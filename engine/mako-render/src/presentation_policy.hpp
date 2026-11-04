@@ -13,6 +13,7 @@
 #include <limits>
 #include <optional>
 #include <string_view>
+#include <utility>
 
 namespace mako::layer {
 
@@ -1252,6 +1253,82 @@ namespace mako::layer {
             }
         };
 
+        /// Observe the application boundary, not generated submissions. Learn
+        /// with eight unpaced samples; once pacing is active, exclude our own
+        /// measured waits when detecting sustained slower application work.
+        /// This prevents a relative game limiter from feeding our waits back
+        /// into an ever-increasing output interval.
+        void observeSource(const TimePoint now, const bool directFixed) {
+            if (!directFixed) {
+                this->resetSource();
+                return;
+            }
+            const auto previous = this->sourceAt;
+            this->sourceAt = now;
+            const auto wait = std::exchange(this->sourceOutputWait, Clock::duration{});
+            this->sourceInterrupted = false;
+            if (!previous)
+                return;
+            const auto elapsed = now - *previous;
+            if (elapsed <= Clock::duration::zero() || elapsed > std::chrono::milliseconds{250}) {
+                this->sourceInterrupted = true;
+                this->sourceSampleCount = this->slowerSourceSamples = 0;
+                return;
+            }
+            if (this->sourcePeriod > Clock::duration::zero()) {
+                this->sourceInterrupted = elapsed > 2 * this->sourcePeriod;
+                if (elapsed - wait > this->sourcePeriod) {
+                    if (++this->slowerSourceSamples == this->sourceSamples.size()) {
+                        this->sourcePeriod = Clock::duration::zero();
+                        this->sourceSampleCount = this->slowerSourceSamples = 0;
+                    }
+                    return;
+                }
+                this->slowerSourceSamples = 0;
+                if (elapsed >= this->sourcePeriod)
+                    return;
+            }
+            this->sourceSamples[this->sourceSampleCount++] = elapsed;
+            if (this->sourceSampleCount == this->sourceSamples.size()) {
+                auto sorted = this->sourceSamples;
+                std::sort(sorted.begin(), sorted.end());
+                this->sourcePeriod = sorted[sorted.size() / 2 - 1] +
+                    (sorted[sorted.size() / 2] - sorted[sorted.size() / 2 - 1]) / 2;
+                this->sourceSampleCount = 0;
+            }
+        }
+
+        void recordOutputWait(const Clock::duration wait) { this->sourceOutputWait = wait; }
+
+        /// No fallback delay on a missed source interval or when preparation
+        /// has already consumed a whole interval. GPU readiness shares this
+        /// same bound and never starts an independent unbounded wait.
+        [[nodiscard]] Clock::duration sourceReadinessBudget(const TimePoint now, const size_t count = 1) const {
+            if (!this->sourceAt || this->sourceInterrupted ||
+                    this->sourcePeriod <= Clock::duration::zero() || now < *this->sourceAt ||
+                    count == 0 || count > GeneratedFramePlan::capacity + 1)
+                return {};
+            const auto span = (this->sourcePeriod / static_cast<int64_t>(count)) *
+                static_cast<int64_t>(count - 1);
+            return std::max(Clock::duration::zero(), std::min(
+                this->sourcePeriod - span - (now - *this->sourceAt),
+                std::chrono::duration_cast<Clock::duration>(std::chrono::milliseconds{50})));
+        }
+
+        /// Game-owned caps have no reserved MAKO cap slack. Space a complete
+        /// ready Fixed batch from now, retaining no expired output slots.
+        [[nodiscard]] std::optional<OutputBatch> scheduleReadyOutputs(
+                const TimePoint now, const size_t count) {
+            if (count < 2 || count > GeneratedFramePlan::capacity + 1 ||
+                    this->sourceReadinessBudget(now, count) <= Clock::duration::zero())
+                return std::nullopt;
+            const auto interval = this->sourcePeriod / static_cast<int64_t>(count);
+            if (!OrderedPresentTimeline::validRate(1.0 / std::chrono::duration<double>(interval).count()))
+                return std::nullopt;
+            this->resetOutputs();
+            return OutputBatch{now, interval, count};
+        }
+
         /// Spend only the existing source-cap interval. Keep a target-output
         /// clock across changing batch counts: spacing each batch separately
         /// would produce 12.5/25 ms gaps for a 40 -> 60 FPS source/target pair.
@@ -1309,7 +1386,10 @@ namespace mako::layer {
                 const TimePoint now, const double framesPerSecond,
                 const bool preserveRatePhase = false) {
             if (!std::isfinite(framesPerSecond) || framesPerSecond <= 0.0) {
-                this->reset();
+                if (this->activeFramesPerSecond > 0.0 || this->nextFrameAt)
+                    this->reset();
+                else
+                    this->resetOutputs();
                 return now;
             }
 
@@ -1351,9 +1431,21 @@ namespace mako::layer {
             this->nextFrameAt.reset();
             this->activeFramesPerSecond = 0.0;
             this->resetOutputs();
+            this->resetSource();
         }
 
     private:
+        void resetSource() {
+            this->sourceAt.reset();
+            this->sourcePeriod = this->sourceOutputWait = Clock::duration::zero();
+            this->sourceSampleCount = this->slowerSourceSamples = 0;
+            this->sourceInterrupted = false;
+        }
+        std::optional<TimePoint> sourceAt;
+        std::array<Clock::duration, 8> sourceSamples{};
+        Clock::duration sourcePeriod{}, sourceOutputWait{};
+        size_t sourceSampleCount{}, slowerSourceSamples{};
+        bool sourceInterrupted{};
         double activeFramesPerSecond{0.0};
         std::optional<TimePoint> nextFrameAt;
         double outputFramesPerSecond{0.0};

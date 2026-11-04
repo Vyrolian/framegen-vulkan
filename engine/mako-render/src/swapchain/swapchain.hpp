@@ -53,6 +53,7 @@ namespace mako::layer {
         // application has not selected its own timing-feedback namespace.
         bool gamescopeDisplayTiming{false};
         bool ownedPresentTiming{false};
+        uint32_t ownedPresentTimingTargetStage{};
         VkFormat format;
         VkColorSpaceKHR colorSpace;
         // Preserve the application's requested minimum separately from the
@@ -283,6 +284,9 @@ namespace mako::layer {
             std::optional<std::chrono::steady_clock::time_point>
                 originalPresentDeadline;
             std::optional<RealFramePacer::OutputBatch> pacedOutputs;
+            bool readyOutputPacing{false};
+            mutable std::chrono::steady_clock::duration outputWait{};
+            mutable std::optional<std::chrono::steady_clock::time_point> previousOutput;
 
             void waitForOutput(std::chrono::steady_clock::time_point deadline) const;
         };
@@ -476,6 +480,7 @@ namespace mako::layer {
         // Immutable for this context; copied from SwapchainInfo rather than
         // inferred again from the current SDR/HDR colour pipeline.
         bool privateOrderedTransport{false};
+        VkPresentModeKHR currentPresentMode{VK_PRESENT_MODE_FIFO_KHR};
         std::optional<uint32_t> gamescopeRefreshHz;
         GamescopePresentationFeedback gamescopePresentationFeedback;
         FixedRefreshBudget fixedRefreshBudget;

@@ -328,7 +328,13 @@ namespace {
         const auto resourceEntries = directoryEntries(
             data, region, *dataDirectory, "RT_RCDATA directory"
         );
-        std::unordered_map<uint32_t, std::vector<uint8_t>> resources;
+        // Validate the whole inventory before copying payloads. Different IDs
+        // can alias the same on-disk range, so per-resource bounds alone allow
+        // a small DLL to expand into arbitrarily larger payload allocations.
+        // Keep total copies within the already validated raw resource region,
+        // itself bounded by the file-size limit. Subtraction avoids overflow.
+        std::unordered_map<uint32_t, std::span<const uint8_t>> payloads;
+        size_t remainingPayloadBytes = region.size;
         for (const DirectoryEntry& resourceEntry : resourceEntries) {
             if ((resourceEntry.id & directoryFlag) != 0)
                 continue;
@@ -374,13 +380,20 @@ namespace {
                 region, static_cast<uint32_t>(payloadRelative), payloadSize,
                 data.size(), "resource payload"
             );
-            std::vector<uint8_t> payload(payloadSize);
-            std::copy_n(data.data() + payloadOffset, payloadSize, payload.data());
-            if (!resources.emplace(resourceEntry.id, std::move(payload)).second)
+            if (payloadSize > remainingPayloadBytes)
+                throw ls::error("resource payload allocation exceeds the raw resource region");
+            remainingPayloadBytes -= payloadSize;
+            if (!payloads.emplace(resourceEntry.id,
+                    data.subspan(payloadOffset, payloadSize)).second)
                 throw ls::error("PE file contains a duplicate numeric resource ID");
         }
-        if (resources.empty())
+        if (payloads.empty())
             throw ls::error("RT_RCDATA directory contains no numeric resources");
+
+        std::unordered_map<uint32_t, std::vector<uint8_t>> resources;
+        resources.reserve(payloads.size());
+        for (const auto& [id, payload] : payloads)
+            resources.emplace(id, std::vector<uint8_t>(payload.begin(), payload.end()));
         return resources;
     }
 

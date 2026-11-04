@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 
 #include "swapchain/swapchain.hpp"
+#include "swapchain/create_policy.hpp"
 #include "swapchain/present/internal.hpp"
 #include "swapchain/retirement.hpp"
 #include "adaptive_scheduler.hpp"
@@ -37,8 +38,14 @@ using namespace mako::layer::present_detail;
 
 void Swapchain::PresentInvocation::waitForOutput(
         const DiagnosticsClock::time_point deadline) const {
-    const auto waitStarted = startPresentDiagnostic();
-    std::this_thread::sleep_until(deadline);
+    const auto waitStarted = DiagnosticsClock::now();
+    const auto effectiveDeadline = this->readyOutputPacing && this->previousOutput
+        ? std::max(deadline, *this->previousOutput + this->pacedOutputs->interval) : deadline;
+    std::this_thread::sleep_until(effectiveDeadline);
+    const auto finished = DiagnosticsClock::now();
+    this->outputWait += finished - waitStarted;
+    if (this->readyOutputPacing)
+        this->previousOutput = finished;
     // The old source-cap sleep preceded present diagnostics. Moving that
     // wait between outputs must not report intentional limiting as slow GPU
     // work or emit a slow-present record on every capped frame.
@@ -65,7 +72,7 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
             .domains = reinterpret_cast<PFN_vkGetSwapchainTimeDomainPropertiesEXT>(get("vkGetSwapchainTimeDomainPropertiesEXT")),
             .past = reinterpret_cast<PFN_vkGetPastPresentationTimingEXT>(get("vkGetPastPresentationTimingEXT")),
             .calibrate = reinterpret_cast<PFN_vkGetCalibratedTimestampsKHR>(get("vkGetCalibratedTimestampsKHR")),
-        });
+        }, this->info.ownedPresentTimingTargetStage);
         std::clog << "MAKO Renderer: presentation timing initialized; owner=renderer; "
                      "transport=VK_EXT_present_timing; active=" << enabled << '\n';
     }
@@ -136,6 +143,15 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         );
     }
     const void* lowerNextChain = filteredPresentChain.head();
+    for (auto* node = static_cast<const VkBaseInStructure*>(lowerNextChain); node; node = node->pNext) {
+        if (node->sType == VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_MODE_INFO_EXT) {
+            const auto* modes = reinterpret_cast<const VkSwapchainPresentModeInfoEXT*>(node);
+            if (modes->swapchainCount == 1 && modes->pPresentModes)
+                this->currentPresentMode = modes->pPresentModes[0];
+        }
+    }
+    const bool directUnthrottled = directUnthrottledPresentation(
+        this->gamescopeDetected, this->currentPresentMode);
 #if defined(VK_EXT_present_timing) && defined(VK_KHR_present_id2)
     this->presentTiming.observePresentMode(lowerNextChain);
 #endif
@@ -325,13 +341,18 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         displayTimingControlsOutput(this->wsiPresentTimingQuery != nullptr,
             this->privateOrderedTransport, this->gamescopeRefreshHz.value_or(0)) ||
         ownedTimingControlsOutput;
+    const bool readyOutputPacing = fixedReadyOutputPacingEligible(
+        this->profile, directUnthrottled,
+        compositorOutputTiming || hasPresentTiming(lowerNextChain),
+        this->steamMenuSuspended || this->recoveryState.orderedAcquireRecovery.active());
+    this->realFramePacer.observeSource(limiterArrival, readyOutputPacing);
     const bool sourceDeadlinePreparation = limiterDeadline > limiterArrival &&
         baseCapPacesOutputs(
             this->profile, baseFpsCap,
-            (this->privateOrderedTransport || ownedTimingControlsOutput) &&
+            (this->privateOrderedTransport || ownedTimingControlsOutput || directUnthrottled) &&
                 !hasPresentTiming(lowerNextChain) &&
                 !this->recoveryState.orderedAcquireRecovery.active(),
-            sourceRefreshHz, compositorOutputTiming) &&
+            sourceRefreshHz, compositorOutputTiming, directUnthrottled) &&
         orderedGeneratedBatchCanPrepareBeforeCap(
             this->info.requestedMinImageCount, this->info.images.size(),
             generatedFrameCapacityForActivePolicy(this->profile),
@@ -376,6 +397,11 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         .originalPresentDeadline = sourceDeadlinePacing
             ? std::optional{limiterDeadline} : std::nullopt,
     };
+    struct OutputWaitObservation {
+        RealFramePacer& pacer;
+        const PresentInvocation& invocation;
+        ~OutputWaitObservation() { pacer.recordOutputWait(invocation.outputWait); }
+    } outputWaitObservation{this->realFramePacer, invocation};
     this->recordPresentCadence(cadenceNow);
 
     if (std::exchange(this->replacementWsiPrimePending, false)) {
@@ -763,6 +789,28 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
                 invocation.pacedOutputs->count - 1);
     } else {
         this->realFramePacer.resetOutputs();
+    }
+    if (readyOutputPacing && !invocation.pacedOutputs && !bypassGeneratedFrames &&
+            !plan.historyWarmupActive &&
+            plan.scheduledGeneratedFrames.size() == this->configuredFixedGeneratedFrames &&
+            plan.scheduledGeneratedFrames.size() == plan.requestedGeneratedFrames.size()) {
+        const auto waiting = DiagnosticsClock::now();
+        const auto budget = this->realFramePacer.sourceReadinessBudget(
+            waiting, plan.scheduledGeneratedFrames.size() + 1);
+        if (budget > DiagnosticsClock::duration::zero()) {
+            const bool ready = this->syncSemaphore->wait(vk, this->frameState.backendTimelineIndex,
+                static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(budget).count()));
+            invocation.outputWait += DiagnosticsClock::now() - waiting;
+            if (ready) {
+                invocation.pacedOutputs = this->realFramePacer.scheduleReadyOutputs(
+                    DiagnosticsClock::now(), plan.scheduledGeneratedFrames.size() + 1);
+                if (invocation.pacedOutputs) {
+                    invocation.readyOutputPacing = true;
+                    invocation.originalPresentDeadline = invocation.pacedOutputs->at(
+                        invocation.pacedOutputs->count - 1);
+                }
+            }
+        }
     }
     if (bypassGeneratedFrames)
         return this->presentHistoryOnly(invocation, plan);

@@ -3,6 +3,7 @@
 #include <QtContainerFwd>
 #include <QStringList>
 #include <QString>
+#include <QFileInfo>
 
 #include "utils.hpp"
 #include "mako-backend/mako.hpp"
@@ -16,6 +17,19 @@
 
 using namespace mako;
 using namespace mako::ui;
+
+QString ui::desktopQuickStyle(const QStringList& importPaths) {
+    if (qEnvironmentVariable("QT_QPA_PLATFORMTHEME").section(':', 0, 0) != "qt6ct" ||
+            !qEnvironmentVariableIsEmpty("QT_QUICK_CONTROLS_STYLE") ||
+            !qEnvironmentVariableIsEmpty("QT_QUICK_CONTROLS_CONF"))
+        return {};
+
+    for (const auto& path : importPaths) {
+        if (QFileInfo(path + "/org/kde/desktop/qmldir").isFile())
+            return QStringLiteral("org.kde.desktop");
+    }
+    return {};
+}
 
 QStringList ui::getAvailableGPUs() {
     // list of found GPUs and their optional PCI IDs

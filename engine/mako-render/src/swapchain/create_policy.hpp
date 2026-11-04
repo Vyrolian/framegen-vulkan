@@ -14,6 +14,12 @@
 
 namespace mako::layer {
 
+    [[nodiscard]] constexpr bool directUnthrottledPresentation(
+            const bool gamescopeDetected, const VkPresentModeKHR mode) noexcept {
+        return !gamescopeDetected &&
+            (mode == VK_PRESENT_MODE_MAILBOX_KHR || mode == VK_PRESENT_MODE_IMMEDIATE_KHR);
+    }
+
     struct GamescopeScalingPresentContract {
         VkPresentModeKHR lowerPresentMode{VK_PRESENT_MODE_FIFO_KHR};
         std::optional<VkPresentModeKHR> compositorPresentMode;

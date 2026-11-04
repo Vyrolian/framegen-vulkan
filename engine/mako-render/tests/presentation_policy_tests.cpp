@@ -723,6 +723,86 @@ void testFixedUsesExistingSourceDeadline() {
     }
 }
 
+void testReadyFixedOutputs() {
+    using Clock = RealFramePacer::Clock;
+    const auto start = Clock::time_point{10s};
+    const auto period = std::chrono::duration_cast<Clock::duration>(
+        std::chrono::duration<double>(1. / 60));
+    for (const size_t count : {2U, 3U, 4U, 5U}) {
+        for (const double cap : {0., 60.}) {
+            RealFramePacer pacer;
+            auto arrival = start;
+            std::optional<RealFramePacer::OutputBatch> batch;
+            for (size_t frame = 0; frame < 200; ++frame) {
+                (void)pacer.schedule(arrival, cap);
+                pacer.observeSource(arrival, true);
+                batch = pacer.scheduleReadyOutputs(arrival + 1ms, count);
+                if (frame >= 8) {
+                    const auto span = (period / static_cast<int64_t>(count)) *
+                        static_cast<int64_t>(count - 1);
+                    expect(pacer.sourceReadinessBudget(arrival + 1ms, count) == period - span - 1ms,
+                        "GPU readiness did not reserve the complete output span");
+                    expect(batch && batch->first == arrival + 1ms &&
+                            batch->interval == period / static_cast<int64_t>(count) &&
+                            batch->at(count - 1) < arrival + period + 1ms,
+                        "game/combined caps lost ready-output spacing or accumulated latency");
+                    pacer.recordOutputWait(batch->interval * static_cast<int64_t>(count - 1));
+                }
+                arrival += period;
+            }
+            arrival += 100ms;
+            pacer.observeSource(arrival, true);
+            expect(!pacer.scheduleReadyOutputs(arrival + 1ms, count),
+                "a source hitch acquired another generated-output wait");
+            arrival += period;
+            pacer.observeSource(arrival, true);
+            batch = pacer.scheduleReadyOutputs(arrival + 1ms, count);
+            expect(batch && batch->interval == period / static_cast<int64_t>(count),
+                "a source hitch stretched the retained output clock");
+            expect(!pacer.scheduleReadyOutputs(arrival + period, count),
+                "late GPU/CPU preparation acquired another full output interval");
+            expect(!pacer.scheduleReadyOutputs(arrival + period -
+                    batch->interval * static_cast<int64_t>(count - 1) + 1ns, count),
+                "GPU preparation borrowed the output span from the next source frame");
+            pacer.recordOutputWait(batch->interval * static_cast<int64_t>(count - 1));
+            for (size_t frame = 0; frame < 200; ++frame) {
+                const auto wait = batch->interval * static_cast<int64_t>(count - 1);
+                arrival += period + wait;
+                (void)pacer.schedule(arrival, cap);
+                pacer.observeSource(arrival, true);
+                batch = pacer.scheduleReadyOutputs(arrival + 1ms, count);
+                expect(batch && batch->interval == period / static_cast<int64_t>(count),
+                    "relative game limiter fed intentional waits into a growing cadence estimate");
+                pacer.recordOutputWait(wait);
+            }
+            for (size_t frame = 0; frame < 32; ++frame) {
+                arrival += 2 * period;
+                pacer.observeSource(arrival, true);
+                batch = pacer.scheduleReadyOutputs(arrival + 1ms, count);
+                if (batch)
+                    pacer.recordOutputWait(batch->interval * static_cast<int64_t>(count - 1));
+            }
+            expect(batch && batch->interval == 2 * period / static_cast<int64_t>(count),
+                "sustained slower work failed to relearn from unpaced samples");
+            for (size_t frame = 0; frame < 24; ++frame) {
+                arrival += period;
+                pacer.observeSource(arrival, true);
+                batch = pacer.scheduleReadyOutputs(arrival + 1ms, count);
+                if (batch)
+                    pacer.recordOutputWait(batch->interval * static_cast<int64_t>(count - 1));
+            }
+            expect(batch && batch->interval == period / static_cast<int64_t>(count),
+                "source acceleration retained a slower output interval");
+            pacer.observeSource(arrival + period, false);
+            expect(!pacer.scheduleReadyOutputs(arrival + period, count),
+                "another timing owner retained ready-output pacing");
+            pacer.reset();
+            expect(pacer.sourceReadinessBudget(arrival) == Clock::duration::zero(),
+                "live pacer reset retained source-readiness state");
+        }
+    }
+}
+
 void testFractionalUsesExistingSourceDeadline() {
     using Clock = RealFramePacer::Clock;
     const auto start = Clock::time_point{10s};
@@ -970,6 +1050,7 @@ int main() {
     testLongSessionDeadlineBounds();
     testFractionalUsesExistingSourceDeadline();
     testFixedUsesExistingSourceDeadline();
+    testReadyFixedOutputs();
     testSmoothCadenceCapFollowsActivePlan();
     testOrderedPresentationTimeline();
     testBridgeCompositorReadiness();

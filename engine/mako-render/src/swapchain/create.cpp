@@ -86,6 +86,7 @@ bool layer::context_ModifySwapchainCreateInfo(const ls::GameConf& profile,
             colorPipeline.encoding == backend::FrameEncoding::SdrHighPrecision);
     const bool orderedFrameGenerationTransport =
         frameGenerationProvisioned &&
+        !directUnthrottledPresentation(gamescopeDetected, createInfo.presentMode) &&
         selectPresentationTransport(
             gamescopeDetected, hdrCapableSwapchain,
             presentationEnvironment
@@ -113,6 +114,7 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance* backend,
         instance(backend),
         gamescopeDetected(gamescopeDetected),
         privateOrderedTransport(info.privateOrderedTransport),
+        currentPresentMode(info.presentMode),
         gamescopeRefreshHz(gamescopeRefreshHz),
         gamescopePresentationFeedback(
             std::move(gamescopePresentationFeedback)),

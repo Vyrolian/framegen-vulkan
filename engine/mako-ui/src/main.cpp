@@ -1,7 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 
 #include <QIcon>
-#include <QGuiApplication>
+#include <QApplication>
+#include <QQuickStyle>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 #include <QUrl>
@@ -10,11 +11,14 @@
 
 #include "backend.hpp"
 #include "localization.hpp"
+#include "utils.hpp"
 
 using namespace mako::ui;
 
 int main(int argc, char* argv[]) try {
-    const QGuiApplication app(argc, argv);
+    // Desktop Qt Quick styles can delegate painting to the user's QStyle
+    // (for example qt6ct/Kvantum), which requires QApplication.
+    const QApplication app(argc, argv);
     QGuiApplication::setWindowIcon(QIcon(":/rsc/io.github.eugeniosegala.mako.png"));
     QGuiApplication::setOrganizationName("MAKO");
     QGuiApplication::setOrganizationDomain("io.github.eugeniosegala");
@@ -22,6 +26,9 @@ int main(int argc, char* argv[]) try {
     QGuiApplication::setApplicationDisplayName("MAKO Renderer");
 
     QQmlApplicationEngine engine;
+    const auto desktopStyle = desktopQuickStyle(engine.importPathList());
+    if (!desktopStyle.isEmpty())
+        QQuickStyle::setStyle(desktopStyle);
     Backend backend;
     Localization localization;
 

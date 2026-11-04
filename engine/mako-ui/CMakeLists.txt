@@ -1,4 +1,4 @@
-find_package(Qt6 6.2 REQUIRED COMPONENTS Quick)
+find_package(Qt6 6.2 REQUIRED COMPONENTS Quick QuickControls2 Widgets)
 
 set(UI_SOURCES
     "src/backend.cpp"
@@ -51,7 +51,9 @@ target_link_libraries(mako-ui
     PRIVATE mako-common
     PRIVATE mako-backend
     PRIVATE mako-ui-localization
-    PRIVATE Qt6::Quick)
+    PRIVATE Qt6::Quick
+    PRIVATE Qt6::QuickControls2
+    PRIVATE Qt6::Widgets)
 
 set(MAKO_VKBASALT_SHADER_SOURCE_DIR
     "${CMAKE_CURRENT_SOURCE_DIR}/../../plugin/py_modules/mako_plugin/vkbasalt_shaders")
@@ -59,6 +61,17 @@ target_compile_definitions(mako-ui PRIVATE
     MAKO_UI_VKBASALT_SHADER_SOURCE_DIR="${MAKO_VKBASALT_SHADER_SOURCE_DIR}")
 
 if(BUILD_TESTING)
+    add_executable(mako-ui-settings-layout-tests
+        "tests/settings_layout_tests.cpp" "src/utils.cpp")
+    target_include_directories(mako-ui-settings-layout-tests PRIVATE "src")
+    target_link_libraries(mako-ui-settings-layout-tests
+        PRIVATE mako-backend Qt6::Quick Qt6::QuickControls2 Qt6::Widgets)
+    target_compile_definitions(mako-ui-settings-layout-tests PRIVATE
+        MAKO_UI_PANES_DIRECTORY="${CMAKE_CURRENT_SOURCE_DIR}/rsc/panes")
+    add_test(NAME ui-settings-layout COMMAND mako-ui-settings-layout-tests)
+    set_tests_properties(ui-settings-layout PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software")
+
     add_executable(mako-ui-process-detection-tests
         "tests/process_detection_tests.cpp"
         "src/backend.cpp"

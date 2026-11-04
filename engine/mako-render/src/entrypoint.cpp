@@ -2296,6 +2296,7 @@ namespace {
             // create swapchain
             VkSwapchainCreateInfoKHR newInfo = *info;
             bool ownedPresentTiming = false;
+            uint32_t ownedPresentTimingTargetStage{};
             std::optional<SpatialScalingExtents> previousVariableExtents;
             std::optional<SpatialScalingExtents>
                 variableSurfaceRollbackExtents;
@@ -2460,6 +2461,7 @@ namespace {
                         // The bridge already owns protocol timing. Native and
                         // full-WSI surfaces negotiate their own Vulkan contract.
                         if (instance_info->presentTimingDevices.contains(device) &&
+                                driverInfo.presentMode == VK_PRESENT_MODE_FIFO_KHR &&
                                 !(instance_info->scalingSurfaces &&
                                   instance_info->scalingSurfaces->owns(info->surface))) {
                             const auto query = reinterpret_cast<PFN_vkGetPhysicalDeviceSurfaceCapabilities2KHR>(
@@ -2483,6 +2485,9 @@ namespace {
                             ownedPresentTiming = query &&
                                 query(it->second.physdev(), &surface, &caps) == VK_SUCCESS &&
                                 OwnedPresentTiming::surfaceSupported(timing, ids);
+                            if (ownedPresentTiming)
+                                ownedPresentTimingTargetStage =
+                                    OwnedPresentTiming::preferredTargetStage(timing.presentStageQueries);
                             if (ownedPresentTiming)
                                 driverInfo.flags |= VK_SWAPCHAIN_CREATE_PRESENT_TIMING_BIT_EXT |
                                     VK_SWAPCHAIN_CREATE_PRESENT_ID_2_BIT_KHR;
@@ -2820,6 +2825,7 @@ namespace {
                 .gamescopeDisplayTiming =
                     instance_info->gamescopeTimingDevices.contains(device),
                 .ownedPresentTiming = ownedPresentTiming,
+                .ownedPresentTimingTargetStage = ownedPresentTimingTargetStage,
                 .format = newInfo.imageFormat,
                 .colorSpace = newInfo.imageColorSpace,
                 .requestedMinImageCount = info->minImageCount,

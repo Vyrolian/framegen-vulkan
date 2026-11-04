@@ -84,8 +84,10 @@ RowLayout {
         id: inner
         Layout.fillWidth: true
         Layout.minimumWidth: 160
-        Layout.preferredWidth: Math.max(160, Math.min(280, root.width * 0.4))
-        Layout.maximumWidth: Math.max(160, root.width * 0.5)
+        // Size hints must not depend on the width assigned by this layout.
+        // Wrapped labels otherwise feed geometry back into layout negotiation.
+        Layout.preferredWidth: 280
+        Layout.maximumWidth: 280
         Layout.alignment: Qt.AlignRight | Qt.AlignVCenter
         spacing: 0
     }

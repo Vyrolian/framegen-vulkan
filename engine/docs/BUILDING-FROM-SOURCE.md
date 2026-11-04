@@ -31,7 +31,7 @@ Install:
 - X11 and XCB headers (`libx11`, `libxcb`, and `xorgproto` on Arch/SteamOS)
 - Python 3 when building the registered tests
 - A multilib C++ toolchain when building the 32-bit Vulkan layer
-- Qt 6.2 or newer and Qt6Quick (only needed when building `mako-ui`)
+- Qt 6.2 or newer with Qt6Quick, Qt6QuickControls2, and Qt6Widgets (only needed when building `mako-ui`; Widgets supports native desktop-style painting)
 
 Package names vary by distribution. These commands cover common Debian/Ubuntu and Arch installations:
 

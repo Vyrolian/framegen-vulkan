@@ -414,6 +414,41 @@ int main() {
     }
     cappedFixedPacing.multiplier = 2;
     cappedFixedPacing.base_fps_cap = 30;
+    for (const int cap : {0, 30, 60}) {
+        auto direct = cappedFixedPacing;
+        direct.base_fps_cap = cap;
+        expect(fixedReadyOutputPacingEligible(direct, true, false, false),
+            "Fixed Smooth Cadence must support external and combined source caps");
+        expect(!fixedReadyOutputPacingEligible(direct, false, false, false) &&
+                !fixedReadyOutputPacingEligible(direct, true, true, false) &&
+                !fixedReadyOutputPacingEligible(direct, true, false, true),
+            "ready-output pacing replaced FIFO, explicit timing or recovery");
+        direct.adaptive_stable_cadence = false;
+        expect(!fixedReadyOutputPacingEligible(direct, true, false, false), "Smooth Cadence Off added output waits");
+        direct.adaptive_stable_cadence = true;
+        direct.adaptive = true;
+        expect(!fixedReadyOutputPacingEligible(direct, true, false, false), "Fixed pacing replaced Adaptive");
+        direct.adaptive = false;
+        direct.dynamic_cadence_recovery = true;
+        expect(!fixedReadyOutputPacingEligible(direct, true, false, false), "Fixed pacing replaced cadence recovery");
+        direct.dynamic_cadence_recovery = false;
+        direct.gpu_headroom_percent = 10;
+        expect(!fixedReadyOutputPacingEligible(direct, true, false, false), "Fixed pacing replaced GPU Headroom");
+        direct.gpu_headroom_percent = 0;
+        direct.frame_generation_enabled = false;
+        expect(!fixedReadyOutputPacingEligible(direct, true, false, false), "generation Off added output waits");
+    }
+    expect(baseCapPacesOutputs(cappedFixedPacing, 30., true, {}, false, true) &&
+            baseCapPacesOutputs(cappedFixedPacing, 30., true, 50, false, true),
+        "VSync-off Fixed output spacing must not depend on a refresh ceiling");
+    expect(!baseCapPacesOutputs(cappedFixedPacing, 30., false, {}, false, true) &&
+            !baseCapPacesOutputs(cappedFixedPacing, 0., true, {}, false, true),
+        "VSync-off pacing must preserve application timing and require a source cap");
+    auto directAdaptive = adaptiveProfile();
+    directAdaptive.frame_generation_provisioned = true;
+    directAdaptive.adaptive_auto_base_fps_cap = true;
+    expect(baseCapPacesOutputs(directAdaptive, 45., true, {}, false, true),
+        "VSync-off Adaptive automatic caps must space outputs without compositor feedback");
     expect(baseCapPacesOutputs(cappedFixedPacing, 30., true, 120),
         "below-refresh Fixed must use its existing source-cap slack");
     expect(!baseCapPacesOutputs(cappedFixedPacing, 30., false, 120) &&

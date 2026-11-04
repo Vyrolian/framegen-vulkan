@@ -100,6 +100,9 @@ printf '%s\n' \
 if [[ "${MAKO_TEST_OMIT_LIB32_GLIBC:-0}" != 1 ]]; then
     printf '%s\n' 'depend = lib32-glibc' >> "$package_root/.PKGINFO"
 fi
+if [[ "${MAKO_TEST_QT_WIDGETS:-0}" == 1 ]]; then
+    printf '%s\n' 'depend = qt6-base' 'depend = qt6-declarative' >> "$package_root/.PKGINFO"
+fi
 printf '%s\n' "${MAKO_TEST_RENDERER_VERSION_OVERRIDE:-$MAKO_TEST_PKGVER}" \
     > "$package_root/usr/share/doc/mako-renderer-bin/MAKO-Renderer-version.txt"
 tar -cf "mako-renderer-bin-${MAKO_TEST_PKGVER}-${MAKO_TEST_PKGREL}-x86_64.pkg.tar.zst" \
@@ -134,6 +137,11 @@ case "$1" in
         fi
         case "$2" in
             */libfuture.so) printf ' 0x00000001 (NEEDED)             Shared library: [libunexpected.so.1]\n' ;;
+            */bin/mako-ui)
+                if [ "${MAKO_TEST_QT_WIDGETS:-0}" = 1 ]; then
+                    printf ' 0x00000001 (NEEDED)             Shared library: [libQt6Widgets.so.6]\n'
+                    printf ' 0x00000001 (NEEDED)             Shared library: [libQt6QuickControls2.so.6]\n'
+                fi ;;
         esac ;;
     *) exit 2 ;;
 esac
@@ -155,6 +163,11 @@ MAKO_TEST_PKGVER="$current_pkgver" \
         "$fake_archive" "$retained_package" >/dev/null
 [[ -f "$retained_package" ]]
 tar -tf "$retained_package" | grep -Fqx usr/bin/mako-launch
+MAKO_TEST_PKGVER="$current_pkgver" \
+    MAKO_TEST_PKGREL="$current_pkgrel" \
+    MAKO_TEST_QT_WIDGETS=1 \
+    PATH="$fake_tools:/usr/bin:/bin" \
+    "$script_dir/verify-release-package.sh" "$fake_archive" >/dev/null
 if MAKO_TEST_PKGVER="$current_pkgver" \
         MAKO_TEST_PKGREL="$current_pkgrel" \
         MAKO_TEST_EXTRA_NEEDED=libunexpected.so.1 \

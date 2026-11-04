@@ -430,22 +430,33 @@ namespace mako::layer {
             *gamescopeRefreshHz > profile.frame_generation_refresh_threshold;
     }
 
+    [[nodiscard]] inline bool fixedReadyOutputPacingEligible(
+            const ls::GameConf& profile, const bool directUnthrottled,
+            const bool anotherTimingOwner, const bool recovering) {
+        return directUnthrottled && !anotherTimingOwner && !recovering &&
+            effectiveFrameGenerationEnabled(profile, std::nullopt) &&
+            !profile.adaptive && profile.adaptive_stable_cadence &&
+            !profile.dynamic_cadence_recovery && profile.gpu_headroom_percent == 0;
+    }
+
     /// Use the existing cap interval for Fractional, below-refresh automatic
     /// caps, and exact Fixed batches that fit the known refresh. A compositor
     /// output clock can also prepare inside a target-matched automatic cap;
-    /// direct FIFO retains its existing target-matched source pacing.
+    /// direct FIFO retains its existing target-matched source pacing. Direct
+    /// VSync-off output uses the configured cap without a display clock.
     [[nodiscard]] inline bool baseCapPacesOutputs(
             const ls::GameConf& profile, const double effectiveCap,
-            const bool untimedOrderedTransport,
+            const bool outputSpacingEligible,
             const std::optional<uint32_t> gamescopeRefreshHz = std::nullopt,
-            const bool compositorOutputTiming = false) {
+            const bool compositorOutputTiming = false,
+            const bool directUnthrottled = false) {
         if (!effectiveFrameGenerationEnabled(profile, gamescopeRefreshHz) ||
-                !untimedOrderedTransport || !std::isfinite(effectiveCap) ||
+                !outputSpacingEligible || !std::isfinite(effectiveCap) ||
                 effectiveCap <= 0.0)
             return false;
         if (profile.adaptive)
             return static_cast<double>(profile.target_fps) > effectiveCap &&
-                (!profile.adaptive_auto_base_fps_cap ||
+                (!profile.adaptive_auto_base_fps_cap || directUnthrottled ||
                     (gamescopeRefreshHz &&
                         (profile.target_fps < *gamescopeRefreshHz ||
                          (compositorOutputTiming &&
@@ -454,8 +465,8 @@ namespace mako::layer {
             (profile.base_fps_cap > 0 || profile.gpu_headroom_percent > 0) &&
             profile.multiplier >= ls::GameConfLimits::minimumMultiplier &&
             profile.multiplier <= ls::GameConfLimits::maximumMultiplier &&
-            gamescopeRefreshHz &&
-            effectiveCap * profile.multiplier <= *gamescopeRefreshHz;
+            (directUnthrottled || (gamescopeRefreshHz &&
+                effectiveCap * profile.multiplier <= *gamescopeRefreshHz));
     }
 
     /// Auto-cap aligns the common healthy path with an exact 2x cadence.

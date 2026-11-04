@@ -48,8 +48,18 @@ namespace mako::layer {
                 timing.presentAtAbsoluteTimeSupported && (timing.presentStageQueries & queueStage);
         }
 
+        [[nodiscard]] static VkPresentStageFlagsEXT preferredTargetStage(
+                const VkPresentStageFlagsEXT supportedStages) {
+            if (supportedStages & VK_PRESENT_STAGE_IMAGE_FIRST_PIXEL_VISIBLE_BIT_EXT)
+                return VK_PRESENT_STAGE_IMAGE_FIRST_PIXEL_VISIBLE_BIT_EXT;
+            if (supportedStages & VK_PRESENT_STAGE_IMAGE_FIRST_PIXEL_OUT_BIT_EXT)
+                return VK_PRESENT_STAGE_IMAGE_FIRST_PIXEL_OUT_BIT_EXT;
+            return queueStage;
+        }
+
         bool initialize(const VkDevice device, const VkSwapchainKHR swapchain,
-                const Functions functions) {
+                const Functions functions, const VkPresentStageFlagsEXT targetStage = queueStage) {
+            this->targetStage = targetStage;
             this->device = device;
             this->swapchain = swapchain;
             this->functions = functions;
@@ -163,7 +173,7 @@ namespace mako::layer {
                 .sType = VK_STRUCTURE_TYPE_PRESENT_TIMING_INFO_EXT,
                 .targetTime = stamp,
                 .timeDomainId = this->domainId,
-                .targetTimeDomainPresentStage = queueStage,
+                .targetTimeDomainPresentStage = this->targetStage,
             };
             if (this->pendingCount < capacity) {
                 const auto slot = std::ranges::find(this->pendingIds, uint64_t{0});
@@ -186,10 +196,10 @@ namespace mako::layer {
         }
         uint64_t toDomain(const TimePoint time) const {
             const auto ns = nanos(time);
-            if (ns < 0 || (this->offset > 0 && ns > INT64_MAX - this->offset) ||
-                    (this->offset < 0 && ns < -this->offset))
+            if (ns < 0 || (this->targetOffset > 0 && ns > INT64_MAX - this->targetOffset) ||
+                    (this->targetOffset < 0 && ns < -this->targetOffset))
                 return 0;
-            return static_cast<uint64_t>(ns + this->offset);
+            return static_cast<uint64_t>(ns + this->targetOffset);
         }
         static TimePoint fromDomain(const uint64_t time, const int64_t offset) {
             if (!time || time > INT64_MAX ||
@@ -222,20 +232,38 @@ namespace mako::layer {
                     .presentStage = queueStage,
                     .timeDomainId = ids[i],
                 };
-                const VkCalibratedTimestampInfoKHR info{
-                    .sType = VK_STRUCTURE_TYPE_CALIBRATED_TIMESTAMP_INFO_KHR,
-                    .pNext = domains[i] == VK_TIME_DOMAIN_CLOCK_MONOTONIC_KHR ? nullptr : &swapchainInfo,
-                    .timeDomain = domains[i],
+                auto targetInfo = swapchainInfo;
+                targetInfo.presentStage = this->targetStage;
+                // Stage-local clocks can have different epochs. Calibrate
+                // output targets independently from queue-completion feedback.
+                // Sample both in one call so uncertainty stays bounded.
+                const uint32_t count = domains[i] == VK_TIME_DOMAIN_PRESENT_STAGE_LOCAL_EXT &&
+                    this->targetStage != queueStage ? 2U : 1U;
+                const VkCalibratedTimestampInfoKHR infos[]{
+                    {
+                        .sType = VK_STRUCTURE_TYPE_CALIBRATED_TIMESTAMP_INFO_KHR,
+                        .pNext = domains[i] == VK_TIME_DOMAIN_CLOCK_MONOTONIC_KHR ? nullptr : &swapchainInfo,
+                        .timeDomain = domains[i],
+                    },
+                    {
+                        .sType = VK_STRUCTURE_TYPE_CALIBRATED_TIMESTAMP_INFO_KHR,
+                        .pNext = &targetInfo,
+                        .timeDomain = domains[i],
+                    },
                 };
-                uint64_t timestamp{}, deviation{};
+                uint64_t timestamps[2]{}, deviation{};
                 const auto before = Clock::now();
-                const auto calibrated = this->functions.calibrate(this->device, 1, &info,
-                    &timestamp, &deviation);
+                const auto calibrated = this->functions.calibrate(this->device, count, infos,
+                    timestamps, &deviation);
                 const auto after = Clock::now();
-                if (calibrated != VK_SUCCESS || timestamp > INT64_MAX || deviation > 1'000'000 ||
+                if (calibrated != VK_SUCCESS || !timestamps[0] ||
+                        !timestamps[count - 1] || timestamps[0] > INT64_MAX ||
+                        timestamps[count - 1] > INT64_MAX || deviation > 1'000'000 ||
                         after < before || nanos(after) - nanos(before) > static_cast<int64_t>(1'000'000 - deviation))
                     continue;
-                this->offset = static_cast<int64_t>(timestamp) - nanos(before + (after - before) / 2);
+                const auto host = nanos(before + (after - before) / 2);
+                this->offset = static_cast<int64_t>(timestamps[0]) - host;
+                this->targetOffset = static_cast<int64_t>(timestamps[count - 1]) - host;
                 this->domain = domains[i];
                 this->domainId = ids[i];
                 this->lastCalibration = after;
@@ -276,7 +304,8 @@ namespace mako::layer {
         uint64_t refreshDuration{}, refreshInterval{}, nextId{};
         std::optional<uint64_t> lastBatch;
         TimePoint lastCalibration{};
-        int64_t offset{};
+        int64_t offset{}, targetOffset{};
+        VkPresentStageFlagsEXT targetStage{queueStage};
         std::array<uint64_t, capacity> pendingIds{};
         std::array<int64_t, capacity> pendingOffsets{};
         uint32_t pendingCount{};

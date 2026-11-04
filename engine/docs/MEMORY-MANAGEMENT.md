@@ -19,6 +19,8 @@ The application-facing device and private backend device can differ. Export/impo
 
 ## Allocation paths
 
+DLL inspection in `mako-backend/src/extraction/dll_reader.cpp` validates the complete selected resource inventory before copying payloads. The sum of copied payload sizes must fit within the validated raw PE resource region, which itself fits within the existing 1 GiB DLL file limit. Distinct IDs may share bytes only while their combined copies fit that budget; repeated or overlapping references cannot amplify a small file into an unbounded payload allocation. Budget checks use subtraction before allocation to avoid integer overflow. This is a per-parse payload bound, not a total process-memory cap: the input file buffer, resource metadata, cached archives, and translated shaders have separate lifetimes.
+
 `mako-common` owns the Vulkan wrappers. `Vulkan::findMemoryTypeIndex()` selects the first compatible memory type with the requested properties: device-local for images, or host-visible and host-coherent for buffers. Selection uses the resource's Vulkan `memoryTypeBits`; it does not classify GPUs by name or treat system RAM as an interchangeable allocation target.
 
 | Path | Allocation behavior |

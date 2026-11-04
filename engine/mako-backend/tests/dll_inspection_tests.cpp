@@ -136,6 +136,42 @@ namespace {
         return data;
     }
 
+    // Distinct IDs may legally share payload bytes. Exercise the aggregate
+    // allocation budget without a large file or any licensed input.
+    [[nodiscard]] std::vector<uint8_t> sharedResourcePe(
+            const uint16_t count, const size_t payloadSize, const bool pe32) {
+        auto data = syntheticPe({}, {.pe32 = pe32});
+        constexpr size_t resources = 0x200U;
+        const size_t language = 0x50U + static_cast<size_t>(count) * 8U;
+        const size_t entry = language + 0x20U;
+        const size_t payload = entry + 0x10U;
+        const auto regionSize = static_cast<uint32_t>(payload + payloadSize);
+        data.resize(resources + regionSize);
+        constexpr size_t optional = 0x98U;
+        const size_t section = optional + (pe32 ? 0xe0U : 0xf0U);
+        writeInteger<uint32_t>(data, optional + (pe32 ? 116U : 132U), regionSize);
+        writeInteger<uint32_t>(data, section + 8U, regionSize);
+        writeInteger<uint32_t>(data, section + 16U, regionSize);
+        writeInteger<uint16_t>(data, resources + 0x4eU, count);
+        for (uint32_t index = 0; index < count; ++index) {
+            writeInteger<uint32_t>(data, resources + 0x50U + index * 8U, index + 1U);
+            writeInteger<uint32_t>(data, resources + 0x54U + index * 8U,
+                0x80000000U | static_cast<uint32_t>(language));
+        }
+        writeInteger<uint16_t>(data, resources + language + 12U, 0U);
+        writeInteger<uint16_t>(data, resources + language + 14U, 1U);
+        writeInteger<uint32_t>(data, resources + language + 16U, 0U);
+        writeInteger<uint32_t>(data, resources + language + 20U,
+            static_cast<uint32_t>(entry));
+        writeInteger<uint32_t>(data, resources + entry,
+            0x1000U + static_cast<uint32_t>(payload));
+        writeInteger<uint32_t>(data, resources + entry + 4U,
+            static_cast<uint32_t>(payloadSize));
+        std::fill(data.begin() + static_cast<ptrdiff_t>(resources + payload),
+            data.end(), uint8_t{0x5aU});
+        return data;
+    }
+
     void writeFile(const std::filesystem::path& path,
             const std::vector<uint8_t>& data) {
         std::ofstream output(path, std::ios::binary | std::ios::trunc);
@@ -563,6 +599,37 @@ namespace {
             "SHA-256 implementation returned the wrong known digest");
     }
 
+    void testPeResourceAllocationBudget(const TemporaryDirectory& temporary) {
+        for (const bool pe32 : {false, true}) {
+            const auto path = temporary.path / (pe32 ? "budget32.dll" : "budget64.dll");
+            // Two 144-byte aliases exactly consume the 288-byte resource
+            // region. Sharing alone must not invalidate a supported DLL.
+            writeFile(path, sharedResourcePe(2U, 144U, pe32));
+            const auto boundary = mako::backend::loadDllResourceArchive(path);
+            require(boundary->resources.size() == 2U &&
+                    boundary->resources.at(1U) == std::vector<uint8_t>(144U, 0x5aU) &&
+                    boundary->resources.at(2U) == boundary->resources.at(1U),
+                "shared resources within the allocation budget were rejected");
+
+            // One extra byte per alias exceeds the region budget by one byte.
+            writeFile(path, sharedResourcePe(2U, 145U, pe32));
+            requireFailure([&] {
+                static_cast<void>(mako::backend::loadDllResourceArchive(path));
+            }, "resource payload allocation exceeded the raw resource region");
+
+            // A roughly 67 KiB file previously expanded into 8 MiB of copies.
+            writeFile(path, sharedResourcePe(128U, 64U * 1024U, pe32));
+            requireFailure([&] {
+                static_cast<void>(mako::backend::loadDllResourceArchive(path));
+            }, "overlapping resource payloads amplified a small DLL");
+
+            writeFile(path, sharedResourcePe(2U, 0U, pe32));
+            const auto empty = mako::backend::loadDllResourceArchive(path);
+            require(empty->resources.size() == 2U && empty->resources.at(1U).empty(),
+                "zero-sized resources consumed payload allocation budget");
+        }
+    }
+
     void testPeExtractionAndIdentity(const TemporaryDirectory& temporary) {
         const auto firstPath = temporary.path / "first.dll";
         writeFile(firstPath, syntheticPe(
@@ -819,6 +886,7 @@ int main() {
         const TemporaryDirectory temporary;
         testSha256();
         testLsfgDxbcResolutionAndTranslation();
+        testPeResourceAllocationBudget(temporary);
         testPeExtractionAndIdentity(temporary);
         testShaderContainersAndRequiredBindings();
         testCapabilityIsolationAndHarmlessAdditions();

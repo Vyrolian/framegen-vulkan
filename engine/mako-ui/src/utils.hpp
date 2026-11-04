@@ -11,4 +11,8 @@ namespace mako::ui {
     /// @return list of available GPUs
     QStringList getAvailableGPUs();
 
+    /// Select the optional widget-theme bridge for qt6ct, preserving explicit
+    /// Quick style/configuration choices and other platform themes.
+    QString desktopQuickStyle(const QStringList& importPaths);
+
 }

@@ -11,6 +11,10 @@
 
 Detection finds the executable; MAKO activates on the next launch. The configuration window can be closed during play. Try display modes and V-Sync on/off if a feature does not work smoothly.
 
+### Desktop theme
+
+The UI uses Qt Quick Controls. Under qt6ct, MAKO automatically selects the optional `qqc2-desktop-style` bridge when installed, allowing controls to use widget themes such as Kvantum. Launch `mako-ui` normally; MAKO preserves an explicit `QT_QUICK_CONTROLS_STYLE` or `QT_QUICK_CONTROLS_CONF` setting and leaves other platform themes unchanged. Without the bridge, Qt retains its normal style. For manual selection, use `QT_QUICK_CONTROLS_STYLE=org.kde.desktop mako-ui`; built-in styles such as `QT_QUICK_CONTROLS_STYLE=Fusion` remain available. MAKO uses `QApplication` to support widget-style painting and does not force Breeze or change system theme settings.
+
 ## Lossless Scaling availability
 
 **MAKO Scaler and Shaders work without Lossless Scaling.** Frame Generation and LS1 require it. If MAKO reports it missing, install Lossless Scaling or correct its DLL path, then restart the game.

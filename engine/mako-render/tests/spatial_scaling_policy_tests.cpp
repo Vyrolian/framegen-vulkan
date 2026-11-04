@@ -1869,6 +1869,24 @@ int main() {
              VK_IMAGE_USAGE_TRANSFER_DST_BIT),
         "Standalone scaling must request only its required transfer usage");
 
+    for (const auto mode : {VK_PRESENT_MODE_MAILBOX_KHR, VK_PRESENT_MODE_IMMEDIATE_KHR}) {
+        expect(directUnthrottledPresentation(false, mode) &&
+                !directUnthrottledPresentation(true, mode),
+            "Native VSync-off modes must retain their own transport without changing Gamescope");
+        auto nativeCreate = scalingOnlyCreate;
+        nativeCreate.presentMode = mode;
+        auto nativeProfile = scalingOnlyProfile;
+        nativeProfile.frame_generation_enabled = true;
+        nativeProfile.multiplier = 4;
+        expect(!applySwapchainCreateProvisioning(nativeProfile, 0, nativeCreate,
+                true, false, !directUnthrottledPresentation(false, mode)) &&
+                nativeCreate.presentMode == mode && nativeCreate.minImageCount >= 6,
+            "Native VSync-off FG must reserve generated images without forcing FIFO");
+    }
+    expect(!directUnthrottledPresentation(false, VK_PRESENT_MODE_FIFO_KHR) &&
+            !directUnthrottledPresentation(false, VK_PRESENT_MODE_FIFO_RELAXED_KHR),
+        "FIFO transports must retain their existing pacing policy");
+
     auto combinedProfile = scalingOnlyProfile;
     combinedProfile.frame_generation_enabled = true;
     VkSwapchainCreateInfoKHR combinedCreate{

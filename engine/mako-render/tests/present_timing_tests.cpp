@@ -4,6 +4,7 @@
 
 #include <cstdlib>
 #include <iostream>
+#include <optional>
 #include <vector>
 
 using namespace mako::layer;
@@ -23,7 +24,9 @@ namespace {
     }
     uint32_t queueSize{}, pastCalls{}, domainCalls{};
     uint64_t duration{16'666'667}, interval{8'333'333}, propertiesCounter{1}, domainCounter{1};
-    uint64_t deviation{}, clockOffset{9'000'000'000};
+    uint64_t deviation{}, clockOffset{9'000'000'000}, targetClockOffset{};
+    uint32_t calibrationCount{};
+    std::optional<uint64_t> invalidTargetClock;
     VkResult pastStatus{VK_SUCCESS}, sizeStatus{VK_SUCCESS}, calibrationStatus{VK_SUCCESS};
     VkResult propertiesStatus{VK_SUCCESS};
     bool availableDomain{true}, complete{true};
@@ -51,12 +54,21 @@ namespace {
     }
     VkResult VKAPI_CALL calibrate(VkDevice, uint32_t count, const VkCalibratedTimestampInfoKHR* info,
             uint64_t* timestamps, uint64_t* maxDeviation) {
-        expect(count == 1 && info->timeDomain == VK_TIME_DOMAIN_PRESENT_STAGE_LOCAL_EXT,
-            "calibrate the selected presentation clock");
-        const auto* local = static_cast<const VkSwapchainCalibratedTimestampInfoEXT*>(info->pNext);
-        expect(local && local->presentStage == OwnedPresentTiming::queueStage && local->timeDomainId == 7,
-            "calibration identifies this swapchain stage and domain");
-        timestamps[0] = nowNs() + clockOffset;
+        calibrationCount = count;
+        expect(count == 1 || count == 2, "calibrate at most two stage clocks in one query");
+        const auto host = nowNs();
+        for (uint32_t i = 0; i < count; ++i) {
+            expect(info[i].timeDomain == VK_TIME_DOMAIN_PRESENT_STAGE_LOCAL_EXT,
+                "calibrate the selected presentation clock");
+            const auto* local = static_cast<const VkSwapchainCalibratedTimestampInfoEXT*>(info[i].pNext);
+            expect(local && local->timeDomainId == 7 &&
+                    (i == 0 ? local->presentStage == OwnedPresentTiming::queueStage :
+                        (local->presentStage == VK_PRESENT_STAGE_IMAGE_FIRST_PIXEL_OUT_BIT_EXT ||
+                         local->presentStage == VK_PRESENT_STAGE_IMAGE_FIRST_PIXEL_VISIBLE_BIT_EXT)),
+                "calibration identifies each requested swapchain stage and domain");
+            timestamps[i] = i == 0 ? host + clockOffset :
+                invalidTargetClock.value_or(host + targetClockOffset);
+        }
         *maxDeviation = deviation;
         return calibrationStatus;
     }
@@ -113,6 +125,46 @@ int main() {
     expect(OwnedPresentTiming::surfaceSupported(caps, surfaceIds), "surface must support the complete contract");
     caps.presentStageQueries = VK_PRESENT_STAGE_IMAGE_FIRST_PIXEL_OUT_BIT_EXT;
     expect(!OwnedPresentTiming::surfaceSupported(caps, surfaceIds), "predicted display time cannot replace observed queue completion");
+
+    expect(OwnedPresentTiming::preferredTargetStage(OwnedPresentTiming::queueStage) ==
+            OwnedPresentTiming::queueStage &&
+            OwnedPresentTiming::preferredTargetStage(OwnedPresentTiming::queueStage |
+                VK_PRESENT_STAGE_IMAGE_FIRST_PIXEL_OUT_BIT_EXT) ==
+                VK_PRESENT_STAGE_IMAGE_FIRST_PIXEL_OUT_BIT_EXT &&
+            OwnedPresentTiming::preferredTargetStage(OwnedPresentTiming::queueStage |
+                VK_PRESENT_STAGE_IMAGE_FIRST_PIXEL_OUT_BIT_EXT |
+                VK_PRESENT_STAGE_IMAGE_FIRST_PIXEL_VISIBLE_BIT_EXT) ==
+                VK_PRESENT_STAGE_IMAGE_FIRST_PIXEL_VISIBLE_BIT_EXT,
+        "target the supported clock nearest visibility while retaining queue feedback");
+    for (const auto stage : {VK_PRESENT_STAGE_IMAGE_FIRST_PIXEL_OUT_BIT_EXT,
+            VK_PRESENT_STAGE_IMAGE_FIRST_PIXEL_VISIBLE_BIT_EXT}) {
+        const auto previousOffset = clockOffset;
+        clockOffset = 1'793'693'992'000'000'000ULL;
+        targetClockOffset = 0;
+        OwnedPresentTiming splitClocks;
+        OrderedPresentTimeline splitTimeline;
+        expect(splitClocks.initialize(VK_NULL_HANDLE, VK_NULL_HANDLE, functions, stage) &&
+                calibrationCount == 2,
+            "different stage epochs require a paired calibration");
+        VkPresentTimingInfoEXT splitRequest{};
+        uint64_t splitId{};
+        const auto target = Clock::now() + std::chrono::milliseconds(30);
+        const auto targetNs = static_cast<uint64_t>(std::chrono::duration_cast<
+            std::chrono::nanoseconds>(target.time_since_epoch()).count());
+        expect(splitClocks.prepare(target, splitTimeline, splitRequest, splitId) &&
+                splitRequest.targetTime > targetNs - 1'000'000 &&
+                splitRequest.targetTime < targetNs + 1'000'000 &&
+                splitRequest.targetTimeDomainPresentStage == stage &&
+                splitRequest.presentStageQueries == OwnedPresentTiming::queueStage,
+            "wall-clock queue completion must not shift monotonic output targets into the far future");
+        for (const uint64_t invalid : {uint64_t{0}, UINT64_MAX}) {
+            invalidTargetClock = invalid;
+            expect(!OwnedPresentTiming{}.initialize(VK_NULL_HANDLE, VK_NULL_HANDLE, functions, stage),
+                "missing or invalid target-clock calibration must retain ordinary pacing");
+        }
+        invalidTargetClock.reset();
+        clockOffset = previousOffset;
+    }
 
     OwnedPresentTiming timing;
     expect(!timing.initialize(VK_NULL_HANDLE, VK_NULL_HANDLE, {}), "missing commands retain existing pacing");

@@ -243,9 +243,9 @@ while IFS= read -r -d '' audited_binary; do
                 dependency="${architecture_prefix}libx11" ;;
             libGLX.so.0 | libOpenGL.so.0)
                 dependency=libglvnd ;;
-            libQt6Core.so.6 | libQt6Gui.so.6 | libQt6Network.so.6 | libQt6OpenGL.so.6)
+            libQt6Core.so.6 | libQt6Gui.so.6 | libQt6Network.so.6 | libQt6OpenGL.so.6 | libQt6Widgets.so.6)
                 dependency=qt6-base ;;
-            libQt6Qml.so.6 | libQt6QmlModels.so.6 | libQt6Quick.so.6)
+            libQt6Qml.so.6 | libQt6QmlModels.so.6 | libQt6Quick.so.6 | libQt6QuickControls2.so.6)
                 dependency=qt6-declarative ;;
             *)
                 echo "Built Arch package has an unreviewed ELF dependency: $binary_path needs $soname." >&2
