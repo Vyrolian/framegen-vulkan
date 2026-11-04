@@ -723,6 +723,117 @@ void testFixedUsesExistingSourceDeadline() {
     }
 }
 
+void testFixedCapRecoversAfterLateArrival() {
+    using Clock = RealFramePacer::Clock;
+    for (const double cap : {30., 60., 90.}) {
+        const auto period = std::chrono::duration_cast<Clock::duration>(
+            std::chrono::duration<double>(1. / cap));
+        for (const size_t count : {2U, 3U, 4U, 5U}) {
+            RealFramePacer pacer;
+            const auto outputInterval = period / static_cast<int64_t>(count);
+            const auto turnaround = std::min(Clock::duration{3ms}, outputInterval / 2);
+            const auto start = Clock::time_point{10s};
+            auto returned = start;
+            size_t recoveredBatches = 0;
+            for (size_t frame = 0; frame < 180; ++frame) {
+                // Model Minecraft's short game turnaround, asynchronous GPU
+                // preparation and a late arrival after the cap has settled.
+                // A second readiness wait followed by a full output span
+                // exceeds the next source period and perpetuates the miss.
+                const auto arrival = returned + turnaround + (frame == 90 ? period : 0ns);
+                const auto deadline = pacer.schedule(arrival, cap);
+                pacer.observeSource(arrival, true);
+                auto now = arrival + 100us;
+                if (deadline == arrival)
+                    pacer.resetOutputs();
+                auto batch = deadline > arrival
+                    ? pacer.scheduleOutputs(now, deadline, cap * count, count, false)
+                    : std::nullopt;
+                Clock::duration waited{};
+                if (!batch) {
+                    const auto budget = pacer.sourceReadinessBudget(now, count);
+                    const auto ready = arrival + outputInterval - turnaround / 2;
+                    const auto wait = std::min(budget, std::max(Clock::duration{}, ready - now));
+                    waited += wait;
+                    now += wait;
+                    if (now >= ready)
+                        batch = pacer.scheduleReadyOutputs(now, count);
+                }
+                if (batch) {
+                    waited += std::max(Clock::duration{}, batch->at(count - 1) - now);
+                    now = std::max(now, batch->at(count - 1));
+                }
+                returned = std::max(now, deadline);
+                pacer.recordOutputWait(waited);
+                if (frame > 92) {
+                    expect(batch && batch->at(count - 1) <= deadline &&
+                            deadline - batch->at(count - 1) < 1us &&
+                            batch->interval == period / static_cast<int64_t>(count),
+                        "a short source hitch trapped a proven cap in ready-output fallback");
+                    ++recoveredBatches;
+                }
+            }
+            expect(recoveredBatches == 87,
+                "source-cap recovery did not retain the warmed output cadence");
+        }
+    }
+}
+
+void testReadyFixedCapOwnershipRequalification() {
+    using Clock = RealFramePacer::Clock;
+    constexpr auto period = 16666666ns;
+    const auto start = Clock::time_point{10s};
+    for (const size_t count : {2U, 3U, 4U, 5U}) {
+        RealFramePacer pacer;
+        auto arrival = start;
+        for (size_t frame = 0; frame < 40; ++frame) {
+            const auto deadline = pacer.schedule(arrival, 60.);
+            pacer.observeSource(arrival, true);
+            if (deadline > arrival) {
+                const auto batch = pacer.scheduleOutputs(arrival + 100us,
+                    deadline, 60. * count, count, false);
+                expect(batch.has_value(), "healthy source cap did not establish output ownership");
+                pacer.recordOutputWait(batch->at(count - 1) - arrival - 100us);
+                arrival = deadline + 1ms;
+            } else {
+                arrival += 1ms;
+            }
+        }
+        expect(pacer.sourceReadinessBudget(arrival, count) == Clock::duration{},
+            "proven source cap allowed an independent readiness clock");
+
+        // Real work that stays slower than the cap must still qualify the
+        // game-owned fallback. Do not turn one successful cap into a latch
+        // that survives a permanent scene or game-limiter change.
+        std::optional<RealFramePacer::OutputBatch> batch;
+        for (size_t frame = 0; frame < 40; ++frame) {
+            arrival += 2 * period;
+            (void)pacer.schedule(arrival, 60.);
+            pacer.observeSource(arrival, true);
+            batch = pacer.scheduleReadyOutputs(arrival + 100us, count);
+            pacer.recordOutputWait(batch
+                ? batch->interval * static_cast<int64_t>(count - 1) : Clock::duration{});
+        }
+        expect(batch && batch->interval == 2 * period / static_cast<int64_t>(count),
+            "sustained slower source could not release configured-cap ownership");
+
+        pacer.reset();
+        (void)pacer.schedule(arrival, 60.);
+        pacer.observeSource(arrival, true);
+        const auto deadline = pacer.schedule(arrival + 1ms, 60.);
+        pacer.observeSource(arrival + 1ms, true);
+        expect(pacer.scheduleOutputs(arrival + 1100us, deadline,
+                60. * count, count, false).has_value(),
+            "reset source cap could not regain output ownership");
+        (void)pacer.schedule(arrival + 2ms, 0.);
+        for (size_t frame = 1; frame <= 10; ++frame) {
+            pacer.observeSource(arrival + frame * period, true);
+        }
+        expect(pacer.scheduleReadyOutputs(arrival + 10 * period + 100us, count).has_value(),
+            "disabling the configured cap retained its output ownership");
+    }
+}
+
 void testReadyFixedOutputs() {
     using Clock = RealFramePacer::Clock;
     const auto start = Clock::time_point{10s};
@@ -1050,7 +1161,9 @@ int main() {
     testLongSessionDeadlineBounds();
     testFractionalUsesExistingSourceDeadline();
     testFixedUsesExistingSourceDeadline();
+    testFixedCapRecoversAfterLateArrival();
     testReadyFixedOutputs();
+    testReadyFixedCapOwnershipRequalification();
     testSmoothCadenceCapFollowsActivePlan();
     testOrderedPresentationTimeline();
     testBridgeCompositorReadiness();

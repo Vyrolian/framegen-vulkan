@@ -1280,6 +1280,7 @@ namespace mako::layer {
                 if (elapsed - wait > this->sourcePeriod) {
                     if (++this->slowerSourceSamples == this->sourceSamples.size()) {
                         this->sourcePeriod = Clock::duration::zero();
+                        this->sourceCapOwnsOutputs = false;
                         this->sourceSampleCount = this->slowerSourceSamples = 0;
                     }
                     return;
@@ -1304,7 +1305,12 @@ namespace mako::layer {
         /// has already consumed a whole interval. GPU readiness shares this
         /// same bound and never starts an independent unbounded wait.
         [[nodiscard]] Clock::duration sourceReadinessBudget(const TimePoint now, const size_t count = 1) const {
-            if (!this->sourceAt || this->sourceInterrupted ||
+            // Once the configured cap has spaced a complete batch, a brief
+            // miss must not replace that owner with readiness + output waits.
+            // Those waits can consume the next cap interval and perpetuate
+            // the miss. Sustained slower work requalifies in observeSource;
+            // a game-owned limiter with no proven cap keeps its fallback.
+            if (!this->sourceAt || this->sourceInterrupted || this->sourceCapOwnsOutputs ||
                     this->sourcePeriod <= Clock::duration::zero() || now < *this->sourceAt ||
                     count == 0 || count > GeneratedFramePlan::capacity + 1)
                 return {};
@@ -1374,6 +1380,8 @@ namespace mako::layer {
             }
             this->outputFramesPerSecond = outputFps;
             this->lastOutputAt = first + span;
+            if (this->sourceAt && !targetClockActive)
+                this->sourceCapOwnsOutputs = true;
             return OutputBatch{first, interval, count};
         }
 
@@ -1394,6 +1402,7 @@ namespace mako::layer {
             }
 
             if (this->activeFramesPerSecond != framesPerSecond) {
+                this->sourceCapOwnsOutputs = false;
                 if (preserveRatePhase && this->activeFramesPerSecond > 0.0 && this->nextFrameAt) {
                     // A governor's small rate adjustment belongs to the same
                     // pacing episode. Move its next boundary without granting
@@ -1438,6 +1447,7 @@ namespace mako::layer {
         void resetSource() {
             this->sourceAt.reset();
             this->sourcePeriod = this->sourceOutputWait = Clock::duration::zero();
+            this->sourceCapOwnsOutputs = false;
             this->sourceSampleCount = this->slowerSourceSamples = 0;
             this->sourceInterrupted = false;
         }
@@ -1446,6 +1456,7 @@ namespace mako::layer {
         Clock::duration sourcePeriod{}, sourceOutputWait{};
         size_t sourceSampleCount{}, slowerSourceSamples{};
         bool sourceInterrupted{};
+        bool sourceCapOwnsOutputs{};
         double activeFramesPerSecond{0.0};
         std::optional<TimePoint> nextFrameAt;
         double outputFramesPerSecond{0.0};
