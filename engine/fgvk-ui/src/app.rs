@@ -3,7 +3,7 @@
 use std::ops::RangeInclusive;
 use std::time::{Duration, Instant};
 
-use egui::{Button, Key, RichText, Stroke, Ui};
+use egui::{Button, Key, RichText, Stroke, StrokeKind, Ui};
 
 use crate::config::{self, Config, ConfigView, FpsMemory, Mode, Profile, ProfileKey, Settings};
 use crate::theme;
@@ -375,8 +375,7 @@ impl App {
         let mut mode = profile.mode;
         ui.horizontal(|ui| {
             for option in MODES {
-                let response = ui.add(option_button(mode_label(option), profile.mode == option));
-                if response.clicked() {
+                if option_button(ui, mode_label(option), profile.mode == option) {
                     mode = option;
                 }
             }
@@ -412,11 +411,11 @@ impl App {
                 ui.label("Max multiplier");
                 let mut max = profile.adaptive_max_multiplier;
                 for option in MAX_MULTIPLIERS {
-                    let response = ui.add(option_button(
+                    if option_button(
+                        ui,
                         format!("{option}x"),
                         profile.adaptive_max_multiplier == option,
-                    ));
-                    if response.clicked() {
+                    ) {
                         max = option;
                     }
                 }
@@ -570,14 +569,19 @@ fn mode_label(mode: Mode) -> String {
     }
 }
 
-/// Framed option button. The selected option adds a mauve border on top of the selection tint.
-fn option_button(label: String, selected: bool) -> Button<'static> {
-    let button = Button::new(label).selected(selected);
+/// Framed option button that returns true when clicked. The selected option gets a 1.5 px mauve
+/// border painted over its frame. A stroke override on the button would change its layout size.
+fn option_button(ui: &mut Ui, label: String, selected: bool) -> bool {
+    let response = ui.add(Button::new(label).selected(selected));
     if selected {
-        button.stroke(Stroke::new(1.5, theme::MAUVE))
-    } else {
-        button
+        ui.painter().rect_stroke(
+            response.rect,
+            ui.visuals().widgets.inactive.corner_radius,
+            Stroke::new(1.5, theme::MAUVE),
+            StrokeKind::Inside,
+        );
     }
+    response.clicked()
 }
 
 fn default_name(profiles: &[Profile]) -> String {

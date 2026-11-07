@@ -90,4 +90,6 @@ fn style_widget(widget: &mut WidgetVisuals, fill: Color32, stroke: Stroke, text:
     widget.bg_stroke = stroke;
     widget.fg_stroke = Stroke::new(1.0, text);
     widget.corner_radius = CornerRadius::same(6);
+    // Hover and press must not grow the frame past its layout rect.
+    widget.expansion = 0.0;
 }
