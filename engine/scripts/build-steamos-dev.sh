@@ -21,8 +21,8 @@ Usage: scripts/build-steamos-dev.sh [options]
 
 Incrementally builds host Vulkan layers needed for native Steam-game testing.
 The default builds the 64-bit layer and CLI. The build directories are retained
-between runs; this does not build the Qt UI, Flatpak extensions, general test
-suite, archives, or a Decky ZIP. Real-hardware licensed-model validation is
+between runs; this does not build Flatpak extensions, the general test suite, or
+archives. Real-hardware licensed-model validation is
 owned by the sibling MAKO Gym repository. Set CXX to choose a compiler. ccache
 is used automatically when present. The shared Vulkan-Headers revision is
 cached under build/cache and checked against the package presentation baseline.
@@ -222,11 +222,9 @@ build_layer() {
         -DMAKO_REQUIRE_NATIVE_PACKAGE_HEADERS=ON \
         -DMAKO_VULKAN_HEADERS_INCLUDE_DIR="$vulkan_headers_include_dir" \
         -DMAKO_BUILD_VK_LAYER=ON \
-        -DMAKO_BUILD_UI=OFF \
         -DMAKO_BUILD_CLI="$build_cli" \
         -DMAKO_EXPERIMENTAL_LSFG_FP16="$experimental_lsfg_fp16" \
         -DMAKO_LSFG_FP16_TOOLS_SOURCE="$lsfg_fp16_tools_source" \
-        -DMAKO_INSTALL_XDG_FILES=OFF \
         -DMAKO_LAYER_LIBRARY_PATH="../$install_libdir/libmako-render.so" \
         -DMAKO_SCALING_LAYER_LIBRARY_PATH="../$install_libdir/libmako-render-scaling.so" \
         "$@"

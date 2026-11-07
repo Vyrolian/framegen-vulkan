@@ -19,7 +19,7 @@ The Flatpak examples below select mpv’s `waylandvk` context and require a Wayl
 
 ## Open videos normally
 
-For Flathub mpv, add `mpv-bin` under **Profile Matching > Matched Processes**. Add these settings to `~/.var/app/io.mpv.Mpv/config/mpv/mpv.conf`:
+For Flathub mpv, add `mpv-bin` to `active_in` in the profile. Add these settings to `~/.var/app/io.mpv.Mpv/config/mpv/mpv.conf`:
 
 ```ini
 vo=gpu-next

@@ -129,7 +129,6 @@ h1 em, h2 em { position: relative; top: 4px; display: inline-block; font-style: 
 .visual-card strong { color: #f2faff; font-size: 18px; }
 .visual-card div span { margin-top: 5px; color: #6f8797; font: 500 10px var(--font-mono), ui-monospace, monospace; text-transform: uppercase; letter-spacing: .08em; }
 .card-index { color: #66808f; font: 500 9px var(--font-mono), ui-monospace, monospace; letter-spacing: .12em; }
-.visual-card-decky { --base-y: 11deg; --base-z: -4deg; z-index: 3; top: 14%; left: 8%; box-shadow: 0 34px 90px rgba(0, 0, 0, .54), -20px 30px 90px rgba(0, 110, 255, .12); }
 .visual-card-renderer { --base-y: -12deg; --base-z: 5deg; z-index: 2; right: calc(3% + 6px); bottom: 9%; animation-duration: 7.2s; animation-delay: -3.4s; box-shadow: 0 34px 90px rgba(0, 0, 0, .54), 20px 30px 90px rgba(255, 80, 0, .11); }
 .signal-strip { position: relative; z-index: 5; display: flex; align-items: center; justify-content: center; gap: 34px; overflow: hidden; width: 100%; padding: 18px 40px; border-top: 1px solid rgba(0, 217, 255, .13); border-bottom: 1px solid rgba(0, 217, 255, .13); color: #728897; background: linear-gradient(90deg, rgba(0, 217, 255, .03), rgba(255, 94, 0, .03)); font: 600 9px var(--font-mono), ui-monospace, monospace; letter-spacing: .18em; }
 .signal-strip span { width: 4px; height: 4px; border-radius: 50%; background: var(--cyan); box-shadow: 0 0 9px var(--cyan); }
@@ -157,7 +156,6 @@ h2 { margin: 0; font-size: clamp(52px, 5.3vw, 82px); font-weight: 800; line-heig
 .renderer-panel .panel-topline span { color: var(--orange); }
 .panel-topline i { font-style: normal; }
 .system-panel > img { position: relative; z-index: 1; display: block; width: 230px; height: 230px; margin: 50px auto 27px; border: 1px solid rgba(150, 219, 255, .09); border-radius: 24px; mix-blend-mode: screen; opacity: .94; filter: drop-shadow(0 12px 26px rgba(0, 0, 0, .18)); }
-.decky-panel > img { padding: 12px; }
 .renderer-panel > img { border-color: rgba(255, 137, 67, .1); }
 .system-panel h3 { position: relative; margin: 0; font-size: clamp(34px, 3vw, 46px); letter-spacing: -.04em; }
 .system-panel > p { position: relative; max-width: 490px; margin: 15px 0 28px; color: #8297a5; font-size: 14px; line-height: 1.7; }
@@ -437,7 +435,6 @@ code { padding: 2px 5px; border: 1px solid rgba(0, 217, 255, .13); border-radius
   .hero-meta span { min-width: 0; max-width: none; font-size: 8px; letter-spacing: .03em; }
   .hero-visual { min-height: 430px; margin: 0; overflow: hidden; transform: none; }
   .visual-card { width: min(62vw, 235px); height: 320px; }
-  .visual-card-decky { top: 10%; left: 16px; }
   .visual-card-renderer { right: 20px; bottom: 4%; }
   .system-section, .features-section { padding-top: 100px; padding-bottom: 100px; }
   .downloads-section { padding-top: 100px; padding-bottom: 70px; }

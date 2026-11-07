@@ -55,24 +55,20 @@ mkdir -p \
     "$package_root/usr/lib/vkbasalt" \
     "$package_root/usr/lib32" \
     "$package_root/usr/lib32/vkbasalt" \
-    "$package_root/usr/share/applications" \
     "$package_root/usr/share/mako-render/mako_remote_play" \
     "$package_root/usr/share/doc/mako-renderer-bin"
 touch \
     "$package_root/usr/bin/mako-cli" \
     "$package_root/usr/bin/mako-diagnostics" \
     "$package_root/usr/bin/mako-launch" \
-    "$package_root/usr/bin/mako-ui" \
     "$package_root/usr/lib/libmako-render.so" \
     "$package_root/usr/lib/libmako-render-scaling.so" \
     "$package_root/usr/lib/vkbasalt/libvkbasalt.so" \
     "$package_root/usr/lib32/libmako-render.so" \
     "$package_root/usr/lib32/libmako-render-scaling.so" \
-    "$package_root/usr/lib32/vkbasalt/libvkbasalt.so" \
-    "$package_root/usr/share/applications/io.github.eugeniosegala.mako.desktop"
+    "$package_root/usr/lib32/vkbasalt/libvkbasalt.so"
 for binary_path in \
     usr/bin/mako-cli \
-    usr/bin/mako-ui \
     usr/lib/libmako-render.so \
     usr/lib/libmako-render-scaling.so \
     usr/lib/vkbasalt/libvkbasalt.so \
@@ -99,9 +95,6 @@ printf '%s\n' \
     > "$package_root/.PKGINFO"
 if [[ "${MAKO_TEST_OMIT_LIB32_GLIBC:-0}" != 1 ]]; then
     printf '%s\n' 'depend = lib32-glibc' >> "$package_root/.PKGINFO"
-fi
-if [[ "${MAKO_TEST_QT_WIDGETS:-0}" == 1 ]]; then
-    printf '%s\n' 'depend = qt6-base' 'depend = qt6-declarative' >> "$package_root/.PKGINFO"
 fi
 printf '%s\n' "${MAKO_TEST_RENDERER_VERSION_OVERRIDE:-$MAKO_TEST_PKGVER}" \
     > "$package_root/usr/share/doc/mako-renderer-bin/MAKO-Renderer-version.txt"
@@ -137,10 +130,9 @@ case "$1" in
         fi
         case "$2" in
             */libfuture.so) printf ' 0x00000001 (NEEDED)             Shared library: [libunexpected.so.1]\n' ;;
-            */bin/mako-ui)
-                if [ "${MAKO_TEST_QT_WIDGETS:-0}" = 1 ]; then
-                    printf ' 0x00000001 (NEEDED)             Shared library: [libQt6Widgets.so.6]\n'
-                    printf ' 0x00000001 (NEEDED)             Shared library: [libQt6QuickControls2.so.6]\n'
+            */bin/mako-cli)
+                if [ "${MAKO_TEST_TOOLKIT_NEEDED:-0}" = 1 ]; then
+                    printf ' 0x00000001 (NEEDED)             Shared library: [libsimulated-toolkit.so.1]\n'
                 fi ;;
         esac ;;
     *) exit 2 ;;
@@ -163,11 +155,15 @@ MAKO_TEST_PKGVER="$current_pkgver" \
         "$fake_archive" "$retained_package" >/dev/null
 [[ -f "$retained_package" ]]
 tar -tf "$retained_package" | grep -Fqx usr/bin/mako-launch
-MAKO_TEST_PKGVER="$current_pkgver" \
-    MAKO_TEST_PKGREL="$current_pkgrel" \
-    MAKO_TEST_QT_WIDGETS=1 \
-    PATH="$fake_tools:/usr/bin:/bin" \
-    "$script_dir/verify-release-package.sh" "$fake_archive" >/dev/null
+if MAKO_TEST_PKGVER="$current_pkgver" \
+        MAKO_TEST_PKGREL="$current_pkgrel" \
+        MAKO_TEST_TOOLKIT_NEEDED=1 \
+        PATH="$fake_tools:/usr/bin:/bin" \
+        "$script_dir/verify-release-package.sh" "$fake_archive" \
+        >/dev/null 2>&1; then
+    echo "Arch release package accepted an unreviewed toolkit dependency" >&2
+    exit 1
+fi
 if MAKO_TEST_PKGVER="$current_pkgver" \
         MAKO_TEST_PKGREL="$current_pkgrel" \
         MAKO_TEST_EXTRA_NEEDED=libunexpected.so.1 \
@@ -253,7 +249,7 @@ printf '%s\n' tool > "$mapping_root/bin/future-tool"
 printf '%s\n' installer > "$mapping_root/bin/mako-installer"
 printf '%s\n' library > "$mapping_root/lib/vkbasalt/libvkbasalt.so"
 printf '%s\n' library32 > "$mapping_root/lib32/vkbasalt/libvkbasalt.so"
-printf '%s\n' uninstaller > "$mapping_root/share/applications/io.github.eugeniosegala.mako.uninstaller.desktop"
+printf '%s\n' entry > "$mapping_root/share/applications/legacy-entry"
 printf '%s\n' license > "$mapping_root/share/doc/mako-render/vkbasalt/LICENSE"
 printf '%s\n' provenance > "$mapping_root/share/doc/mako-render/vkbasalt/SOURCE"
 printf '%s\n' future > "$mapping_root/share/mako-render/future/payload.dat"
@@ -266,7 +262,7 @@ printf '%s\n' future > "$mapping_root/share/mako-render/future/payload.dat"
     _mako_install_payload_file bin/mako-installer
     _mako_install_payload_file lib/vkbasalt/libvkbasalt.so
     _mako_install_payload_file lib32/vkbasalt/libvkbasalt.so
-    _mako_install_payload_file share/applications/io.github.eugeniosegala.mako.uninstaller.desktop
+    _mako_install_payload_file share/applications/legacy-entry
     _mako_install_payload_file share/doc/mako-render/vkbasalt/LICENSE
     _mako_install_payload_file share/doc/mako-render/vkbasalt/SOURCE
     _mako_install_payload_file share/mako-render/future/payload.dat
@@ -282,26 +278,20 @@ printf '%s\n' future > "$mapping_root/share/mako-render/future/payload.dat"
 [[ -f "$mapping_pkgdir/usr/share/doc/mako-renderer-bin/vkbasalt/SOURCE" ]]
 [[ -f "$mapping_pkgdir/usr/share/mako-render/future/payload.dat" ]]
 [[ ! -e "$mapping_pkgdir/usr/bin/mako-installer" ]]
-[[ ! -e "$mapping_pkgdir/usr/share/applications/io.github.eugeniosegala.mako.uninstaller.desktop" ]]
+[[ ! -e "$mapping_pkgdir/usr/share/applications/legacy-entry" ]]
 
-decky_marker_home="$work_dir/decky-marker-home"
 standalone_marker_home="$work_dir/standalone-marker-home"
-mkdir -p \
-    "$decky_marker_home/.local/share/mako-render/lib" \
-    "$standalone_marker_home/.local/lib"
-printf '%s\n' decky > \
-    "$decky_marker_home/.local/share/mako-render/lib/libmako-render.so"
+mkdir -p "$standalone_marker_home/.local/lib"
 printf '%s\n' standalone > \
     "$standalone_marker_home/.local/lib/libmako-render.so"
 (
     # shellcheck disable=SC1091
     . "$script_dir/mako-renderer-bin.install"
-    [[ "$(mako_renderer_bin_user_local_owner "$decky_marker_home")" == unknown ]]
     [[ "$(mako_renderer_bin_user_local_owner "$standalone_marker_home")" == unknown ]]
 )
 
 cp "$script_dir/PKGBUILD" "$work_dir/PKGBUILD"
-python3 - "$repo_root/plugin/package.json" "$work_dir/package.json" <<'PY'
+python3 - "$repo_root/engine/renderer-release.json" "$work_dir/package.json" <<'PY'
 import json
 import sys
 
@@ -339,7 +329,7 @@ grep -Fqx 'pkgrel=7' "$work_dir/PKGBUILD"
 native_archive="$work_dir/MAKO-Renderer-v9.8.7-linux.tar.xz"
 flatpak_archive="$work_dir/MAKO-Renderer-v9.8.7-flatpaks.tar.xz"
 arch_package="$work_dir/mako-renderer-bin-9.8.7-7-x86_64.pkg.tar.zst"
-node "$repo_root/plugin/scripts/pin-renderer-release.mjs" \
+node "$repo_root/engine/scripts/pin-renderer-release.mjs" \
     "$work_dir/package.json" \
     9.8.7 render-v9.8.7 "$(printf 'cd%.0s' {1..20})" \
     eugeniosegala/MAKO \
@@ -352,7 +342,7 @@ if (!binary.arch_package ||
     binary.arch_package.name !== "mako-renderer-bin-9.8.7-7-x86_64.pkg.tar.zst" ||
     binary.arch_package.sha256hash !== "56".repeat(32)) process.exit(1);
 ' "$work_dir/package.json"
-node "$repo_root/plugin/scripts/pin-renderer-release.mjs" \
+node "$repo_root/engine/scripts/pin-renderer-release.mjs" \
     "$work_dir/package.json" \
     9.8.7 render-v9.8.7 "$(printf 'cd%.0s' {1..20})" \
     eugeniosegala/MAKO \

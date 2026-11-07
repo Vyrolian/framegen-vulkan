@@ -4,7 +4,7 @@ export const siteUrl = 'https://eugeniosegala.github.io/MAKO/';
 export const siteTitle =
   'MAKO: Frame Generation, Scaling, and Shaders for SteamOS and Linux';
 export const siteDescription =
-  'MAKO brings frame generation, spatial scaling, and per-game shader effects to Steam Deck, SteamOS, and desktop Linux through Decky and Vulkan.';
+  'MAKO brings frame generation, spatial scaling, and per-game shader effects to Steam Deck, SteamOS, and desktop Linux through Vulkan.';
 export const socialImageUrl = `${siteUrl}og.png`;
 export const siteKeywords = [
   'MAKO',
@@ -13,7 +13,6 @@ export const siteKeywords = [
   'SteamOS frame generation',
   'Linux spatial scaling',
   'Steam Deck shaders',
-  'Decky Loader plugin',
   'Vulkan frame generation',
   'Lossless Scaling Linux',
 ];
@@ -26,7 +25,7 @@ export const structuredData = {
       '@id': `${siteUrl}#website`,
       url: siteUrl,
       name: 'MAKO',
-      alternateName: 'MAKO Decky and MAKO Renderer',
+      alternateName: 'MAKO Renderer',
       description: siteDescription,
       inLanguage: 'en',
     },
@@ -34,7 +33,7 @@ export const structuredData = {
       '@type': 'SoftwareApplication',
       '@id': `${siteUrl}#software`,
       name: 'MAKO',
-      alternateName: ['MAKO Decky', 'MAKO Renderer'],
+      alternateName: 'MAKO Renderer',
       url: siteUrl,
       description: siteDescription,
       applicationCategory: 'UtilitiesApplication',
@@ -46,11 +45,8 @@ export const structuredData = {
         priceCurrency: 'USD',
         availability: 'https://schema.org/InStock',
       },
-      softwareVersion: `MAKO Decky ${releaseData.deckyVersion}; MAKO Renderer ${releaseData.rendererVersion}`,
-      downloadUrl: [
-        releaseData.links.deckyDownload,
-        releaseData.links.rendererDownload,
-      ],
+      softwareVersion: `MAKO Renderer ${releaseData.rendererVersion}`,
+      downloadUrl: releaseData.links.rendererDownload,
       codeRepository: releaseData.links.repository,
       license: `${releaseData.links.repository}/blob/main/LICENSE.md`,
       image: socialImageUrl,
@@ -60,7 +56,7 @@ export const structuredData = {
         'Fixed and adaptive frame generation',
         'Spatial scaling with MAKO Scaler or LS1',
         'Per-game Vulkan shader effects',
-        'Steam Deck and SteamOS integration through Decky Loader',
+        'Steam Deck and SteamOS launch integration through a Steam launch option',
         'Standalone MAKO Renderer for desktop Linux',
       ],
       mainEntityOfPage: { '@id': `${siteUrl}#website` },
@@ -74,7 +70,7 @@ export const structuredData = {
           name: 'Which MAKO version should I install?',
           acceptedAnswer: {
             '@type': 'Answer',
-            text: 'Use MAKO Decky for Steam Deck, Steam Machine, and Decky Loader. Use MAKO Renderer for a direct Vulkan-layer installation on desktop Linux.',
+            text: 'Use the MAKO Renderer host archive for SteamOS and desktop Linux, or the Arch package on Arch Linux.',
           },
         },
         {

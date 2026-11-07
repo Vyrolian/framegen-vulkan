@@ -1,5 +1,5 @@
 # Native Remote Play is x86_64-only. The helper travels with its shared Python
-# owner in both standalone and Decky installs, independent of lib/lib32 layout.
+# owner in standalone installs, independent of lib/lib32 layout.
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SIZEOF_VOID_P EQUAL 8 AND
         CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
     add_library(mako-remote-play-sdr SHARED sdr_helper.cpp)

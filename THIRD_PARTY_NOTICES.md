@@ -4,7 +4,7 @@ This document supplements [LICENSE.md](LICENSE.md). It identifies third-party ma
 
 ## Lossless Scaling is not distributed by MAKO
 
-MAKO is an independent open-source project. MAKO source archives, MAKO Renderer packages, MAKO Decky packages, Flatpak extensions, and the MAKO website do not contain or distribute Lossless Scaling, `Lossless.dll`, or extracted LS1 or LSFG model and shader payloads.
+MAKO is an independent open-source project. MAKO source archives, MAKO Renderer packages, Flatpak extensions, and the MAKO website do not contain or distribute Lossless Scaling, `Lossless.dll`, or extracted LS1 or LSFG model and shader payloads.
 
 The open MAKO Scaler works without Lossless Scaling. A user who chooses LSFG frame generation or LS1 scaling must independently obtain a lawful copy of Lossless Scaling and select or permit discovery of its locally installed `Lossless.dll`. The user is responsible for complying with the terms and law applicable to that copy. MAKO grants no license or other rights in Lossless Scaling or its proprietary resources.
 
@@ -12,9 +12,9 @@ MAKO Renderer reads the user-supplied local DLL at runtime for LSFG or LS1. It m
 
 Lossless Scaling, LS1, and LSFG are used descriptively and remain the property of their respective owner. MAKO is not affiliated with or endorsed by Lossless Scaling.
 
-## Incorporated Renderer and Decky source
+## Incorporated Renderer source
 
-The complete notices for the original Decky LSFG-VK plugin, the GPL-3.0-or-later lsfg-vk version 2 Renderer lineage, toml++, Bjoern Hoehrmann's UTF-8 decoder, and Steam Deck Homebrew components are reproduced in [LICENSE.md](LICENSE.md).
+The complete notices for the GPL-3.0-or-later lsfg-vk version 2 Renderer lineage, toml++, and Bjoern Hoehrmann's UTF-8 decoder are reproduced in [LICENSE.md](LICENSE.md).
 
 ### lsfg-vk Renderer provenance
 
@@ -60,29 +60,11 @@ vkBasalt is copyright © 2019–2022 Georg Lehmann and is distributed under the 
 
 ## Bundled vkBasalt shader presets
 
-MAKO Renderer and MAKO Decky include `Vibrance.fx`, `Curves.fx`, `Technicolor.fx`, `Sepia.fx`, `Monochrome.fx`, `Vignette.fx`, `FakeHDR.fx`, `Technicolor2.fx`, `DPX.fx`, `FilmGrain.fx`, `Cartoon.fx`, `Nostalgia.fx`, and `ChromaticAberration.fx` derived from [CeeJayDK/SweetFX commit `407c11562950195c1b45461fbb59f4bd6bbe7ba4`](https://github.com/CeeJayDK/SweetFX/commit/407c11562950195c1b45461fbb59f4bd6bbe7ba4) and distributed under that repository's MIT License. Upstream author credits remain in the source files. MAKO replaces the shaders' `ReShadeUI.fxh` UI macros with equivalent explicit annotations. Defaults and algorithms are otherwise unchanged except for the bounded FakeHDR sampling optimization documented in [shader provenance](plugin/py_modules/mako_plugin/vkbasalt_shaders/SOURCE.md).
+MAKO Renderer includes `Vibrance.fx`, `Curves.fx`, `Technicolor.fx`, `Sepia.fx`, `Monochrome.fx`, `Vignette.fx`, `FakeHDR.fx`, `Technicolor2.fx`, `DPX.fx`, `FilmGrain.fx`, `Cartoon.fx`, `Nostalgia.fx`, and `ChromaticAberration.fx` derived from [CeeJayDK/SweetFX commit `407c11562950195c1b45461fbb59f4bd6bbe7ba4`](https://github.com/CeeJayDK/SweetFX/commit/407c11562950195c1b45461fbb59f4bd6bbe7ba4) and distributed under that repository's MIT License. Upstream author credits remain in the source files. MAKO replaces the shaders' `ReShadeUI.fxh` UI macros with equivalent explicit annotations. Defaults and algorithms are otherwise unchanged except for the bounded FakeHDR sampling optimization documented in [shader provenance](engine/vkbasalt-shaders/SOURCE.md).
 
 `Colourfulness.fx` is copied from [crosire/reshade-shaders commit `4fee10cdac28f0a6d4fa5ddd778faf0016ab7b91`](https://github.com/crosire/reshade-shaders/commit/4fee10cdac28f0a6d4fa5ddd778faf0016ab7b91). It is copyright © 2016–2018 bacondither and is redistributed under the permissive BSD-style terms preserved in its header and in `LICENSE-Colourfulness`. MAKO changes only the optional `ReShadeUI.fxh` UI annotation macro. `BleachBypass.fx` and `Noir.fx` are original MAKO GPL-3.0-or-later shaders.
 
-MAKO also includes `ReShade.fxh` from [crosire/reshade-shaders `slim` commit `6db142b4b1a05c764222e5b0bd9a644b7ccfe1dc`](https://github.com/crosire/reshade-shaders/commit/6db142b4b1a05c764222e5b0bd9a644b7ccfe1dc), which declares [CC0-1.0](https://creativecommons.org/publicdomain/zero/1.0/legalcode). MAKO's Clarity and Levels Plus are original GPL-3.0-or-later effects with comparable purposes to third-party effects, not redistributed copies. Exact provenance and complete SweetFX and Colourfulness license texts are kept with the canonical sources under `plugin/py_modules/mako_plugin/vkbasalt_shaders/` and installed with MAKO Renderer under `share/mako-render/vkbasalt-shaders/`.
-
-## MAKO Decky frontend
-
-MAKO Decky's compiled frontend includes the following third-party code and icon data. Declared dependencies are in `plugin/package.json`, and exact resolutions are in `plugin/pnpm-lock.yaml`. MAKO Decky packages include the upstream license files under `third_party_licenses/` and a frontend source map with the bundled dependency source content.
-
-- **@decky/api**, Steam Deck Homebrew, GNU Lesser General Public License version 2.1. Source: <https://github.com/SteamDeckHomebrew/decky-frontend-lib>.
-- **React Icons**, copyright 2018 kamijin_fanta, MIT License. Source: <https://github.com/react-icons/react-icons>.
-- **tslib**, copyright Microsoft Corporation, 0BSD License. Source: <https://github.com/microsoft/tslib>.
-
-React Icons retains the licenses of its source icon projects. MAKO Decky uses these packs:
-
-- **Game Icons:** “Shark fin” by Delapouite, <https://game-icons.net/1x1/delapouite/shark-fin.html>, licensed under [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/). MAKO uses the icon through React Icons and does not intentionally modify the artwork.
-- **Font Awesome Free icons:** copyright Fonticons, Inc., licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). Source and license information: <https://fontawesome.com/license/free>.
-- **Feather icons:** copyright Cole Bemis, licensed under the MIT License. Source: <https://github.com/feathericons/feather>.
-- **Remix Icon:** copyright Remix Design, licensed under the Apache License 2.0. Source: <https://github.com/Remix-Design/RemixIcon>.
-- **Material Design icons:** copyright Google LLC, licensed under the Apache License 2.0. Source: <https://github.com/google/material-design-icons>.
-
-The upstream React Icons license file shipped in MAKO Decky identifies these icon-pack licenses and their license locations.
+MAKO also includes `ReShade.fxh` from [crosire/reshade-shaders `slim` commit `6db142b4b1a05c764222e5b0bd9a644b7ccfe1dc`](https://github.com/crosire/reshade-shaders/commit/6db142b4b1a05c764222e5b0bd9a644b7ccfe1dc), which declares [CC0-1.0](https://creativecommons.org/publicdomain/zero/1.0/legalcode). MAKO's Clarity and Levels Plus are original GPL-3.0-or-later effects with comparable purposes to third-party effects, not redistributed copies. Exact provenance and complete SweetFX and Colourfulness license texts are kept with the canonical sources under `engine/vkbasalt-shaders/` and installed with MAKO Renderer under `share/mako-render/vkbasalt-shaders/`.
 
 ## MAKO website
 

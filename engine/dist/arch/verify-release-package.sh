@@ -162,22 +162,24 @@ for required_entry in \
     usr/bin/mako-cli \
     usr/bin/mako-diagnostics \
     usr/bin/mako-launch \
-    usr/bin/mako-ui \
     usr/lib/libmako-render.so \
     usr/lib/libmako-render-scaling.so \
     usr/lib/vkbasalt/libvkbasalt.so \
     usr/lib32/libmako-render.so \
     usr/lib32/libmako-render-scaling.so \
-    usr/lib32/vkbasalt/libvkbasalt.so \
-    usr/share/applications/io.github.eugeniosegala.mako.desktop; do
+    usr/lib32/vkbasalt/libvkbasalt.so; do
     if ! grep -Fqx "$required_entry" <<< "$package_entries"; then
         echo "Built Arch package is missing $required_entry" >&2
         exit 1
     fi
 done
 
-if grep -Eq '(^|/)mako-installer$|io\.github\.eugeniosegala\.mako\.uninstaller\.desktop$|(^|/)\.config/mako-render/' <<< "$package_entries"; then
-    echo "Built Arch package contains a user-local installer, uninstaller, or profile path." >&2
+if grep -Eq '(^|/)mako-installer$|(^|/)\.config/mako-render/' <<< "$package_entries"; then
+    echo "Built Arch package contains a user-local installer or profile path." >&2
+    exit 1
+fi
+if grep -Eq '^usr/share/applications/|^usr/bin/[^/]+-ui$' <<< "$package_entries"; then
+    echo "Built Arch package contains desktop entries or the removed configuration app." >&2
     exit 1
 fi
 
@@ -243,17 +245,13 @@ while IFS= read -r -d '' audited_binary; do
                 dependency="${architecture_prefix}libx11" ;;
             libGLX.so.0 | libOpenGL.so.0)
                 dependency=libglvnd ;;
-            libQt6Core.so.6 | libQt6Gui.so.6 | libQt6Network.so.6 | libQt6OpenGL.so.6 | libQt6Widgets.so.6)
-                dependency=qt6-base ;;
-            libQt6Qml.so.6 | libQt6QmlModels.so.6 | libQt6Quick.so.6 | libQt6QuickControls2.so.6)
-                dependency=qt6-declarative ;;
             *)
                 echo "Built Arch package has an unreviewed ELF dependency: $binary_path needs $soname." >&2
                 exit 1 ;;
         esac
         if [[ -n "$architecture_prefix" ]]; then
             case "$dependency" in
-                qt6-* | libglvnd)
+                libglvnd)
                     echo "Built Arch package has an unreviewed 32-bit dependency: $binary_path needs $soname." >&2
                     exit 1 ;;
             esac

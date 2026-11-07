@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Synchronize the Arch recipe with MAKO Decky's verified Renderer pin."""
+"""Synchronize the Arch recipe with the verified MAKO Renderer release pin."""
 
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ def main() -> int:
     if len(sys.argv) != 3:
         raise SystemExit(
             "Usage: sync-release-pin.py "
-            "<plugin/package.json> <engine/dist/arch/PKGBUILD>"
+            "<engine/renderer-release.json> <engine/dist/arch/PKGBUILD>"
         )
 
     pin_path = Path(sys.argv[1])

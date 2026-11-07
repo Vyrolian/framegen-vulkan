@@ -26,7 +26,6 @@ The matrix runs 384 combinations of source cadence, target, multiplier ceiling, 
 ```bash
 cmake -S . -B build/adaptive-policy \
   -DMAKO_BUILD_VK_LAYER=OFF \
-  -DMAKO_BUILD_UI=OFF \
   -DMAKO_BUILD_CLI=OFF \
   -DBUILD_TESTING=ON
 cmake --build build/adaptive-policy --target mako-adaptive-matrix

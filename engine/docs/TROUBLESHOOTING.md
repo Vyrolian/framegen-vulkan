@@ -10,7 +10,7 @@
     ```
 
 3. For terminal launches, replace `%command%` with the executable and arguments. Flatpak apps need [Flatpak preparation](FLATPAK-GUIDE.md).
-4. Check **Matched Processes** against the game's executable. A saved profile alone does not activate MAKO.
+4. Check that `active_in` in the profile matches the game's executable. A saved profile alone does not activate MAKO.
 
 For native loader problems, run:
 
@@ -36,7 +36,7 @@ mako-cli validate --config ~/.config/mako-render/conf.toml
 
 ## Gamescope WSI, overlays, and HDR
 
-Use [supported graphics integrations](LAYER-CHAINING.md). HDR is experimental and disabled by default. To use it on a supported Gamescope display, turn on **Enable HDR (Restart)**, restart the game, then enable HDR in the game. Keep full Gamescope WSI off; see [HDR setup](CONFIGURATION.md#hdr).
+Use [supported graphics integrations](LAYER-CHAINING.md). HDR is experimental and disabled by default. To use it on a supported Gamescope display, set `disable_hdr_exposure = 0` in `launcher.conf`, restart the game, then enable HDR in the game. Keep full Gamescope WSI off; see [HDR setup](CONFIGURATION.md#hdr).
 
 ## Collect diagnostics
 

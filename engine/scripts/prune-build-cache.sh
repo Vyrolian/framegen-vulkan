@@ -20,7 +20,7 @@ Options:
 
 This preserves source, incremental CMake build trees, release artifacts,
 installed plugins/renderers, profiles, and the normal user Flatpak install.
-Later release builds will download the Qt and Flatpak SDK dependencies again.
+Later release builds will download the Flatpak SDK dependencies again.
 EOF
 }
 

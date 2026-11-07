@@ -4,7 +4,7 @@ import type { PointerEvent as ReactPointerEvent } from 'react';
 import { releaseData } from './release-data';
 import { DiscordIcon, GitHubIcon } from './social-icons';
 
-const { deckyVersion, rendererVersion, links } = releaseData;
+const { rendererVersion, links } = releaseData;
 
 const newTabProps = { target: '_blank', rel: 'noopener noreferrer' } as const;
 
@@ -130,8 +130,8 @@ export default function Home() {
           <a className="social-link" href={links.discord} {...newTabProps}><DiscordIcon /><span>Discord</span></a>
           <DonateMenu />
         </div>
-        <a className="nav-download" href={links.deckyDownload} {...newTabProps}>
-          Download <span>v{deckyVersion}</span>
+        <a className="nav-download" href={links.rendererDownload} {...newTabProps}>
+          Download <span>v{rendererVersion}</span>
         </a>
         <details className="mobile-nav">
           <summary>Menu <span aria-hidden="true">+</span></summary>
@@ -163,10 +163,6 @@ export default function Home() {
               <span className="open-source-sticker-arrow" aria-hidden="true">↗</span>
             </a>
             <div className="hero-actions">
-              <a className="button button-primary" href={links.deckyDownload} {...newTabProps}>
-                <span className="download-glyph" aria-hidden="true"><i /></span>
-                <span className="hero-download-copy"><span>Get MAKO Decky</span><small>Includes MAKO Renderer</small></span>
-              </a>
               <a className="button button-primary button-renderer" href={links.rendererDownload} {...newTabProps}>
                 <span className="download-glyph" aria-hidden="true"><i /></span>
                 <span className="hero-download-copy"><span>Get MAKO Renderer</span><small>Standalone for desktop Linux</small></span>
@@ -182,16 +178,11 @@ export default function Home() {
             </div>
           </div>
 
-          <div className="hero-visual" aria-label="MAKO Decky and Renderer system visualization">
+          <div className="hero-visual" aria-label="MAKO Renderer system visualization">
             <div className="orbit orbit-one" />
             <div className="orbit orbit-two" />
-            <div className="visual-card visual-card-decky" onPointerMove={tiltCard} onPointerLeave={resetCardTilt}>
-              <span className="card-index">01 / CONTROL</span>
-              <img src="assets/mako-logo.webp" alt="MAKO Decky shark logo" width="170" height="170" draggable={false} />
-              <div><strong>MAKO Decky</strong><span>Per-game orchestration</span></div>
-            </div>
             <div className="visual-card visual-card-renderer" onPointerMove={tiltCard} onPointerLeave={resetCardTilt}>
-              <span className="card-index">02 / PIPELINE</span>
+              <span className="card-index">01 / PIPELINE</span>
               <img src="assets/mako-render-logo.webp" alt="MAKO Renderer shark logo" width="154" height="154" draggable={false} />
               <div><strong>MAKO Renderer</strong><span>Scaling + synthesis + shaders</span></div>
             </div>
@@ -210,38 +201,16 @@ export default function Home() {
 
         <section className="system-section section-shell" id="system">
           <header className="section-heading">
-            <p className="section-kicker"><span>01</span> One system. Two precision layers.</p>
+            <p className="section-kicker"><span>01</span> One renderer. One pipeline.</p>
             <div>
-              <h2>Controls above.<br /><em>Vulkan below.</em></h2>
-              <p>MAKO Decky manages the game. MAKO Renderer runs the frame pipeline. Together, they bring frame generation, spatial scaling, and bundled shader effects into Linux gaming.</p>
+              <h2>Built on<br /><em>Vulkan.</em></h2>
+              <p>MAKO Renderer runs the frame pipeline in a private Vulkan layer, bringing frame generation, spatial scaling, and bundled shader effects into Linux gaming.</p>
             </div>
           </header>
 
           <div className="system-grid">
-            <article className="system-panel decky-panel">
-              <div className="panel-number">01</div>
-              <div className="panel-topline"><span>CONTROL LAYER</span><i>STEAMOS / DECKY</i></div>
-              <img src="assets/mako-logo.webp" alt="MAKO Decky" width="230" height="230" draggable={false} />
-              <h3>MAKO Decky</h3>
-              <p>Per-game controls, profiles, installation, Flatpak preparation, and launch integration through one focused interface.</p>
-              <ul>
-                <li><span /> Scaling, generation &amp; shader controls</li>
-                <li><span /> Steam, Heroic &amp; EmuDeck profiles</li>
-                <li><span /> Fixed &amp; Adaptive modes</li>
-              </ul>
-              <a href={links.deckyDownload} {...newTabProps}>Download Decky ZIP <span>→</span></a>
-            </article>
-
-            <div className="pipeline" aria-label="Configuration flows from MAKO Decky to MAKO Renderer">
-              <div className="pipeline-label">REAL-TIME CONFIG</div>
-              <div className="pipeline-line"><span /><span /><span /><span /><span /><span /></div>
-              <div className="pipeline-chip">MAKO<br />SYNC</div>
-              <div className="pipeline-line reverse"><span /><span /><span /><span /><span /><span /></div>
-              <div className="pipeline-label">FRAME TELEMETRY</div>
-            </div>
-
             <article className="system-panel renderer-panel">
-              <div className="panel-number">02</div>
+              <div className="panel-number">01</div>
               <div className="panel-topline"><span>RENDER LAYER</span><i>VULKAN / LINUX</i></div>
               <img src="assets/mako-render-logo.webp" alt="MAKO Renderer" width="230" height="230" draggable={false} />
               <h3>MAKO Renderer</h3>
@@ -402,7 +371,7 @@ export default function Home() {
               </li>
               <li>
                 <span>02</span>
-                <div><strong>Install MAKO</strong><p>Use MAKO Decky on SteamOS, or extract MAKO Renderer directly on desktop Linux.</p></div>
+                <div><strong>Install MAKO</strong><p>Extract the MAKO Renderer archive and run its installer, or install the Arch package on Arch Linux.</p></div>
               </li>
               <li>
                 <span>03</span>
@@ -417,31 +386,16 @@ export default function Home() {
           <header className="downloads-heading">
             <p className="section-kicker"><span>07</span> Latest release</p>
             <h2>Choose your<br /><em>entry point.</em></h2>
-            <p>Both components are open source and independently versioned. Current packages are MAKO Decky v{deckyVersion} and MAKO Renderer v{rendererVersion}.</p>
+            <p>MAKO is open source. The current package is MAKO Renderer v{rendererVersion}.</p>
           </header>
 
           <div className="download-grid">
-            <article className="download-card download-decky">
-              <div className="download-badge">RECOMMENDED FOR STEAMOS</div>
-              <div className="download-icon"><img src="assets/mako-logo.webp" alt="" width="88" height="88" draggable={false} /></div>
-              <p className="download-type">CONTROL + BUNDLED RENDERER</p>
-              <h3>MAKO Decky</h3>
-              <p className="download-copy">The complete managed experience for Steam Deck, Steam Machine, Decky Loader, Heroic, and EmuDeck.</p>
-              <dl>
-                <div><dt>VERSION</dt><dd>{deckyVersion}</dd></div>
-                <div><dt>FORMAT</dt><dd>ZIP</dd></div>
-                <div><dt>INSTALL</dt><dd>DECKY</dd></div>
-              </dl>
-              <a className="download-button" href={links.deckyDownload} {...newTabProps}><span>Download Decky ZIP</span><i>→</i></a>
-              <a className="release-link" href={links.deckyRelease} {...newTabProps}>View release notes <span>→</span></a>
-            </article>
-
             <article className="download-card download-renderer">
               <div className="download-badge">DIRECT LINUX INSTALL</div>
               <div className="download-icon"><img src="assets/mako-render-logo.webp" alt="" width="88" height="88" draggable={false} /></div>
               <p className="download-type">STANDALONE VULKAN LAYER</p>
               <h3>MAKO Renderer</h3>
-              <p className="download-copy">The direct host archive for desktop Linux, with the UI, launcher, CLI, both x86 Vulkan layers, and bundled shader effects.</p>
+              <p className="download-copy">The direct host archive for desktop Linux, with the launcher, CLI, both x86 Vulkan layers, and bundled shader effects.</p>
               <dl>
                 <div><dt>VERSION</dt><dd>{rendererVersion}</dd></div>
                 <div><dt>FORMAT</dt><dd>TAR.XZ</dd></div>
@@ -469,7 +423,7 @@ export default function Home() {
           <div className="faq-list">
             <details>
               <summary><span>01</span> Which version should I install?<i>+</i></summary>
-              <p>Use MAKO Decky for Steam Deck, Steam Machine, and Decky Loader. Use the standalone MAKO Renderer archive when you want direct Vulkan-layer installation on desktop Linux.</p>
+              <p>Use the MAKO Renderer host archive for SteamOS and desktop Linux, or the Arch package on Arch Linux. Use the Flatpak bundle for Flatpak games, launchers, and emulators.</p>
             </details>
             <details>
               <summary><span>02</span> Does MAKO include Lossless Scaling?<i>+</i></summary>
@@ -477,7 +431,7 @@ export default function Home() {
             </details>
             <details>
               <summary><span>03</span> Can frame generation, scaling, and shaders run together?<i>+</i></summary>
-              <p>Yes. Scale with LS1 or the open MAKO Scaler, feed reconstructed real frames into Fixed or Adaptive frame generation, and apply per-game shader effects in the same profile. The downloads above track MAKO Decky v{deckyVersion} and MAKO Renderer v{rendererVersion} from canonical release metadata.</p>
+              <p>Yes. Scale with LS1 or the open MAKO Scaler, feed reconstructed real frames into Fixed or Adaptive frame generation, and apply per-game shader effects in the same profile. The downloads above track MAKO Renderer v{rendererVersion} from canonical release metadata.</p>
             </details>
             <details>
               <summary><span>04</span> What hardware is published today?<i>+</i></summary>
@@ -492,9 +446,9 @@ export default function Home() {
           <div>
             <p className="eyebrow"><span /> Motion-Adaptive Kernel Orchestration</p>
             <h2>Play smoother.<br /><em>Look sharper.</em></h2>
-            <p>Choose MAKO Decky for the managed SteamOS workflow or MAKO Renderer for a direct Linux installation.</p>
+            <p>Download MAKO Renderer for SteamOS, Steam Machine, or desktop Linux.</p>
             <div className="hero-actions">
-              <a className="button button-primary" href={links.deckyDownload} {...newTabProps}>Download MAKO <span>→</span></a>
+              <a className="button button-primary" href={links.rendererDownload} {...newTabProps}>Download MAKO <span>→</span></a>
               <a className="button button-secondary social-button" href={links.repository} {...newTabProps}><span className="social-button-label"><GitHubIcon />View on GitHub</span><span aria-hidden="true">→</span></a>
               <a className="button button-secondary social-button" href={links.discord} {...newTabProps}><span className="social-button-label"><DiscordIcon />Join Discord</span><span aria-hidden="true">→</span></a>
             </div>
@@ -509,7 +463,7 @@ export default function Home() {
         </div>
         <div className="footer-links">
           <div><span>PROJECT</span><a className="social-link" href={links.repository} {...newTabProps}><GitHubIcon /><span>GitHub</span></a><a className="social-link" href={links.discord} {...newTabProps}><DiscordIcon /><span>Discord</span></a><a href={links.docs} {...newTabProps}>Installation Guide</a><a href="third-party-notices.txt">Third-party notices</a><a href={links.issues} {...newTabProps}>Issues</a></div>
-          <div><span>DOWNLOAD</span><a href={links.deckyRelease} {...newTabProps}>MAKO Decky</a><a href={links.rendererRelease} {...newTabProps}>MAKO Renderer</a><a href={links.allReleases} {...newTabProps}>All releases</a></div>
+          <div><span>DOWNLOAD</span><a href={links.rendererRelease} {...newTabProps}>MAKO Renderer</a><a href={links.allReleases} {...newTabProps}>All releases</a></div>
         </div>
         <div className="footer-bottom"><span>GPL-3.0-OR-LATER</span><span>INDEPENDENT COMMUNITY PROJECT</span><span>© 2026 MAKO</span></div>
       </footer>

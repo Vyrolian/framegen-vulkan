@@ -18,10 +18,9 @@ usage() {
   cat <<'EOF'
 Usage: ./scripts/publish-release.sh X.Y.Z
 
-Publishes the matching MAKO Renderer and MAKO Decky releases. The workflow is
-resumable: it checksum-verifies complete Renderer state, while Decky is skipped
-when its version, tag, release, and expected asset name are present. Both
-component RELEASE_NOTES.md files must be prepared and committed for X.Y.Z first.
+Publishes the matching MAKO Renderer release. The workflow is resumable: it
+checksum-verifies complete Renderer state before skipping any step. The
+engine/RELEASE_NOTES.md file must be prepared and committed for X.Y.Z first.
 EOF
 }
 
@@ -50,20 +49,6 @@ done
 
 node scripts/read-release-notes.mjs \
   engine/RELEASE_NOTES.md "MAKO Renderer" "$version" >/dev/null
-node scripts/read-release-notes.mjs \
-  plugin/RELEASE_NOTES.md "MAKO Decky" "$version" >/dev/null
-renderer_codename="$(
-  node plugin/scripts/read-release-info.mjs \
-    engine/RELEASE_NOTES.md "MAKO Renderer" --codename
-)"
-decky_codename="$(
-  node plugin/scripts/read-release-info.mjs \
-    plugin/RELEASE_NOTES.md "MAKO Decky" --codename
-)"
-if [[ "$renderer_codename" != "$decky_codename" ]]; then
-  echo "Paired release notes must use the same codename: Renderer '$renderer_codename', Decky '$decky_codename'." >&2
-  exit 1
-fi
 
 if command -v sha256sum >/dev/null 2>&1; then
   checksum_command=(sha256sum)
@@ -111,10 +96,8 @@ if [[ "$(git rev-parse HEAD)" != "$(git rev-parse refs/remotes/origin/main)" ]];
 fi
 
 renderer_tag="render-v$version"
-decky_tag="plugin-v$version"
 renderer_archive="MAKO-Renderer-v$version-linux.tar.xz"
 flatpak_archive="MAKO-Renderer-v$version-flatpaks.tar.xz"
-decky_archive="MAKO-Decky-v$version.zip"
 
 refresh_arch_package_name() {
   local arch_pkgver
@@ -203,7 +186,7 @@ renderer_pin_matches() {
       binary?.arch_package?.url === `${base}/${archName}` &&
       sha256.test(binary?.arch_package?.sha256hash ?? "");
     process.exit(valid ? 0 : 1);
-  ' plugin/package.json "$version" "$tag_commit" "$github_repository" "$arch_package"
+  ' engine/renderer-release.json "$version" "$tag_commit" "$github_repository" "$arch_package"
 }
 
 renderer_is_complete() {
@@ -223,20 +206,11 @@ renderer_is_complete() {
       const { resolve } = require("node:path");
       const binary = require(resolve(process.argv[1])).remote_binary[0];
       process.stdout.write(`${binary.sha256hash}\t${binary.flatpak_bundle.sha256hash}\t${binary.arch_package.sha256hash}\n`);
-    ' plugin/package.json
+    ' engine/renderer-release.json
   )
   release_asset_checksum_matches "$renderer_tag" "$renderer_archive" "$native_checksum" || return 1
   release_asset_checksum_matches "$renderer_tag" "$flatpak_archive" "$flatpak_checksum" || return 1
   release_asset_checksum_matches "$renderer_tag" "$arch_package" "$arch_checksum" || return 1
-}
-
-decky_is_complete() {
-  local package_version
-  package_version="$(node -p 'require("./plugin/package.json").version')"
-  [[ "$package_version" == "$version" ]] || return 1
-  git show-ref --verify --quiet "refs/tags/$decky_tag" || return 1
-  gh release view "$decky_tag" --repo "$github_repository" >/dev/null 2>&1 || return 1
-  release_has_asset "$decky_tag" "$decky_archive" || return 1
 }
 
 renderer_verified=false
@@ -256,37 +230,20 @@ if [[ "$renderer_verified" != true ]]; then
   exit 1
 fi
 
-decky_verified=false
-if decky_is_complete; then
-  echo "MAKO Decky v$version is already complete; skipping its build and upload."
-  decky_verified=true
-else
-  "$repository_root/plugin/scripts/publish-package.sh" --version "$version"
-  if decky_is_complete; then
-    decky_verified=true
-  fi
-fi
-
-if [[ "$decky_verified" != true ]]; then
-  echo "MAKO Decky v$version did not pass the final release-state verification." >&2
-  exit 1
-fi
-
 node scripts/update-release-links.mjs renderer "$version" "$github_repository"
-node scripts/update-release-links.mjs decky "$version" "$github_repository"
-release_link_readmes=(README.md plugin/README.md engine/README.md)
+release_link_readmes=(README.md engine/README.md)
 if ! git diff --quiet -- "${release_link_readmes[@]}"; then
   git add "${release_link_readmes[@]}"
   git commit -m "docs: sync MAKO v$version release links$ci_skip_suffix"
 fi
 
 latest_tag="$(gh api "repos/$github_repository/releases/latest" --jq '.tag_name')"
-if [[ "$latest_tag" != "$decky_tag" ]]; then
-  gh release edit "$decky_tag" --repo "$github_repository" --latest
+if [[ "$latest_tag" != "$renderer_tag" ]]; then
+  gh release edit "$renderer_tag" --repo "$github_repository" --latest
 fi
 latest_tag="$(gh api "repos/$github_repository/releases/latest" --jq '.tag_name')"
-if [[ "$latest_tag" != "$decky_tag" ]]; then
-  echo "GitHub Latest points to $latest_tag instead of $decky_tag." >&2
+if [[ "$latest_tag" != "$renderer_tag" ]]; then
+  echo "GitHub Latest points to $latest_tag instead of $renderer_tag." >&2
   exit 1
 fi
 
@@ -301,18 +258,14 @@ fi
 rm -f -- \
   "$repository_root/engine/out/$renderer_archive" \
   "$repository_root/engine/out/$flatpak_archive" \
-  "$repository_root/engine/out/$arch_package" \
-  "$repository_root/plugin/out/$decky_archive"
+  "$repository_root/engine/out/$arch_package"
 cleanup_rm_args=(-rf)
 if [[ "$(uname -s)" == "Linux" ]]; then
   cleanup_rm_args+=(--one-file-system)
 fi
 rm "${cleanup_rm_args[@]}" -- \
-  "$repository_root/engine/build/work" \
-  "$repository_root/plugin/dist" \
-  "$repository_root/plugin/coverage"
+  "$repository_root/engine/build/work"
 echo "Removed rebuildable release outputs and staging; reusable build caches were preserved."
 
-echo "Published and verified MAKO v$version:"
+echo "Published and verified MAKO Renderer v$version:"
 echo "  Renderer: https://github.com/$github_repository/releases/tag/$renderer_tag"
-echo "  Decky:    https://github.com/$github_repository/releases/tag/$decky_tag"

@@ -1,5 +1,5 @@
 // Steam supplies SDL3. Resolve its public ABI instead of linking a host SDL
-// or adding Qt/graphics dependencies to this process-start compatibility shim.
+// or adding toolkit/graphics dependencies to this process-start compatibility shim.
 // https://wiki.libsdl.org/SDL3/SDL_CreateRendererWithProperties
 #include <cstdint>
 #include <cstdio>

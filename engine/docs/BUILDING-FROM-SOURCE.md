@@ -15,7 +15,7 @@ Once cloned, run build and packaging commands from `engine/` unless a section sa
 >
 > The installer restores the original SteamOS read-only state, initializes the official Arch and Holo keyrings, and reinstalls the native build packages without `--needed`. Some SteamOS images preserve Pacman's installed-package records while removing development files or the local keyring. The script prompts before the Pacman transaction and does not build or deploy MAKO.
 
-SteamOS image updates can also leave X11, XCB, Wayland, Vulkan loader, and Qt packages registered with Pacman while their development headers or metadata are absent. The installer restores these alongside the compiler, 32-bit headers, shader tools, and Flatpak development tools; its `--check` mode reports missing commands and headers without changing the host.
+SteamOS image updates can also leave X11, XCB, Wayland, and Vulkan loader packages registered with Pacman while their development headers or metadata are absent. The installer restores these alongside the compiler, 32-bit headers, shader tools, and Flatpak development tools; its `--check` mode reports missing commands and headers without changing the host.
 
 Already writable roots remain writable. Initially read-only roots are restored after the package transaction, including when it fails. SteamOS 3.9 provides `steamos-readonly` through its `steamos-alias` package, forwarding to `holo-readonly`; the installer accepts the command's `disabled` result with exit status 1.
 
@@ -31,7 +31,6 @@ Install:
 - X11 and XCB headers (`libx11`, `libxcb`, and `xorgproto` on Arch/SteamOS)
 - Python 3 when building the registered tests
 - A multilib C++ toolchain when building the 32-bit Vulkan layer
-- Qt 6.2 or newer with Qt6Quick, Qt6QuickControls2, and Qt6Widgets (only needed when building `mako-ui`; Widgets supports native desktop-style painting)
 
 Package names vary by distribution. These commands cover common Debian/Ubuntu and Arch installations:
 
@@ -42,36 +41,33 @@ sudo apt-get install -y \
     llvm clang clang-tools clang-tidy \
     cmake ninja-build pkg-config g++-multilib \
     libvulkan-dev libx11-dev libxcb1-dev \
-    mesa-common-dev \
-    qt6-base-dev qt6-base-dev-tools \
-    qt6-tools-dev qt6-tools-dev-tools \
-    qt6-declarative-dev qt6-declarative-dev-tools
+    mesa-common-dev
 
 # On writable Arch Linux, use (SteamOS users should run the installer above):
 sudo pacman -S --needed \
     git curl python \
     llvm clang ccache lib32-glibc \
     cmake ninja \
-    vulkan-headers vulkan-icd-loader libx11 libxcb xorgproto \
-    qt6-base qt6-declarative
+    vulkan-headers vulkan-icd-loader libx11 libxcb xorgproto
 ```
 
-The release packager builds the 64-bit CLI, UI, launcher, and both Renderer roles, then builds both roles again with `-m32`. It installs the libraries in `lib` and `lib32` with architecture-tagged manifests. A direct CMake build targets only the selected compiler architecture.
+The release packager builds the 64-bit CLI, launcher, and both Renderer roles, then builds both roles again with `-m32`. It installs the libraries in `lib` and `lib32` with architecture-tagged manifests. A direct CMake build targets only the selected compiler architecture.
 
 ## Choose the right build path
 
 | Need | Entry point | Result |
 | --- | --- | --- |
 | Incremental native Renderer work on SteamOS | `engine/scripts/build-steamos-dev.sh` | Reuses a development tree and builds the 64-bit layer and CLI; no distributable archive |
-| Standalone Renderer archive | `engine/scripts/package-local.sh` | Tests and packages the host Renderer payload; does not build MAKO Decky or publish |
+| Standalone Renderer archive | `engine/scripts/package-local.sh` | Tests and packages the host Renderer payload; does not publish |
 | Complete local Renderer release-shaped set | `engine/scripts/package-local-release.sh` | Builds the portable host archive, Flatpak archive, verified Arch package, and `SHA256SUMS` without changing release pins or publishing |
-| Complete MAKO Decky tester package from current Renderer source | `pnpm --dir plugin run package:local-engine` from the repository root | Builds and embeds the native and Flatpak Renderer payloads in a self-contained local ZIP |
-| Complete local release candidate | `MAKO_PORTABLE_PACKAGE=1 pnpm --dir plugin run package:local-engine`, then `scripts/check-release-candidate.sh PATH-TO-ZIP` from the repository root | Builds once from a clean pushed commit and checks the existing complete Decky ZIP without a CI rebuild or installation |
-| Matched public release | `scripts/publish-release.sh X.Y.Z` from the repository root | Publishes MAKO Renderer first, pins it by checksum, then publishes MAKO Decky |
+| Complete local release candidate | `engine/scripts/package-local-release.sh`, then `scripts/check-release-candidate.sh` with the host and Flatpak archives from `engine/out/` | Builds once from a clean pushed commit and checks the existing complete archives without a CI rebuild or installation |
+| Public release | `scripts/publish-release.sh X.Y.Z` from the repository root | Publishes MAKO Renderer, records its checksums in `engine/renderer-release.json`, and updates release links |
 
-`package-local-release.sh` writes under `engine/out/` and synchronizes a disposable Arch recipe. Complete Decky ZIPs serve as local candidates; publication separately applies version/pin commits and rebuilds public assets. [How to release MAKO](../../HOW_TO_RELEASE.md) owns qualification, build alignment, and publication.
+`package-local-release.sh` writes under `engine/out/` and synchronizes a disposable Arch recipe. The complete local archives serve as release candidates; publication separately applies version and pin commits and rebuilds public assets. [How to release MAKO](../../HOW_TO_RELEASE.md) owns qualification, build alignment, and publication.
 
-For an explicitly requested maintainer exception, `MAKO_RELEASE_SKIP_TESTS=1` omits test compilation, CTest, and launcher tests while retaining build, ABI, archive, and checksum verification. See the [hotfix exception](../../HOW_TO_RELEASE.md#maintainer-directed-hotfix-without-automated-validation). Publication always uses the portable builders: Ubuntu 22.04, Clang 14, Qt 6.2, and the pinned Vulkan headers for the native archive, plus Ubuntu 24.04 driving each declared Flatpak runtime SDK. Use `MAKO_PORTABLE_PACKAGE=1` for complete tester packages too; the scripts select Docker or Podman automatically. Without that flag, Flatpak packaging uses host `flatpak-builder` when available and falls back to the container builder when it is absent. Follow the [build-alignment and evidence requirements](../../HOW_TO_RELEASE.md#keep-tester-and-release-builds-aligned) when comparing tester and release artifacts.
+Local native Linux packaging uses the host SDK when it passes the Vulkan header check. If that check fails, set `MAKO_PORTABLE_PACKAGE=1` to use the portable baseline with Docker or Podman. Non-Linux packaging and all public native releases require one of those runtimes.
+
+For an explicitly requested maintainer exception, `MAKO_RELEASE_SKIP_TESTS=1` omits test compilation, CTest, and launcher tests while retaining build, ABI, archive, and checksum verification. See the [hotfix exception](../../HOW_TO_RELEASE.md#maintainer-directed-hotfix-without-automated-validation). Publication always uses the portable builders: Ubuntu 22.04, Clang 14, and the pinned Vulkan headers for the native archive, plus Ubuntu 24.04 driving each declared Flatpak runtime SDK. Use `MAKO_PORTABLE_PACKAGE=1` for complete tester packages too; the scripts select Docker or Podman automatically. Without that flag, Flatpak packaging uses host `flatpak-builder` when available and falls back to the container builder when it is absent. Follow the [build-alignment and evidence requirements](../../HOW_TO_RELEASE.md#keep-tester-and-release-builds-aligned) when comparing tester and release artifacts.
 
 ## Package dependency pins
 
@@ -81,7 +77,7 @@ Native and Flatpak archive builds and `scripts/build-steamos-dev.sh` enable `MAK
 
 [`engine/vulkan-headers-revision.txt`](../vulkan-headers-revision.txt) is the single owner of the native and Flatpak Vulkan-Headers build pin and minimum header version. It contains one upstream SDK branch (`vulkan-sdk-X.Y.Z`) or release tag (`vX.Y.Z`). The portable packager, fast SteamOS development builder, and main Renderer CI builds fetch that ref, and CMake derives its minimum version from the same file.
 
-The fast builder caches a release tag under `engine/build/cache/vulkan-headers/`, resolves a movable SDK branch on each run, and logs the selected commit. `scripts/generate-flatpak-vulkan-headers.py` derives the shared Flatpak module from the pin; regenerate after pin changes, then run its read-only `--check` gate. Every generated Flatpak manifest includes that generated module before its two Renderer builds. The headers are removed during Flatpak cleanup and are not a runtime dependency. An SDK branch can advance, so retain the resolved header commit with the build evidence. MAKO Decky delegates native source builds to the owning Renderer builder and has no separate header pin.
+The fast builder caches a release tag under `engine/build/cache/vulkan-headers/`, resolves a movable SDK branch on each run, and logs the selected commit. `scripts/generate-flatpak-vulkan-headers.py` derives the shared Flatpak module from the pin; regenerate after pin changes, then run its read-only `--check` gate. Every generated Flatpak manifest includes that generated module before its two Renderer builds. The headers are removed during Flatpak cleanup and are not a runtime dependency. An SDK branch can advance, so retain the resolved header commit with the build evidence.
 
 The sanitizer CI job also fetches this pin and compiles its policy tests against the same headers; manual portable-policy runs can still exercise distribution headers for compatibility coverage. To update the baseline, change this file and qualify the resulting packages under the tester/release build-alignment requirements above.
 
@@ -93,17 +89,7 @@ The Vulkan layer manifests' `api_version` describes the layer's supported API an
 
 To update vkBasalt, merge the intended upstream baseline into the maintained fork, increment the fork release revision, run its dual-architecture release workflow, and retain the successful workflow and artifact attestations. Then update `vkbasalt-release.json`, regenerate `dist/flatpak/mako-render/vkbasalt-module.json` with `just generate-vkbasalt-release`, and run `just check-vkbasalt-release`. Never retag or replace a pinned asset: publish a new fork tag and change the MAKO pin. A released MAKO Renderer archive contains the verified libraries, manifests, licenses, source record, and pin, so an installed or downloaded MAKO release does not depend on the upstream vkBasalt repository remaining available. Rebuilding the same MAKO source from an empty cache still requires the pinned fork release asset.
 
-Distributable archives and Flatpak extensions include the project license, third-party notices, and asset-provenance record. Packaging fails if those files or another required payload entry is missing. The standalone installer also rewrites its desktop entries to the selected installation prefix.
-
-## Reusable SteamOS release-build SDK
-
-`scripts/package-local.sh` normally uses the host Qt development installation. On Pacman-based SteamOS, if the Qt headers or CMake files are unavailable, it caches an isolated SDK under `build/cache/native-sdk/`. The first fallback build needs network access; later builds reuse the cache without changing the host installation.
-
-This fallback applies only to `scripts/package-local.sh`. Manual CMake builds still use the system development packages. Set `MAKO_NATIVE_SDK_DIR` to place that SDK somewhere else, or set `MAKO_BUILD_CACHE_ROOT` to relocate all MAKO build caches together.
-
-Local native Linux packaging can use the host SDK when it passes the Vulkan header check and Qt ABI guard. The package check rejects a UI that needs symbols newer than Qt 6.4. If either check fails, set `MAKO_PORTABLE_PACKAGE=1` to use the portable baseline with Docker or Podman. Non-Linux packaging and all public native releases require one of those runtimes.
-
-The Ubuntu 22.04 portable builder installs the Qt QML runtime modules required by offscreen UI tests alongside the Qt development packages. Its system Python 3.10 exercises disabled Remote Play status and refusal to activate on an unsupported interpreter; stream activation still requires system Python 3.11 or newer.
+Distributable archives and Flatpak extensions include the project license, third-party notices, and asset-provenance record. Packaging fails if those files or another required payload entry is missing.
 
 ## Fast SteamOS development build
 
@@ -121,7 +107,7 @@ It builds both 64-bit Renderer roles and the CLI, retaining `build/steamos-dev` 
 ./scripts/build-steamos-dev.sh --with-32-bit
 ```
 
-The 32-bit tree defaults to `build/steamos-dev-32`. This development path skips the UI, Flatpak extensions, tests, archives, Decky ZIP, and hardware QA. It uses `ccache` under `build/cache/ccache` when available.
+The 32-bit tree defaults to `build/steamos-dev-32`. This development path skips Flatpak extensions, tests, archives, and hardware QA. It uses `ccache` under `build/cache/ccache` when available.
 
 ### Experimental forced LSFG FP16
 
@@ -135,7 +121,7 @@ For visual testing of an FP32-only LSFG model, build a separate native candidate
 
 This build requires CMake 3.22.1 or newer. `scripts/prepare-lsfg-fp16-tools.sh` downloads checksum-pinned official SPIRV-Tools `33e02568181e3312f49a3cf33df470bf96ef293a` and its matching SPIRV-Headers `2a611a970fdbc41ac2e3e328802aed9985352dca` into `build/cache/lsfg-fp16-tools/`. The optimizer is linked statically for each architecture, with no additional runtime library or executable requirement. Direct CMake builds can use `-DMAKO_EXPERIMENTAL_LSFG_FP16=ON -DMAKO_LSFG_FP16_TOOLS_SOURCE=PATH` with the prepared source directory. Ordinary development and release builds leave conversion disabled by default; the build fingerprint identifies experimental binaries explicitly.
 
-There is no additional UI or runtime toggle. With FP16 on, native FP16 takes priority; otherwise a supported native FP32 or translated DirectX graph is converted once and cached in memory. With FP16 off, the ordinary FP32 path remains selected. Conversion requires valid SPIR-V, preserved descriptor contracts, and actual half arithmetic. It cannot manufacture support for an unknown model layout or an unsupported GPU. Shader inputs, converted modules, and model resources never leave process memory.
+There is no additional runtime toggle. With FP16 on, native FP16 takes priority; otherwise a supported native FP32 or translated DirectX graph is converted once and cached in memory. With FP16 off, the ordinary FP32 path remains selected. Conversion requires valid SPIR-V, preserved descriptor contracts, and actual half arithmetic. It cannot manufacture support for an unknown model layout or an unsupported GPU. Shader inputs, converted modules, and model resources never leave process memory.
 
 Forced conversion remains unqualified for game image quality and reports `experimental_fp16=forced; quality=unqualified`. Earlier blanket conversion failed moving-edge checks; precision protection corrected the tested procedural failures. Compare brightness, motion edges, ghosting, flicker, and fine detail against FP32 and real-frame passthrough in actual games. Compilation, procedural checks, and Vulkan validation do not establish game quality. Building does not update installed components; use the deployment workflow only when requested.
 
@@ -159,11 +145,11 @@ just generate-flatpak-runtimes
 just check-flatpak-runtimes
 ```
 
-Without `just`, run `python3 scripts/generate-flatpak-runtimes.py`, then `python3 plugin/scripts/generate_ts_schema.py`; validate with `python3 plugin/scripts/check_generated_config.py`.
+Without `just`, run `python3 scripts/generate-flatpak-runtimes.py`; validate with `python3 scripts/generate-flatpak-runtimes.py --check`.
 
-Generation updates Renderer manifests and the shell matrix, removes retired generated manifests, and updates Decky's self-contained Python list and TypeScript descriptors. Never edit generated outputs independently. Packaging, Renderer CTest, and Decky's freshness gate reject stale outputs without rewriting them.
+Generation updates Renderer manifests and the shell matrix, and removes retired generated manifests. Never edit generated outputs independently. Packaging and Renderer CTest reject stale outputs without rewriting them.
 
-The same catalogue drives bundles, ZIP validation, extension refresh, RPC status, and Flatpak Setup rows. When it changes, build a complete current-source Flatpak archive and Decky ZIP; older archives may lack new branches. Installed components share no source-checkout dependency. Builds use the shared [Vulkan-Headers pin](#vulkan-headers) with each runtime SDK's compiler and libraries.
+The same catalogue drives the bundles and extension refresh. When it changes, build a complete current-source Flatpak archive; older archives may lack new branches. Installed components share no source-checkout dependency. Builds use the shared [Vulkan-Headers pin](#vulkan-headers) with each runtime SDK's compiler and libraries.
 
 ## SteamOS Flatpak development cache
 
@@ -214,9 +200,7 @@ git checkout tags/render-vX.Y.Z
 cmake -B build -G Ninja \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_INSTALL_PREFIX=/usr/local \
-    -DCMAKE_CXX_COMPILER=clang++ \
-    -DMAKO_BUILD_UI=On \
-    -DMAKO_INSTALL_XDG_FILES=On
+    -DCMAKE_CXX_COMPILER=clang++
 ```
 
 Useful CMake options:
@@ -224,10 +208,8 @@ Useful CMake options:
 - `CMAKE_BUILD_TYPE`: Set to `Release` for optimized builds or `Debug` for debugging builds.
 - `CMAKE_INSTALL_PREFIX`: Specify the installation directory (default is `/usr/local`).
 - `MAKO_BUILD_VK_LAYER`: Set to `On` to build the Vulkan layer (default is `On`).
-- `MAKO_BUILD_UI`: Set to `On` to build the user interface (default is `Off`).
 - `MAKO_BUILD_CLI`: Set to `On` to build the command-line interface (default is `On`).
 - `MAKO_INSTALL_DEVELOP`: Set to `On` to install development files like headers and libraries (default is `Off`).
-- `MAKO_INSTALL_XDG_FILES`: Set to `On` to install XDG desktop files and icons (default is `Off`).
 - `MAKO_REQUIRE_NATIVE_PACKAGE_HEADERS`: Require the shared native/Flatpak Vulkan header baseline (default is `Off` for direct CMake builds; all package builds set it to `On`).
 - `MAKO_VULKAN_HEADERS_INCLUDE_DIR`: Prefer an explicit Vulkan-Headers `include/` directory for compilation and the required-header check; the fast SteamOS builder sets this to its cache of the shared pin.
 - `MAKO_LAYER_LIBRARY_PATH`: Override the frame-generation role library path stored in its manifest.
@@ -252,7 +234,7 @@ The default and Vulkan-layer builds check `mako-render/src/**/*.cpp` against the
 sudo cmake --install build
 ```
 
-Start a native game with `mako-launch <command>`. The helper selects the install prefix's private manifests, activates MAKO for that child, excludes competing frame generation and Gamescope WSI, and defaults to SDR. Enable HDR through the [HDR configuration controls](CONFIGURATION.md) when needed. A directly installed CMake build does not fetch the optional vkBasalt payload; use `scripts/package-local.sh` for the complete archive that supports `ENABLE_VKBASALT=1 mako-launch <command>`. Read [WSI isolation](WSI-ISOLATION.md) and [Optional graphics integrations](LAYER-CHAINING.md#standalone-mako-renderer-with-vkbasalt) before changing manifests or launch variables.
+Start a native game with `mako-launch <command>`. The helper selects the install prefix's private manifests, activates MAKO for that child, excludes competing frame generation and Gamescope WSI, and defaults to SDR. Enable HDR through the [HDR setup](CONFIGURATION.md#hdr) when needed. A directly installed CMake build does not fetch the optional vkBasalt payload; use `scripts/package-local.sh` for the complete archive that supports `ENABLE_VKBASALT=1 mako-launch <command>`. Read [WSI isolation](WSI-ISOLATION.md) and [Optional graphics integrations](LAYER-CHAINING.md#standalone-mako-renderer-with-vkbasalt) before changing manifests or launch variables.
 
 ### Local vkBasalt candidates
 
@@ -266,30 +248,28 @@ User installation, updates and removal are in the [Arch guide](../dist/arch/READ
 
 The package installs:
 
-- `mako-cli`, `mako-launch`, `mako-ui`, and `mako-diagnostics` into `/usr/bin`.
+- `mako-cli`, `mako-launch`, and `mako-diagnostics` into `/usr/bin`.
 - the 64-bit Vulkan layers into `/usr/lib` and the 32-bit layers into `/usr/lib32`.
 - the public implicit-layer manifests into `/usr/share/vulkan/implicit_layer.d`, gated by `ENABLE_MAKO` and `ENABLE_MAKO_SPATIAL_SCALING`.
 - the private manifests used by `mako-launch` into `/usr/share/mako-render/vulkan/implicit_layer.d` and `/usr/share/mako-render/vulkan/spatial_scaling.d`.
 - any checksum-manifested private integration shipped by the pinned archive, including MAKO's private 64-bit and 32-bit vkBasalt libraries, manifests, licences, and provenance when present in that Renderer release.
-- the configuration desktop entry and its seven hicolor icons.
 - license texts into `/usr/share/licenses/mako-renderer-bin`.
 - `ASSET_PROVENANCE.md`, the version file, and the upstream checksum manifest into `/usr/share/doc/mako-renderer-bin`.
 
 The package deliberately excludes:
 
 - `bin/mako-installer` and the `Install MAKO Renderer` launcher, which form the user-local installer and target `~/.local`.
-- `share/applications/io.github.eugeniosegala.mako.uninstaller.desktop`, whose `Exec` calls `mako-installer --uninstall` and would target the user-local install.
 - the archive's `README.txt`, which documents the user-local installer flow that this package does not provide.
 
 Two details differ from the archive layout: the archived `share/doc/mako-render/*` files are installed under `/usr/share/licenses/mako-renderer-bin/` and `/usr/share/doc/mako-renderer-bin/`, and shared libraries are installed as mode `0755` instead of the archive's `0644`, following Arch convention. Content hashes are unaffected, so the checksum manifest still matches.
 
 ### Release pins
 
-The publisher pins the verified host archive in `plugin/package.json`, runs `sync-release-pin.py` (resetting `pkgrel` to 1 for a new version), and checks it with `check-release-pin.sh`. `verify-release-package.sh` packages that exact local archive and retains the verified `.pkg.tar.zst` for publication and checksum recording. The archive manifest owns payload membership; do not maintain a second list.
+The publisher pins the verified host archive in `engine/renderer-release.json`, runs `sync-release-pin.py` (resetting `pkgrel` to 1 for a new version), and checks it with `check-release-pin.sh`. `verify-release-package.sh` packages that exact local archive and retains the verified `.pkg.tar.zst` for publication and checksum recording. The archive manifest owns payload membership; do not maintain a second list.
 
 The verifier checks every ELF's architecture and direct `DT_NEEDED` dependencies against `.PKGINFO`; a new shared-library dependency requires a reviewed package dependency and soname mapping. Dynamically opened libraries still need Arch launch testing.
 
-For a packaging-only fix, leave `pkgver` and `sha256sums` unchanged and increment `pkgrel`. Run `just check-arch-package` from the repository root before committing. `check-release-pin.sh` also runs in portable Renderer CTest and fails when `pkgver`, the source URL, or `sha256sums` drifts from `plugin/package.json`.
+For a packaging-only fix, leave `pkgver` and `sha256sums` unchanged and increment `pkgrel`. Run `just check-arch-package` from the repository root before committing. `check-release-pin.sh` also runs in portable Renderer CTest and fails when `pkgver`, the source URL, or `sha256sums` drifts from `engine/renderer-release.json`.
 
 ### AUR publication
 
@@ -300,8 +280,7 @@ This repository owns the reviewed `PKGBUILD` and publishes its verified binary p
 - `makepkg` verifies the release archive against `sha256sums` before packaging.
 - Renderer publication runs `verify-release-package.sh` after synchronizing the recipe, uploads that exact verified package, records its checksum in release metadata, and refuses to consider the release complete if the asset is missing or differs from the recorded checksum.
 - The build wrapper rejects a stale or renamed package unless its filename, `.PKGINFO` name/version/architecture, embedded `MAKO-Renderer-version.txt`, synchronized recipe, and source archive checksum all agree.
-- The build wrapper rejects a new or undeclared ELF dependency in the CLI, UI, either Renderer role, or the private 64-bit and 32-bit vkBasalt libraries. It also rejects an ELF with the wrong 32-bit or 64-bit class for its package path.
-- Every payload file this package installs has the same SHA-256 as its entry in `MAKO-Renderer-install-manifest.txt`. The recipe verifies the complete archive manifest, packages every supported entry instead of maintaining a second payload allowlist, and fails on unsafe or unsupported paths. The manifest is installed unchanged at `/usr/share/doc/mako-renderer-bin/MAKO-Renderer-install-manifest.txt` so the claim can be re-checked. The only manifest entries without a matching installed file are `bin/mako-installer` and `share/applications/io.github.eugeniosegala.mako.uninstaller.desktop`, both excluded by design.
-- `desktop-file-validate` accepts the installed desktop entry.
+- The build wrapper rejects a new or undeclared ELF dependency in the CLI, either Renderer role, or the private 64-bit and 32-bit vkBasalt libraries. It also rejects an ELF with the wrong 32-bit or 64-bit class for its package path.
+- Every payload file this package installs has the same SHA-256 as its entry in `MAKO-Renderer-install-manifest.txt`. The recipe verifies the complete archive manifest, packages every supported entry instead of maintaining a second payload allowlist, and fails on unsafe or unsupported paths. The manifest is installed unchanged at `/usr/share/doc/mako-renderer-bin/MAKO-Renderer-install-manifest.txt` so the claim can be re-checked. The only manifest entries without a matching installed file are `bin/mako-installer` and desktop entries, both excluded by design.
 - A Vulkan loader run with `VK_IMPLICIT_LAYER_PATH` pointed at each packaged manifest directory discovers and activates `VK_LAYER_MAKO_render` and `VK_LAYER_MAKO_spatial_scaling` for the public set, and the matching layer for each private directory, with the relative `library_path` values resolving to `/usr/lib` and `/usr/lib32`.
 - `bash -n PKGBUILD`, `sh -n mako-renderer-bin.install`, and `./check-release-pin.sh` all pass.

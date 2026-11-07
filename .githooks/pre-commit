@@ -6,14 +6,14 @@ cd "$repository_root"
 
 ./scripts/check-protected-inputs.sh
 
-if ! command -v pnpm >/dev/null 2>&1; then
-  printf '%s\n' 'MAKO pre-commit: pnpm is required to format staged Markdown.' >&2
+if ! command -v npm >/dev/null 2>&1; then
+  printf '%s\n' 'MAKO pre-commit: npm is required to format staged Markdown.' >&2
   exit 1
 fi
 
-if [[ ! -x plugin/node_modules/.bin/lint-staged ]]; then
-  printf '%s\n' 'MAKO pre-commit: install plugin dependencies with `pnpm --dir plugin install --frozen-lockfile`.' >&2
+if [[ ! -x node_modules/.bin/lint-staged ]]; then
+  printf '%s\n' 'MAKO pre-commit: install repository tools with `npm ci`.' >&2
   exit 1
 fi
 
-pnpm --dir plugin run format:staged
+npm run format:staged

@@ -49,7 +49,7 @@ Each run is written to `traces/<version-label>/<game-slug>/<run-id>/`. The run I
 - `present-diagnostics.log`: raw session-scoped MAKO Renderer evidence;
 - `events.log`: derived navigation index for transitions, misses, fallback, and failures;
 - `config.toml`: sanitized Renderer configuration;
-- `decky-session.log` and `steam-session.log`: optional time-clipped context;
+- `steam-session.log`: optional time-clipped Steam console context;
 - `notes.md`: subjective observations and evidence-backed interpretation; and
 - `checksums.sha256`: integrity record for every other run file.
 

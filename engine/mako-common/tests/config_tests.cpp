@@ -351,7 +351,7 @@ int main() {
     expect(defaults.scaling_method == ls::ScalingMethod::Ls1,
         "LS1 Quality must be the default spatial scaling method");
     expect(ls::GameConfDefaults::flowScale == 0.8F,
-        "standalone Renderer and MAKO Decky must share the 80% Flow Scale default");
+        "new Renderer profiles must default to the 80% Flow Scale");
     expect(ls::GameConfDefaults::adaptiveStableCadence,
         "Smooth Cadence must default to on for new standalone Renderer profiles");
     expect(ls::scalingMethodFromName("native") ==

@@ -36,71 +36,34 @@ jobs:
       - name: Check local release-candidate verification
         if: runner.os == 'Linux'
         run: ./scripts/test-release-candidate.sh
-  decky:
-    name: MAKO Decky
+  repository-tools:
+    name: Repository tools
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
       - name: Check out source
         uses: actions/checkout@v6
 
-      - name: Install pnpm
-        uses: pnpm/action-setup@v6
+      - name: Set up Python runtime
+        uses: actions/setup-python@v6
         with:
-          version: 11.17.0
+          python-version: "3.11"
+
+      - name: Test diagnostics helper
+        run: python3 -I scripts/tests/test_diagnostics_helper.py
 
       - name: Set up Node.js
         uses: actions/setup-node@v7
         with:
           node-version: 24
-          cache: pnpm
-          cache-dependency-path: plugin/pnpm-lock.yaml
+          cache: npm
+          cache-dependency-path: package-lock.json
 
-      - name: Set up Decky Python runtime
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.11"
-
-      - name: Install locked frontend dependencies
-        working-directory: plugin
-        run: pnpm install --frozen-lockfile
+      - name: Install locked Markdown tooling
+        run: npm ci
 
       - name: Check Markdown formatting
-        working-directory: plugin
-        run: pnpm run format:markdown:check
-
-      - name: Install Flatpak test dependency
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends flatpak
-          flatpak --version
-
-      - name: Test backend behavior
-        working-directory: plugin
-        run: pnpm run test:backend
-
-      - name: Type-check frontend tests
-        working-directory: plugin
-        run: pnpm run test:frontend:typecheck
-
-      - name: Test frontend behavior with coverage
-        working-directory: plugin
-        run: pnpm run test:frontend:coverage
-
-      - name: Build release-candidate frontend
-        working-directory: plugin
-        env:
-          MAKO_LOCAL_RELEASE_BUILD: "1"
-        run: pnpm run build
-
-      - name: Retain frontend coverage
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: decky-frontend-coverage
-          path: plugin/coverage/frontend
-          if-no-files-found: ignore
-          retention-days: 14
+        run: npm run format:markdown:check
 
   renderer:
     name: MAKO Renderer (${{ matrix.toolchain }})
@@ -128,11 +91,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             cmake ninja-build g++ clang \
-            libvulkan-dev libx11-dev libxcb1-dev \
-            qt6-base-dev qt6-declarative-dev \
-            qml6-module-qtqml qml6-module-qtqml-models qml6-module-qtqml-workerscript \
-            qml6-module-qtquick qml6-module-qtquick-controls qml6-module-qtquick-layouts \
-            qml6-module-qtquick-templates qml6-module-qtquick-window
+            libvulkan-dev libx11-dev libxcb1-dev
 
       - name: Fetch the native package Vulkan headers
         run: |
@@ -147,7 +106,6 @@ jobs:
           -DCMAKE_BUILD_TYPE=Release
           -DBUILD_TESTING=ON
           -DMAKO_BUILD_VK_LAYER=ON
-          -DMAKO_BUILD_UI=ON
           -DMAKO_BUILD_CLI=ON
           -DMAKO_REQUIRE_NATIVE_PACKAGE_HEADERS=ON
           -DMAKO_GPU_QUALITY_TEST=OFF

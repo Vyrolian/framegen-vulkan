@@ -829,8 +829,8 @@ bool WatchedConfig::update() {
             retryNow < this->next_parse_retry)
         return powerChanged;
 
-    // Advance the observed timestamp only after parsing succeeds. Decky may
-    // briefly expose a partially-written TOML file; retaining the old stamp
+    // Advance the observed timestamp only after parsing succeeds. An external
+    // editor may briefly expose a partially-written TOML file; retaining the old stamp
     // makes the same version retryable instead of silently losing the update.
     ConfigFile new_config;
     try {

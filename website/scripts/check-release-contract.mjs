@@ -6,17 +6,14 @@ import { fileURLToPath } from 'node:url';
 
 const websiteRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const repositoryRoot = dirname(websiteRoot);
-const manifest = JSON.parse(readFileSync(join(repositoryRoot, 'plugin/package.json'), 'utf8'));
+const manifest = JSON.parse(readFileSync(join(repositoryRoot, 'engine/renderer-release.json'), 'utf8'));
 const pageSource = readFileSync(join(websiteRoot, 'app/page.tsx'), 'utf8');
 const pagesWorkflow = readFileSync(join(repositoryRoot, '.github/workflows/pages.yml'), 'utf8');
 const [renderer] = manifest.remote_binary ?? [];
 const semver = /^\d+\.\d+\.\d+$/;
 
-if (!semver.test(manifest.version ?? '')) {
-  throw new Error('plugin/package.json must define a semantic MAKO Decky version');
-}
 if (!renderer || !semver.test(renderer.version ?? '')) {
-  throw new Error('plugin/package.json must define a semantic MAKO Renderer payload version');
+  throw new Error('engine/renderer-release.json must define a semantic MAKO Renderer payload version');
 }
 
 const repository = renderer.source_repository?.replace(/\/$/, '');
@@ -37,8 +34,8 @@ if (renderer.flatpak_bundle?.name !== flatpakArchive || renderer.flatpak_bundle?
 if (/\bv?\d+\.\d+\.\d+\b/.test(pageSource)) {
   throw new Error('website/app/page.tsx must not hardcode a release version');
 }
-if (!pagesWorkflow.includes('"plugin/package.json"')) {
+if (!pagesWorkflow.includes('"engine/renderer-release.json"')) {
   throw new Error('The GitHub Pages workflow must redeploy when release metadata changes');
 }
 
-console.log(`Website release contract matches MAKO Decky v${manifest.version} and MAKO Renderer v${renderer.version}.`);
+console.log(`Website release contract matches MAKO Renderer v${renderer.version}.`);

@@ -1,37 +1,59 @@
 #!/usr/bin/env bash
-# Verify an already-built complete local MAKO Decky ZIP before publication.
+# Verify already-built complete local MAKO Renderer archives before publication.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 usage() {
   cat <<'EOF'
-Usage: scripts/check-release-candidate.sh PATH-TO-LOCAL-DECKY-ZIP
+Usage: scripts/check-release-candidate.sh PATH-TO-HOST-ARCHIVE [PATH-TO-FLATPAK-ARCHIVE]
 
-Checks a complete, portable local Decky ZIP from the current clean, pushed
-commit. This does not build, install, deploy, publish, or run MAKO Gym.
+Checks complete, portable local MAKO Renderer archives from the current clean,
+pushed commit. The host archive must be MAKO-Renderer-vX.Y.Z-linux.tar.xz for
+engine/VERSION. The optional Flatpak archive must contain one bundle for every
+runtime in the shared Flatpak catalogue. This does not build, install, deploy,
+publish, or run MAKO Gym.
 EOF
 }
 
-if (($# == 1)) && [[ "$1" == --help || "$1" == -h ]]; then
+if (($# == 1 || $# == 2)) && [[ "$1" == --help || "$1" == -h ]]; then
   usage
   exit 0
 fi
-if (($# != 1)); then
+if (($# < 1 || $# > 2)); then
   usage >&2
   exit 2
 fi
 
-for command in git node python3 realpath sha256sum tar unzip; do
+for command in git realpath sha256sum tar; do
   if ! command -v "$command" >/dev/null 2>&1; then
     echo "Required command not found: $command" >&2
     exit 1
   fi
 done
 
-archive="$(realpath -e -- "$1")"
-if [[ ! -f "$archive" ]]; then
-  echo "MAKO Decky candidate is not a file: $archive" >&2
+host_archive="$(realpath -e -- "$1")"
+if [[ ! -f "$host_archive" ]]; then
+  echo "MAKO Renderer candidate is not a file: $host_archive" >&2
+  exit 1
+fi
+flatpak_archive=""
+if (($# == 2)); then
+  flatpak_archive="$(realpath -e -- "$2")"
+  if [[ ! -f "$flatpak_archive" ]]; then
+    echo "MAKO Renderer Flatpak candidate is not a file: $flatpak_archive" >&2
+    exit 1
+  fi
+fi
+
+version="$(tr -d '[:space:]' < "$repo_root/engine/VERSION")"
+if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "engine/VERSION must use X.Y.Z format: $version" >&2
+  exit 1
+fi
+expected_host_name="MAKO-Renderer-v$version-linux.tar.xz"
+if [[ "$(basename "$host_archive")" != "$expected_host_name" ]]; then
+  echo "The host candidate must be $expected_host_name, received $(basename "$host_archive")." >&2
   exit 1
 fi
 
@@ -52,59 +74,77 @@ if [[ "$source_commit" != "$(git rev-parse "refs/remotes/origin/$branch")" ]]; t
   echo "The candidate branch must match origin/$branch." >&2
   exit 1
 fi
+engine_short_commit="${engine_commit:0:12}"
 
-unzip -t "$archive" >/dev/null
 work_root="$(mktemp -d "${TMPDIR:-/tmp}/mako-release-candidate.XXXXXX")"
 trap 'rm -rf -- "$work_root"' EXIT
-unzip -q "$archive" -d "$work_root"
-package_root="$work_root/Mako"
-node "$repo_root/plugin/scripts/validate-package-contract.mjs" "$package_root" local
 
-renderer_name="$(node - "$package_root/package.json" "$source_commit" "$engine_commit" <<'JS'
-const fs = require('node:fs');
-const [manifestPath, sourceCommit, engineCommit] = process.argv.slice(2);
-const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-const renderer = manifest.bundled_renderer;
-if (manifest.local_package_source_commit !== sourceCommit ||
-    manifest.local_package_worktree_dirty !== false) {
-  throw new Error('The Decky ZIP must be built from the current clean commit');
-}
-if (renderer?.source_commit !== engineCommit || renderer?.local_worktree_dirty !== false) {
-  throw new Error('The bundled Renderer must come from the current clean engine source');
-}
-if (!renderer.architectures?.includes('64') || !renderer.architectures?.includes('32') ||
-    !renderer.host_architectures?.includes('x86_64')) {
-  throw new Error('The candidate must contain 64-bit and 32-bit x86 Renderer layers');
-}
-if (!/\.portable-linux\.tar\.xz$/.test(renderer.name)) {
-  throw new Error('The candidate must use the portable native Renderer builder');
-}
-process.stdout.write(renderer.name);
-JS
-)"
-
-flatpak_bundle_output="$(python3 "$repo_root/plugin/scripts/read_flatpak_runtime_contract.py" bundles)"
-if [[ -z "$flatpak_bundle_output" ]]; then
-  echo "The Flatpak runtime contract contains no bundles." >&2
+# Extract the host archive and verify its declared identity, checksums, layers,
+# and build fingerprint. The fingerprint is compiled from the clean engine commit.
+mkdir -p "$work_root/host"
+tar -tJf "$host_archive" > "$work_root/host-files.txt"
+tar -xJf "$host_archive" -C "$work_root/host"
+package_root="$work_root/host"
+if [[ "$(tr -d '[:space:]' < "$package_root/MAKO-Renderer-version.txt")" != "$version" ]]; then
+  echo "The host archive does not contain MAKO Renderer $version." >&2
   exit 1
 fi
-mapfile -t flatpak_bundles <<< "$flatpak_bundle_output"
-for flatpak_bundle in "${flatpak_bundles[@]}"; do
-  if [[ ! -s "$package_root/bin/$flatpak_bundle" ]]; then
-    echo "The complete candidate is missing Flatpak bundle $flatpak_bundle." >&2
+(
+  cd "$package_root"
+  sha256sum --check --status MAKO-Renderer-install-manifest.txt
+) || {
+  echo "The host archive does not match its install manifest." >&2
+  exit 1
+}
+for renderer_file in ./bin/mako-launch ./bin/mako-cli ./lib/libmako-render.so \
+  ./lib32/libmako-render.so ./share/vulkan/implicit_layer.d/VkLayer_MAKO_render.json; do
+  if ! grep -Fxq "$renderer_file" "$work_root/host-files.txt"; then
+    echo "The host archive is missing $renderer_file." >&2
+    exit 1
+  fi
+done
+for layer in "$package_root/lib/libmako-render.so" "$package_root/lib32/libmako-render.so"; do
+  if ! grep -aFq -- "$engine_short_commit" "$layer"; then
+    echo "${layer#"$package_root"/} was not built from the current clean engine commit." >&2
+    exit 1
+  fi
+  if grep -aFq -- "$engine_short_commit.dirty." "$layer"; then
+    echo "${layer#"$package_root"/} was built from a dirty engine worktree." >&2
     exit 1
   fi
 done
 
-tar -tJf "$package_root/bin/$renderer_name" > "$work_root/renderer-files.txt"
-for renderer_file in ./lib/libmako-render.so ./lib32/libmako-render.so \
-  ./share/vulkan/implicit_layer.d/VkLayer_MAKO_render.json; do
-  if ! grep -Fxq "$renderer_file" "$work_root/renderer-files.txt"; then
-    echo "The native Renderer archive is missing $renderer_file." >&2
+if [[ -n "$flatpak_archive" ]]; then
+  if [[ "$(basename "$flatpak_archive")" != "MAKO-Renderer-v$version-flatpaks.tar.xz" ]]; then
+    echo "The Flatpak candidate must be MAKO-Renderer-v$version-flatpaks.tar.xz." >&2
     exit 1
   fi
-done
+  tar -tJf "$flatpak_archive" | sed 's|^\./||' > "$work_root/flatpak-files.txt"
+  mkdir -p "$work_root/flatpaks"
+  tar -xJf "$flatpak_archive" -C "$work_root/flatpaks"
+  runtime_count=0
+  while IFS= read -r runtime_version || [[ -n "$runtime_version" ]]; do
+    [[ -n "$runtime_version" && "$runtime_version" != \#* ]] || continue
+    runtime_count=$((runtime_count + 1))
+    bundle="org.freedesktop.Platform.VulkanLayer.makorender-$runtime_version.flatpak"
+    if ! grep -Fxq "$bundle" "$work_root/flatpak-files.txt" ||
+        [[ ! -s "$work_root/flatpaks/$bundle" ]]; then
+      echo "The complete candidate is missing Flatpak bundle $bundle." >&2
+      exit 1
+    fi
+  done < "$repo_root/engine/dist/flatpak/mako-render/runtime-versions.txt"
+  if ((runtime_count == 0)); then
+    echo "The Flatpak runtime catalogue contains no runtimes." >&2
+    exit 1
+  fi
+fi
 
-echo "Verified complete MAKO Decky release candidate: $archive"
+echo "Verified complete MAKO Renderer release candidate: $host_archive"
+if [[ -n "$flatpak_archive" ]]; then
+  echo "Verified Flatpak extensions: $flatpak_archive"
+fi
 echo "Source commit: $source_commit"
-sha256sum "$archive"
+sha256sum "$host_archive"
+if [[ -n "$flatpak_archive" ]]; then
+  sha256sum "$flatpak_archive"
+fi

@@ -1,7 +1,7 @@
 MAKO Renderer standalone archive
 ================================
 
-MAKO Renderer provides Frame Generation and spatial scaling for Vulkan games on SteamOS and Linux. The archive includes matching 64-bit and 32-bit Vulkan layers, the configuration UI, the command-line tools, and the managed installer.
+MAKO Renderer provides Frame Generation and spatial scaling for Vulkan games on SteamOS and Linux. The archive includes matching 64-bit and 32-bit Vulkan layers, the command-line tools, and the managed installer.
 
 Frame Generation and LS1 scaling require a user-owned installation of the default public version of Lossless Scaling from Steam. MAKO can use beta branches, but they are not validated; the default public branch is recommended. The open MAKO Scaler does not require Lossless.dll.
 
@@ -12,17 +12,33 @@ Install or update
 2. Extract the entire archive into a new folder. Do not run the installer from an archive preview.
 3. Double-click "Install MAKO Renderer" and choose "Execute" if your file manager asks.
 4. Confirm the installation location. The installer verifies every managed payload file, safely updates an existing installation, and preserves your profiles.
-5. MAKO Renderer Configuration opens when installation finishes. You can reopen it from the application menu or by running ~/.local/bin/mako-ui.
+5. When installation finishes, the installer shows the Steam launch option. Profiles live in ~/.config/mako-render/conf.toml; check them with ~/.local/bin/mako-cli validate.
 
 Prepare and launch a game
 -------------------------
 
-Installing MAKO Renderer or opening its configuration window does not activate it for every game. A standalone native or Proton game needs both a matching profile and the launch command.
+Installing MAKO Renderer does not activate it for every game. A standalone native or Proton game needs both a matching profile and the launch command.
 
-1. In MAKO Renderer Configuration, choose "Create New Profile" and name it.
-2. Under Profile Matching > Matched Processes > Edit..., enter the game's executable or process name (for example Game.exe), then press +. Use the game's process, not its launcher or Steam display title.
-3. Select Frame Generation and/or scaling. Set Lossless.dll Path if automatic discovery fails. To use the open MAKO Scaler without the DLL, turn Frame Generation off and select MAKO Scaler. Scaling enablement and other restart-labelled settings must be selected before launch.
-4. Changes save automatically. You can close the configuration window; it does not need to stay open during play.
+1. Add a profile to ~/.config/mako-render/conf.toml. Set active_in to the game's executable, for example Game.exe. Use the game's process, not its launcher or Steam display title. A minimal example:
+
+    version = 2
+
+    [global]
+    allow_fp16 = true
+
+    [[profile]]
+    name = "My game"
+    active_in = ["Game.exe"]
+    frame_generation_provisioned = true
+    frame_generation_enabled = true
+    multiplier = 2
+
+    scaling_enabled = false
+
+2. Enable Frame Generation and/or scaling in the profile. Set dll to your Lossless.dll path if automatic discovery fails. To use the open MAKO Scaler without the DLL, set frame_generation_enabled = false, scaling_enabled = true, and scaling_method = "mako". Settings that need a restart take effect the next time the game starts.
+3. Check the file with ~/.local/bin/mako-cli validate.
+
+The full configuration guide is at https://github.com/eugeniosegala/MAKO/blob/main/engine/docs/CONFIGURATION.md.
 
 For a native Steam or Proton game, add this under Steam Properties > General > Launch Options:
 
@@ -47,7 +63,7 @@ For the full vkBasalt option suite, create a standard config file and select it 
 
 The config path is optional. Renderer process matching does not select a vkBasalt file; assign a distinct VKBASALT_CONFIG_FILE in each game's launch option for per-game settings. Only MAKO's private bundled vkBasalt is used; a system installation is ignored. If the complete 64-bit/32-bit bundle or selected config is unavailable, the launcher reports it and safely continues with MAKO alone. Restart the game after changing activation or configuration. Flatpak applications require the separate setup guide below.
 
-Flatpak games, launchers, and emulators require the matching MAKO runtime extension and preparation for each application. The standalone configuration window edits profiles; it does not prepare Flatpaks. "Install MAKO Flatpak Extensions" installs extensions only. Follow the Flatpak setup link below for runtime selection, configuration/DLL access, and sandbox environment, then restart and launch the app normally. The host mako-launch command does not replace that preparation. MAKO Decky's Flatpak Setup provides managed preparation when using Decky.
+Flatpak games, launchers, and emulators require the matching MAKO runtime extension and preparation for each application. Installing the extension does not prepare Flatpaks. "Install MAKO Flatpak Extensions" installs extensions only. Follow the Flatpak setup link below for runtime selection, configuration/DLL access, and sandbox environment, then restart and launch the app normally. The host mako-launch command does not replace that preparation.
 
 Update
 ------
@@ -59,11 +75,11 @@ The complete payload is verified and staged before any installed file is replace
 Uninstall
 ---------
 
-Open the application menu and select "Uninstall MAKO Renderer", or run:
+Run:
 
     ~/.local/bin/mako-installer --uninstall
 
-The first confirmation removes the managed native Renderer while preserving modified files and your profiles. MAKO Decky remains installed, but the default standalone installation shares its native Renderer with MAKO Decky; after removal, open MAKO Decky and select "Install Renderer" before using MAKO through Decky again. Shared Flatpak runtime extensions remain installed.
+The first confirmation removes the managed native Renderer while preserving modified files and your profiles. Shared Flatpak runtime extensions remain installed.
 
 The uninstaller then separately asks whether to remove profiles, settings, and diagnostics from ~/.config/mako-render. Declining keeps them for a later installation. Accepting permanently removes that directory and its contents.
 

@@ -1,6 +1,6 @@
 # Collect MAKO Renderer Diagnostics
 
-For standalone installations using `mako-launch`. If you use `mako-run`, follow the [MAKO Decky guide](../../plugin/docs/COLLECT_DIAGNOSTICS.md).
+For installations using `mako-launch`.
 
 ## 1. Enable logs
 
@@ -81,7 +81,7 @@ python3 /absolute/path/to/MAKO/engine/scripts/profile-framegen.py capture \
 
 For Steam, replace `/path/to/game` with `%command%` in Launch Options. If your command already includes `mangohud`, keep that single wrapper. Do not add a second one. Preserve required game/Proton environment and working launcher arguments; a downstream script that resets the environment can override these requested settings. A wrapper that detaches the game and exits immediately produces an incomplete run; use a command that stays alive with the game. Flatpak sandbox admission and output-directory access are not prepared by this tool.
 
-For baseline and Smooth Motion, run the game with MangoHud directly, outside `mako-launch`/`mako-run`. MAKO's launchers deliberately isolate implicit-layer discovery and can suppress MangoHud when MAKO is disabled, so wrapping those launchers would not provide a valid shared observer. The profiler refuses those known combinations and refuses an inherited `VK_IMPLICIT_LAYER_PATH` override for Smooth Motion. For example:
+For baseline and Smooth Motion, run the game with MangoHud directly, outside `mako-launch`. MAKO's launchers deliberately isolate implicit-layer discovery and can suppress MangoHud when MAKO is disabled, so wrapping those launchers would not provide a valid shared observer. The profiler refuses those known combinations and refuses an inherited `VK_IMPLICIT_LAYER_PATH` override for Smooth Motion. For example:
 
 ```bash
 python3 /absolute/path/to/MAKO/engine/scripts/profile-framegen.py capture \

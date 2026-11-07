@@ -124,13 +124,7 @@ if [[ "$containerized_build" != "1" && ( "$(uname -s)" != "Linux" || "$portable_
             apt-get update -qq
             apt-get install -y -qq \
                 git curl nodejs python3 llvm clang cmake ninja-build pkg-config g++-multilib \
-                libvulkan-dev mesa-common-dev \
-                qt6-base-dev qt6-base-dev-tools \
-                qt6-tools-dev qt6-tools-dev-tools \
-                qt6-declarative-dev qt6-declarative-dev-tools \
-                qml6-module-qtqml qml6-module-qtqml-models qml6-module-qtqml-workerscript \
-                qml6-module-qtquick qml6-module-qtquick-controls qml6-module-qtquick-layouts \
-                qml6-module-qtquick-templates qml6-module-qtquick-window
+                libvulkan-dev mesa-common-dev
             git clone --depth=1 -b "$MAKO_VULKAN_HEADERS_REVISION" \
                 https://github.com/KhronosGroup/Vulkan-Headers /tmp/vkh
             rm -rf /usr/include/vulkan /usr/include/vk_video
@@ -150,114 +144,6 @@ for command in cmake ninja clang++ nm python3 readelf strings tar sha256sum; do
     fi
 done
 
-has_usable_qt_prefix() {
-    local prefix="$1"
-    local qt_config
-    local qt_header
-    local gl_header
-    local opengl_library
-    qt_config="$(find "$prefix/lib" -path '*/cmake/Qt6/Qt6Config.cmake' -print -quit 2>/dev/null)"
-    qt_header="$(find "$prefix/include" -path '*/qt6/QtCore/QtCore' -print -quit 2>/dev/null)"
-    gl_header="$(find "$prefix/include" -path '*/GL/gl.h' -print -quit 2>/dev/null)"
-    opengl_library="$(find "$prefix/lib" -name 'libOpenGL.so' -print -quit 2>/dev/null)"
-    [[ -n "$qt_config" && -n "$qt_header" && -n "$gl_header" && -n "$opengl_library" ]]
-}
-
-bootstrap_native_qt_sdk() {
-    local prefix_list="/usr"
-    local candidate_prefix
-    local configured_prefixes
-    local -a prefix_candidates=()
-
-    if [[ -n "${CMAKE_PREFIX_PATH:-}" ]]; then
-        configured_prefixes="${CMAKE_PREFIX_PATH//;/:}"
-        IFS=':' read -r -a prefix_candidates <<< "$configured_prefixes"
-        for candidate_prefix in "${prefix_candidates[@]}"; do
-            if [[ -n "$candidate_prefix" ]] && has_usable_qt_prefix "${candidate_prefix%/}"; then
-                return
-            fi
-        done
-    fi
-    if has_usable_qt_prefix "$prefix_list"; then
-        return
-    fi
-
-    for command in pacman curl bsdtar; do
-        if ! command -v "$command" >/dev/null 2>&1; then
-            echo "MAKO's release UI needs Qt 6 development files, but $command is unavailable." >&2
-            echo "Install the Qt development packages, or run the package script on a Pacman-based SteamOS host." >&2
-            exit 1
-        fi
-    done
-
-    local sdk_cache_dir="${MAKO_NATIVE_SDK_DIR:-$build_cache_root/native-sdk}"
-    if [[ "$sdk_cache_dir" != /* ]]; then
-        sdk_cache_dir="$repo_root/$sdk_cache_dir"
-    fi
-    local package_cache_dir="$sdk_cache_dir/packages"
-    local package_urls
-    if ! package_urls="$(pacman -Sp qt6-base qt6-declarative libglvnd)"; then
-        echo "Could not resolve the SteamOS packages needed for MAKO's native Qt SDK." >&2
-        exit 1
-    fi
-
-    local -a package_names=(qt6-base qt6-declarative libglvnd)
-    local -a package_files=()
-    local package_name
-    local package_url
-    local package_file
-    local -A package_sources=()
-    while IFS= read -r package_url; do
-        package_file="${package_url##*/}"
-        for package_name in "${package_names[@]}"; do
-            if [[ "$package_file" == "$package_name"-*.pkg.tar.* ]]; then
-                package_sources["$package_name"]="$package_url"
-            fi
-        done
-    done <<< "$package_urls"
-
-    for package_name in "${package_names[@]}"; do
-        package_url="${package_sources[$package_name]:-}"
-        if [[ -z "$package_url" ]]; then
-            echo "Pacman did not provide a download URL for $package_name." >&2
-            exit 1
-        fi
-        package_file="${package_url##*/}"
-        package_files+=("$package_file")
-        mkdir -p "$package_cache_dir"
-        if [[ ! -s "$package_cache_dir/$package_file" ]]; then
-            echo "Caching $package_name for MAKO's native release builds..."
-            curl --fail --location --retry 3 \
-                --output "$package_cache_dir/$package_file.part" \
-                "$package_url"
-            mv "$package_cache_dir/$package_file.part" "$package_cache_dir/$package_file"
-        fi
-    done
-
-    local sdk_key
-    sdk_key="$(printf '%s\n' "${package_files[@]}" | sha256sum | awk '{print substr($1, 1, 16)}')"
-    local sdk_root="$sdk_cache_dir/$sdk_key"
-    if [[ ! -f "$sdk_root/.ready" ]]; then
-        echo "Preparing isolated native Qt SDK at $sdk_root..."
-        mkdir -p "$sdk_root"
-        for package_file in "${package_files[@]}"; do
-            bsdtar -xf "$package_cache_dir/$package_file" -C "$sdk_root"
-        done
-        touch "$sdk_root/.ready"
-    fi
-
-    local sdk_prefix="$sdk_root/usr"
-    if ! has_usable_qt_prefix "$sdk_prefix"; then
-        echo "The cached MAKO native Qt SDK is incomplete: $sdk_root" >&2
-        echo "Remove that SDK directory and run the package command again." >&2
-        exit 1
-    fi
-
-    export CMAKE_PREFIX_PATH="$sdk_prefix${CMAKE_PREFIX_PATH:+:$CMAKE_PREFIX_PATH}"
-    echo "Using cached isolated native Qt SDK: $sdk_prefix"
-}
-
-bootstrap_native_qt_sdk
 
 mkdir -p "$build_work_root"
 build_root="$(mktemp -d "$build_work_root/mako-package.XXXXXX")"
@@ -284,9 +170,7 @@ cmake -S "$repo_root" -B "$build64_dir" -G Ninja \
     -DBUILD_TESTING="$build_testing" \
     -DMAKO_REQUIRE_NATIVE_PACKAGE_HEADERS=ON \
     -DMAKO_BUILD_VK_LAYER=ON \
-    -DMAKO_BUILD_UI=ON \
     -DMAKO_BUILD_CLI=ON \
-    -DMAKO_INSTALL_XDG_FILES=ON \
     -DMAKO_LAYER_LIBRARY_PATH="../../../lib/libmako-render.so" \
     -DMAKO_SCALING_LAYER_LIBRARY_PATH="../../../lib/libmako-render-scaling.so"
 
@@ -315,9 +199,7 @@ if [[ "$build_32_bit" == true ]]; then
         -DBUILD_TESTING=OFF \
         -DMAKO_REQUIRE_NATIVE_PACKAGE_HEADERS=ON \
         -DMAKO_BUILD_VK_LAYER=ON \
-        -DMAKO_BUILD_UI=OFF \
         -DMAKO_BUILD_CLI=OFF \
-        -DMAKO_INSTALL_XDG_FILES=OFF \
         -DMAKO_LAYER_MANIFEST_SUFFIX=.x86 \
         -DMAKO_LAYER_LIBRARY_PATH="../../../lib32/libmako-render.so" \
         -DMAKO_SCALING_LAYER_LIBRARY_PATH="../../../lib32/libmako-render-scaling.so"
@@ -351,15 +233,12 @@ required_paths=(
     "share/mako-render/mako_remote_play/remote_play_launch.py" \
     "share/mako-render/mako_remote_play/managed_files.py" \
     "bin/mako-vrr-lease" \
-    "bin/mako-ui" \
     "lib/libmako-render.so" \
     "lib/libmako-render-scaling.so" \
     "lib/vkbasalt/libvkbasalt.so" \
     "share/doc/mako-render/ASSET_PROVENANCE.md" \
     "share/doc/mako-render/LICENSE.md" \
     "share/doc/mako-render/THIRD_PARTY_NOTICES.md" \
-    "share/applications/io.github.eugeniosegala.mako.desktop" \
-    "share/applications/io.github.eugeniosegala.mako.uninstaller.desktop" \
     "share/mako-render/vulkan/implicit_layer.d/VkLayer_MAKO_render.json" \
     "share/mako-render/vulkan/spatial_scaling.d/VkLayer_MAKO_spatial_scaling.json" \
     "share/mako-render/vulkan/vkbasalt.d/vkBasalt.json" \
@@ -516,24 +395,6 @@ if ! grep -Fq '"library_arch": "64"' "$private_scaling_manifest64" ||
         ! grep -Fq '../../../../lib/libmako-render-scaling.so' "$private_scaling_manifest64" ||
         ! grep -Fq '"name": "VK_LAYER_MAKO_spatial_scaling"' "$private_scaling_manifest64"; then
     echo "Packaging failed: private 64-bit spatial Vulkan manifest is incorrect" >&2
-    exit 1
-fi
-
-# Qt promises backwards binary compatibility, not forwards compatibility.
-# Keep release archives usable on the Qt 6.4 baseline provided by Ubuntu
-# 24.04 even when packaging is initiated on a rolling distribution. Portable
-# packaging intentionally builds against Qt 6.2 and therefore produces an
-# archive with a broader runtime range.
-ui_strings="$build_root/mako-ui.strings"
-strings "$install_dir/bin/mako-ui" > "$ui_strings"
-if grep -Eq 'Qt_6\.([5-9]|[1-9][0-9])' "$ui_strings"; then
-    echo "Packaging failed: mako-ui requires a Qt ABI newer than 6.4." >&2
-    echo "Re-run with MAKO_PORTABLE_PACKAGE=1 to use the reproducible Qt 6.2 container." >&2
-    exit 1
-fi
-if grep -Fq 'libQt6QmlMeta.so.6' "$ui_strings"; then
-    echo "Packaging failed: mako-ui unexpectedly depends on Qt 6.8's QmlMeta library." >&2
-    echo "Re-run with MAKO_PORTABLE_PACKAGE=1 to use the reproducible Qt 6.2 container." >&2
     exit 1
 fi
 

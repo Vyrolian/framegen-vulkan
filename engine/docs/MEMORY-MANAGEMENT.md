@@ -143,7 +143,7 @@ Existing records include:
 - `MAKO Renderer: renderer-memory operation=swapchain-context-create`: application-side allocation deltas, context and layer role, extents, and live/peak totals.
 - `MAKO Renderer: renderer-memory operation=private-context-prepared` and `operation=private-context-applied`: application-side totals at Frame Generation replacement boundaries.
 
-Use [standalone diagnostics](COLLECT_DIAGNOSTICS.md) or the [MAKO Decky collection guide](../../plugin/docs/COLLECT_DIAGNOSTICS.md) to retain these records with transition and retirement evidence. Compare repeated equivalent states after warmup and completed retirement. A temporary overlap, pool slack, retained Off state, or unchanged high-water mark alone is not evidence of a leak. Repeated growth in settled live allocations, descriptor counts, or process memory needs investigation against the owning lifetime.
+Use [diagnostics](COLLECT_DIAGNOSTICS.md) to retain these records with transition and retirement evidence. Compare repeated equivalent states after warmup and completed retirement. A temporary overlap, pool slack, retained Off state, or unchanged high-water mark alone is not evidence of a leak. Repeated growth in settled live allocations, descriptor counts, or process memory needs investigation against the owning lifetime.
 
 ## Validation and change ownership
 

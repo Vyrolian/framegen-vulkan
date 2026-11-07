@@ -19,8 +19,8 @@ Options:
               staging directory.
   -h, --help  Show this help.
 
-This never removes native build trees, the installed MAKO Decky, its bundled
-Flatpak files, or your normal user Flatpak installation. A later dev:flatpaks
+This never removes native build trees, installed MAKO Renderer files, or your
+normal user Flatpak installation. A later dev:flatpaks
 or dev:e2e run will download the Flatpak SDK/runtime dependencies again.
 EOF
 }

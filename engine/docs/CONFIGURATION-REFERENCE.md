@@ -1,10 +1,10 @@
 # Advanced configuration reference
 
-For normal setup, use the [configuration guide](CONFIGURATION.md). This page covers manual `conf.toml` editing and environment variables. The file is `~/.config/mako-render/conf.toml`; edit shared profiles in one UI at a time.
+For normal setup, use the [configuration guide](CONFIGURATION.md). This page covers every `conf.toml` field and environment variable. The file is `~/.config/mako-render/conf.toml`.
 
 ## Format compatibility
 
-Only `version = 2` is supported. Unknown keys are ignored and removed on the next UI save. Launcher, shader, and HDR exposure options belong in their UI controls or supported launcher files; HDR buffer precision is a native profile field.
+Only `version = 2` is supported. Unknown keys are ignored. Launcher compatibility options belong in `launcher.conf`, shader selection in the vkBasalt configuration, and HDR buffer precision is a native profile field.
 
 ## Profiles
 
@@ -68,13 +68,13 @@ Known launchers and helpers stay inactive while their child games can match. The
 | Setting | Default | Meaning |
 | --- | --- | --- |
 | `frame_generation_provisioned` | `true` | Prepares Frame Generation at process start. Set `false` for Scaling-only use. Requires restart. |
-| `frame_generation_enabled` | `true` | Live execution state. `false` is the UI's `0x` position. |
+| `frame_generation_enabled` | `true` | Live execution state. `false` pauses generation. |
 | `multiplier` | `2` | Fixed total output multiplier, from 2–5. |
 | `adaptive` | `false` | Enables Adaptive instead of Fixed generation. |
-| `target_fps` | `120` | Adaptive generation target, or saved fallback when refresh matching is on. Fractional Automatic permits sustained native FPS above this target when the manual base cap is off or at least the target; the cap remains enforced. MAKO Decky uses a 90 FPS product default. |
+| `target_fps` | `120` | Adaptive generation target, or saved fallback when refresh matching is on. Fractional Automatic permits sustained native FPS above this target when the manual base cap is off or at least the target; the cap remains enforced. |
 | `adaptive_target_refresh_rate` | `false` | Matches Adaptive's output target to confirmed Gamescope display refresh, clamped to the Renderer’s 10–1000 FPS range. Applies live; unavailable or zero refresh uses the saved `target_fps`. Fixed ignores this choice. |
 | `adaptive_max_multiplier` | `3` | Adaptive multiplier ceiling, from 2–5. |
-| `adaptive_auto_base_fps_cap` | `false` | Enables Steady Base Cap behavior. MAKO Decky defaults this to `true`. |
+| `adaptive_auto_base_fps_cap` | `false` | Enables Steady Base Cap behavior. |
 | `adaptive_fractional_real_frame_priority` | `auto` | Fractional real-frame preference: `auto`, `low`, `medium`, `high`, or `very-high`. |
 | `adaptive_stable_cadence` | `true` | Favours a stable validated cadence when available. |
 | `gamescope_vrr_mode` | `follow-steam` | Per-profile live Gamescope VRR choice: `follow-steam`, `on`, or `off`. On and Off take effect only when Gamescope reports that the active display supports VRR; otherwise they are saved but leave the live setting untouched. |
@@ -116,7 +116,7 @@ Changes apply live while Frame Generation is active. Off stops Headroom sampling
 
 Fixed retains its selected multiplier, so reserving capacity may lower both real and output FPS. Releasing Headroom does not force a native-frame probe: ordinary Fixed/FIFO pacing can retain that generated workload after the scene becomes lighter, including with Headroom Off. Use Adaptive when restoring a higher real-frame rate after load changes is important. Adaptive can use more generated frames within its configured ceiling and existing qualification rules. Neither policy changes model quality, Flow Scale or clocks. The controller never deliberately caps below 20 real FPS; Adaptive additionally respects `Target FPS / available maximum multiplier`. For example, a 90 FPS target with a 2× ceiling cannot trade away real frames below 45 FPS. A higher permitted multiplier allows more room but can increase interpolation artifacts and input latency. The utilization target is not guaranteed when generation is expensive, another process consumes the GPU, or the floor is reached.
 
-GPU Headroom is dormant with Frame Generation disabled or refresh-paused, during confirmed Steam-menu suspension, and during ordered-acquire recovery. It does not independently control scaling or shaders. Dynamic Cadence Recovery is mutually exclusive: enabling Headroom in either UI disables Recovery; enabling Recovery clears Headroom. Profile and separate power-mode settings preserve the reserve. Live Status distinguishes unavailable telemetry and a reached real-frame floor; diagnostics record decisions independently of the saved setting.
+GPU Headroom is dormant with Frame Generation disabled or refresh-paused, during confirmed Steam-menu suspension, and during ordered-acquire recovery. It does not independently control scaling or shaders. Dynamic Cadence Recovery is mutually exclusive: enabling Headroom disables Recovery; enabling Recovery clears Headroom. Profile and separate power-mode settings preserve the reserve. Live Status distinguishes unavailable telemetry and a reached real-frame floor; diagnostics record decisions independently of the saved setting.
 
 See [Adaptive validation](ADAPTIVE-VALIDATION.md#gpu-headroom) for controller sampling and recovery, and [Runtime transitions](RUNTIME-TRANSITIONS.md) for when edits take effect.
 
@@ -126,7 +126,7 @@ See [Adaptive validation](ADAPTIVE-VALIDATION.md#gpu-headroom) for controller sa
 MAKO_CONFIG="$HOME/.config/mako-render/conf.toml" MAKO_PROFILE="My game" ~/.local/bin/mako-launch %command%
 ```
 
-`DISABLE_MAKO=1` bypasses MAKO. Native Remote Play uses `MAKO_FOLLOW_CURRENT_PROFILE=1` to follow a valid root `current_profile` selection on reload, falling back to `MAKO_PROFILE`. Ordinary game launchers use normal matching. See the [Remote Play lifecycle](../../plugin/docs/BACKEND-ARCHITECTURE.md#native-remote-play-lifecycle) for shared selection and shader-cache ownership.
+`DISABLE_MAKO=1` bypasses MAKO. Native Remote Play uses `MAKO_FOLLOW_CURRENT_PROFILE=1` to follow a valid root `current_profile` selection on reload, falling back to `MAKO_PROFILE`. Ordinary game launchers use normal matching.
 
 ## Environment-only configuration
 
@@ -156,4 +156,4 @@ Set `MAKO_ENV=1` to build one profile from environment variables instead of TOML
 
 ## Presentation acquisition timeout
 
-`MAKO_PRESENT_ACQUIRE_TIMEOUT_MS` limits how long MAKO waits for generated-image availability before native recovery. MAKO Decky uses 50 ms; standalone launches have no explicit default, although Adaptive VRR delivery and constrained Fixed image pools enforce a 50 ms limit. For a focused stall reproduction, try `25` and include the log. See [presentation recovery](LIFECYCLE.md) for deadline and fallback rules.
+`MAKO_PRESENT_ACQUIRE_TIMEOUT_MS` limits how long MAKO waits for generated-image availability before native recovery. Adaptive VRR delivery and constrained Fixed image pools enforce a 50 ms limit when no explicit value is set. For a focused stall reproduction, try `25` and include the log. See [presentation recovery](LIFECYCLE.md) for deadline and fallback rules.

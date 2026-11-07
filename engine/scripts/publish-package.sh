@@ -22,7 +22,7 @@ Usage: scripts/publish-package.sh [--version X.Y.Z]
 
 Builds, verifies, and publishes MAKO Renderer. When --version is supplied, the
 script updates and commits engine/VERSION first. After publishing, it commits
-the generated MAKO Decky binary pins and MAKO Renderer release links automatically.
+the generated Renderer release pin and release links automatically.
 engine/RELEASE_NOTES.md must contain the matching manually curated heading.
 EOF
 }
@@ -158,8 +158,8 @@ MAKO_PORTABLE_PACKAGE=1 scripts/package-flatpaks.sh "$flatpak_archive"
 flatpak_checksum="$("${checksum_command[@]}" "$flatpak_archive" | awk '{print $1}')"
 
 pin_renderer_release() {
-    node "$repo_root/../plugin/scripts/pin-renderer-release.mjs" \
-        "$repo_root/../plugin/package.json" \
+    node "$repo_root/scripts/pin-renderer-release.mjs" \
+        "$repo_root/renderer-release.json" \
         "$version" \
         "$tag" \
         "$source_commit" \
@@ -175,7 +175,7 @@ pin_renderer_release() {
 # package that passes verification is retained and recorded for publication.
 pin_renderer_release
 python3 "$repo_root/dist/arch/sync-release-pin.py" \
-    "$repo_root/../plugin/package.json" \
+    "$repo_root/renderer-release.json" \
     "$repo_root/dist/arch/PKGBUILD"
 "$repo_root/dist/arch/check-release-pin.sh"
 arch_pkgver="$(sed -n 's/^pkgver=\(.*\)$/\1/p' "$repo_root/dist/arch/PKGBUILD" | head -n 1)"
@@ -198,8 +198,6 @@ cleanup() {
 trap cleanup EXIT
 
 cat > "$notes_file" <<EOF
-> Looking for Decky integration? Download the [latest MAKO Decky release](https://github.com/eugeniosegala/MAKO/releases/latest).
-
 $manual_release_notes
 
 ## 🎮 In-game considerations
@@ -221,11 +219,11 @@ Every game, renderer, and display setup behaves differently. Compare Fixed Frame
 
 | Release file | Use it for | Installation owner |
 | --- | --- | --- |
-| \`$(basename "$archive")\` | General Linux and direct user-local installation, including SteamOS without MAKO Decky | The included graphical installer manages files under \`~/.local\`. |
+| \`$(basename "$archive")\` | General Linux and direct user-local installation, including SteamOS | The included graphical installer manages files under \`~/.local\`. |
 | \`$(basename "$arch_package")\` | Arch Linux or a traditional writable Arch-based distribution—not SteamOS | Pacman manages the system-wide files under \`/usr\`. |
-| \`$(basename "$flatpak_archive")\` | Flatpak games, launchers, and emulators | The archive contains separate MAKO Vulkan extensions for the supported Freedesktop runtimes; it does not install the host UI or CLI. |
+| \`$(basename "$flatpak_archive")\` | Flatpak games, launchers, and emulators | The archive contains separate MAKO Vulkan extensions for the supported Freedesktop runtimes; it does not install the host CLI. |
 
-GitHub's automatically generated **Source code** ZIP and tarball contain source code, not ready-to-run MAKO Renderer packages. SteamOS users who want the managed plugin workflow should use the separate [MAKO Decky release](https://github.com/$release_repository/releases/latest).
+GitHub's automatically generated **Source code** ZIP and tarball contain source code, not ready-to-run MAKO Renderer packages.
 
 ### Host archive
 
@@ -233,18 +231,13 @@ Download \`$(basename "$archive")\`, extract it into a new folder, then use the 
 
 1. Double-click **Install MAKO Renderer**.
 2. Choose **Execute** if your file manager asks.
-3. Confirm the installation. The wizard verifies the package, installs it under \`~/.local\`, safely updates existing files, preserves profiles, and opens the configuration UI.
+3. Confirm the installation. The installer verifies the package, installs it under \`~/.local\`, safely updates existing files, and preserves profiles.
 
-To remove it later, open **Uninstall MAKO Renderer** from the application menu. The wizard removes MAKO-owned files and keeps your profiles unless you explicitly choose to remove them.
+To remove it later, run \`~/.local/bin/mako-installer --uninstall\` from a terminal. The removal keeps your profiles unless you explicitly choose to remove them.
 
-The host archive includes 64-bit and 32-bit Vulkan layers; the CLI and Qt UI are 64-bit.
+The host archive includes 64-bit and 32-bit Vulkan layers; the CLI is 64-bit.
 
-Reopen the configuration UI after installation:
-
-- **Application menu:** On Steam Deck or Steam Machine, switch to Desktop Mode, open the bottom-left Application Launcher, search for **MAKO Renderer Configuration**, and click the MAKO-logo app icon.
-- **Terminal:** Run \`~/.local/bin/mako-ui\` from Konsole or another terminal. Do not run it with \`sudo\`.
-
-Configure the profile in the UI or \`~/.config/mako-render/conf.toml\`. Select the licensed DLL path when using Frame Generation or LS1 scaling, then use \`~/.local/bin/mako-launch %command%\` for a direct Steam launch.
+Configure profiles in \`~/.config/mako-render/conf.toml\`, then validate them with \`~/.local/bin/mako-cli validate\`. Set the licensed DLL path in the profile when using Frame Generation or LS1 scaling, then use \`~/.local/bin/mako-launch %command%\` for a direct Steam launch.
 
 ### Arch Linux package
 
@@ -256,9 +249,9 @@ sudo pacman -U ./$(basename "$arch_package")
 
 The \`./\` prefix refers to the terminal's current folder; this command does not download the package. If you saved the file elsewhere, use its full path instead. If pacman reports \`could not find or read package\`, check the path and exact filename, or download the package again if it is missing.
 
-The package installs MAKO Renderer under \`/usr\`, preserves profiles under \`~/.config/mako-render\`, and does not touch MAKO Decky's user-local Renderer under \`~/.local\`. Use either the system package or the user-local installation as the active owner for a user; see the [Arch package guide](https://github.com/$release_repository/blob/main/engine/dist/arch/README.md) for coexistence details.
+The package installs MAKO Renderer under \`/usr\`, preserves profiles under \`~/.config/mako-render\`, and does not touch a user-local Renderer under \`~/.local\`. Use either the system package or the user-local installation as the active owner for a user; see the [Arch package guide](https://github.com/$release_repository/blob/main/engine/dist/arch/README.md) for coexistence details.
 
-After installation, open **MAKO Renderer Configuration** from the application menu or run \`mako-ui\`, create a game profile, and use \`/usr/bin/mako-launch %command%\` as that native Steam or Proton game's launch option. Installing the package alone does not activate MAKO globally.
+After installation, create a game profile in \`~/.config/mako-render/conf.toml\`, validate it with \`mako-cli validate\`, and use \`/usr/bin/mako-launch %command%\` as that native Steam or Proton game's launch option. Installing the package alone does not activate MAKO globally.
 
 ### Flatpak runtime extensions
 
@@ -299,12 +292,12 @@ if gh release view "$tag" --repo "$release_repository" >/dev/null 2>&1; then
         --repo "$release_repository" \
         --title "MAKO Renderer v$version" \
         --notes-file "$notes_file" \
-        --latest=false
+        --latest
 else
     gh release create "$tag" "$archive" "$arch_package" "$flatpak_archive" \
         --repo "$release_repository" \
         --title "MAKO Renderer v$version" \
-        --latest=false \
+        --latest \
         --notes-file "$notes_file" \
         --verify-tag
 fi
@@ -312,10 +305,9 @@ fi
 node "$repository_root/scripts/update-release-links.mjs" \
     renderer "$version" "$release_repository"
 release_metadata_paths=(
-    plugin/package.json
+    engine/renderer-release.json
     engine/dist/arch/PKGBUILD
     README.md
-    plugin/README.md
     engine/README.md
 )
 if ! git -C "$repository_root" diff --quiet -- "${release_metadata_paths[@]}"; then
@@ -325,4 +317,4 @@ if ! git -C "$repository_root" diff --quiet -- "${release_metadata_paths[@]}"; t
 fi
 
 echo "Published: https://github.com/$release_repository/releases/tag/$tag"
-echo "Committed the matching MAKO Decky binary pins and MAKO Renderer release links."
+echo "Committed the matching MAKO Renderer release pin and release links."

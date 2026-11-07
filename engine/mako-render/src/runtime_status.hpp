@@ -78,8 +78,8 @@ namespace mako::layer {
         std::optional<std::string> error;
     };
 
-    /// Publish the current requested-versus-applied runtime state for Decky
-    /// and other local controllers. Writes occur only when state changes, use
+    /// Publish the current requested-versus-applied runtime state for local
+    /// controllers. Writes occur only when state changes, use
     /// atomic replacement, and never participate in the presentation result.
     class RuntimeStatusPublisher {
     public:

@@ -57,28 +57,6 @@ htmlcov/
 /engine/out/
 /engine/.flatpak-builder/
 
-# MAKO Decky plugin (pnpm, generated output, and packaging)
+# Repository Markdown tooling (npm dependencies)
 /node_modules/
-/.pnpm-store/
-/plugin/node_modules/
-/plugin/bower_components/
-/plugin/.pnpm-store/
-/plugin/.flatpak-builder/
-/plugin/dist/
-/plugin/src/config/devBuildInfo.generated.ts
-/plugin/.dev-build-info.json
-/plugin/.yalc/
-/plugin/yalc.lock
-/plugin/backend/out/
-/plugin/decky_plugin.py
-/plugin/out/
-/plugin/upstream-archive-cache/
-/plugin/cli/
-/plugin/lib-cov/
-/plugin/pids/
-/plugin/logs/
-/plugin/results/
-/plugin/tmp/
-/plugin/coverage/
-/plugin/.eslintcache
-/plugin/.turbo/
+/engine/fgvk-ui/target/

@@ -3,7 +3,3 @@
 engine/build/
 engine/mako-common/thirdparty/
 engine/out/
-plugin/coverage/
-plugin/dist/
-plugin/node_modules/
-plugin/out/

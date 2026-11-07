@@ -1,6 +1,6 @@
 #!/usr/bin/python3
 # MAKO_NATIVE_REMOTE_PLAY_OVERRIDE_V3
-"""Self-contained Steam entry point; installed independently of either UI."""
+"""Self-contained Steam entry point; installed independently of the profile editor."""
 
 import fcntl
 import hashlib
@@ -110,13 +110,6 @@ def selected_profile(config: Path) -> dict:
     ):
         raise ValueError("selected profile unavailable")
     name = data.get("current_profile")
-    # Preserve editor selections saved by older Decky versions on first launch.
-    if not isinstance(name, str) or not any(profile['name'] == name for profile in profiles):
-        for line in content.splitlines():
-            match = re.fullmatch(r'\s*#\s*decky-current-profile\s*=\s*"([^"]+)"\s*', line)
-            if match and any(profile['name'] == match[1] for profile in profiles):
-                name = match[1]
-                break
     return next((profile for profile in profiles if profile["name"] == name),
                 next((profile for profile in profiles if profile["name"] == "mako"), profiles[0]))
 
@@ -286,7 +279,7 @@ def main() -> int:
         sdr_helper=Path('__MAKO_SDR_HELPER_PATH__'),
     )
     # Keep the shared lease through the exec chain and the stream lifetime.
-    # This also protects the handoff while mako-run is still preparing its environment.
+    # This also protects the handoff while mako-launch is still preparing its environment.
     try:
         descriptor = os.open(paths["lock"], os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK)
         with os.fdopen(descriptor, "r") as lock:

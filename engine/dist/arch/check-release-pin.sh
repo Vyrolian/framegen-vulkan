@@ -2,7 +2,7 @@
 # Verify that engine/dist/arch/PKGBUILD is still pinned to the release that
 # upstream validated.
 #
-# plugin/package.json remote_binary[0] is written by the release flow only after
+# engine/renderer-release.json remote_binary[0] is written by the release flow only after
 # the native build and its gates pass, so it is the authoritative version, URL
 # and checksum for the host archive this package repackages. This script fails
 # when the PKGBUILD drifts from that pin.
@@ -15,7 +15,7 @@ script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 repo_root=$(CDPATH= cd -- "$script_dir/../../.." && pwd -P)
 pkgbuild="${1:-$script_dir/PKGBUILD}"
 install_script="$script_dir/mako-renderer-bin.install"
-pin_file="${2:-$repo_root/plugin/package.json}"
+pin_file="${2:-$repo_root/engine/renderer-release.json}"
 
 fail() {
     printf 'check-release-pin: %s\n' "$1" >&2

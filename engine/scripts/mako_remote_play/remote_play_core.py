@@ -168,7 +168,7 @@ class RemotePlayOverride:
         self.config_dir.mkdir(parents=True, exist_ok=True)
         descriptor = os.open(self.lock_path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
         with os.fdopen(descriptor, "r+") as lock:
-            # Decky may run as root; the Steam user's self-contained wrapper reads this lock.
+            # A privileged caller may own this setup; the Steam user's launcher reads the lock.
             identity = os.fstat(lock.fileno())
             if not stat.S_ISREG(identity.st_mode) or identity.st_nlink != 1:
                 raise ValueError("Remote Play launch lock is not a private regular file")
@@ -193,7 +193,7 @@ class RemotePlayOverride:
         if not isinstance(stored_runner, str):
             raise ValueError('Invalid Remote Play launcher path')
         runner = Path(stored_runner)
-        if not runner.is_absolute() or runner.name not in ('mako-run', 'mako-launch'):
+        if not runner.is_absolute() or runner.name != 'mako-launch':
             raise ValueError('Invalid Remote Play launcher path')
         configuration = raw.get('configuration_path')
         if not isinstance(configuration, str) or not Path(configuration).is_absolute():
@@ -231,8 +231,7 @@ class RemotePlayOverride:
             if not for_removal:
                 raise
             saved_runner = self.mako_script_path
-            for runner in dict.fromkeys((saved_runner, self.user_home / '.local/bin/mako-run',
-                                         self.user_home / '.local/bin/mako-launch')):
+            for runner in dict.fromkeys((saved_runner, self.user_home / '.local/bin/mako-launch')):
                 self.mako_script_path = runner
                 expected = hashlib.sha256(self._payload().encode()).hexdigest()
                 if self._digest(self.client) == expected:
@@ -287,7 +286,7 @@ class RemotePlayOverride:
         if not installed:
             self.mako_script_path = self._requested_runner
             self.config_file_path = self._requested_configuration
-        if not self.mako_script_path.is_absolute() or self.mako_script_path.name not in ('mako-run', 'mako-launch'):
+        if not self.mako_script_path.is_absolute() or self.mako_script_path.name != 'mako-launch':
             raise ValueError('Remote Play requires an absolute MAKO launcher path')
         if not self.config_file_path.is_absolute():
             raise ValueError('Remote Play requires an absolute configuration path')
@@ -337,18 +336,6 @@ class RemotePlayOverride:
             check_sdr_helper(self.mako_script_path.parent.parent / SDR_HELPER_RELATIVE_PATH)
         except (OSError, ValueError) as error:
             raise ValueError("Install the current MAKO Renderer Remote Play SDR helper") from error
-        if self.mako_script_path.name == 'mako-run':
-            descriptor = os.open(self.mako_script_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-            with os.fdopen(descriptor, 'rb') as stream:
-                if stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
-                    marker = b'MAKO_LAUNCH_RENDERER_REQUIRED'
-                    tail = b''
-                    while chunk := stream.read(65536):
-                        content = tail + chunk
-                        if marker in content:
-                            return
-                        tail = content[-len(marker):]
-                raise ValueError("Update MAKO Decky before enabling Remote Play, or restore the override and enable it from Qt.")
 
     def _commit_wrapper(self, payload: str, previous_hash: str, permissions: os.stat_result) -> None:
         profile = selected_profile(self.config_file_path)

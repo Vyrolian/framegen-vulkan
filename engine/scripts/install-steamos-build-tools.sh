@@ -8,7 +8,7 @@ Usage: scripts/install-steamos-build-tools.sh --check|--install
 
   --check    Report missing SteamOS build commands and development headers.
   --install  Install the complete direct-build toolchain, including 32-bit,
-             shader, Qt UI, and Flatpak development prerequisites.
+             shader, and Flatpak development prerequisites.
 
 Run as your normal SteamOS user. Installation prompts for sudo and Pacman
 confirmation, preserves the original read-only state, and does not build,
@@ -51,10 +51,6 @@ check_prerequisites() {
         /usr/include/xcb/xcb.h
         /usr/include/wayland-client.h
         /usr/include/GL/gl.h
-        /usr/include/qt6/QtCore/qglobal.h
-        /usr/include/qt6/QtQuick/QQuickItem
-        /usr/include/qt6/QtShaderTools/QtShaderTools
-        /usr/include/qt6/QtUiTools/QUiLoader
     )
     for command_name in "${commands[@]}"; do
         if ! command -v "$command_name" >/dev/null 2>&1; then
@@ -133,7 +129,6 @@ sudo pacman -S \
     git curl python gcc lib32-gcc-libs clang cmake ninja pkgconf ccache \
     glslang spirv-tools vulkan-headers vulkan-icd-loader \
     libx11 libxcb xorgproto libxau libxdmcp wayland libglvnd \
-    qt6-base qt6-declarative qt6-shadertools qt6-tools \
     flatpak flatpak-builder
 
 check_prerequisites

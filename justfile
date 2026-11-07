@@ -4,9 +4,9 @@ set shell := ["bash", "-eu", "-o", "pipefail", "-c"]
 default:
     @just --list
 
-# Install the Decky plugin dependencies from the lockfile.
-install-plugin:
-    pnpm --dir plugin install --frozen-lockfile
+# Install the Markdown formatting and commit-hook tools from the lockfile.
+install-tools:
+    npm ci
 
 # Enable the tracked Markdown pre-commit hook for this checkout.
 install-hooks:
@@ -14,11 +14,11 @@ install-hooks:
 
 # Format all Markdown without artificial prose wrapping.
 format-markdown:
-    pnpm --dir plugin run format:markdown
+    npm run format:markdown
 
 # Check repository Markdown formatting without changing files.
 check-markdown-format:
-    pnpm --dir plugin run format:markdown:check
+    npm run format:markdown:check
 
 # Update the README gallery from this branch's commit and co-author history.
 update-contributors:
@@ -28,7 +28,7 @@ update-contributors:
 check-contributors:
     python3 scripts/update-contributors.py --check
 
-# Generate Renderer and Decky launcher lists from the documented shared registry.
+# Generate the Renderer launcher list from the documented shared registry.
 generate-launcher-exclusions:
     python3 scripts/generate-launcher-exclusions.py
 
@@ -36,23 +36,13 @@ generate-launcher-exclusions:
 check-launcher-exclusions:
     python3 scripts/generate-launcher-exclusions.py --check
 
-# Bundle the shared native Remote Play owner into independently installed Decky.
-generate-remote-play:
-    python3 engine/scripts/generate-remote-play-bindings.py
-
-# Reject stale shared Remote Play bindings without rewriting them.
-check-remote-play:
-    python3 engine/scripts/generate-remote-play-bindings.py --check
-
-# Generate Renderer manifests and Decky bindings from the shared Flatpak catalogue.
+# Generate Renderer Flatpak manifests from the shared runtime catalogue.
 generate-flatpak-runtimes:
     python3 scripts/generate-flatpak-runtimes.py
-    python3 plugin/scripts/generate_ts_schema.py
 
-# Check the generated Renderer and Decky Flatpak runtime contracts without rewriting them.
+# Check the generated Renderer Flatpak runtime contract without rewriting it.
 check-flatpak-runtimes:
     python3 scripts/generate-flatpak-runtimes.py --check
-    python3 plugin/scripts/check_generated_config.py
 
 # Check Gamescope protocol provenance and supported versions without network access.
 check-gamescope-compatibility:
@@ -76,18 +66,18 @@ check-vkbasalt-release:
 
 # Sync the Arch package recipe to the checksum-pinned Renderer release.
 sync-arch-package:
-    python3 engine/dist/arch/sync-release-pin.py plugin/package.json engine/dist/arch/PKGBUILD
+    python3 engine/dist/arch/sync-release-pin.py engine/renderer-release.json engine/dist/arch/PKGBUILD
 
 # Reject a stale or unsafe Arch package recipe and lifecycle script.
 check-arch-package:
     engine/dist/arch/check-release-pin.sh
     engine/dist/arch/test-package-contract.sh
 
-# Build MAKO Renderer and the MAKO Decky plugin.
-build: build-engine build-plugin
+# Build MAKO Renderer.
+build: build-engine
 
-# Run the protected-input, release-candidate, engine, plugin, and trace-producer tests.
-test: test-protected-inputs test-release-candidate test-engine test-plugin test-trace-producer
+# Run the protected-input, release-candidate, diagnostics, engine, and trace-producer tests.
+test: test-protected-inputs test-release-candidate test-diagnostics-helper test-engine test-trace-producer
 
 # Reject licensed inputs and disguised binary/model/archive payloads from Git.
 test-protected-inputs:
@@ -96,6 +86,10 @@ test-protected-inputs:
 # Verify the local release-candidate checker with complete and incomplete ZIP fixtures.
 test-release-candidate:
     ./scripts/test-release-candidate.sh
+
+# Exercise the diagnostics helper's filters and retained-session contract.
+test-diagnostics-helper:
+    python3 -I scripts/tests/test_diagnostics_helper.py
 
 # Exercise the private-archive producer without requiring private evidence.
 test-trace-producer:
@@ -190,14 +184,6 @@ test-engine-gym-proton-compatibility *args:
 test-engine-gym-constraints *args:
     ./engine/scripts/run-mako-gym.sh --suite constraints {{args}}
 
-# Build the Decky frontend.
-build-plugin:
-    pnpm --dir plugin run build
-
-# Run the Decky backend tests.
-test-plugin:
-    pnpm --dir plugin run test
-
 # Build the native MAKO Renderer release archive.
 package-engine:
     ./engine/scripts/package-local.sh
@@ -210,14 +196,6 @@ package-flatpaks:
 package-renderer-local-release:
     ./engine/scripts/package-local-release.sh
 
-# Build a complete Decky ZIP from the local engine checkout.
-package-plugin:
-    pnpm --dir plugin run package:local-engine
-
-# Build a fast native-only, 64-bit Decky development ZIP.
-package-plugin-fast:
-    pnpm --dir plugin run package:local-engine-fast
-
-# Check an already-built complete local Decky ZIP against the pushed source commit.
+# Check an already-built complete local Renderer host archive against the pushed source commit.
 check-release-candidate archive:
     ./scripts/check-release-candidate.sh {{archive}}

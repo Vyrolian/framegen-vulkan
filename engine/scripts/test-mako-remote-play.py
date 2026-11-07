@@ -95,7 +95,7 @@ class RemotePlayCommandTests(unittest.TestCase):
         self.assertEqual(str(self.launcher.parent.parent / SDR_HELPER_RELATIVE_PATH), values['LD_PRELOAD'])
         self.assertEqual('effects = none\n', expected.read_text())
         self.assertNotIn('GALLIUM_DRIVER', values)
-        # The stored path survives calls made by the other UI/default config.
+        # The stored path survives calls made by the default config.
         self.assertEqual(str(config), self.command('status')['configuration_path'])
         before = self.client.read_bytes()
         self.command('refresh')
@@ -169,7 +169,7 @@ class RemotePlayCommandTests(unittest.TestCase):
                 self.assertEqual(str(self.config.parent / 'vkbasalt/current-profile.conf'), values['VKBASALT_CONFIG_FILE'])
                 self.assertEqual(shader.read_bytes(), Path(values['VKBASALT_CONFIG_FILE']).read_bytes())
 
-        # Default uses the Qt/standalone global shader path even with an alternate TOML.
+        # Default uses the standalone global shader path even with an alternate TOML.
         for xdg in (None, self.home / 'custom-xdg'):
             with self.subTest(xdg=xdg):
                 if xdg is None:

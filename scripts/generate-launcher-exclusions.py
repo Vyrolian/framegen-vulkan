@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate component-local launcher exclusions from the documented shared list."""
+"""Generate the Renderer launcher exclusions from the documented shared list."""
 
 import argparse
 import json
@@ -13,9 +13,6 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 SOURCE = REPOSITORY_ROOT / "engine/mako-common/launcher_exclusions.json"
 RENDERER_OUTPUT = REPOSITORY_ROOT / (
     "engine/mako-common/src/configuration/launcher_exclusions_generated.hpp"
-)
-DECKY_OUTPUT = REPOSITORY_ROOT / (
-    "plugin/py_modules/mako_plugin/launcher_exclusions_generated.py"
 )
 
 
@@ -89,19 +86,7 @@ def generated_files(entries: list[LauncherExclusion]) -> dict[Path, str]:
         "}",
         "",
     ]
-    decky = [
-        f'"""Generated from {source}; do not edit."""',
-        f"# Regenerate: {command}",
-        "",
-        "EXCLUDED_WINDOWS_LAUNCHERS: frozenset[str] = frozenset((",
-        *(f"    {json.dumps(name)}," for name in names),
-        "))",
-        "",
-    ]
-    return {
-        RENDERER_OUTPUT: "\n".join(renderer),
-        DECKY_OUTPUT: "\n".join(decky),
-    }
+    return {RENDERER_OUTPUT: "\n".join(renderer)}
 
 
 def main() -> int:

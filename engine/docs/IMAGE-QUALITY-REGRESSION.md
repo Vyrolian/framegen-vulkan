@@ -94,7 +94,7 @@ The quality commands report whether optional `robustImageAccess2` support was en
 The synthetic contracts are part of the full CTest build described in the [root testing guide](../../TESTING.md). From `engine/`:
 
 ```bash
-cmake -S . -B build/quality-policy -DBUILD_TESTING=ON -DMAKO_BUILD_UI=OFF
+cmake -S . -B build/quality-policy -DBUILD_TESTING=ON
 cmake --build build/quality-policy --target mako-device-feature-tests mako-image-quality-tests mako-cli
 ctest --test-dir build/quality-policy --output-on-failure -R '^(optional-device-features|procedural-image-quality-scene|cli-i18n-contract)$'
 ```

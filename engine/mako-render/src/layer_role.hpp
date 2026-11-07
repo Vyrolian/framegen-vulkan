@@ -57,7 +57,7 @@ namespace mako::layer {
         return frameGenerationLayer && deviceInteropEnabled;
     }
 
-    /// Decky's scaling path loads two isolated copies of MAKO around
+    /// The scaling path can load two isolated copies of MAKO around
     /// Gamescope WSI. Direct Renderer users keep the established combined
     /// library unless their launcher explicitly opts into that split chain.
     [[nodiscard]] inline bool splitLayerChainEnabled() {

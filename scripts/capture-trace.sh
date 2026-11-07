@@ -20,7 +20,6 @@ Options:
   --run-index NUMBER       Repetition number for this scenario; defaults to 1
   --session-end TIME       Local ISO timestamp; defaults to the capture time
   --diagnostics PATH       Present diagnostics source
-  --decky-log PATH         Decky log to clip to the session window
   --steam-log PATH         Steam console log to clip to the session window
   --config PATH            Renderer configuration source
   --mako-repo PATH         MAKO source checkout used for branch/commit identity
@@ -417,7 +416,6 @@ session_start=''
 session_end=''
 diagnostics="$HOME/.config/mako-render/present-diagnostics.log"
 config="$HOME/.config/mako-render/conf.toml"
-decky_log=''
 steam_log=''
 notes=''
 
@@ -467,11 +465,6 @@ while [[ $# -gt 0 ]]; do
       diagnostics=$2
       shift 2
       ;;
-    --decky-log)
-      require_value "$@"
-      decky_log=$2
-      shift 2
-      ;;
     --steam-log)
       require_value "$@"
       steam_log=$2
@@ -514,7 +507,6 @@ done
 [[ -r "$diagnostics" ]] || die "diagnostics file is not readable: $diagnostics"
 [[ -s "$diagnostics" ]] || die "diagnostics file is empty: $diagnostics"
 [[ -r "$config" ]] || die "configuration file is not readable: $config"
-[[ -z "$decky_log" || -r "$decky_log" ]] || die "Decky log is not readable: $decky_log"
 [[ -z "$steam_log" || -r "$steam_log" ]] || die "Steam log is not readable: $steam_log"
 [[ -z "$notes" || -r "$notes" ]] || die "notes file is not readable: $notes"
 command -v jq >/dev/null || die 'jq is required'
@@ -589,10 +581,6 @@ working=$(mktemp -d "$trace_repo/.capture.XXXXXX")
 
 sanitize_file "$diagnostics" "$working/present-diagnostics.log"
 sanitize_file "$config" "$working/config.toml"
-
-if [[ -n "$decky_log" ]]; then
-  slice_bracketed_log "$decky_log" "$working/decky-session.log" "$start_log_time" "$end_log_time"
-fi
 
 if [[ -n "$steam_log" ]]; then
   slice_bracketed_log "$steam_log" "$working/steam-session.log" "$start_log_time" "$end_log_time"

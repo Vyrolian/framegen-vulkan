@@ -1,174 +1,197 @@
 # Configuration
 
-**MAKO Renderer Configuration** (`mako-ui`) saves automatically. Options marked **Restart** need a game restart. MAKO Decky shares the same profiles; edit them in one UI at a time.
+MAKO Renderer reads its profiles from `~/.config/mako-render/conf.toml`. Edit the file in any text editor. MAKO reads it when a game starts, so most changes apply to the next launch; settings marked live in [Applying changes](#applying-changes) can change while the game runs. Check each edit with `~/.local/bin/mako-cli validate`. The [configuration reference](CONFIGURATION-REFERENCE.md) lists every field, default, and environment variable.
 
 ## Quick start
 
-1. Open **MAKO Renderer Configuration** from the application launcher or run `~/.local/bin/mako-ui`.
-2. Create a profile and add the game's executable under **Matched Processes**. Or start the game, use **Detect Running Game…**, save the match, and close it.
-3. Choose Frame Generation, Scaling, and/or Shaders.
-4. Copy the complete launch option shown by the UI into the game's Steam properties, then launch the game again.
+1. Create `~/.config/mako-render/conf.toml` from the example below.
+2. Set `active_in` to the game's executable name, such as `Game.exe`. Match the game's process, not its launcher, Steam title, or ROM filename.
+3. Enable Frame Generation and/or Scaling for that profile.
+4. Add `~/.local/bin/mako-launch %command%` to the game's Steam launch options, then start the game.
+5. Run `~/.local/bin/mako-cli validate` after each change.
 
-Detection finds the executable; MAKO activates on the next launch. The configuration window can be closed during play. Try display modes and V-Sync on/off if a feature does not work smoothly.
+```toml
+version = 2
 
-### Desktop theme
+[global]
+allow_fp16 = true
 
-The UI uses Qt Quick Controls. Under qt6ct, MAKO automatically selects the optional `qqc2-desktop-style` bridge when installed, allowing controls to use widget themes such as Kvantum. Launch `mako-ui` normally; MAKO preserves an explicit `QT_QUICK_CONTROLS_STYLE` or `QT_QUICK_CONTROLS_CONF` setting and leaves other platform themes unchanged. Without the bridge, Qt retains its normal style. For manual selection, use `QT_QUICK_CONTROLS_STYLE=org.kde.desktop mako-ui`; built-in styles such as `QT_QUICK_CONTROLS_STYLE=Fusion` remain available. MAKO uses `QApplication` to support widget-style painting and does not force Breeze or change system theme settings.
+[[profile]]
+name = "My game"
+active_in = ["Game.exe"]
+frame_generation_provisioned = true
+frame_generation_enabled = true
+multiplier = 2
 
-## Lossless Scaling availability
+scaling_enabled = false
+scaling_method = "ls1"
+scaling_factor = 1.5
+scaling_supersampling = false
+scaling_sharpness = 0.8
+```
 
-**MAKO Scaler and Shaders work without Lossless Scaling.** Frame Generation and LS1 require it. If MAKO reports it missing, install Lossless Scaling or correct its DLL path, then restart the game.
+MAKO activates on the next launch of a matched process. If nothing matches, MAKO stays inactive. `MAKO_PROFILE` selects an exact profile and overrides automatic matching.
+
+### Lossless Scaling availability
+
+**MAKO Scaler and Shaders work without Lossless Scaling.** Frame Generation and LS1 require it. If MAKO reports it missing, install Lossless Scaling or set `dll` to the correct `Lossless.dll` path, then restart the game.
 
 ## Profiles
 
-**Create New Profile** copies the selected profile's settings, matches, power modes, and shaders. Use **Rename Profile** or **Delete Profile** to manage copies; **Default** is protected.
-
-The dropdown selects the profile you edit; local games use their executable matches. If detection fails, use **Show all applications** or add the executable manually. Match the game, not its launcher, Steam title, or ROM filename.
+Each `[[profile]]` has a unique `name`. `active_in` lists executable names, process names, or executable-path suffixes. Copy a profile block to create a variant for another game.
 
 ### AC and battery settings
 
-Under **Power Profiles**, enable **Separate power settings**, then choose Handheld, Docked, or Base under **Editing settings for**.
+Optional `[profile.handheld]` and `[profile.docked]` tables override selected values while the device is on battery or charging. Battery selects handheld; confirmed AC power selects docked. If startup power detection fails, the base profile applies. DLL, FP16, shader, and launcher settings stay shared. Both tables must exist when enabled.
 
-Battery selects Handheld; charging selects Docked without requiring a dock. An external display alone does not switch sets. Base applies if startup power detection fails or separate settings are off. DLL, FP16, Shaders, and launcher settings stay shared; normal live/restart rules apply.
+```toml
+[[profile]]
+name = "My game"
+active_in = ["Game.exe"]
+adaptive = true
+target_fps = 90
+
+[profile.handheld]
+target_fps = 60
+
+[profile.docked]
+target_fps = 120
+```
 
 ### Launcher exclusions
 
-Known launchers and helpers are excluded so their child games can match normally. If detection finds only a launcher, wait for gameplay and try again.
+Known launchers and helpers stay inactive while their child games can match. The [shared registry](../mako-common/launcher_exclusions.json) owns the exact exclusions; the generic `Launcher.exe` name is not excluded globally. If only a launcher is detected, wait for gameplay and try again.
 
-## Native Steam Remote Play
+## Frame Generation
 
-On the receiving device, close streams and select **Override Remote Play**. Choose a saved profile before streaming. **Restore Steam Client** removes the override; **Refresh** checks its status. See the [Remote Play guide](../../plugin/docs/REMOTE-PLAY.md) for setup and limits.
+Enable `frame_generation_provisioned` before launching to allow Frame Generation in that process. `frame_generation_enabled` is live: `false` pauses generation, and `true` resumes it.
 
-## Profile settings
-
-### Frame Generation
-
-Turn on **Enable Frame-gen (Restart)** before launching. **Real FPS** counts game frames; output FPS includes generated frames. In Fixed or Adaptive mode, `0x` pauses generation and its FPS caps live; selecting 2x–5x resumes it.
-
-| Control | What it does |
+| Setting | What it does |
 | --- | --- |
-| **Fixed Multiplier** | Requests 2x–5x output. Start at 2x. |
-| **Adaptive Frame Generation** | Varies generation toward **Target FPS** (10–1000), up to **Maximum Adaptive Multiplier** (2x–5x). |
-| **Match Display Refresh Rate** | Uses Gamescope's refresh as the Adaptive target; **Fallback Target FPS** applies without feedback. Turn matching off to edit the target. |
-| **Steady Base Cap** | Initially caps real FPS at half the target for even cadence; may reduce responsiveness. |
-| **Fractional Adaptive** | Keeps more real frames, but delivery may feel less even. |
-| **Real Frame Priority** | Low–Very High select a Fractional real-FPS cap; higher priority allows more real FPS. **Automatic** adds no priority cap. |
-| **Base FPS Cap** | Limits real FPS. **Off** adds no manual cap; Steady or explicit Fractional caps take precedence. |
-| **Smooth Cadence** | Favours consistent delivery; compare on/off for responsiveness. |
-| **Gamescope VRR** | Follows Steam, or temporarily requests VRR on/off on a supported display during play. |
+| `multiplier` | Fixed output multiplier, 2–5. Start at 2. |
+| `adaptive = true` | Varies generation toward `target_fps` (10–1000), up to `adaptive_max_multiplier` (2–5). |
+| `adaptive_target_refresh_rate` | Uses Gamescope's refresh rate as the Adaptive target; `target_fps` applies when no feedback is available. |
+| `adaptive_auto_base_fps_cap` | Steady Base Cap: initially caps real FPS at half the target for even cadence; may reduce responsiveness. |
+| `adaptive_fractional_real_frame_priority` | Real-frame priority for Fractional Adaptive, from low to very high. Automatic adds no priority cap. |
+| `adaptive_stable_cadence` | Favours consistent delivery; compare on and off for responsiveness. |
+| `base_fps_cap` | Limits real FPS. Off adds no manual cap; Steady or explicit Fractional caps take precedence. |
+| `gamescope_vrr_mode` | `follow-steam`, `on`, or `off` for Gamescope VRR during play, when the display supports it. |
 
-With **Fractional Adaptive** and **Automatic** Real Frame Priority, sustained native FPS can exceed **Target FPS** without generation when **Base FPS Cap** is off or at least the target. For example, a 60 FPS target on a 90 Hz display allows native 75 FPS gameplay with the cap off or set to 90; the manual cap still limits faster sources. Smooth Cadence can be on or off; below-target caps, explicit priorities and Steady keep their selected pacing.
+With Fractional Adaptive and automatic real-frame priority, sustained native FPS can exceed `target_fps` without generation when `base_fps_cap` is off or at least the target. For example, a 60 FPS target on a 90 Hz display allows native 75 FPS gameplay with the cap off or set to 90; a manual cap still limits faster sources.
 
-For games switching between 30 FPS cutscenes and 60 FPS gameplay on a 60 Hz display, try Fractional Adaptive with a 2x ceiling, a 60 FPS target, and **Dynamic Cadence Recovery** enabled. Recovery clears base caps and selects **Automatic** Real Frame Priority; keep those settings to let gameplay reach its native rate. Its checks can briefly lower output FPS or hitch. **Match Display Refresh Rate** can supply the target. **Auto-disable Frame Generation by Refresh Rate** instead checks display Hz, not the game's real FPS.
+For games that switch between 30 FPS cutscenes and 60 FPS gameplay on a 60 Hz display, try Fractional Adaptive with a 2x ceiling, a 60 FPS target, and `dynamic_cadence_recovery = true`. Recovery clears base caps and selects automatic real-frame priority; keep those settings to let gameplay reach its native rate. Its checks can briefly lower output FPS or hitch. `frame_generation_refresh_threshold` checks display Hz, not the game's real FPS.
 
-### Scaling
+## Spatial scaling
 
-Enable Scaling before launching. Set Steam's **Game Resolution** to the display maximum, then choose a lower in-game resolution. Gamescope is recommended; try different display modes if needed.
+Enable `scaling_enabled` before launching. Set Steam's game resolution to the display maximum, then choose a lower in-game resolution. Gamescope is recommended; try different display modes if needed.
 
-| Method | Use it for |
+| `scaling_method` | Use it for |
 | --- | --- |
-| **Native Resolution** | Simple model-free reconstruction |
-| **MAKO Scaler** | Open scaling with anti-ringing and sharpening |
-| **LS1 Quality** | Highest-quality LS1 scaling; requires Lossless Scaling |
-| **LS1 Performance** | Lower-cost LS1 scaling; requires Lossless Scaling |
+| `native` | Simple model-free reconstruction |
+| `mako` | Open MAKO Scaler with anti-ringing and sharpening |
+| `ls1` | Highest-quality LS1 scaling; requires Lossless Scaling |
+| `ls1-performance` | Lower-cost LS1 scaling; requires Lossless Scaling |
 
-**Scale Factor** targets 1.0x–2.0x output dimensions, within display limits; **Sharpness** adjusts sharpening except in Native Resolution. **Quality Supersampling** can improve quality on supported Gamescope surfaces, with higher GPU and memory use. LS1 failures fall back to MAKO Scaler.
+`scaling_factor` targets 1.0–2.0× output dimensions, within display limits; `scaling_sharpness` adjusts sharpening except with `native`. `scaling_supersampling` can improve quality on supported Gamescope surfaces, with higher GPU and memory use. LS1 failures fall back to the MAKO Scaler.
 
-### Performance and device selection
+For 1920×1080 output at 1.5×, aim for a 1280×720 input. Raising the factor without lowering the in-game resolution increases GPU and memory cost. Check source and presentation sizes in [diagnostics](COLLECT_DIAGNOSTICS.md); see [Scaling](SCALING.md) for supported display setups.
 
-| Control | What it does |
+## Performance and device selection
+
+| Setting | What it does |
 | --- | --- |
-| **Ultra Performance (Restart)** | Uses 70% Flow Scale, the lighter FG model, and LS1 Performance when scaling is enabled. |
-| **Flow Scale** | 25–100% motion-estimation resolution; lower saves GPU work at a quality cost. Ultra Performance fixes it at 70%. |
-| **GPU Headroom** | Live, Frame Generation-only control that reduces real FPS to target spare GPU capacity; see below. Off by default. |
-| **Lighter FG Model** | Reduces GPU work, with potentially more artifacts; forced on by Ultra Performance. |
-| **Allow FP16 (Restart)** | Global precision: FP16 for supported Frame Generation models and MAKO Scaler; off uses FP32. LS1 always uses FP32. |
-| **Lossless.dll Path (Restart)** | Global override; leave empty for automatic detection. |
-| **GPU (Restart)** | Selects a GPU; multi-GPU Frame Generation is unsupported. |
+| `ultra_performance = true` (restart) | Uses 70% Flow Scale, the lighter model, and `ls1-performance` when scaling is enabled. |
+| `flow_scale` | 25–100% motion-estimation resolution; lower saves GPU work at a quality cost. Ultra Performance fixes it at 70%. |
+| `gpu_headroom_percent` | Live, Frame Generation-only reserve that reduces real FPS to keep spare GPU capacity; see below. Off by default. |
+| `performance_mode = true` | Uses the lighter Frame Generation model, which reduces GPU work with potentially more artifacts. |
+| `allow_fp16` (restart, `[global]`) | FP16 for supported Frame Generation models and the MAKO Scaler; `false` uses FP32. LS1 always uses FP32. |
+| `dll` (restart) | Lossless.dll path override; leave unset for automatic detection. |
+| `gpu` (restart) | Optional GPU name, vendor/device ID, or PCI bus ID. Multi-GPU Frame Generation is unsupported. |
 
 ### GPU Headroom
 
-Enable **GPU Headroom** under **Performance** and choose a 5%, 10%, 15% or 20% reserve. Enabling it selects 10%, targeting roughly 90% utilization of the game's GPU, including the compositor and other applications. The toggle and reserve apply live while Frame Generation is active. Off removes its additional cap and stops its utilization sampling.
+Set `gpu_headroom_percent` to 5, 10, 15, or 20 to reserve that share of GPU capacity. The reserve targets roughly 90% utilization at 10%, including the compositor and other applications. It applies live while Frame Generation is active. Setting it to 0 removes the additional cap and stops utilization sampling.
 
 MAKO smooths readings and gradually reduces real FPS when usage stays high. Adaptive can use more generated frames within its qualified multiplier ceiling; Fixed keeps its multiplier, so output FPS can fall too. Adaptive is preferable when you want to regain real FPS as scenes become lighter. Brief spikes can still reach 100%, and the reserve is not a power or temperature limit.
 
-Supported AMD telemetry must be readable for the game's GPU; Gamescope is optional. Missing readings restore ordinary pacing. Existing caps and a minimum real-frame rate limit how much load MAKO can remove. GPU Headroom does not independently control scaling or shaders. It is mutually exclusive with Dynamic Cadence Recovery, and each power profile can save its own reserve. See the [setting reference](CONFIGURATION-REFERENCE.md#gpu-headroom) for floors and compatibility limits.
+Supported AMD telemetry must be readable for the game's GPU; Gamescope is optional. Missing readings restore ordinary pacing. Existing caps and a minimum real-frame rate limit how much load MAKO can remove. GPU Headroom does not independently control scaling or shaders, and it is mutually exclusive with `dynamic_cadence_recovery`. See the [setting reference](CONFIGURATION-REFERENCE.md#gpu-headroom) for floors and compatibility limits.
 
-### Qt Shaders and compatibility controls
+## Shaders
 
-Enable **Shaders** before launching to use bundled vkBasalt; more effects cost more GPU time.
+Shaders use bundled vkBasalt. Add `ENABLE_VKBASALT=1` to the launch option, then select effects in a vkBasalt configuration file referenced by `VKBASALT_CONFIG_FILE`. Effects run in the order listed in `effects`, separated by colons; more effects cost more GPU time. The bundled effect sources are in `engine/vkbasalt-shaders/`, and their provenance is in [third-party notices](../../THIRD_PARTY_NOTICES.md).
 
-- **Effects:** select effects in order; uncheck and recheck to move one last. **Off** clears the effect list. **HDR Look (SDR)** changes appearance without enabling HDR.
-- **Sharpening:** Off, CAS, or DLS, with adjustable **Sharpness**. **DLS denoise** limits sharpening of grain and noise.
-- **Anti-aliasing:** Off, FXAA, or SMAA.
+```text
+ENABLE_VKBASALT=1 VKBASALT_CONFIG_FILE="$HOME/.config/vkBasalt/game-name.conf" ~/.local/bin/mako-launch %command%
+```
 
-Select **Customize shaders** to adjust selected bundled and compatible custom effects with sliders, exact-value fields, toggles, choices, and colour controls. **Reset shader to defaults** resets only the selected effect, preserving values its author marked as non-resettable. The popup edits parameters; choose enabled effects in **Effects**.
+```ini
+effects = makoClarity:smaa
+```
 
-Sliders follow the shader author's step, or use a decimal step such as 0.01 when none is specified. Type a value beneath the slider for finer adjustments. Fields hide floating-point readback noise without changing the shader's value; simply opening or leaving a field does not rewrite it.
+- **Sharpening:** list `cas` or `dls` in `effects`, then set `casSharpness` or `dlsSharpness`. `dlsDenoise` limits sharpening of grain and noise.
+- **Anti-aliasing:** list `fxaa` or `smaa` in `effects`.
+- **HDR Look (SDR):** `makoHDRLook` changes appearance without enabling HDR.
+- **Crop & Stretch:** `makoCropStretch` has four crop parameters, each limited to 49%, declared in [`CropStretch.fx`](../vkbasalt-shaders/CropStretch.fx). Cropping affects the whole game image, including HUD elements and subtitles. Place it before other effects when those effects should use the stretched image.
 
-Palettes such as Nostalgia's **Custom palette** appear as colour swatches. Select a swatch to edit its RGB channels with sliders or exact values. Only the selected colour's controls are expanded; reset still applies to the whole effect. Colour controls require metadata from the matching Renderer helper; older helpers show numeric fields instead.
+Only MAKO's private bundled vkBasalt is used; a system installation is ignored. Adding a custom effect requires a vkBasalt-compatible ReShade `.fx` file and its includes and textures reachable by the game; see [optional graphics integrations](LAYER-CHAINING.md) for the supported setup and limits. Restart the game after changing shader activation or configuration.
 
-Adjustments save with the selected profile and are shared across AC and battery modes. Copies retain them; deleting the profile removes them. Unchecking a custom shader retains its values, while deleting its registration removes them. Changes apply live when Shaders was enabled at game launch. Rebuilding an effect may briefly hitch, and higher quality or iteration settings can increase GPU cost.
+## Compatibility
 
-The movable editor opens on the left, stays above other windows, and temporarily hides the main configuration window. **Hide controls** collapses it for a clearer view of the game. Closing restores the main window and waits for pending saves; failed saves can be retried or discarded.
+| Setting | What it does |
+| --- | --- |
+| `frame_generation_refresh_threshold` | Pauses generation and Adaptive caps at or below the chosen Gamescope refresh; a manual `base_fps_cap` remains. |
+| `dynamic_cadence_recovery` | Off by default. Rechecks games that change native FPS by briefly reducing generated work; these checks can lower output FPS or cause hitches under sustained GPU load. Clears base caps and GPU Headroom, and resets real-frame priority. |
+| `dynamic_cadence_probe_interval_seconds` | 0.1–3 seconds between recovery checks; default 2. Shorter intervals react sooner but can hitch more often. |
+| `swapchain_image_count_compatibility` (restart) | May help games that fail to start, with less generated-frame headroom. |
 
-If the editor requests an update, install the matching Renderer. Custom effects must be vkBasalt-compatible; compile-time macros are not editable here. Reopen the editor after changing shader source or includes. See the [shader editor contract](LAYER-CHAINING.md#shader-parameter-editor-contract) for supported parameter types and implementation details.
-
-**Add custom shader** registers a vkBasalt-compatible ReShade `.fx` file; enable it in **Effects**. Keep includes and textures accessible to Flatpak games. **Delete selected custom shaders** removes profile registrations, preserving original files. **Refresh** reloads external edits; failed loads keep the previous chain active.
-
-Under **Compatibility**, keep defaults unless a game needs a change:
-
-- **Auto-disable Frame Generation by Refresh Rate / Refresh Rate Threshold:** pauses generation and Adaptive caps at or below the chosen Gamescope refresh; a manual Base FPS Cap remains.
-- **Dynamic Cadence Recovery:** off by default. Rechecks games that change native FPS by briefly reducing generated work; these checks can lower output FPS or cause hitches under sustained GPU load. Clears base caps and GPU Headroom, and resets Real Frame Priority. Enabling a cap or GPU Headroom, or changing priority, turns Recovery off.
-- **Cadence Probe Interval:** 0.1–3 seconds between recovery checks; default 2 seconds. Shorter intervals react sooner but can hitch more often.
-- **Game Swapchain Images (Restart):** may help games that fail to start, with less generated-frame headroom.
-
-### Crop & Stretch
-
-Select **Crop & Stretch** in **Effects**, then open **Customize shaders**. **Left crop (%)**, **Right crop (%)**, **Top crop (%)**, and **Bottom crop (%)** independently remove part of that edge and stretch the remaining image to fill the output. All four default to zero. For example, Top and Bottom at 5 remove 5% from each edge and stretch the remaining 90% vertically; Left and Right at zero keep the horizontal framing. **Reset shader to defaults** restores the original framing.
-
-The controls apply live through the normal per-profile shader editor. Each edge is limited to 49% so opposing edges cannot cross. Cropping affects the whole game image, including HUD elements and subtitles, and independent horizontal/vertical stretching changes aspect ratio. It can remove bars within the game's image, but cannot remove borders added later by Gamescope or the display. Place it before other effects when those effects should use the stretched image.
-
-### Desktop scaling and resolution
-
-For 1920×1080 output at 1.5x, aim for a 1280×720 input. Raising the factor without lowering resolution can increase GPU and memory cost. Check source and presentation sizes in [diagnostics](COLLECT_DIAGNOSTICS.md); see [Scaling](SCALING.md) for supported display setups.
+Keep the defaults unless a game needs a change.
 
 ## Applying changes
 
 | Timing | Common settings |
 | --- | --- |
-| **Restart** | Enabling Frame Generation, Scaling, or Shaders; DLL; FP16; GPU; Ultra Performance; launcher compatibility controls |
-| **Live** | Most Frame Generation controls; scaling method and sharpness; Flow Scale; Lighter FG Model; shader adjustments |
-| **May wait for resolution change or restart** | Scale Factor, Quality Supersampling, and changes needing more Frame Generation capacity |
+| Restart | Enabling `frame_generation_provisioned` or `scaling_enabled`; `dll`; `allow_fp16`; `gpu`; `ultra_performance`; `swapchain_image_count_compatibility`; launcher compatibility settings |
+| Live | `frame_generation_enabled`; most Frame Generation timing and cap settings; `scaling_method` and `scaling_sharpness`; `flow_scale`; `performance_mode`; `gpu_headroom_percent`; `hdr_quality` |
+| May wait for resolution change or restart | `scaling_factor`, `scaling_supersampling`, and changes needing more Frame Generation capacity |
 
 Some live changes rebuild resources and may briefly hitch. See [Runtime transitions](RUNTIME-TRANSITIONS.md) for details.
 
-**Interface Settings > Language** changes and saves the Qt interface language, including German and Russian. The first launch follows your system language, with English as the fallback.
+## Launch settings
 
-## Launch Settings
-
-For native Steam and Proton games, copy the UI's complete launch option. Without shaders or an explicit profile, the user-local archive uses:
+For native Steam and Proton games, use the launch option below. Flatpak applications need [Flatpak preparation](FLATPAK-GUIDE.md). The Arch package uses `/usr/bin/mako-launch`. For a terminal launch, replace `%command%` with the executable and arguments.
 
 ```text
 ~/.local/bin/mako-launch %command%
 ```
 
-The Arch package uses `/usr/bin/mako-launch`. For a terminal launch, replace `%command%` with the executable and arguments. Flatpak applications need [Flatpak preparation](FLATPAK-GUIDE.md).
+Standalone launch compatibility settings live in `~/.config/mako-render/launcher.conf`, and apply to every `mako-launch` game:
 
-The controls under **Launch Settings** apply globally to `mako-launch` games. **Disable Steam Overlay (Restart)** is on by default; it may reduce stutter but disables Steam's in-game overlay and FPS counter and may affect Steam Input. Gaming Mode menus and performance overlay remain available.
+```ini
+version = 1
+disable_steam_overlay = 1
+disable_hdr_exposure = 0
+enable_zink = 0
+force_alsa_audio = 0
+```
 
-**Zink** runs OpenGL through Vulkan. **Force ALSA** changes the audio path for compatibility problems. Steam Deck mode and Gamescope WSI controls are available in MAKO Decky.
+- `disable_steam_overlay`: on by default; it may reduce stutter but disables Steam's in-game overlay and FPS counter and may affect Steam Input.
+- `enable_zink`: runs OpenGL through Vulkan.
+- `force_alsa_audio`: changes the audio path for compatibility problems.
 
-**External Tools → Enable MangoHud (Restart)** applies to the selected profile and shares its saved selection with MAKO Decky. Install host MangoHud and Python 3, then use **Refresh MangoHud** if needed. Enabling MangoHud turns off Shaders; enabling Shaders turns off MangoHud. Copy the updated launch option to Steam after either change and restart the game. Flatpak games are unsupported. Both UIs use the optional [shared MangoHud layout](LAYER-CHAINING.md#shared-mangohud-layout).
-
-## Advanced configuration
-
-For manual TOML fields, defaults, and environment variables, see the [advanced reference](CONFIGURATION-REFERENCE.md). For problems, see [troubleshooting](TROUBLESHOOTING.md) or [collect diagnostics](COLLECT_DIAGNOSTICS.md).
+To use a shared MangoHud layout, create `~/.config/mako-render/mangohud.conf` and enable MangoHud for a game with `MANGOHUD=1` in its launch option. Shaders and MangoHud are mutually exclusive; a manual command requesting both is rejected. Install host MangoHud and Python 3 first, and check availability with `mako-launch --check-mangohud`. Flatpak games are unsupported. See the [shared MangoHud layout](LAYER-CHAINING.md#shared-mangohud-layout).
 
 ## HDR
 
-**HDR is experimental and disabled by default.** It works with Scaling, Frame Generation and Shaders in Gaming Mode on Steam Deck OLED or an HDR-capable external display, with HDR allowed in Gamescope. The Steam Deck LCD’s built-in display is SDR.
+**HDR is experimental and disabled by default.** It works with Scaling, Frame Generation and Shaders in Gaming Mode on Steam Deck OLED or an HDR-capable external display, with HDR allowed in Gamescope. The Steam Deck LCD's built-in display is SDR.
 
-In **Launch Settings**, turn on **Enable HDR (Restart)**, restart the game, then enable HDR in its settings. Restart after changing MAKO’s HDR toggle or switching between HDR and SDR displays.
+Set `disable_hdr_exposure = 0` in `launcher.conf`, restart the game, then enable HDR in its own settings. Restart after changing HDR exposure or switching between HDR and SDR displays.
 
-**HDR Quality** defaults to **Performance**. **Quality** retains full precision and full motion analysis; **Balanced** uses compact shader/scaling buffers while retaining linear-light Frame Generation and full motion analysis; **Performance** also uses approximate HDR10 generation and coarser motion analysis. Output resolution stays unchanged. Changes apply live with a brief hitch; lower precision may add banding or motion artifacts. See the [HDR pipeline](HDR-PIPELINE.md) for details.
+`hdr_quality` defaults to `'performance'`. `'quality'` retains full precision and full motion analysis; `'balanced'` uses compact shader and scaling buffers while retaining linear-light Frame Generation and full motion analysis; `'performance'` also uses approximate HDR10 generation and coarser motion analysis. Output resolution stays unchanged. Changes apply live with a brief hitch; lower precision may add banding or motion artifacts. See the [HDR pipeline](HDR-PIPELINE.md) for details.
+
+## Native Steam Remote Play
+
+Native Remote Play is an opt-in override for the receiving device. Use `mako-remote-play status` to inspect it and `mako-remote-play restore-before-uninstall` before removing the Renderer. See [Renderer usage](../README.md#usage) for the complete command set and limits.
+
+## Advanced configuration
+
+For every TOML field, its default, and the environment variables, see the [configuration reference](CONFIGURATION-REFERENCE.md). For problems, see [troubleshooting](TROUBLESHOOTING.md) or [collect diagnostics](COLLECT_DIAGNOSTICS.md).

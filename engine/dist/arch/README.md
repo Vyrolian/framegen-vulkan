@@ -1,10 +1,10 @@
 # Arch Linux packaging
 
-Install `mako-renderer-bin` for a system-wide MAKO Renderer on writable x86_64 Arch Linux. SteamOS users should use [MAKO Decky or the user-local archive](../../README.md#installation).
+Install `mako-renderer-bin` for a system-wide MAKO Renderer on writable x86_64 Arch Linux. SteamOS users should use the [user-local archive](../../../README.md#install-and-use).
 
 ## Contents
 
-The package includes the CLI, launcher, Qt UI, diagnostics helper, and 64-bit/32-bit Vulkan layers under `/usr`. Use pacman to manage these files; the user-local archive installer is not included. Maintainers can find the [payload layout and checks](../../docs/BUILDING-FROM-SOURCE.md#arch-package-maintenance) in the build guide.
+The package includes the CLI, launcher, diagnostics helper, and 64-bit/32-bit Vulkan layers under `/usr`. Use pacman to manage these files; the user-local archive installer is not included. Maintainers can find the [payload layout and checks](../../docs/BUILDING-FROM-SOURCE.md#arch-package-maintenance) in the build guide.
 
 ## Install the release package
 
@@ -26,13 +26,12 @@ Pacman verifies the package database transaction, installs the declared dependen
 
 ### Configure and launch
 
-Installing the package does not activate MAKO for every game. Open **MAKO Renderer Configuration** from the application menu or run:
+Installing the package does not activate MAKO for every game. Create a game profile in `~/.config/mako-render/conf.toml` and configure Frame Generation, Scaling, and/or Shaders. Check the file with:
 
 ```bash
-mako-ui
+mako-cli validate
 ```
-
-Create or select a game profile and configure Frame Generation, Scaling, and/or Shaders. Frame Generation and LS1 scaling require a lawful user-supplied `Lossless.dll`; the open MAKO Scaler and bundled shaders do not. LS1 and DirectX-only LSFG models additionally need the optional `vkd3d` dependency, plus `lib32-vkd3d` for 32-bit games. Native SPIR-V LSFG models do not need the translator. For a native Steam or Proton game, add this under **Steam Properties > General > Launch Options**:
+ Frame Generation and LS1 scaling require a lawful user-supplied `Lossless.dll`; the open MAKO Scaler and bundled shaders do not. LS1 and DirectX-only LSFG models additionally need the optional `vkd3d` dependency, plus `lib32-vkd3d` for 32-bit games. Native SPIR-V LSFG models do not need the translator. For a native Steam or Proton game, add this under **Steam Properties > General > Launch Options**:
 
 ```text
 /usr/bin/mako-launch %command%
@@ -40,7 +39,7 @@ Create or select a game profile and configure Frame Generation, Scaling, and/or 
 
 Use the absolute `/usr/bin` path so a separate `~/.local/bin/mako-launch` cannot shadow the pacman-owned launcher. Flatpak games additionally require the matching MAKO Flatpak runtime extension and application preparation described in the [Flatpak guide](../../docs/FLATPAK-GUIDE.md).
 
-Use the complete launch option shown by `/usr/bin/mako-ui` when shaders or an explicit profile are selected.
+When shaders are selected, the launch option also sets `ENABLE_VKBASALT=1`; see [Shaders](../../docs/CONFIGURATION.md#shaders).
 
 ## Build from the tracked recipe
 
@@ -61,7 +60,7 @@ From the repository root, build release-shaped host, Flatpak, and Arch artifacts
 just package-renderer-local-release
 ```
 
-The equivalent component command is `engine/scripts/package-local-release.sh`. It writes all three artifacts and `SHA256SUMS` under `engine/out/`, uses the same portable builders as publication, and verifies the pacman package against the newly built host archive. It synchronizes a disposable copy of this recipe, so the tracked public archive checksum, Decky Renderer pin, tags, and releases remain unchanged.
+The equivalent component command is `engine/scripts/package-local-release.sh`. It writes all three artifacts and `SHA256SUMS` under `engine/out/`, uses the same portable builders as publication, and verifies the pacman package against the newly built host archive. It synchronizes a disposable copy of this recipe, so the tracked public archive checksum, Renderer release pin, tags, and releases remain unchanged.
 
 ## Upgrade
 
@@ -69,25 +68,25 @@ This package is not currently published through an official pacman repository or
 
 ## Remove
 
-If native Remote Play is enabled, [restore Steam Client](../../../plugin/docs/REMOTE-PLAY.md#restore-steam) before removing the package.
+If native Remote Play is enabled, run `mako-remote-play restore-before-uninstall` before removing the package.
 
 ```bash
 sudo pacman -R mako-renderer-bin
 ```
 
-Pacman removes only the files the package owns under `/usr`. Profiles and configuration under `~/.config/mako-render` are preserved and must be removed manually if they are no longer wanted. A user-local MAKO install, including MAKO Decky's, is left untouched.
+Pacman removes only the files the package owns under `/usr`. Profiles and configuration under `~/.config/mako-render` are preserved and must be removed manually if they are no longer wanted. A user-local MAKO install is left untouched.
 
 Do not run the upstream installer or extract the archive with `MAKO_INSTALL_PREFIX=/usr`. That writes the same `/usr/bin` and `/usr/share` paths this package owns: pacman then refuses the next install or upgrade with `exists in filesystem`, and the upstream uninstaller would delete files pacman still believes it owns. If pacman reports a file conflict, use `pacman -Qo` to check whether the file is unowned, remove it, and install again; do not reach for `--overwrite`.
 
-## Coexistence with MAKO Decky and other user-local installs
+## Coexistence with user-local installs
 
-The pacman package manages `/usr`; MAKO Decky and the standalone archive share a separate native installation under `~/.local`. Pacman reports user-local copies but does not change or remove them.
+The pacman package manages `/usr`; the standalone archive installs a separate native copy under `~/.local`. Pacman reports user-local copies but does not change or remove them.
 
-Use `/usr/bin/mako-launch` and `/usr/bin/mako-ui` explicitly to select this package. Do not export `ENABLE_MAKO=1` globally: use the launcher to select the matching layers. Flatpak runtime extensions are installed and updated separately.
+Use `/usr/bin/mako-launch` explicitly to select this package. Do not export `ENABLE_MAKO=1` globally: use the launcher to select the matching layers. Flatpak runtime extensions are installed and updated separately.
 
 ## Profiles and configuration data
 
-Profiles, settings, and runtime state live in `~/.config/mako-render` (`conf.toml`, `profile-metadata.json`, `profile-wrapper-settings.json`, and `runtime-state/`). They belong to the user and are never installed, replaced, or removed by this package.
+Profiles, settings, and runtime state live in `~/.config/mako-render` (`conf.toml`, `launcher.conf`, `mangohud.conf`, and `runtime-state/`). They belong to the user and are never installed, replaced, or removed by this package.
 
 Because both delivery paths share that directory, do not run two different MAKO Renderer versions against one `~/.config/mako-render`: a user-local install and this package would migrate the same profiles with different engine versions. Keep one owner per user.
 

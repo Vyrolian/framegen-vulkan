@@ -10,86 +10,14 @@ active_renderer_state="$install_prefix/share/mako-render/active-renderer.json"
 config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/mako-render"
 payload_manifest="$script_dir/MAKO-Renderer-install-manifest.txt"
 version_file="$script_dir/MAKO-Renderer-version.txt"
-decky_plugin_manifest="$HOME/homebrew/plugins/Mako/plugin.json"
-decky_install_prefix="$HOME/.local"
-configuration_desktop_path="share/applications/io.github.eugeniosegala.mako.desktop"
-uninstaller_desktop_path="share/applications/io.github.eugeniosegala.mako.uninstaller.desktop"
 dialog_title="MAKO Renderer"
-dialog_icon_name="io.github.eugeniosegala.mako"
-dialog_icon_path=""
-dialog_data_dirs="$script_dir/share:$script_dir/../share:$install_prefix/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
-for candidate_icon in \
-        "$script_dir/share/icons/hicolor/256x256/apps/$dialog_icon_name.png" \
-        "$script_dir/../share/icons/hicolor/256x256/apps/$dialog_icon_name.png" \
-        "$install_prefix/share/icons/hicolor/256x256/apps/$dialog_icon_name.png"; do
-    if [[ -f "$candidate_icon" ]]; then
-        dialog_icon_path="$candidate_icon"
-        break
-    fi
-done
-decky_renderer_relative_paths=(
-    ".local/share/mako-render/mako_remote_play/libmako-remote-play-sdr.so"
-    ".local/share/mako-render/lib/libmako-render.so"
-    ".local/share/mako-render/lib32/libmako-render.so"
-    ".local/share/mako-render/lib/libmako-render-scaling.so"
-    ".local/share/mako-render/lib32/libmako-render-scaling.so"
-    ".local/share/mako-render/lib/vkbasalt/libvkbasalt.so"
-    ".local/share/mako-render/lib32/vkbasalt/libvkbasalt.so"
-    ".local/share/mako-render/vulkan/implicit_layer.d/VkLayer_MAKO_render.json"
-    ".local/share/mako-render/vulkan/implicit_layer.d/VkLayer_MAKO_render.x86.json"
-    ".local/share/mako-render/vulkan/spatial_scaling.d/VkLayer_MAKO_spatial_scaling.json"
-    ".local/share/mako-render/vulkan/spatial_scaling.d/VkLayer_MAKO_spatial_scaling.x86.json"
-    ".local/share/mako-render/vulkan/gamescope_wsi_compatibility.d/VkLayer_FROG_gamescope_wsi.x86_64.json"
-    ".local/share/mako-render/vulkan/gamescope_wsi_compatibility.d/libVkLayer_FROG_gamescope_wsi_x86_64.so"
-    ".local/share/mako-render/vulkan/mangohud.d/MangoHud.x86_64.json"
-    ".local/share/mako-render/vulkan/mangohud.d/MangoHud.x86.json"
-    ".local/share/mako-render/vulkan/vkbasalt.d/vkBasalt.json"
-    ".local/share/mako-render/vulkan/vkbasalt.d/vkBasalt.x86.json"
-    ".local/share/mako-render/vkbasalt-shaders/BleachBypass.fx"
-    ".local/share/mako-render/vkbasalt-shaders/Cartoon.fx"
-    ".local/share/mako-render/vkbasalt-shaders/ChromaticAberration.fx"
-    ".local/share/mako-render/vkbasalt-shaders/Clarity.fx"
-    ".local/share/mako-render/vkbasalt-shaders/Colourfulness.fx"
-    ".local/share/mako-render/vkbasalt-shaders/CropStretch.fx"
-    ".local/share/mako-render/vkbasalt-shaders/Curves.fx"
-    ".local/share/mako-render/vkbasalt-shaders/DPX.fx"
-    ".local/share/mako-render/vkbasalt-shaders/FakeHDR.fx"
-    ".local/share/mako-render/vkbasalt-shaders/FilmGrain.fx"
-    ".local/share/mako-render/vkbasalt-shaders/LICENSE-Colourfulness"
-    ".local/share/mako-render/vkbasalt-shaders/LICENSE-SweetFX"
-    ".local/share/mako-render/vkbasalt-shaders/LevelsPlus.fx"
-    ".local/share/mako-render/vkbasalt-shaders/Monochrome.fx"
-    ".local/share/mako-render/vkbasalt-shaders/Noir.fx"
-    ".local/share/mako-render/vkbasalt-shaders/Nostalgia.fx"
-    ".local/share/mako-render/vkbasalt-shaders/ReShade.fxh"
-    ".local/share/mako-render/vkbasalt-shaders/SOURCE.md"
-    ".local/share/mako-render/vkbasalt-shaders/Sepia.fx"
-    ".local/share/mako-render/vkbasalt-shaders/Technicolor.fx"
-    ".local/share/mako-render/vkbasalt-shaders/Technicolor2.fx"
-    ".local/share/mako-render/vkbasalt-shaders/Vibrance.fx"
-    ".local/share/mako-render/vkbasalt-shaders/Vignette.fx"
-    ".local/share/mako-render/bin/mako-cli"
-    ".local/share/mako-render/bin/mako-shader-tool"
-    ".local/share/mako-render/bin/mako-vrr-lease"
-    ".local/share/mako-render/installed-engine.json"
-    ".local/share/mako-render/active-renderer.json"
-    ".local/bin/mako-run"
-    ".local/bin/mako-diagnostics"
-    ".local/share/vulkan/implicit_layer.d/VkLayer_MAKO_render.json"
-    ".local/share/vulkan/implicit_layer.d/VkLayer_MAKO_render.x86.json"
-)
 
 kdialog_mako() {
-    env XDG_DATA_DIRS="$dialog_data_dirs" \
-        kdialog --title "$dialog_title" --icon "$dialog_icon_name" "$@"
+    kdialog --title "$dialog_title" "$@"
 }
 
 zenity_mako() {
-    local -a options=(--title="$dialog_title")
-    if [[ -n "$dialog_icon_path" ]]; then
-        options+=(--window-icon="$dialog_icon_path")
-    fi
-    zenity "${options[@]}" "$@"
+    zenity --title="$dialog_title" "$@"
 }
 
 fail() {
@@ -190,51 +118,6 @@ hash_file() {
     sha256sum -- "$1" | awk '{print $1}'
 }
 
-quote_desktop_exec_path() {
-    local value="$1"
-    [[ "$value" != *$'\n'* && "$value" != *$'\r'* ]] ||
-        fail "The MAKO installation path cannot contain a line break."
-    value="${value//\\/\\\\}"
-    value="${value//\"/\\\"}"
-    value="${value//\`/\\\`}"
-    value="${value//\$/\\\$}"
-    value="${value//%/%%}"
-    printf '"%s"' "$value"
-}
-
-rewrite_desktop_exec() {
-    local relative_path="$1"
-    local executable="$2"
-    local arguments="$3"
-    local desktop_path="${4:-$install_prefix}/$relative_path"
-    local temporary_path="${desktop_path}.mako-install.$$"
-    local quoted_executable line
-    local exec_lines=0
-
-    manifest_contains_path "$payload_manifest" "$relative_path" || return 0
-    [[ -f "$desktop_path" ]] || fail "The installed payload is missing $relative_path."
-    quoted_executable="$(quote_desktop_exec_path "$executable")"
-    : > "$temporary_path"
-    while IFS= read -r line || [[ -n "$line" ]]; do
-        if [[ "$line" == Exec=* ]]; then
-            if [[ -n "$arguments" ]]; then
-                printf 'Exec=%s %s\n' "$quoted_executable" "$arguments" >> "$temporary_path"
-            else
-                printf 'Exec=%s\n' "$quoted_executable" >> "$temporary_path"
-            fi
-            exec_lines=$((exec_lines + 1))
-        else
-            printf '%s\n' "$line" >> "$temporary_path"
-        fi
-    done < "$desktop_path"
-    if ((exec_lines != 1)); then
-        rm -f -- "$temporary_path"
-        fail "The packaged desktop entry $relative_path must contain exactly one Exec line."
-    fi
-    chmod --reference="$desktop_path" "$temporary_path"
-    mv -f -- "$temporary_path" "$desktop_path"
-}
-
 write_installed_state_manifest() {
     local payload_root="$1"
     local output_manifest="$2"
@@ -286,13 +169,6 @@ remove_empty_parent_directories() {
         rmdir -- "$directory" 2>/dev/null || break
         directory="$(dirname -- "$directory")"
     done
-}
-
-warn_decky_installation() {
-    [[ -f "$decky_plugin_manifest" ]] || return 0
-    local message="Warning: MAKO Decky is installed at ${decky_plugin_manifest%/plugin.json}. Continuing selects this standalone Renderer version for both launch workflows. If it differs from Decky's bundled version, MAKO Decky will offer its normal Renderer update. Continue with the standalone installation?"
-    printf 'MAKO installer: %s\n' "$message" >&2
-    confirm "$message"
 }
 
 # These backups exist only during an explicit install, never in a game path.
@@ -353,10 +229,6 @@ install_payload() {
     [[ -f "$payload_manifest" && -f "$version_file" ]] ||
         fail "Open ‘Install MAKO Renderer’ from the extracted MAKO Renderer archive."
 
-    if ! warn_decky_installation; then
-        exit 0
-    fi
-
     local version
     version="$(tr -d '[:space:]' < "$version_file")"
     [[ -n "$version" ]] || fail "The MAKO Renderer version file is empty."
@@ -392,8 +264,6 @@ install_payload() {
             fail "The package file $manifest_path does not match its recorded checksum."
     done < "$payload_manifest"
 
-    rewrite_desktop_exec "$configuration_desktop_path" "$install_prefix/bin/mako-ui" "" "$install_staging/payload"
-    rewrite_desktop_exec "$uninstaller_desktop_path" "$install_prefix/bin/mako-installer" "--uninstall" "$install_staging/payload"
     write_installed_state_manifest "$install_staging/payload" "$install_staging/installed-files.sha256"
     write_active_renderer_state "$version" "$install_staging/active-renderer.json"
 
@@ -427,20 +297,9 @@ install_payload() {
     install_committed=1
     finish_install
 
-    notice "MAKO Renderer $version is installed. MAKO Renderer Configuration will open now.
+    notice "MAKO Renderer $version is installed. Configure profiles in $config_dir/conf.toml, then use this Steam launch option for a native Steam or Proton game:
 
-For a native Steam or Proton game, use this Steam launch option:
 \"$install_prefix/bin/mako-launch\" %command%"
-    if [[ "${MAKO_INSTALLER_NO_LAUNCH:-0}" != "1" ]]; then
-        if [[ -x "$install_prefix/bin/mako-ui" ]]; then
-            (
-                "$install_prefix/bin/mako-ui" ||
-                    fail "MAKO Renderer is installed, but its configuration app exited with an error. Run \"$install_prefix/bin/mako-ui\" from a terminal to see the error and check configuration permissions or missing Qt dependencies."
-            ) &
-        else
-            notice "MAKO Renderer was installed, but mako-ui is missing. Re-extract the archive and run the installer again."
-        fi
-    fi
 }
 
 uninstall_payload() {
@@ -449,11 +308,7 @@ uninstall_payload() {
         fail "No MAKO Renderer installation managed by this installer was found at $install_prefix."
 
     validate_manifest "$state_manifest"
-    local uninstall_message="Remove the managed native MAKO Renderer? Modified files and your profiles will be kept."
-    if [[ "$install_prefix" == "$decky_install_prefix" && -f "$decky_plugin_manifest" ]]; then
-        uninstall_message="Remove the managed native MAKO Renderer? MAKO Decky will remain installed, but its shared native Renderer will be removed. Open MAKO Decky and select Install Renderer before using MAKO again. Modified files and your profiles will be kept."
-    fi
-    if ! confirm "$uninstall_message"; then
+    if ! confirm "Remove the managed native MAKO Renderer? Modified files and your profiles will be kept."; then
         exit 0
     fi
 
@@ -478,18 +333,9 @@ uninstall_payload() {
             "$install_prefix/$manifest_path" "$install_prefix"
     done < "$state_manifest"
 
-    if [[ "$install_prefix" == "$decky_install_prefix" ]]; then
-        local relative_path
-        for relative_path in "${decky_renderer_relative_paths[@]}"; do
-            rm -f -- "$HOME/$relative_path"
-            remove_empty_parent_directories \
-                "$HOME/$relative_path" "$decky_install_prefix"
-        done
-    else
-        rm -f -- "$active_renderer_state"
-        remove_empty_parent_directories \
-            "$active_renderer_state" "$install_prefix"
-    fi
+    rm -f -- "$active_renderer_state"
+    remove_empty_parent_directories \
+        "$active_renderer_state" "$install_prefix"
     rm -f -- "$state_manifest"
     remove_empty_parent_directories "$state_manifest" "$install_prefix"
     rmdir -- "$install_prefix/bin" 2>/dev/null || true
@@ -509,9 +355,8 @@ usage() {
 Usage: mako-installer [--install] [--uninstall [--purge-configuration]]
 
 Run ‘Install MAKO Renderer’ from an extracted MAKO Renderer archive to install
-or update the standalone user-local Renderer. Run mako-installer --uninstall
-from a default installation to remove the managed native Renderer shared with
-MAKO Decky. A custom installation prefix removes only that standalone payload.
+or update the user-local Renderer. Run mako-installer --uninstall to remove the
+managed Renderer files; profiles are kept unless --purge-configuration is given.
 EOF
 }
 

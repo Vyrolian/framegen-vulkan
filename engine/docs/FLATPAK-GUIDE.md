@@ -1,14 +1,12 @@
 # Flatpak guide
 
-**MAKO Decky users:** prepare apps through **Flatpak Setup**, then follow the [launcher guide](../../plugin/docs/LAUNCHERS.md).
-
-**Standalone users:** complete the steps below for each app. Installing the native Renderer or creating a profile alone does not prepare a Flatpak.
+Complete the steps below for each app. Installing the native Renderer or creating a profile alone does not prepare a Flatpak.
 
 ## Prepare a Renderer profile
 
-In **MAKO Renderer Configuration**, match the game's executable, such as `Game.exe` or `dolphin-emu`, and enable the features you want. Match the executable, not the Flatpak application ID.
+In `~/.config/mako-render/conf.toml`, set `active_in` to the game's executable, such as `Game.exe` or `dolphin-emu`, and enable the features you want. Match the executable, not the Flatpak application ID.
 
-Frame Generation and LS1 require Lossless Scaling's default Steam version: set its absolute **Lossless.dll Path**. Without it, turn Frame Generation off and choose MAKO Scaler and/or Shaders.
+Frame Generation and LS1 require Lossless Scaling's default Steam version: set `dll` to its absolute `Lossless.dll` path. Without it, turn Frame Generation off and choose the MAKO Scaler and/or Shaders.
 
 ## Identify the application and runtime
 
@@ -88,21 +86,21 @@ These settings persist for this app. Repeat with another `appid` for each additi
 
 ## Optional HDR
 
-The manual setup above defaults to SDR. To enable experimental HDR, close the app and replace its HDR overrides. These sandbox settings control exposure; the host Qt UI's **Launch Settings** apply to `mako-launch` and do not configure Flatpak apps.
+The manual setup above defaults to SDR. To enable experimental HDR, close the app and replace its HDR overrides. These sandbox settings control exposure; `launcher.conf` applies to `mako-launch` and does not configure Flatpak apps.
 
 ```bash
 flatpak override --user --env=MAKO_DISABLE_HDR_EXPOSURE=0 "$appid"
 flatpak override --user --env=DXVK_HDR=1 "$appid"
 ```
 
-Restart the app, then enable HDR inside the game. This requires an HDR-capable display in a Gamescope session; keep Gamescope WSI disabled. See [HDR setup](CONFIGURATION.md#hdr) for the supported path. To return to SDR, close the app and restore the overrides:
+Restart the app, then enable HDR inside the game. This requires an HDR-capable display in a Gamescope session. See [HDR setup](CONFIGURATION.md#hdr) for the supported path. To return to SDR, close the app and restore the overrides:
 
 ```bash
 flatpak override --user --env=MAKO_DISABLE_HDR_EXPOSURE=1 "$appid"
 flatpak override --user --unset-env=DXVK_HDR "$appid"
 ```
 
-These app-wide overrides affect every game launched by that Flatpak. MAKO Decky users should use the profile toggle and managed launcher setup instead.
+These app-wide overrides affect every game launched by that Flatpak.
 
 ## Optional private vkBasalt chain
 
@@ -143,7 +141,7 @@ Restart the app and launch normally, or run:
 flatpak run "$appid"
 ```
 
-Use Vulkan, including DXVK/VKD3D for compatible Windows games. The host configuration window can be closed.
+Use Vulkan, including DXVK/VKD3D for compatible Windows games.
 
 If MAKO does not activate, inspect the overrides and sandbox access:
 
@@ -186,7 +184,7 @@ Avoid `flatpak override --reset`: it also removes unrelated app settings.
 
 ## Gamescope VRR overrides
 
-MAKO Decky handles host discovery automatically. For standalone On/Off VRR requests, run this on the host as the game's user while playing:
+For On/Off VRR requests, run this on the host as the game's user while playing:
 
 ```bash
 ~/.local/bin/mako-vrr-lease --watch-flatpak

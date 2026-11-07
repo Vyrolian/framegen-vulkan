@@ -33,7 +33,6 @@ fi
 cmake -S "$repo_root" -B "$build_root" -G "$generator" \
     -DCMAKE_BUILD_TYPE=Debug \
     -DMAKO_BUILD_VK_LAYER=OFF \
-    -DMAKO_BUILD_UI=OFF \
     -DMAKO_BUILD_CLI=OFF \
     -DMAKO_ENABLE_SANITIZERS="$sanitizer_mode" \
     -DBUILD_TESTING=ON

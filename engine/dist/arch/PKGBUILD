@@ -8,7 +8,7 @@
 # verifiable against MAKO-Renderer-install-manifest.txt.
 #
 # Run check-release-pin.sh next to this file to confirm that pkgver, source
-# and sha256sums still match the release pinned in plugin/package.json.
+# and sha256sums still match the release pinned in engine/renderer-release.json.
 
 pkgname=mako-renderer-bin
 pkgver=4.6.0
@@ -28,17 +28,11 @@ depends=(
     'glibc'
     # libstdc++.so.6, libgcc_s.so.1
     'gcc-libs'
-    # libQt6Core.so.6, libQt6Gui.so.6, libQt6Network.so.6, libQt6OpenGL.so.6, libQt6Widgets.so.6
-    'qt6-base'
-    # libQt6Qml.so.6, libQt6QmlModels.so.6, libQt6Quick.so.6, libQt6QuickControls2.so.6
-    'qt6-declarative'
     # libGLX.so.0, libOpenGL.so.0
     'libglvnd'
     # libX11.so.6, used directly by the bundled private vkBasalt layer in
     # releases that include it
     'libx11'
-    # fallback icon theme for the desktop entry
-    'hicolor-icon-theme'
     # The Vulkan loader dlopens the layers. It is not a DT_NEEDED entry, but the
     # implicit layers are unusable without it.
     'vulkan-icd-loader'
@@ -53,7 +47,6 @@ depends=(
 )
 
 optdepends=(
-    'qt6-wayland: native configuration UI under Wayland sessions'
     'vkd3d: LS1 scaling and DirectX LSFG models need libvkd3d-shader.so.1 (64-bit)'
     'lib32-vkd3d: LS1 scaling and DirectX LSFG models need libvkd3d-shader.so.1 (32-bit)'
     'lib32-mesa: Zink support for 32-bit OpenGL games'
@@ -92,9 +85,10 @@ _mako_install_payload_file() {
     fi
 
     case "$relative_path" in
-        bin/mako-installer | share/applications/io.github.eugeniosegala.mako.uninstaller.desktop)
-            # The user-local installer and uninstaller must never manage a
-            # pacman-owned system prefix.
+        bin/mako-installer | bin/*-ui | share/applications/*)
+            # The user-local installer must never manage a pacman-owned system
+            # prefix. The Renderer-only package ships no configuration app or
+            # desktop entries, including those in older archives.
             return 0
             ;;
         share/doc/mako-render/LICENSE.md | share/doc/mako-render/THIRD_PARTY_NOTICES.md)
@@ -149,13 +143,10 @@ package() {
         bin/mako-diagnostics
         bin/mako-installer
         bin/mako-launch
-        bin/mako-ui
         lib/libmako-render-scaling.so
         lib/libmako-render.so
         lib32/libmako-render-scaling.so
         lib32/libmako-render.so
-        share/applications/io.github.eugeniosegala.mako.desktop
-        share/applications/io.github.eugeniosegala.mako.uninstaller.desktop
         share/doc/mako-render/ASSET_PROVENANCE.md
         share/doc/mako-render/LICENSE.md
         share/doc/mako-render/THIRD_PARTY_NOTICES.md
@@ -192,12 +183,11 @@ package() {
     install -Dm644 MAKO-Renderer-install-manifest.txt "$pkgdir/usr/share/doc/mako-renderer-bin/MAKO-Renderer-install-manifest.txt"
 
     # Deliberately not installed:
-    # - bin/mako-installer and "Install MAKO Renderer": the user-local installer,
-    #   which targets ~/.local and manages its own renderer copy.
-    # - share/applications/io.github.eugeniosegala.mako.uninstaller.desktop: its
-    #   Exec calls "mako-installer --uninstall", which defaults to ~/.local and
-    #   would delete MAKO Decky's user-local renderer files. It has no meaning
-    #   for a pacman-owned package.
+    # - bin/mako-installer: the user-local installer, which targets ~/.local and
+    #   manages its own renderer copy.
+    # - bin/*-ui and share/applications/*: the Qt configuration app and desktop
+    #   entries were removed from the Renderer, and this package does not ship
+    #   them even when an older archive contains them.
     # - README.txt from the archive root: it documents the user-local installer
     #   flow that this package deliberately does not provide.
 }

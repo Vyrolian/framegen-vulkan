@@ -35,7 +35,7 @@ namespace {
 bool ls::isExcludedLauncher(const Identification& id) noexcept {
     // Launcher UI processes inherit the game's profile environment. Keep their
     // own presentation native and omit them from capture without denying their
-    // child game. The registry also generates Decky's independent binding.
+    // child game. The shared registry also generates the Renderer binding.
     // A mapped Windows executable is authoritative. Never inspect its parent
     // directory, command-line arguments, or mutable thread name.
     std::string_view executable = id.wine_executable &&
@@ -83,7 +83,7 @@ Identification ls::identify() {
     if (override && *override != '\0')
         id.override = std::string(override);
 
-    // Decky's generated wrapper uses this only to keep an unknown game active
+    // The launcher uses this only to keep an unknown game active
     // on the default profile. Unlike MAKO_PROFILE, process matching outranks it
     // so saving a game profile can take effect in the running process.
     const char* fallback = std::getenv("MAKO_PROFILE_FALLBACK");

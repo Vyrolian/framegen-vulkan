@@ -19,13 +19,14 @@ usage() {
 Usage: mako-diagnostics [options] [PRESET ...]
 
 Filters retained MAKO Renderer diagnostics sessions. Multiple presets may be combined.
-The MAKO Decky private log is preferred. Otherwise, the newest native or
+The private wrapper log at ~/.config/mako-render/present-diagnostics.log is
+preferred when it exists. Otherwise, the newest native or
 Flatpak Steam console log is used. --pacing selects the newest private pacing
 capture instead; these files contain only MAKO timing records.
 
 Presets:
   hdr          HDR/scRGB selection, transport packing, passthrough, and initialization
-  config       Decky reloads and pending/applied safe runtime transitions
+  config       configuration reloads and pending/applied safe runtime transitions
   scaling      spatial extent, format, queue, activation, and scaling-only policy
   adaptive     Adaptive policy, stabilization, ramp, rescue, and cadence
   recovery     generated-image fallback, history warm-up, and in-place recovery
@@ -219,7 +220,7 @@ fi
 for selected_log_path in "${log_paths[@]}"; do
   if [[ ! -f "$selected_log_path" ]]; then
     echo "Diagnostics log not found for session '$session': $selected_log_path" >&2
-    echo "Only the latest $retained_session_count diagnostics-enabled MAKO Decky launches are retained." >&2
+    echo "Only the latest $retained_session_count diagnostics-enabled launches are retained." >&2
     exit 1
   fi
 done
@@ -259,10 +260,6 @@ add_pattern "$renderer_prefix present diagnostics: operation=(launch-environment
 add_pattern "$renderer_prefix Gamescope presentation feedback"
 add_pattern "$renderer_prefix presentation timing (initialized|fallback);"
 add_pattern "$renderer_prefix present diagnostics: operation=gamescope-presentation-feedback"
-# Wrapper session admission failures are deliberately log-only. Retain this
-# line in every focused report so a Desktop-session fallback remains visible
-# without reproducing Gamescope WSI's modal error path.
-add_pattern 'MAKO Decky: Gamescope WSI skipped:'
 # Spatial-scaling and live resource policy records are low-frequency
 # swapchain/startup metadata. Keep them in every focused report so combined
 # Fixed/Adaptive failures cannot be misread as frame-generation-only sessions.

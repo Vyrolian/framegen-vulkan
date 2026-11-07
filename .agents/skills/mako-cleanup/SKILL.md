@@ -30,7 +30,7 @@ For managed environments or container resources, also record the owning manager/
 {
   "entries": [
     {"path": "/absolute/MAKO/engine/build/cache", "decision": "keep", "reason": "Reusable build dependencies"},
-    {"path": "/absolute/MAKO/plugin/out/tester.zip", "decision": "remove", "reason": "Completed release's tester package"}
+    {"path": "/absolute/MAKO/engine/out/MAKO-Renderer-vX.Y.Z-linux.tar.xz", "decision": "remove", "reason": "Completed release's local candidate archive"}
   ]
 }
 ```

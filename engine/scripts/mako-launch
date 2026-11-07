@@ -39,7 +39,7 @@ may cause startup, synchronization, presentation, or image-quality failures.
 EOF
 }
 
-# Keep discovery and admission in one owner for both the Qt availability check
+# Keep discovery and admission in one owner for both the availability check
 # and launch. Only named, guarded manifests enter the private directory; never
 # expose the host's implicit-layer directory to the game. Python runs only when
 # MangoHud is requested, not on normal launches or in the rendering loop.
@@ -190,7 +190,7 @@ esac
 
 # Launcher-only compatibility settings must be established before the child
 # starts, but they are not Renderer profile values and must never be placed in
-# conf.toml. Parse the UI-owned fixed key/value format without sourcing or
+# conf.toml. Parse the fixed key/value format without sourcing or
 # evaluating user-controlled text. An invalid file fails closed to defaults.
 mako_launch_config_path="${MAKO_LAUNCH_CONFIG:-}"
 if [[ -z "$mako_launch_config_path" ]]; then
@@ -507,7 +507,7 @@ if [[ "$mako_mangohud_requested" == 1 && "${DISABLE_MAKO:-0}" != 1 ]]; then
         mako_implicit_layer_path="$mako_implicit_layer_path:$mako_mangohud_directory"
         export MANGOHUD=1
         unset DISABLE_MANGOHUD
-        # Match Decky's 64-bit explicit ordering. The guarded 32-bit manifest
+        # Keep the 64-bit manifest explicit. The guarded 32-bit manifest
         # stays implicit and is admitted only to a matching 32-bit process.
         if [[ -r "$mako_mangohud_directory/MangoHud.x86_64.json" ]]; then
             mako_mangohud_chain=":${VK_INSTANCE_LAYERS:-}:"

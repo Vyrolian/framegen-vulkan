@@ -24,7 +24,6 @@ fi
 cmake -S "$repo_root" -B "$build_root" -G "$generator" \
     -DCMAKE_BUILD_TYPE=Release \
     -DMAKO_BUILD_VK_LAYER=OFF \
-    -DMAKO_BUILD_UI=OFF \
     -DMAKO_BUILD_CLI=OFF \
     -DBUILD_TESTING=ON
 cmake --build "$build_root" --target mako-adaptive-benchmark

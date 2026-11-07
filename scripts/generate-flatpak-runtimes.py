@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate Renderer manifests and Decky's runtime list from one build catalogue."""
+"""Generate Renderer Flatpak manifests and the runtime list from one build catalogue."""
 
 import argparse
 import json
@@ -55,15 +55,6 @@ def generated_files(root: Path) -> dict[Path, str]:
         MATRIX_DIRECTORY / "runtime-versions.txt": "".join(
             f"{entry['version']}\n" for entry in entries
         ),
-        Path("plugin/shared_flatpak_runtimes.py"): "\n".join([
-            f'"""Generated from {CATALOGUE}; do not edit."""',
-            "# Regenerate: just generate-flatpak-runtimes",
-            "",
-            "SUPPORTED_FLATPAK_RUNTIME_VERSIONS = (",
-            *(f'    "{entry["version"]}",' for entry in entries),
-            ")",
-            "",
-        ]),
     }
     for entry in entries:
         manifest = template.replace("@RUNTIME_VERSION@", entry["version"]).replace(

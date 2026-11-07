@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const [component, version, repository] = process.argv.slice(2);
-const usage = "Usage: update-release-links.mjs <decky|renderer> <version> <owner/repository>";
+const usage = "Usage: update-release-links.mjs renderer <version> <owner/repository>";
 
 if (!component || !version || !repository) {
   throw new Error(usage);
@@ -19,17 +19,6 @@ if (!/^[A-Za-z0-9._-]+$/.test(version)) {
 }
 
 const componentDetails = {
-  decky: {
-    name: "MAKO Decky",
-    releaseTarget: "Latest",
-    releaseUrl: `https://github.com/${repository}/releases/latest`,
-    tableText: "Latest MAKO Decky release (ZIP under Assets)",
-    linkText: "latest MAKO Decky release",
-    expectedLinks: {
-      "README.md": 1,
-      "plugin/README.md": 1,
-    },
-  },
   renderer: {
     name: "MAKO Renderer",
     releaseTarget: `render-v${version}`,
@@ -38,7 +27,6 @@ const componentDetails = {
     linkText: "latest MAKO Renderer release",
     expectedLinks: {
       "README.md": 1,
-      "plugin/README.md": 1,
       "engine/README.md": 1,
     },
   },

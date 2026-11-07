@@ -1,0 +1,14 @@
+{
+  "name": "repository-tools",
+  "private": true,
+  "description": "Markdown formatting and commit-hook tools for this repository.",
+  "scripts": {
+    "format:markdown": "prettier --write --config .prettierrc.json --ignore-path .prettierignore \"**/*.md\"",
+    "format:markdown:check": "prettier --check --config .prettierrc.json --ignore-path .prettierignore \"**/*.md\"",
+    "format:staged": "lint-staged --config lint-staged.config.mjs"
+  },
+  "devDependencies": {
+    "lint-staged": "17.3.0",
+    "prettier": "3.9.6"
+  }
+}

@@ -526,7 +526,7 @@ if(MAKO_BUILD_VK_LAYER)
         @ONLY)
 
     # MAKO-managed SDR launches use a private manifest directory, matching the
-    # proven v2 Decky boundary. Relative paths containing a directory need one
+    # proven v2 launch boundary. Relative paths containing a directory need one
     # more parent traversal; a bare loader name remains valid as-is.
     set(MAKO_PUBLIC_LAYER_LIBRARY_PATH "${MAKO_LAYER_LIBRARY_PATH}")
     set(MAKO_PUBLIC_SCALING_LAYER_LIBRARY_PATH

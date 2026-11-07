@@ -21,6 +21,8 @@ install(PROGRAMS "${CMAKE_CURRENT_SOURCE_DIR}/../scripts/mako-diagnostics"
     DESTINATION "${CMAKE_INSTALL_BINDIR}")
 install(PROGRAMS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/mako-installer"
     DESTINATION "${CMAKE_INSTALL_BINDIR}")
+install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/vkbasalt-shaders/"
+    DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/mako-render/vkbasalt-shaders")
 install(PROGRAMS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/mako-remote-play"
     DESTINATION "${CMAKE_INSTALL_BINDIR}")
 install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/scripts/mako_remote_play/"
@@ -75,10 +77,8 @@ endif()
 
 # === READ HERE FOR BUILD OPTIONS ===
 option(MAKO_BUILD_VK_LAYER     "Build the Vulkan layer"            ON)
-option(MAKO_BUILD_UI           "Build the user interface"         OFF)
 option(MAKO_BUILD_CLI          "Build the command line interface"  ON)
 option(MAKO_INSTALL_DEVELOP    "Install development libraries and headers"      OFF)
-option(MAKO_INSTALL_XDG_FILES  "Install the application icon and desktop files" OFF)
 option(MAKO_ENABLE_SANITIZERS  "Enable AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
 option(MAKO_EXPERIMENTAL_LSFG_FP16 "Convert FP32-only LSFG models when the existing FP16 setting is enabled (quality unqualified)" OFF)
 set(MAKO_LSFG_FP16_TOOLS_SOURCE "" CACHE PATH "Pinned SPIRV-Tools source prepared by scripts/prepare-lsfg-fp16-tools.sh")
@@ -122,9 +122,6 @@ if(BUILD_TESTING AND UNIX)
         COMMAND "${MAKO_PYTHON3_EXECUTABLE}"
             "${CMAKE_CURRENT_SOURCE_DIR}/scripts/test-mako-launch-mangohud.py")
     set_tests_properties(standalone-mangohud PROPERTIES LABELS "portable-policy")
-    add_test(NAME remote-play-bindings
-        COMMAND "${MAKO_PYTHON3_EXECUTABLE}"
-            "${CMAKE_CURRENT_SOURCE_DIR}/scripts/generate-remote-play-bindings.py" --check)
     add_test(NAME remote-play-command
         COMMAND "${MAKO_PYTHON3_EXECUTABLE}"
             "${CMAKE_CURRENT_SOURCE_DIR}/scripts/test-mako-remote-play.py")
@@ -272,7 +269,7 @@ if(MAKO_TESTING_RENDERDOC)
     add_compile_definitions(MAKO_TESTING_RENDERDOC)
 endif()
 
-if(MAKO_BUILD_VK_LAYER OR MAKO_BUILD_UI OR MAKO_BUILD_CLI OR
+if(MAKO_BUILD_VK_LAYER OR MAKO_BUILD_CLI OR
         MAKO_INSTALL_DEVELOP OR BUILD_TESTING)
     add_subdirectory(mako-common)
 endif()
@@ -281,9 +278,6 @@ if(MAKO_BUILD_VK_LAYER OR MAKO_BUILD_CLI OR MAKO_INSTALL_DEVELOP)
 endif()
 if(MAKO_BUILD_VK_LAYER OR MAKO_BUILD_CLI OR BUILD_TESTING)
     add_subdirectory(mako-render)
-endif()
-if(MAKO_BUILD_UI)
-    add_subdirectory(mako-ui)
 endif()
 if(MAKO_BUILD_CLI)
     add_subdirectory(mako-cli)
