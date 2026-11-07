@@ -10,7 +10,7 @@ fn main() -> eframe::Result {
         viewport: egui::ViewportBuilder::default()
             .with_title("fgvk")
             .with_app_id("fgvk")
-            .with_inner_size([420.0, 560.0]),
+            .with_inner_size([460.0, 660.0]),
         ..Default::default()
     };
     eframe::run_native(

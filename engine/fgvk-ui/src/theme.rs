@@ -1,6 +1,9 @@
 //! Catppuccin Mocha colours applied to egui visuals.
 
-use egui::{style::WidgetVisuals, Color32, CornerRadius, Stroke, ThemePreference, Visuals};
+use egui::{
+    style::WidgetVisuals, Color32, CornerRadius, FontFamily, FontId, Stroke, Style, TextStyle,
+    ThemePreference, Visuals,
+};
 
 pub const BASE: Color32 = Color32::from_rgb(0x1e, 0x1e, 0x2e);
 pub const MANTLE: Color32 = Color32::from_rgb(0x18, 0x18, 0x25);
@@ -15,9 +18,10 @@ pub const MAUVE: Color32 = Color32::from_rgb(0xcb, 0xa6, 0xf7);
 pub const RED: Color32 = Color32::from_rgb(0xf3, 0x8b, 0xa8);
 pub const GREEN: Color32 = Color32::from_rgb(0xa6, 0xe3, 0xa1);
 
-/// Forces dark mode and applies the palette to the egui visuals.
+/// Forces dark mode and applies the palette, text sizes and spacing to egui.
 pub fn apply(ctx: &egui::Context) {
     ctx.set_theme(ThemePreference::Dark);
+    ctx.all_styles_mut(sizing);
 
     let mut visuals = Visuals::dark();
     visuals.dark_mode = true;
@@ -58,6 +62,26 @@ pub fn apply(ctx: &egui::Context) {
     );
 
     ctx.set_visuals(visuals);
+}
+
+/// Slightly larger text and roomier controls than egui's defaults. Only sizes change, so each text style keeps its font family.
+fn sizing(style: &mut Style) {
+    text_size(style, TextStyle::Small, 13.0);
+    text_size(style, TextStyle::Body, 15.5);
+    text_size(style, TextStyle::Button, 15.5);
+    text_size(style, TextStyle::Monospace, 14.0);
+    text_size(style, TextStyle::Heading, 20.0);
+    style.spacing.item_spacing = egui::vec2(8.0, 6.0);
+    style.spacing.button_padding = egui::vec2(8.0, 4.0);
+    style.spacing.interact_size.y = 26.0;
+}
+
+fn text_size(style: &mut Style, text_style: TextStyle, size: f32) {
+    style
+        .text_styles
+        .entry(text_style)
+        .or_insert_with(|| FontId::new(size, FontFamily::Proportional))
+        .size = size;
 }
 
 fn style_widget(widget: &mut WidgetVisuals, fill: Color32, stroke: Stroke, text: Color32) {

@@ -3,7 +3,7 @@
 use std::ops::RangeInclusive;
 use std::time::{Duration, Instant};
 
-use egui::{Button, Key, RichText, Ui};
+use egui::{Button, Key, RichText, Stroke, Ui};
 
 use crate::config::{self, Config, ConfigView, FpsMemory, Mode, Profile, ProfileKey, Settings};
 use crate::theme;
@@ -375,7 +375,10 @@ impl App {
         let mut mode = profile.mode;
         ui.horizontal(|ui| {
             for option in MODES {
-                ui.selectable_value(&mut mode, option, mode_label(option));
+                let response = ui.add(option_button(mode_label(option), profile.mode == option));
+                if response.clicked() {
+                    mode = option;
+                }
             }
         });
         if mode != profile.mode {
@@ -409,7 +412,13 @@ impl App {
                 ui.label("Max multiplier");
                 let mut max = profile.adaptive_max_multiplier;
                 for option in MAX_MULTIPLIERS {
-                    ui.selectable_value(&mut max, option, format!("{option}x"));
+                    let response = ui.add(option_button(
+                        format!("{option}x"),
+                        profile.adaptive_max_multiplier == option,
+                    ));
+                    if response.clicked() {
+                        max = option;
+                    }
                 }
                 max
             })
@@ -469,7 +478,8 @@ impl App {
                 let typed = text_commit(ui, &mut self.fps_text, &current.to_string(), 56.0, "");
 
                 let mut value = current.clamp(*FPS_SLIDER_RANGE.start(), *FPS_SLIDER_RANGE.end());
-                let response = ui.add(egui::Slider::new(&mut value, FPS_SLIDER_RANGE));
+                let response =
+                    ui.add(egui::Slider::new(&mut value, FPS_SLIDER_RANGE).show_value(false));
                 let dragged = slider_commit(&mut self.fps_slider, value, &response);
                 (typed, dragged)
             })
@@ -557,6 +567,16 @@ fn mode_label(mode: Mode) -> String {
         Mode::Off => "Off".to_owned(),
         Mode::Fixed(multiplier) => format!("{multiplier}x"),
         Mode::Adaptive => "Adaptive".to_owned(),
+    }
+}
+
+/// Framed option button. The selected option adds a mauve border on top of the selection tint.
+fn option_button(label: String, selected: bool) -> Button<'static> {
+    let button = Button::new(label).selected(selected);
+    if selected {
+        button.stroke(Stroke::new(1.5, theme::MAUVE))
+    } else {
+        button
     }
 }
 
