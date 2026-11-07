@@ -115,10 +115,7 @@ impl App {
     }
 
     fn content(&mut self, ui: &mut Ui) {
-        let footer_height = 24.0;
-        let body_height = (ui.available_height() - footer_height).max(0.0);
         egui::ScrollArea::vertical()
-            .max_height(body_height)
             .auto_shrink([false, false])
             .show(ui, |ui| match self.config.view() {
                 ConfigView::Missing(path) => self.missing(ui, &path),
@@ -128,8 +125,6 @@ impl App {
                 }
                 ConfigView::Ready(settings) => self.editor(ui, settings),
             });
-        ui.separator();
-        status_line(ui, &self.status);
     }
 
     fn missing(&mut self, ui: &mut Ui, path: &str) {
@@ -523,6 +518,7 @@ impl eframe::App for App {
     }
 
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
+        footer(ui, &self.status);
         egui::CentralPanel::default().show(ui, |ui| self.content(ui));
     }
 }
@@ -540,9 +536,32 @@ fn invalid(ui: &mut Ui, message: &str) {
     );
 }
 
+/// Bottom panel with the separator and status line. Its height follows the message, so a wrapped
+/// error stays visible. Idle keeps one text row, so "Saved" does not move the layout.
+fn footer(ui: &mut Ui, status: &Status) {
+    let mut frame = egui::Frame::side_top_panel(ui.style());
+    frame.inner_margin.bottom = 10;
+    let response = egui::Panel::bottom("footer")
+        .frame(frame)
+        .show(ui, |ui| status_line(ui, status))
+        .response;
+
+    // A panel is sized from the previous pass. When the footer height changes, request another
+    // pass so the new height is used in this frame instead of one frame later.
+    let id = ui.scope_id().with("footer_height");
+    let height = response.rect.height();
+    if ui.data(|data| data.get_temp::<f32>(id)) != Some(height) {
+        ui.data_mut(|data| data.insert_temp(id, height));
+        ui.ctx().request_discard("footer height changed");
+    }
+}
+
 fn status_line(ui: &mut Ui, status: &Status) {
     match status {
-        Status::Idle => {}
+        // An empty label lays out the same text row as a message, so the height matches exactly.
+        Status::Idle => {
+            ui.label("");
+        }
         Status::Saved => {
             ui.label(RichText::new("Saved").color(theme::GREEN));
         }
