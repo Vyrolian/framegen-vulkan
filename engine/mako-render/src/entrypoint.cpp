@@ -9,9 +9,12 @@
 #include "mako-common/vulkan/vulkan.hpp"
 #include "mako-common/vulkan/device_features.hpp"
 #include "present_diagnostics.hpp"
+#include "wayland_presentation_feedback.hpp"
 #include "swapchain/swapchain.hpp"
 #include "swapchain/create_policy.hpp"
 #include "swapchain/retirement.hpp"
+#include "swapchain/private_present_queue.hpp"
+#include "swapchain/release_gate.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -37,11 +40,10 @@
 
 #include <vulkan/vk_layer.h>
 #include <vulkan/vulkan_core.h>
+#include <vulkan/vulkan_wayland.h>
 
-// Platform surface create-info types are opaque here: MAKO only forwards the
-// structures and records which entrypoint produced the resulting handle. This
-// avoids making the Renderer link against X11, XCB, or Wayland client APIs.
-struct VkWaylandSurfaceCreateInfoKHR;
+// X11 create-info types remain opaque. Native Wayland's borrowed handles are
+// used only by the opt-in presentation observer; client APIs resolve at runtime.
 struct VkXcbSurfaceCreateInfoKHR;
 struct VkXlibSurfaceCreateInfoKHR;
 
@@ -66,10 +68,15 @@ namespace {
         bool surfaceCapabilities2{false};
 
         std::unordered_map<VkDevice, vk::Vulkan> devices;
+        std::unordered_map<VkDevice, std::shared_ptr<DeferredPresentQueue>> deferredPresentQueues;
         std::unordered_set<VkDevice> nativeDevices;
         std::unordered_set<VkDevice> presentRetirementDevices;
         std::unordered_set<VkDevice> gamescopeTimingDevices;
         std::unordered_set<VkDevice> presentTimingDevices;
+        std::unordered_set<VkDevice> presentMeteringDevices;
+        std::unordered_set<VkDevice> copyCalibrationDevices;
+        std::unordered_set<VkDevice> applicationTimingDevices;
+        std::unordered_set<VkDevice> presentFeedbackDevices;
         std::unordered_set<VkDevice> hdrMetadataDevices;
         std::unordered_set<VkDevice> lowerHdrMetadataDevices;
         struct QueueIdentity {
@@ -98,6 +105,7 @@ namespace {
         std::unordered_map<VkSurfaceKHR, SpatialScalingExtents>
             variableSurfaceRollbackExtents;
         std::unordered_map<VkSurfaceKHR, SpatialSurfaceOrigin> surfaceOrigins;
+        std::unordered_map<VkSurfaceKHR, std::shared_ptr<WaylandPresentationFeedback>> waylandPresentation;
         std::unordered_set<VkSurfaceKHR> unprovenSplitSurfacesLogged;
         std::unordered_map<
             VkSurfaceKHR, ScalingAdmissionRetrySurfaceBudget
@@ -605,6 +613,8 @@ namespace {
             layer_info->root.modifyInstanceCreateInfo(newInfo,
                 [&, newInfo = &newInfo]() {
                     auto res = vkCreateInstance(newInfo, alloc, instance);
+                    present_diagnostics::traceVulkanSetup(layerRoleName, *info, *newInfo,
+                        res, res == VK_SUCCESS ? *instance : VK_NULL_HANDLE);
                     if (res != VK_SUCCESS)
                         throw ls::vulkan_error(res, "vkCreateInstance() failed");
                     lowerInstanceCreated = true;
@@ -791,7 +801,31 @@ namespace {
                 physdev, *info, scalingEngineProvisioned
             )
             : std::nullopt;
+        uint32_t privateFamilyCount{};
+        instance_info->funcs.GetPhysicalDeviceQueueFamilyProperties(physdev, &privateFamilyCount, nullptr);
+        std::vector<VkQueueFamilyProperties> privateFamilies(privateFamilyCount);
+        instance_info->funcs.GetPhysicalDeviceQueueFamilyProperties(physdev, &privateFamilyCount, privateFamilies.data());
+        const PrivatePresentQueueRequest privatePresentQueue(*info, privateFamilies,
+            frameGenerationInteropEnabled ? layerQueueFamily : std::nullopt);
         bool ownedPresentTiming = false;
+        bool presentMeteringEnabled = false;
+#if defined(VK_NV_present_metering)
+        if (frameGenerationInteropEnabled && instance_info->funcs.GetPhysicalDeviceFeatures2) {
+            const auto extensions = lowerDeviceExtensions(physdev);
+            bool supplied = false;
+            for (auto* node = static_cast<const VkBaseInStructure*>(info->pNext); node; node = node->pNext)
+                supplied |= node->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_METERING_FEATURES_NV;
+            if (!supplied && std::ranges::any_of(extensions, [](const auto& extension) {
+                    return std::strcmp(extension.extensionName, VK_NV_PRESENT_METERING_EXTENSION_NAME) == 0;
+                })) {
+                VkPhysicalDevicePresentMeteringFeaturesNV metering{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_METERING_FEATURES_NV};
+                VkPhysicalDeviceFeatures2 features{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &metering};
+                instance_info->funcs.GetPhysicalDeviceFeatures2(physdev, &features);
+                presentMeteringEnabled = metering.presentMetering;
+            }
+        }
+#endif
+        bool copyCalibrationEnabled = false;
 #if defined(VK_EXT_present_timing) && defined(VK_KHR_present_id2)
         if (frameGenerationInteropEnabled && instance_info->surfaceCapabilities2 &&
                 OwnedPresentTiming::ownsNamespace(*info) &&
@@ -850,6 +884,7 @@ namespace {
         // create device
         try {
             VkDeviceCreateInfo newInfo = *info;
+            privatePresentQueue.apply(newInfo);
             std::vector<const char*> precisionExtensions;
             bool enableScalingFp16 = false;
             if (scalingEngineProvisioned && layer_info->root.fp16RequestedAtStartup() &&
@@ -939,6 +974,54 @@ namespace {
                 newInfo.pNext = &timingFeatures;
             }
 #endif
+#if defined(VK_NV_present_metering)
+            std::vector<const char*> meteringExtensions;
+            VkPhysicalDevicePresentMeteringFeaturesNV meteringFeatures{
+                .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_METERING_FEATURES_NV,
+                .pNext = const_cast<void*>(newInfo.pNext), .presentMetering = VK_TRUE,
+            };
+            if (presentMeteringEnabled) {
+                for (uint32_t i = 0; i < newInfo.enabledExtensionCount; ++i)
+                    meteringExtensions.push_back(newInfo.ppEnabledExtensionNames[i]);
+                if (std::ranges::none_of(meteringExtensions, [](const char* name) {
+                        return std::strcmp(name, VK_NV_PRESENT_METERING_EXTENSION_NAME) == 0;
+                    })) meteringExtensions.push_back(VK_NV_PRESENT_METERING_EXTENSION_NAME);
+                newInfo.enabledExtensionCount = static_cast<uint32_t>(meteringExtensions.size());
+                newInfo.ppEnabledExtensionNames = meteringExtensions.data();
+                newInfo.pNext = &meteringFeatures;
+            }
+#endif
+            // Full-trace diagnostics only. Negotiate a supported calibration
+            // alias and known clock domains without adding any feature node.
+            std::vector<const char*> copyCalibrationExtensions;
+            if (frameGenerationLayer && frameGenerationInteropEnabled && present_diagnostics::pacingFrameTraceEnabled()) {
+                const auto supported = lowerDeviceExtensions(physdev);
+                const char* calibrationExtension{};
+                for (const auto* name : {VK_KHR_CALIBRATED_TIMESTAMPS_EXTENSION_NAME, VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME})
+                    if (!calibrationExtension && std::ranges::any_of(supported, [name](const auto& extension) {
+                            return std::strcmp(extension.extensionName, name) == 0;
+                        })) calibrationExtension = name;
+                auto domains = reinterpret_cast<PFN_vkGetPhysicalDeviceCalibrateableTimeDomainsKHR>(
+                    layer_info->GetInstanceProcAddr(instance_info->handles.front(), "vkGetPhysicalDeviceCalibrateableTimeDomainsKHR"));
+                if (!domains) domains = reinterpret_cast<PFN_vkGetPhysicalDeviceCalibrateableTimeDomainsKHR>(
+                    layer_info->GetInstanceProcAddr(instance_info->handles.front(), "vkGetPhysicalDeviceCalibrateableTimeDomainsEXT"));
+                std::array<VkTimeDomainKHR, 8> supportedDomains{};
+                uint32_t count = supportedDomains.size();
+                if (calibrationExtension && domains && domains(physdev, &count, supportedDomains.data()) == VK_SUCCESS && count <= supportedDomains.size()) {
+                    const auto available = std::span{supportedDomains}.first(count);
+                    copyCalibrationEnabled = std::ranges::find(available, VK_TIME_DOMAIN_DEVICE_KHR) != available.end() &&
+                        std::ranges::find(available, VK_TIME_DOMAIN_CLOCK_MONOTONIC_KHR) != available.end();
+                }
+                if (copyCalibrationEnabled) {
+                    for (uint32_t i = 0; i < newInfo.enabledExtensionCount; ++i)
+                        copyCalibrationExtensions.push_back(newInfo.ppEnabledExtensionNames[i]);
+                    if (!std::ranges::any_of(copyCalibrationExtensions, [calibrationExtension](const char* name) {
+                            return std::strcmp(name, calibrationExtension) == 0;
+                        })) copyCalibrationExtensions.push_back(calibrationExtension);
+                    newInfo.enabledExtensionCount = static_cast<uint32_t>(copyCalibrationExtensions.size());
+                    newInfo.ppEnabledExtensionNames = copyCalibrationExtensions.data();
+                }
+            }
             layer_info->root.modifyDeviceCreateInfo(
                 newInfo,
                 swapchainMaintenance1Extension.value_or(nullptr),
@@ -948,6 +1031,8 @@ namespace {
                         swapchainMaintenance1Enabled(*newInfo);
                     shaderFloat16Enabled = vk::shaderFloat16Enabled(newInfo->pNext);
                     auto res = instance_info->funcs.CreateDevice(physdev, newInfo, alloc, device);
+                    present_diagnostics::traceVulkanSetup(layerRoleName, *info, *newInfo,
+                        res, res == VK_SUCCESS ? *device : VK_NULL_HANDLE, physdev);
                     if (res != VK_SUCCESS)
                         throw ls::vulkan_error(res, "vkCreateDevice() failed");
                     lowerDeviceCreated = true;
@@ -972,6 +1057,14 @@ namespace {
             instance_info->gamescopeTimingDevices.insert(*device);
         if (ownedPresentTiming)
             instance_info->presentTimingDevices.insert(*device);
+        if (presentMeteringEnabled)
+            instance_info->presentMeteringDevices.insert(*device);
+        if (copyCalibrationEnabled)
+            instance_info->copyCalibrationDevices.insert(*device);
+        if (applicationOwnsPresentationTiming(*info))
+            instance_info->applicationTimingDevices.insert(*device);
+        if (enablesApplicationPresentId2Wait2(info->pNext))
+            instance_info->presentFeedbackDevices.insert(*device);
         if (hdrMetadataEnabled)
             instance_info->hdrMetadataDevices.insert(*device);
         if (lowerHdrMetadataEnabled)
@@ -1002,8 +1095,13 @@ namespace {
             instance_info->presentRetirementDevices.erase(*device);
             instance_info->gamescopeTimingDevices.erase(*device);
             instance_info->presentTimingDevices.erase(*device);
+            instance_info->presentMeteringDevices.erase(*device);
+            instance_info->copyCalibrationDevices.erase(*device);
+            instance_info->applicationTimingDevices.erase(*device);
+            instance_info->presentFeedbackDevices.erase(*device);
             instance_info->hdrMetadataDevices.erase(*device);
             instance_info->lowerHdrMetadataDevices.erase(*device);
+            instance_info->deferredPresentQueues.erase(*device);
         };
         try {
             if (!layerQueueFamily) {
@@ -1026,6 +1124,18 @@ namespace {
             if (!inserted)
                 throw ls::error("duplicate Vulkan device handle");
             layerDeviceInserted = true;
+
+            if (privatePresentQueue.index) {
+                auto privateQueue = std::make_shared<DeferredPresentQueue>();
+                wrapper->second.df().GetDeviceQueue(*device, *layerQueueFamily,
+                    *privatePresentQueue.index, &privateQueue->queue);
+                if (privateQueue->queue && wrapper->second.loaderdatafunc()) {
+                    const auto result = (*wrapper->second.loaderdatafunc())(*device, privateQueue->queue);
+                    if (result != VK_SUCCESS) privateQueue->queue = VK_NULL_HANDLE;
+                }
+                if (privateQueue->queue)
+                    instance_info->deferredPresentQueues.emplace(*device, std::move(privateQueue));
+            }
 
             // Queue handles are stable for the device lifetime. Register
             // every ordinary queue the application requested so scaling can
@@ -1093,15 +1203,146 @@ namespace {
         return VK_SUCCESS;
     }
 
+    VkResult completeDeferredPresent(VkSwapchainKHR swapchain, uint64_t timeout) {
+        const auto mapping = instance_info->swapchains.find(swapchain);
+        if (mapping == instance_info->swapchains.end() ||
+                instance_info->nativeSwapchains.contains(swapchain)) return VK_SUCCESS;
+        try {
+            return layer_info->root.getSwapchainContext(swapchain, mapping->second.get())
+                .completeDeferredPresent(timeout);
+        } catch (const std::exception&) { return VK_ERROR_INITIALIZATION_FAILED; }
+    }
+
+    // An application present may keep one sealed overlapped batch spacing:
+    // resource replacement joins it before retiring anything it waits on.
+    void drainDeferredDevice(VkDevice device, bool retainOverlap = false) {
+        for (const auto& [swapchain, wrapper] : instance_info->swapchains) {
+            if (wrapper.get().dev() != device) continue;
+            if (!retainOverlap) {
+                static_cast<void>(completeDeferredPresent(swapchain, UINT64_MAX));
+                continue;
+            }
+            const auto mapping = instance_info->swapchains.find(swapchain);
+            if (instance_info->nativeSwapchains.contains(swapchain)) continue;
+            try {
+                static_cast<void>(layer_info->root.getSwapchainContext(swapchain, mapping->second.get())
+                    .completeDeferredPresentRetainingOverlap());
+            } catch (const std::exception&) {}
+        }
+    }
+
+    VkResult myvkDeviceWaitIdle(VkDevice device) {
+        drainDeferredDevice(device);
+        const auto lower = reinterpret_cast<PFN_vkDeviceWaitIdle>(
+            instance_info->funcs.GetDeviceProcAddr(device, "vkDeviceWaitIdle"));
+        return lower(device);
+    }
+
+    VkResult myvkQueueWaitIdle(VkQueue queue) {
+        const auto identity = instance_info->queueIdentities.find(queue);
+        if (identity == instance_info->queueIdentities.end()) {
+            const auto lower = reinterpret_cast<PFN_vkQueueWaitIdle>(
+                layer_info->GetInstanceProcAddr(instance_info->handles.front(), "vkQueueWaitIdle"));
+            return lower(queue);
+        }
+        const auto device = identity->second.device;
+        drainDeferredDevice(device);
+        const auto lower = reinterpret_cast<PFN_vkQueueWaitIdle>(
+            instance_info->funcs.GetDeviceProcAddr(device, "vkQueueWaitIdle"));
+        if (const auto owned = instance_info->deferredPresentQueues.find(device);
+                owned != instance_info->deferredPresentQueues.end()) {
+            const std::lock_guard queueLock(owned->second->mutex);
+            const auto result = lower(owned->second->queue);
+            if (result != VK_SUCCESS) return result;
+        }
+        return lower(queue);
+    }
+
+    // Lower pointers cached per thread, so an unarmed application submit
+    // or wait costs thread-local loads instead of a map lookup and GDPA.
+    // Device destruction invalidates every cache: handles can be reused.
+    std::atomic<uint64_t> deviceDispatchEpoch{0};
+
+    template<typename Function, typename Handle>
+    struct CachedLower {
+        Handle handle{};
+        uint64_t epoch{UINT64_MAX};
+        Function function{};
+        template<typename Resolve>
+        Function get(const Handle current, Resolve&& resolve) {
+            const auto now = deviceDispatchEpoch.load(std::memory_order_acquire);
+            if (current != handle || epoch != now || !function) {
+                function = reinterpret_cast<Function>(resolve());
+                handle = current;
+                epoch = now;
+            }
+            return function;
+        }
+    };
+
+    PFN_vkVoidFunction lowerQueueCommand(const VkQueue queue, const char* name) {
+        const auto identity = instance_info->queueIdentities.find(queue);
+        if (identity == instance_info->queueIdentities.end())
+            return layer_info->GetInstanceProcAddr(instance_info->handles.front(), name);
+        return instance_info->funcs.GetDeviceProcAddr(identity->second.device, name);
+    }
+
+    // See swapchain/release_gate.hpp: record the cap deadline against the
+    // signal-only submit that follows an application present.
+    template<const char* Name>
+    VkResult VKAPI_CALL myvkQueueSubmit2Common(VkQueue queue, uint32_t submitCount,
+            const VkSubmitInfo2* submits, VkFence fence) {
+        static thread_local CachedLower<PFN_vkQueueSubmit2, VkQueue> lower;
+        const auto next = lower.get(queue, [&] { return lowerQueueCommand(queue, Name); });
+        ReleaseGate::global().observeSubmit2(queue, submitCount, submits, fence);
+        return next(queue, submitCount, submits, fence);
+    }
+    constexpr char queueSubmit2Name[] = "vkQueueSubmit2";
+    constexpr char queueSubmit2KhrName[] = "vkQueueSubmit2KHR";
+
+    // Delay a successful application wait on a recorded release token until
+    // its cap deadline. A deadline after the caller's timeout keeps the token
+    // and reports VK_TIMEOUT, as if the value had not yet been reached.
+    template<const char* Name>
+    VkResult VKAPI_CALL myvkWaitSemaphoresCommon(VkDevice device,
+            const VkSemaphoreWaitInfo* info, uint64_t timeout) {
+        static thread_local CachedLower<PFN_vkWaitSemaphores, VkDevice> lower;
+        const auto next = lower.get(device, [&] {
+            return instance_info->funcs.GetDeviceProcAddr(device, Name); });
+        auto& gate = ReleaseGate::global();
+        if (gate.empty() || !info) return next(device, info, timeout);
+        using Clock = ReleaseGate::Clock;
+        const auto started = Clock::now();
+        const auto result = next(device, info, timeout);
+        if (result != VK_SUCCESS) return result;
+        const auto now = Clock::now();
+        const auto limit = timeout >= uint64_t{3'600'000'000'000}
+            ? Clock::time_point::max() : started + std::chrono::nanoseconds(timeout);
+        const auto release = gate.released(*info, now, limit);
+        if (!release) return result;
+        std::this_thread::sleep_until(release->consumed ? release->deadline : limit);
+        return release->consumed ? VK_SUCCESS : VK_TIMEOUT;
+    }
+    constexpr char waitSemaphoresName[] = "vkWaitSemaphores";
+    constexpr char waitSemaphoresKhrName[] = "vkWaitSemaphoresKHR";
+
+    bool isOptionalReleaseCommand(const std::string_view name) {
+        return name == queueSubmit2Name || name == queueSubmit2KhrName ||
+            name == waitSemaphoresName || name == waitSemaphoresKhrName;
+    }
+
     // destroy device
     void myvkDestroyDevice(VkDevice device, const VkAllocationCallbacks* alloc) {
         if (!instance_info)
             return;
+        deviceDispatchEpoch.fetch_add(1, std::memory_order_acq_rel);
 
         collectRetiredSwapchains(
             device, 250'000'000, "device-destroy"
         );
         forceFinalizeRetiredSwapchains(device);
+        drainDeferredDevice(device);
+        instance_info->deferredPresentQueues.erase(device);
 
         // destroy layer instance
         auto it = instance_info->devices.find(device);
@@ -1117,6 +1358,10 @@ namespace {
         instance_info->presentRetirementDevices.erase(device);
         instance_info->gamescopeTimingDevices.erase(device);
         instance_info->presentTimingDevices.erase(device);
+        instance_info->presentMeteringDevices.erase(device);
+        instance_info->copyCalibrationDevices.erase(device);
+        instance_info->applicationTimingDevices.erase(device);
+        instance_info->presentFeedbackDevices.erase(device);
         instance_info->hdrMetadataDevices.erase(device);
         instance_info->lowerHdrMetadataDevices.erase(device);
 
@@ -1195,7 +1440,11 @@ namespace {
             instance_info->funcs.GetDeviceProcAddr(device, "vkWaitForPresentKHR"));
         return present_diagnostics::observeApplicationPresentWait(device, swapchain,
             present_diagnostics::PresentWaitApi::Khr, presentId, timeout,
-            [&] { return next(device, swapchain, presentId, timeout); });
+            [&] {
+                DeferredPresent::applicationWait(swapchain, presentId, timeout);
+                return DeferredPresent::waitForPresent(device, swapchain, presentId, timeout,
+                    [&](uint64_t remaining) { return next(device, swapchain, presentId, remaining); });
+            });
     }
 
 #if defined(VK_KHR_present_wait2)
@@ -1205,7 +1454,15 @@ namespace {
             instance_info->funcs.GetDeviceProcAddr(device, "vkWaitForPresent2KHR"));
         return present_diagnostics::observeApplicationPresentWait(device, swapchain,
             present_diagnostics::PresentWaitApi::Khr2, info->presentId, info->timeout,
-            [&] { return next(device, swapchain, info); });
+            [&] {
+                DeferredPresent::applicationWait(swapchain, info->presentId, info->timeout);
+                return DeferredPresent::waitForPresent(device, swapchain, info->presentId, info->timeout,
+                    [&](uint64_t remaining) {
+                        auto adjusted = *info;
+                        adjusted.timeout = remaining;
+                        return next(device, swapchain, &adjusted);
+                    });
+            });
     }
 #endif
 
@@ -1233,10 +1490,10 @@ namespace {
     PFN_vkVoidFunction getProcAddr(const std::string& name) {
         if (name == "vkSetHdrMetadataEXT" && !bridgeHdrEnabled())
             return nullptr;
-        // Only the application-facing role observes this call. A lower
-        // spatial role must not count the same forwarded wait a second time.
-        if (isPresentWaitCommand(name) &&
-                (!frameGenerationLayer || !present_diagnostics::enabled()))
+        // The application role also observes actual serialized completion
+        // pacing when diagnostics are off. Lower spatial roles forward waits
+        // untouched and must not count or classify the same call twice.
+        if (isPresentWaitCommand(name) && !frameGenerationLayer)
             return nullptr;
         auto it = layer_info->map.find(name);
         if (it == layer_info->map.end()) return nullptr;
@@ -1269,7 +1526,7 @@ namespace {
                 "vkGetPhysicalDeviceSurfaceFormats2KHR" ||
                 std::string_view(name) == "vkGetPhysicalDeviceFeatures2" ||
                 std::string_view(name) == "vkGetPhysicalDeviceFeatures2KHR" ||
-                isOptionalPresentationCommand(name)) {
+                isOptionalPresentationCommand(name) || isOptionalReleaseCommand(name)) {
             if (!instance || !layer_info->GetInstanceProcAddr ||
                     !layer_info->GetInstanceProcAddr(instance, name)) {
                 return nullptr;
@@ -1290,7 +1547,7 @@ namespace {
 
         if (!instance_info->funcs.GetDeviceProcAddr) return nullptr;
 
-        if (isOptionalPresentationCommand(name) &&
+        if ((isOptionalPresentationCommand(name) || isOptionalReleaseCommand(name)) &&
                 !instance_info->funcs.GetDeviceProcAddr(device, name))
             return nullptr;
 
@@ -2126,6 +2383,11 @@ namespace {
                 instance_info->variableSurfaceScalingExtents.erase(surface);
                 instance_info->variableSurfaceRollbackExtents.erase(surface);
                 instance_info->surfaceOrigins.erase(surface);
+                if (const auto feedback = instance_info->waylandPresentation.find(surface);
+                        feedback != instance_info->waylandPresentation.end()) {
+                    feedback->second->stop();
+                    instance_info->waylandPresentation.erase(feedback);
+                }
                 instance_info->unprovenSplitSurfacesLogged.erase(surface);
                 instance_info->scalingAdmissionRetryStates.erase(surface);
             }
@@ -2166,6 +2428,8 @@ namespace {
         if (!lower)
             return VK_ERROR_EXTENSION_NOT_PRESENT;
         const auto result = lower(instance, createInfo, alloc, surface);
+        present_diagnostics::traceVulkanSurface(layerRoleName, entrypoint, instance,
+            result == VK_SUCCESS && surface ? *surface : VK_NULL_HANDLE, result);
         if (result == VK_SUCCESS && surface)
             recordSurfaceOrigin(*surface, origin);
         return result;
@@ -2176,10 +2440,22 @@ namespace {
             const VkWaylandSurfaceCreateInfoKHR* createInfo,
             const VkAllocationCallbacks* alloc,
             VkSurfaceKHR* surface) {
-        return createSurfaceAndRecord<
+        const auto result = createSurfaceAndRecord<
             CreateWaylandSurface
         >(instance, createInfo, alloc, surface, "vkCreateWaylandSurfaceKHR",
             SpatialSurfaceOrigin::Wayland);
+        const bool diagnostics = present_diagnostics::pacingWaylandProfileEnabled();
+        if (result == VK_SUCCESS && createInfo && surface && instance_info &&
+                !spatialScalingLayer && diagnostics) {
+            try {
+                auto observer = WaylandPresentationFeedback::create(createInfo->display, createInfo->surface, diagnostics);
+                if (observer) {
+                    const std::lock_guard lock(instance_info->surfaceScalingMutex);
+                    instance_info->waylandPresentation.insert_or_assign(*surface, std::move(observer));
+                }
+            } catch (...) {} // Diagnostics cannot change surface creation.
+        }
+        return result;
     }
 
     VkResult myvkCreateXcbSurfaceKHR(
@@ -2497,6 +2773,8 @@ namespace {
                             newInfo->minImageCount;
                         auto res = it->second.df().CreateSwapchainKHR(
                             device, &driverInfo, alloc, swapchain);
+                        present_diagnostics::traceVulkanSetup(layerRoleName, *info, driverInfo,
+                            res, res == VK_SUCCESS ? *swapchain : VK_NULL_HANDLE, device);
                         if (shouldRetrySwapchainWithApplicationMinimum(
                                 res, info->minImageCount,
                                 provisionedMinImages)) {
@@ -2507,6 +2785,8 @@ namespace {
                             res = it->second.df().CreateSwapchainKHR(
                                 device, &retryInfo, alloc, swapchain
                             );
+                            present_diagnostics::traceVulkanSetup(layerRoleName, *info, retryInfo,
+                                res, res == VK_SUCCESS ? *swapchain : VK_NULL_HANDLE, device);
                             if (present_diagnostics::enabled()) {
                                 std::cerr << "MAKO Renderer: present diagnostics: "
                                              "operation=swapchain-create-compatibility-retry"
@@ -2816,15 +3096,40 @@ namespace {
                           << '\n';
             }
 
+            std::shared_ptr<WaylandPresentationFeedback> waylandPresentation;
+            {
+                const std::lock_guard lock(instance_info->surfaceScalingMutex);
+                const auto observer = instance_info->waylandPresentation.find(info->surface);
+                if (observer != instance_info->waylandPresentation.end()) waylandPresentation = observer->second;
+            }
             auto& swapchainInfo = instance_info->swapchainInfos.emplace(*swapchain, SwapchainInfo {
                 .images = std::move(swapchainImages),
                 .surface = info->surface,
+                .surfaceOrigin = surfaceOrigin(info->surface),
+                .waylandPresentation = std::move(waylandPresentation),
+                .deferredPresentQueue = instance_info->deferredPresentQueues.contains(device)
+                    ? instance_info->deferredPresentQueues.at(device) : nullptr,
                 .gamescopeScalingSurface = instance_info->scalingSurfaces &&
                         instance_info->scalingSurfaces->owns(info->surface)
                     ? instance_info->scalingSurfaces.get() : nullptr,
                 .gamescopeDisplayTiming =
                     instance_info->gamescopeTimingDevices.contains(device),
                 .ownedPresentTiming = ownedPresentTiming,
+                .presentMetering = instance_info->presentMeteringDevices.contains(device),
+                .applicationPresentTiming = instance_info->applicationTimingDevices.contains(device),
+#if defined(VK_EXT_present_timing) && defined(VK_KHR_present_id2)
+                // The forwarded create flags are driverInfo inside the create
+                // lambda: MAKO's owned timing bit (ownedPresentTiming) or the
+                // application's own bit in newInfo.
+                .applicationSwapchainTiming = instance_info->applicationTimingDevices.contains(device) &&
+                    (ownedPresentTiming || (newInfo.flags & VK_SWAPCHAIN_CREATE_PRESENT_TIMING_BIT_EXT) != 0),
+#if defined(VK_KHR_present_wait2)
+                .applicationPresentFeedback = instance_info->presentFeedbackDevices.contains(device) &&
+                    (newInfo.flags & VK_SWAPCHAIN_CREATE_PRESENT_ID_2_BIT_KHR) != 0 &&
+                    (newInfo.flags & VK_SWAPCHAIN_CREATE_PRESENT_WAIT_2_BIT_KHR) != 0,
+#endif
+#endif
+                .copyTimestampCalibration = instance_info->copyCalibrationDevices.contains(device),
                 .ownedPresentTimingTargetStage = ownedPresentTimingTargetStage,
                 .format = newInfo.imageFormat,
                 .colorSpace = newInfo.imageColorSpace,
@@ -2937,10 +3242,20 @@ namespace {
 #pragma clang diagnostic ignored "-Wunknown-warning-option"
 #pragma clang diagnostic ignored "-Wunsafe-buffer-usage"
         present_diagnostics::ApplicationPresentScope timingScope(
-            queue, info->swapchainCount == 1 ? info->pSwapchains[0] : VK_NULL_HANDLE
+            queue, info->swapchainCount == 1 ? info->pSwapchains[0] : VK_NULL_HANDLE,
+            info->swapchainCount == 1 ? std::optional<uint32_t>{info->pImageIndices[0]} : std::nullopt
         );
+        const auto present = [&]() -> VkResult {
         VkResult result = VK_SUCCESS;
         bool swapchainOutOfDate = false;
+        // Configuration polling can replace private resources across surfaces.
+        // Complete retained CPU submissions before any such transition.
+        const auto queueIdentity = instance_info->queueIdentities.find(queue);
+        if (queueIdentity != instance_info->queueIdentities.end()) {
+            timingScope.deferredJoinStarted();
+            drainDeferredDevice(queueIdentity->second.device, true);
+            timingScope.deferredJoinFinished();
+        }
 
         // Binary application wait semaphores belong to the whole present
         // batch and may be consumed only once. The existing per-swapchain FG
@@ -3233,6 +3548,8 @@ namespace {
         // Preserve a genuine game/driver out-of-date result, or MAKO's guarded
         // one-shot live-scaling recreation request, across the present batch.
         return swapchainOutOfDate ? VK_ERROR_OUT_OF_DATE_KHR : result;
+        };
+        return timingScope.returned(present());
 #pragma clang diagnostic pop
     }
 
@@ -3245,40 +3562,86 @@ namespace {
                 info->second.surface, swapchain);
     }
 
+    template<typename Acquire>
+    VkResult acquireAfterDeferredPresent(VkSwapchainKHR swapchain,
+            uint64_t timeout, Acquire&& acquire) {
+        const auto mapping = instance_info->swapchains.find(swapchain);
+        if (mapping == instance_info->swapchains.end() ||
+                instance_info->nativeSwapchains.contains(swapchain)) return acquire(timeout);
+        auto& context = layer_info->root.getSwapchainContext(swapchain, mapping->second.get());
+        present_diagnostics::bindApplicationAcquireContext(context.diagnosticsId());
+        if (!context.hasDeferredPresent()) return acquire(timeout);
+        context.observeDeferredApplicationAcquire();
+        const auto started = std::chrono::steady_clock::now();
+        const auto completed = context.completeDeferredPresent(0);
+        if (completed != VK_SUCCESS && completed != VK_SUBOPTIMAL_KHR && completed != VK_NOT_READY) return completed;
+        // An older finished completion can return success while a newer overlapped
+        // batch keeps outputting. Its spare image is still acquirable without a join.
+        if (completed == VK_NOT_READY || context.deferredPresentPending()) {
+            const auto polled = context.pollDeferredAcquire([&] { return acquire(0); });
+            if (polled != VK_NOT_READY && polled != VK_TIMEOUT)
+                return polled == VK_SUCCESS && completed == VK_SUBOPTIMAL_KHR ? VK_SUBOPTIMAL_KHR : polled;
+        }
+        if (context.deferredOverlapPending()) {
+            auto remaining = timeout;
+            if (remaining != UINT64_MAX) {
+                const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - started).count();
+                remaining -= std::min(remaining, static_cast<uint64_t>(std::max<int64_t>(0, elapsed)));
+            }
+            const auto result = context.waitDeferredAcquire(remaining, [&] { return acquire(0); });
+            return result == VK_SUCCESS && completed == VK_SUBOPTIMAL_KHR ? VK_SUBOPTIMAL_KHR : result;
+        }
+        const auto deferred = context.completeDeferredPresent(timeout, true);
+        if (deferred != VK_SUCCESS && deferred != VK_SUBOPTIMAL_KHR) return deferred;
+        if (timeout != UINT64_MAX) {
+            const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - started).count();
+            timeout -= std::min(timeout, static_cast<uint64_t>(std::max<int64_t>(0, elapsed)));
+        }
+        const auto result = acquire(timeout);
+        return result == VK_SUCCESS && deferred == VK_SUBOPTIMAL_KHR ? deferred : result;
+    }
+
     VkResult myvkAcquireNextImageKHR(
             VkDevice device, VkSwapchainKHR swapchain, uint64_t timeout,
             VkSemaphore semaphore, VkFence fence, uint32_t* imageIndex) {
         const auto mapping = instance_info->swapchains.find(swapchain);
         if (mapping == instance_info->swapchains.end())
             return VK_ERROR_INITIALIZATION_FAILED;
-
         const auto extentResult = bridgeAcquisitionResult(swapchain);
-        if (extentResult != VK_SUCCESS)
-            return extentResult;
+        if (extentResult != VK_SUCCESS) return extentResult;
         return present_diagnostics::observeApplicationAcquire(
             device, swapchain, present_diagnostics::ApplicationFrameApi::AcquireKhr,
             timeout, [&] {
-                return mapping->second.get().df().AcquireNextImageKHR(
-                    device, swapchain, timeout, semaphore, fence, imageIndex);
-            });
+                return acquireAfterDeferredPresent(swapchain, timeout, [&](uint64_t remaining) {
+                    return present_diagnostics::observeApplicationAcquireDriver(remaining, [&] {
+                        return mapping->second.get().df().AcquireNextImageKHR(
+                            device, swapchain, remaining, semaphore, fence, imageIndex);
+                    }, imageIndex);
+                });
+            }, imageIndex);
     }
 
     VkResult myvkAcquireNextImage2KHR(VkDevice device,
             const VkAcquireNextImageInfoKHR* info, uint32_t* imageIndex) {
-        if (!instance_info || !info)
-            return VK_ERROR_INITIALIZATION_FAILED;
+        if (!instance_info || !info) return VK_ERROR_INITIALIZATION_FAILED;
         const auto mapping = instance_info->swapchains.find(info->swapchain);
-        if (mapping == instance_info->swapchains.end())
-            return VK_ERROR_INITIALIZATION_FAILED;
+        if (mapping == instance_info->swapchains.end()) return VK_ERROR_INITIALIZATION_FAILED;
         const auto lower = mapping->second.get().df().AcquireNextImage2KHR;
-        if (!lower)
-            return VK_ERROR_EXTENSION_NOT_PRESENT;
+        if (!lower) return VK_ERROR_EXTENSION_NOT_PRESENT;
         const auto extentResult = bridgeAcquisitionResult(info->swapchain);
-        if (extentResult != VK_SUCCESS)
-            return extentResult;
+        if (extentResult != VK_SUCCESS) return extentResult;
         return present_diagnostics::observeApplicationAcquire(
             device, info->swapchain, present_diagnostics::ApplicationFrameApi::AcquireKhr2,
-            info->timeout, [&] { return lower(device, info, imageIndex); });
+            info->timeout, [&] {
+                return acquireAfterDeferredPresent(info->swapchain, info->timeout, [&](uint64_t remaining) {
+                    auto adjusted = *info;
+                    adjusted.timeout = remaining;
+                    return present_diagnostics::observeApplicationAcquireDriver(remaining,
+                        [&] { return lower(device, &adjusted, imageIndex); }, imageIndex);
+                });
+            }, imageIndex);
     }
 
     void myvkDestroySwapchainKHR(
@@ -3404,6 +3767,12 @@ namespace {
                     { "vkGetPhysicalDeviceFeatures2", VKPTR(myvkGetPhysicalDeviceFeatures2) },
                     { "vkGetPhysicalDeviceFeatures2KHR", VKPTR(myvkGetPhysicalDeviceFeatures2) },
                     { "vkDestroyDevice", VKPTR(myvkDestroyDevice) },
+                    { "vkDeviceWaitIdle", VKPTR(myvkDeviceWaitIdle) },
+                    { "vkQueueWaitIdle", VKPTR(myvkQueueWaitIdle) },
+                    { queueSubmit2Name, VKPTR(myvkQueueSubmit2Common<queueSubmit2Name>) },
+                    { queueSubmit2KhrName, VKPTR(myvkQueueSubmit2Common<queueSubmit2KhrName>) },
+                    { waitSemaphoresName, VKPTR(myvkWaitSemaphoresCommon<waitSemaphoresName>) },
+                    { waitSemaphoresKhrName, VKPTR(myvkWaitSemaphoresCommon<waitSemaphoresKhrName>) },
                     { "vkDestroyInstance", VKPTR(myvkDestroyInstance) },
                     { "vkCreateWaylandSurfaceKHR",
                         VKPTR(myvkCreateWaylandSurfaceKHR) },

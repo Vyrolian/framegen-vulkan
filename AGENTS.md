@@ -144,6 +144,7 @@ Start with the root `README.md`, then read `engine/README.md` or `plugin/README.
 | Change native Steam Remote Play override | `plugin/docs/REMOTE-PLAY.md`, `INSTALLATION-TRANSACTIONS.md` | `engine/scripts/mako_remote_play/`, `engine/scripts/mako-remote-play`, `engine/scripts/generate-remote-play-bindings.py`, Qt/Decky adapters, `just generate-remote-play`, `just check-remote-play`, and focused Remote Play tests |
 | Deploy/reload a local Decky install | `plugin/docs/PACKAGING.md` | `plugin/scripts/deploy-dev.sh`, `plugin/scripts/reload-decky-plugin.mjs` |
 | Collect diagnostics | `COLLECT_DIAGNOSTICS.md` | `scripts/mako-diagnostics` |
+| Compare MAKO and NVIDIA Smooth Motion overhead without Nsight | `engine/docs/COLLECT_DIAGNOSTICS.md#compare-mako-and-nvidia-smooth-motion-without-nsight` | `engine/scripts/profile-framegen.py capture`, `engine/scripts/profile-framegen.py compare` |
 | Prepare release notes, artwork, and flavor text | `HOW_TO_RELEASE.md#notes-identity-and-artwork` | `.agents/skills/mako-prepare-release/SKILL.md` (`$mako-prepare-release`) |
 | Publish both components | `HOW_TO_RELEASE.md` | `scripts/publish-release.sh` |
 | Resume one component publish | `HOW_TO_RELEASE.md` | `engine/scripts/publish-package.sh`, `plugin/scripts/publish-package.sh` |
@@ -167,8 +168,11 @@ Read `TRACES.md` before archiving a completed session. MAKO owns trace extractio
 - `COLLECT_DIAGNOSTICS.md` routes users to Decky or standalone collection.
 - `plugin/docs/COLLECT_DIAGNOSTICS.md` owns the managed Decky workflow.
 - `engine/docs/COLLECT_DIAGNOSTICS.md` owns standalone Renderer collection.
-- `scripts/mako-diagnostics` filters current and legacy Renderer logs into a focused report; its deterministic coverage is in `plugin/tests/test_diagnostics_helper.py`.
+- `scripts/mako-diagnostics` filters current and legacy Renderer logs into a focused report; its deterministic coverage is in `plugin/tests/test_diagnostics_helper.py`. `engine/scripts/analyze-pacing-profile.py` summarizes versioned CPU pacing captures; its tests live with the Renderer.
 - `engine/mako-render/src/present_diagnostics.cpp` and `.hpp` own structured presentation records. Related state is emitted from `instance.cpp` and the owning files under `swapchain/`; `swapchain/status.cpp` assembles live status without applying transitions.
+- `engine/scripts/wayland_pacing_protocol.py` owns optional source-checkout capture of selected Wayland protocol messages and exact feedback-to-commit correlation for `analyze-pacing-profile.py`; it does not change the Renderer or saved launch configuration.
+- `engine/mako-render/src/frame_content_capture.*` owns optional explicit-trigger real/generated picture readback through existing copy commands and completion fences; `engine/scripts/analyze-frame-content.py` decodes and compares its separate private image files. Timing-only collectors do not automatically include those pictures.
+- `engine/mako-render/src/wayland_presentation_feedback.*` owns optional `MAKO_PACING_PROFILE_WAYLAND=1` compositor presentation/discard observation for the game's borrowed native Wayland surface. Keep its private event queue, bounded proxies/records, surface retirement and timestamp domains separate from pacing policy; XCB probes do not qualify Wine Wayland.
 - `plugin/py_modules/mako_plugin/wrapper_generation.py` owns the generated wrapper environment, including opt-in wrapper-side log capture; `configuration.py` orchestrates canonical state, migrations, and atomic regeneration; and `installation.py` installs and migrates the helper.
 
 Keep diagnostic operation names and fields machine-filterable. If a current log format changes, update the collector, its tests, and both user guides together.

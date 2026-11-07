@@ -3,6 +3,7 @@
 #include "swapchain/swapchain.hpp"
 #include "swapchain/present/internal.hpp"
 #include "swapchain/retirement.hpp"
+#include "swapchain/create_policy.hpp"
 #include "adaptive_scheduler.hpp"
 #include "gamescope_scaling_surface.hpp"
 #include "mako-common/helpers/errors.hpp"
@@ -12,6 +13,7 @@
 #include "mako-common/vulkan/vulkan.hpp"
 #include "present_diagnostics.hpp"
 #include "pnext_chain.hpp"
+#include "wayland_presentation_feedback.hpp"
 
 #include <algorithm>
 #include <array>
@@ -35,10 +37,113 @@ using namespace mako::layer;
 
 using namespace mako::layer::present_detail;
 
+VkResult Swapchain::completeDeferredPresent(const uint64_t timeoutNs, const bool acquisition,
+        const bool retainNewest) {
+    if (!this->deferredPresent) return this->deferredPresentResult;
+    const auto started = acquisition ? DiagnosticsClock::now() : DiagnosticsClock::time_point{};
+    const auto first = this->deferredPresent->finish(timeoutNs, true, retainNewest);
+    if (acquisition && (!first || first->finished > started))
+        this->realFramePacer.recordAcquireWait(DiagnosticsClock::now() - started);
+    if (!first) return timeoutNs == 0 ? VK_NOT_READY : VK_TIMEOUT;
+    const auto report = [this](const DeferredPresent::Completion& completion) {
+        if (!this->adaptiveScheduler)
+            for (size_t i = 0; i < completion.count; ++i)
+                if (completion.calls[i].workerCopy) {
+                    if (completion.calls[i].skipped)
+                        ++this->diagnosticsState.fixedSkippedFrames;
+                    else
+                        ++this->diagnosticsState.fixedGeneratedFrames;
+                }
+        if (completion.result == VK_SUCCESS && completion.count && !completion.readinessMiss)
+            this->realFramePacer.completeOutputBatch(completion.calls[completion.count - 1].started,
+                completion.readinessShift);
+        else if (completion.readinessMiss)
+            this->realFramePacer.resetOutputs();
+        else if (completion.result != VK_SUCCESS)
+            this->realFramePacer.resetOutputs();
+        if (this->pacingProfile && completion.count)
+            this->pacingProfile->completedWorkerBatch(completion.readinessMiss);
+        if (this->pacingProfile)
+            for (size_t i = 0; i < completion.count; ++i) {
+                const auto& call = completion.calls[i];
+                if (call.skipped) continue;
+                const auto sample = this->pacingProfile->output(call.started, call.finished, call.result, {
+                    .scheduled = call.scheduled, .imageIndex = call.imageIndex,
+                    .generated = call.generated, .deferred = true,
+                    .copyChecked = call.copyChecked, .copyStatus = call.copyStatus,
+                    .copySampledAt = call.copySampledAt, .source = completion.source,
+                    .enqueued = call.enqueued, .queueLockStarted = call.queueLockStarted,
+                    .queueLockAcquired = call.queueLockAcquired, .readinessChecked = call.readinessChecked,
+                    .readinessStarted = call.readinessStarted, .readinessFinished = call.readinessFinished,
+                    .readinessDeadline = call.readinessDeadline, .readinessResult = call.readinessResult,
+                    .queue = call.outputQueue, .presentWait = call.presentWait,
+                });
+                present_diagnostics::logPacingOutput(this->diagnosticsState.contextId, call.swapchain, sample);
+            }
+        if (completion.result != VK_SUCCESS)
+            this->deferredPresentResult = completion.result;
+    };
+    report(*first);
+    // Drain every other finished batch in the same call, oldest first.
+    while (this->deferredPresent->hasCompletion()) {
+        const auto next = this->deferredPresent->finish(0, false, true);
+        if (!next) break;
+        report(*next);
+    }
+    return this->deferredPresentResult;
+}
+
+bool Swapchain::beginDeferredPresentBatch(const vk::Vulkan& vk, const size_t limit,
+        const uint64_t readyValue, const DiagnosticsClock::time_point readyDeadline, const bool capOwned,
+        const std::optional<DiagnosticsClock::time_point> releasedOutputLimit,
+        const DiagnosticsClock::duration releasedJoinTolerance,
+        const bool overlap, const DiagnosticsClock::duration outputInterval) {
+    if (!this->info.deferredPresentQueue) return false;
+    if (!this->deferredPresent) {
+        try {
+            this->deferredPresent = std::make_unique<DeferredPresent>(
+                this->info.deferredPresentQueue, vk.df().QueuePresentKHR, vk.dev());
+            this->deferredPresent->setOwnedPresentIdStorage(&this->presentFeedbackTag);
+        } catch (const std::exception&) { return false; }
+    }
+    return this->deferredPresent->beginBatch(limit, {
+        .device = vk.dev(), .semaphore = this->syncSemaphore->handle(),
+        .value = readyValue, .wait = vk.df().WaitSemaphoresKHR, .deadline = readyDeadline, .capOwned = capOwned,
+        .latestOutput = releasedOutputLimit.value_or(DiagnosticsClock::time_point::max()),
+        .joinTolerance = releasedJoinTolerance,
+        .expediteOnJoin = releasedOutputLimit.has_value(),
+        .overlap = overlap, .outputInterval = outputInterval,
+        .copyFence = this->pacingProfile && present_diagnostics::pacingGpuProfileEnabled() && !this->renderSlots.empty()
+            ? this->currentRenderSlot().fence.handle() : VK_NULL_HANDLE,
+        .copyStatus = this->pacingProfile && present_diagnostics::pacingGpuProfileEnabled()
+            ? vk.df().GetFenceStatus : nullptr,
+        .observer = this->info.waylandPresentation,
+        .observe = this->info.waylandPresentation ? &WaylandPresentationFeedback::observe : nullptr,
+        .context = this->diagnosticsState.contextId,
+        .source = this->pacingProfile ? this->pacingProfile->sourceOrdinal() : 0,
+        .trace = present_diagnostics::pacingFrameTraceEnabled(),
+    });
+}
+
 VkResult Swapchain::queuePresentWithRetirementFence(
         const vk::Vulkan& vk, const VkQueue queue,
-        const VkPresentInfoKHR& incomingPresentInfo) {
+        const VkPresentInfoKHR& incomingPresentInfo,
+        const present_diagnostics::PacingProfile::OutputObservation& observation) {
     VkPresentInfoKHR presentInfo = incomingPresentInfo;
+#if defined(VK_NV_present_metering)
+    VkSetPresentConfigNV metering{
+        .sType = VK_STRUCTURE_TYPE_SET_PRESENT_CONFIG_NV, .pNext = presentInfo.pNext,
+        .numFramesPerBatch = static_cast<uint32_t>(this->bridgeOutputBatchSize),
+    };
+    if (this->info.presentMetering && observation.generated &&
+            !this->gamescopeDetected && !this->spatialScaler && !this->profile.adaptive &&
+            this->configuredFixedGeneratedFrames == 1 && this->bridgeOutputBatchSize == 2)
+        presentInfo.pNext = &metering;
+#endif
+    using PacingProfile = present_diagnostics::PacingProfile;
+    auto timingOwner = hasPresentTiming(incomingPresentInfo.pNext)
+        ? PacingProfile::ApplicationTiming : PacingProfile::DriverTiming;
+    std::optional<DiagnosticsClock::time_point> timingTarget;
     // Use qualified scheduler state, not this frame's batch size: occasional
     // real-only turns must not release Fractional output timing.
     const auto outputPolicy = gamescopeBridgeOutputPolicy(
@@ -91,6 +196,8 @@ VkResult Swapchain::queuePresentWithRetirementFence(
             if (this->presentTiming.prepare(slot->presentAt, this->wsiPresentTimeline, timing, timingId)) {
                 this->orderedPresentationDeadline = slot->presentAt;
                 presentInfo.pNext = &timings;
+                timingOwner = PacingProfile::ExtTiming;
+                timingTarget = slot->presentAt;
             }
         }
     }
@@ -116,7 +223,7 @@ VkResult Swapchain::queuePresentWithRetirementFence(
                         vk.dev(), presentInfo.pSwapchains[0])) {
                     this->wsiPresentTimingQuery = nullptr;
                     return this->queuePresentWithRetirementFence(
-                        vk, queue, incomingPresentInfo);
+                        vk, queue, incomingPresentInfo, observation);
                 }
             }
             std::this_thread::sleep_until(slot->submitAt);
@@ -124,6 +231,8 @@ VkResult Swapchain::queuePresentWithRetirementFence(
                 std::chrono::duration_cast<std::chrono::nanoseconds>(
                     slot->presentAt.time_since_epoch()).count());
             presentInfo.pNext = &presentTimes;
+            timingOwner = PacingProfile::GoogleTiming;
+            timingTarget = slot->presentAt;
             if (!this->wsiPresentTimingLogged) {
                 std::cerr << "MAKO Renderer: Gamescope WSI ordered output timing enabled; "
                              "owner=renderer; transport=VK_GOOGLE_display_timing\n";
@@ -148,11 +257,91 @@ VkResult Swapchain::queuePresentWithRetirementFence(
                 return completeRejectedPresent(vk.df().QueueSubmit,
                     queue, presentInfo, prepared);
         }
+        timingOwner = PacingProfile::BridgeTiming;
+        timingTarget.reset();
     }
+    const auto lowerPresent = [&](const VkPresentInfoKHR& info) {
+        if (this->pacingProfile)
+            this->pacingProfile->outputTiming(timingOwner, timingTarget);
+        if (this->deferredPresentDeadline && this->info.deferredPresentQueue) {
+            if (!this->deferredPresent) {
+                try {
+                    this->deferredPresent = std::make_unique<DeferredPresent>(
+                        this->info.deferredPresentQueue, vk.df().QueuePresentKHR, vk.dev());
+                    this->deferredPresent->setOwnedPresentIdStorage(&this->presentFeedbackTag);
+                } catch (const std::exception&) {
+                    // Thread/resource exhaustion retains synchronous delivery.
+                }
+            }
+            if (this->deferredPresent && this->deferredPresent->enqueue(info,
+                    *this->deferredPresentDeadline, observation.generated)) {
+                this->deferredOutputQueuedThisFrame = true;
+                this->deferredPresentDeadline.reset();
+                return VK_SUCCESS;
+            }
+            // A failed tail admission must not let this synchronous output
+            // overtake earlier retained images or overlap swapchain host use.
+            if (this->deferredPresent) {
+                this->deferredPresent->closeBatch();
+                static_cast<void>(this->completeDeferredPresent(UINT64_MAX));
+            }
+            std::this_thread::sleep_until(*this->deferredPresentDeadline);
+            this->deferredPresentDeadline.reset();
+        }
+        // A synchronous output must not overtake older retained images. An open
+        // newest batch never completes, so wait for every older batch then.
+        if (this->deferredPresent && this->deferredPresent->olderBatchPending())
+            static_cast<void>(this->completeDeferredPresent(UINT64_MAX, false,
+                this->deferredPresent->newestOpen()));
+        const auto submit = [&] {
+            this->realFramePacer.synchronousOutput();
+            const auto observedPresent = [&](VkQueue selectedQueue, const VkPresentInfoKHR& selectedInfo) {
+                if (this->info.waylandPresentation)
+                    return WaylandPresentationFeedback::observe(this->info.waylandPresentation.get(),
+                        vk.df().QueuePresentKHR, selectedQueue, selectedInfo, this->diagnosticsState.contextId,
+                        this->pacingProfile ? this->pacingProfile->sourceOrdinal() : 0, observation.generated);
+                return vk.df().QueuePresentKHR(selectedQueue, &selectedInfo);
+            };
+            if (nativePrivatePresentQueueEligible(this->gamescopeDetected,
+                    this->info.gamescopeScalingSurface != nullptr,
+                    static_cast<bool>(this->info.deferredPresentQueue))) {
+                // Pin every native output from the first managed present,
+                // including synchronous first/generated/native/fallback and
+                // policy-off frames. Joining the worker proves host delivery,
+                // not cross-queue presentation order at the driver.
+                if (this->info.waylandPresentation) {
+                    const std::lock_guard lock(this->info.deferredPresentQueue->mutex);
+                    return observedPresent(this->info.deferredPresentQueue->queue, info);
+                }
+                return this->info.deferredPresentQueue->presentNow(vk.df().QueuePresentKHR, info);
+            }
+            return observedPresent(queue, info);
+        };
+        if (!this->pacingProfile) return submit();
+        auto observed = observation;
+        observed.queue = nativePrivatePresentQueueEligible(this->gamescopeDetected,
+            this->info.gamescopeScalingSurface != nullptr, static_cast<bool>(this->info.deferredPresentQueue))
+            ? this->info.deferredPresentQueue->queue : queue;
+        if (info.waitSemaphoreCount == 1 && info.pWaitSemaphores)
+            observed.presentWait = info.pWaitSemaphores[0];
+        if (info.swapchainCount == 1 && info.pImageIndices)
+            observed.imageIndex = info.pImageIndices[0];
+        const auto started = DiagnosticsClock::now();
+        const auto result = submit();
+        const auto finished = DiagnosticsClock::now();
+        if (observed.copyExpected && present_diagnostics::pacingGpuProfileEnabled() && !this->renderSlots.empty()) {
+            observed.copyChecked = true;
+            observed.copyStatus = vk.df().GetFenceStatus(vk.dev(), this->currentRenderSlot().fence.handle());
+            observed.copySampledAt = DiagnosticsClock::now();
+        }
+        const auto sample = this->pacingProfile->output(started, finished, result, observed);
+        present_diagnostics::logPacingOutput(this->diagnosticsState.contextId, info.swapchainCount == 1 ? info.pSwapchains[0] : VK_NULL_HANDLE, sample);
+        return result;
+    };
     if (this->presentRetirementFences.empty() ||
             presentInfo.swapchainCount != 1 ||
             !presentInfo.pImageIndices) {
-        return vk.df().QueuePresentKHR(queue, &presentInfo);
+        return lowerPresent(presentInfo);
     }
 
     if (const auto* upstreamFence =
@@ -168,7 +357,7 @@ VkResult Swapchain::queuePresentWithRetirementFence(
                          "recreation on protected final presents\n";
             this->externalPresentFenceLogged = true;
         }
-        const auto result = vk.df().QueuePresentKHR(queue, &presentInfo);
+        const auto result = lowerPresent(presentInfo);
         this->lastLowerPresentRetirementProtected =
             upstreamPresentFenceProtectsSwapchain(upstreamFence) &&
             presentFenceWillSignal(result);
@@ -177,7 +366,7 @@ VkResult Swapchain::queuePresentWithRetirementFence(
 
     const uint32_t imageIndex = presentInfo.pImageIndices[0];
     if (imageIndex >= this->presentRetirementFences.size())
-        return vk.df().QueuePresentKHR(queue, &presentInfo);
+        return lowerPresent(presentInfo);
 
     auto& slot = this->presentRetirementFences.at(imageIndex);
     try {
@@ -189,7 +378,7 @@ VkResult Swapchain::queuePresentWithRetirementFence(
                                  "this present will not trigger live recreation\n";
                     this->presentRetirementBusyLogged = true;
                 }
-                return vk.df().QueuePresentKHR(queue, &presentInfo);
+                return lowerPresent(presentInfo);
             }
             slot.associated = false;
         }
@@ -199,7 +388,7 @@ VkResult Swapchain::queuePresentWithRetirementFence(
         std::cerr << "MAKO Renderer: presentation retirement fence preparation "
                      "failed; this present will not trigger live recreation: "
                   << error.what() << '\n';
-        return vk.df().QueuePresentKHR(queue, &presentInfo);
+        return lowerPresent(presentInfo);
     }
 
     const VkFence fence = slot.fence.handle();
@@ -211,7 +400,7 @@ VkResult Swapchain::queuePresentWithRetirementFence(
     };
     auto protectedPresentInfo = presentInfo;
     protectedPresentInfo.pNext = &fenceInfo;
-    const auto result = vk.df().QueuePresentKHR(queue, &protectedPresentInfo);
+    const auto result = lowerPresent(protectedPresentInfo);
     slot.used = true;
     slot.associated = presentFenceWillSignal(result);
     this->lastLowerPresentRetirementProtected = slot.associated;
@@ -223,6 +412,8 @@ VkResult Swapchain::queuePresentWithRetirementFence(
 bool Swapchain::waitForPresentRetirement(
         const vk::Vulkan& vk, const uint64_t timeoutNs) {
     const auto started = std::chrono::steady_clock::now();
+    const auto deferred = this->completeDeferredPresent(timeoutNs);
+    if (deferred == VK_NOT_READY || deferred == VK_TIMEOUT) return false;
     for (auto& slot : this->presentRetirementFences) {
         if (!slot.associated)
             continue;
@@ -256,8 +447,7 @@ bool Swapchain::waitForPresentRetirement(
                     (!this->instance ||
                      !this->instance->contextReady(this->ctx.get())))
                 return false;
-            if (this->frameState.renderFenceInFlight &&
-                    !this->renderFence->wait(vk, 0))
+            if (!this->pollRenderSlotsIdle(vk))
                 return false;
             for (const auto& pass : this->spatialScalingPasses) {
                 if (pass.completionInFlight &&
@@ -298,7 +488,6 @@ VkResult Swapchain::retireAcquiredImagesAndPresent(const vk::Vulkan& vk,
         spatialScalingReady = scalingPass.readySemaphore.handle();
     }
 
-    this->renderFence->reset(vk);
     const size_t semaphoreBase = (
         this->frameState.sequenceIndex + acquiredImageIndices.size() + 1
     ) % this->postCopySemaphores.size();
@@ -309,7 +498,7 @@ VkResult Swapchain::retireAcquiredImagesAndPresent(const vk::Vulkan& vk,
         const size_t semaphoreIndex =
             (semaphoreBase + i) % this->postCopySemaphores.size();
         auto& pcs = this->postCopySemaphores.at(semaphoreIndex);
-        auto& pass = this->passes.at(i);
+        auto& pass = this->currentRenderSlot().passes.at(i);
         const auto acquiredImage = this->info.images.at(
             acquiredImageIndices[i]
         );
@@ -383,18 +572,17 @@ VkResult Swapchain::retireAcquiredImagesAndPresent(const vk::Vulkan& vk,
         }
         commandBuffer.submit(
             vk, waits, VK_NULL_HANDLE, 0,
-            std::array{pcs.first.handle(), pcs.second.handle()},
+            std::array{this->postCopySemaphores.at(acquiredImageIndices[i]).first.handle(),
+                last ? this->postCopySemaphores.at(originalImageIndex).first.handle() : pcs.second.handle()},
             VK_NULL_HANDLE, 0,
-            last ? this->renderFence->handle() : VK_NULL_HANDLE
+            last ? this->currentRenderSlot().fence.handle() : VK_NULL_HANDLE
         );
     }
-    this->frameState.renderFenceInFlight = true;
+    this->currentRenderSlot().inFlight = true;
 
     for (size_t i = 0; i < acquiredImageIndices.size(); ++i) {
-        const size_t semaphoreIndex =
-            (semaphoreBase + i) % this->postCopySemaphores.size();
         const VkSemaphore waitSemaphore =
-            this->postCopySemaphores.at(semaphoreIndex).first.handle();
+            this->postCopySemaphores.at(acquiredImageIndices[i]).first.handle();
         const uint32_t acquiredImageIndex = acquiredImageIndices[i];
         const VkPresentInfoKHR acquiredPresentInfo{
             .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
@@ -416,11 +604,8 @@ VkResult Swapchain::retireAcquiredImagesAndPresent(const vk::Vulkan& vk,
         }
     }
 
-    const size_t lastSemaphoreIndex = (
-        semaphoreBase + acquiredImageIndices.size() - 1
-    ) % this->postCopySemaphores.size();
     const VkSemaphore originalWaitSemaphore =
-        this->postCopySemaphores.at(lastSemaphoreIndex).second.handle();
+        this->postCopySemaphores.at(originalImageIndex).first.handle();
     const VkPresentInfoKHR originalPresentInfo{
         .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
         .pNext = nextChain,

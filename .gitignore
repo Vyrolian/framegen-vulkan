@@ -47,6 +47,10 @@ htmlcov/
 *.tmp
 *.temp
 
+# Local frame-generation comparison recordings
+/mako-profile/
+/smooth-motion-profile/
+
 # MAKO Renderer (CMake and packaging)
 /engine/build/
 /engine/build-*/

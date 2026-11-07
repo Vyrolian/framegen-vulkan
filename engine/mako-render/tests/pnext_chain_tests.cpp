@@ -16,6 +16,58 @@ namespace {
         std::exit(1);
     }
 
+    void testGeneratedOutputMetadata() {
+        constexpr uint64_t presentIds[]{1234};
+        constexpr VkPresentModeKHR modes[]{VK_PRESENT_MODE_FIFO_KHR};
+        const VkPresentRegionsKHR regions{
+            .sType = VK_STRUCTURE_TYPE_PRESENT_REGIONS_KHR,
+        };
+        const VkSwapchainPresentFenceInfoEXT fence{
+            .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_FENCE_INFO_EXT,
+            .pNext = &regions,
+        };
+        const VkSwapchainPresentModeInfoEXT mode{
+            .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_MODE_INFO_EXT,
+            .pNext = &fence, .swapchainCount = 1, .pPresentModes = modes,
+        };
+        const VkPresentTimesInfoGOOGLE timing{
+            .sType = VK_STRUCTURE_TYPE_PRESENT_TIMES_INFO_GOOGLE,
+            .pNext = &mode,
+        };
+        const VkPresentIdKHR id{
+            .sType = VK_STRUCTURE_TYPE_PRESENT_ID_KHR,
+            .pNext = &timing, .swapchainCount = 1, .pPresentIds = presentIds,
+        };
+        const GeneratedPresentPNextChain generated(&id);
+        const auto* copied = static_cast<const VkSwapchainPresentModeInfoEXT*>(generated.head());
+        expect(copied != nullptr, "generated output lost its persistent mode override");
+        expect(copied != &mode, "generated output borrowed the caller mode node");
+        expect(copied->sType == mode.sType, "generated mode type changed");
+        expect(copied->pNext == nullptr, "generated mode retained caller frame metadata");
+        expect(copied->swapchainCount == 1, "generated mode count changed");
+        expect(copied->pPresentModes == modes, "generated mode array changed");
+        expect(id.pNext == &timing && timing.pNext == &mode && mode.pNext == &fence &&
+                fence.pNext == &regions && id.pPresentIds[0] == 1234,
+            "caller real-output metadata must remain immutable and complete");
+        const VkPresentIdKHR idOnly{
+            .sType = VK_STRUCTURE_TYPE_PRESENT_ID_KHR,
+            .pNext = &fence, .swapchainCount = 1, .pPresentIds = presentIds,
+        };
+        expect(!GeneratedPresentPNextChain(&idOnly).head() &&
+                !GeneratedPresentPNextChain(nullptr).head(),
+            "generated output must not acquire a caller completion ID or fence");
+#if defined(VK_KHR_present_id2)
+        const VkPresentId2KHR id2{
+            .sType = VK_STRUCTURE_TYPE_PRESENT_ID_2_KHR,
+            .pNext = &mode, .swapchainCount = 1, .pPresentIds = presentIds,
+        };
+        const GeneratedPresentPNextChain generated2(&id2);
+        expect(generated2.head() && static_cast<const VkSwapchainPresentModeInfoEXT*>(
+                generated2.head())->pNext == nullptr && id2.pNext == &mode,
+            "ID2 metadata must also remain solely on the caller real image");
+#endif
+    }
+
 #if defined(VK_KHR_present_id2)
     void testPresentId2Prefix() {
         constexpr uint64_t ids[]{0x123456789abcdef0ULL};
@@ -62,6 +114,49 @@ namespace {
                     ids[0] == 0x123456789abcdef0ULL,
                 "present ID2 filtering changed caller data or the fence suffix");
         }
+    }
+#endif
+
+#if defined(VK_KHR_present_id2) && defined(VK_KHR_present_wait2)
+    void testPresentId2Wait2Enablement() {
+        // Feature structs carry a mutable void* pNext, so these stay non-const.
+        VkPhysicalDevicePresentWait2FeaturesKHR wait2{
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_2_FEATURES_KHR,
+            .presentWait2 = VK_TRUE,
+        };
+        VkPhysicalDevicePresentId2FeaturesKHR id2{
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_2_FEATURES_KHR,
+            .pNext = &wait2,
+            .presentId2 = VK_TRUE,
+        };
+        expect(enablesApplicationPresentId2Wait2(&id2),
+            "enabled present ID2 and wait2 features were not recognized");
+
+        wait2.presentWait2 = VK_FALSE;
+        expect(!enablesApplicationPresentId2Wait2(&id2),
+            "a disabled wait2 feature was accepted");
+        wait2.presentWait2 = VK_TRUE;
+        id2.presentId2 = VK_FALSE;
+        expect(!enablesApplicationPresentId2Wait2(&id2),
+            "a disabled present ID2 feature was accepted");
+        id2.presentId2 = VK_TRUE;
+
+        expect(!enablesApplicationPresentId2Wait2(&wait2),
+            "wait2 alone was accepted");
+        expect(!enablesApplicationPresentId2Wait2(nullptr),
+            "an absent feature chain was accepted");
+        id2.pNext = nullptr;
+        expect(!enablesApplicationPresentId2Wait2(&id2),
+            "present ID2 alone was accepted without wait2");
+
+        VkPhysicalDeviceTimelineSemaphoreFeatures unrelated{
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES,
+            .pNext = &wait2,
+            .timelineSemaphore = VK_TRUE,
+        };
+        id2.pNext = &unrelated;
+        expect(enablesApplicationPresentId2Wait2(&id2),
+            "features behind an unrelated feature node were not found");
     }
 #endif
 
@@ -184,6 +279,7 @@ namespace {
 }
 
 int main() {
+    testGeneratedOutputMetadata();
     const VkPresentTimesInfoGOOGLE googleTiming{
         .sType = VK_STRUCTURE_TYPE_PRESENT_TIMES_INFO_GOOGLE,
     };
@@ -204,6 +300,9 @@ int main() {
         "ordinary present metadata incorrectly claimed timing ownership");
 #if defined(VK_KHR_present_id2)
     testPresentId2Prefix();
+#endif
+#if defined(VK_KHR_present_id2) && defined(VK_KHR_present_wait2)
+    testPresentId2Wait2Enablement();
 #endif
     testPresentTimingPrefix();
     const VkBaseInStructure tail{

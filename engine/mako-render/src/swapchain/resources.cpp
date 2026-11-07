@@ -2,10 +2,12 @@
 
 #include "swapchain/swapchain.hpp"
 #include "present_diagnostics.hpp"
+#include "swapchain/present/internal.hpp"
 #include "mako-common/helpers/errors.hpp"
 #include "mako-common/helpers/file_descriptors.hpp"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -14,6 +16,7 @@
 #include <iostream>
 #include <optional>
 #include <span>
+#include <sstream>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -124,20 +127,56 @@ void Swapchain::selectPackedHdr10Transport(const vk::Vulkan& vk,
 
 void Swapchain::ensureFrameGenerationExecutionResources(
         const vk::Vulkan& vk) {
-    if (!this->renderCommandBuffer.has_value())
-        this->renderCommandBuffer.emplace(vk);
-    if (!this->renderFence.has_value())
-        this->renderFence.emplace(vk);
+    if (this->pacingProfile && present_diagnostics::pacingFrameTraceEnabled() && !this->gamescopeDetected &&
+            !this->spatialScaler && !this->nativeCopyProfileInitialized) {
+        this->nativeCopyProfileInitialized = true;
+        try {
+            using Copy = present_diagnostics::NativeCopyProfile;
+            const auto get = [&](const char* name) { return vk.fi().GetDeviceProcAddr(vk.dev(), name); };
+            auto calibrate = this->info.copyTimestampCalibration
+                ? reinterpret_cast<PFN_vkGetCalibratedTimestampsKHR>(get("vkGetCalibratedTimestampsKHR")) : nullptr;
+            if (this->info.copyTimestampCalibration && !calibrate)
+                calibrate = reinterpret_cast<PFN_vkGetCalibratedTimestampsKHR>(get("vkGetCalibratedTimestampsEXT"));
+            uint32_t count{};
+            vk.fi().GetPhysicalDeviceQueueFamilyProperties(vk.physdev(), &count, nullptr);
+            std::vector<VkQueueFamilyProperties> families(count);
+            vk.fi().GetPhysicalDeviceQueueFamilyProperties(vk.physdev(), &count, families.data());
+            VkPhysicalDeviceProperties properties{};
+            vk.fi().GetPhysicalDeviceProperties(vk.physdev(), &properties);
+            this->nativeCopyProfile = std::make_unique<Copy>(vk.dev(), Copy::Functions{
+                reinterpret_cast<PFN_vkCreateQueryPool>(get("vkCreateQueryPool")),
+                reinterpret_cast<PFN_vkDestroyQueryPool>(get("vkDestroyQueryPool")),
+                reinterpret_cast<PFN_vkCmdResetQueryPool>(get("vkCmdResetQueryPool")),
+                reinterpret_cast<PFN_vkCmdWriteTimestamp>(get("vkCmdWriteTimestamp")),
+                reinterpret_cast<PFN_vkGetQueryPoolResults>(get("vkGetQueryPoolResults")), calibrate,
+            }, vk.queueFamilyIndex() < families.size() ? families[vk.queueFamilyIndex()].timestampValidBits : 0,
+                properties.limits.timestampPeriod, this->diagnosticsState.contextId);
+            if (!this->nativeCopyProfile->ready()) this->nativeCopyProfile.reset();
+        } catch (...) { this->nativeCopyProfile.reset(); }
+        try {
+            std::ostringstream line;
+            line << "MAKO Renderer: present diagnostics: operation=pacing-profile-copy-gpu-state version=1"
+                 << " context=" << this->diagnosticsState.contextId << " active=" << static_cast<bool>(this->nativeCopyProfile)
+                 << " calibrated=" << (this->nativeCopyProfile && this->nativeCopyProfile->hasCalibration()) << '\n';
+            present_diagnostics::writePacingProfileRecords(line.str());
+        } catch (...) {}
+    }
 
     // These objects are WSI-facing and intentionally remain stable while the
     // full-resolution images and backend context are replaced. Preallocating
-    // four pass slots avoids retiring binary semaphores that may still be
+    // render slots avoids retiring binary semaphores that may still be
     // referenced by a previously queued presentation.
-    while (this->passes.size() < GeneratedFramePlan::capacity) {
-        this->passes.emplace_back(RenderPass{
-            .commandBuffer = vk::CommandBuffer(vk),
-            .acquireSemaphore = vk::Semaphore(vk),
+    while (this->renderSlots.size() < renderSlotDepth) {
+        auto& slot = this->renderSlots.emplace_back(RenderSlot{
+            .sourceCopy = vk::CommandBuffer(vk),
+            .fence = vk::Fence(vk),
         });
+        while (slot.passes.size() < GeneratedFramePlan::capacity) {
+            slot.passes.emplace_back(RenderPass{
+                .commandBuffer = vk::CommandBuffer(vk),
+                .acquireSemaphore = vk::Semaphore(vk),
+            });
+        }
     }
     const size_t semaphoreFrames = std::max(
         this->info.images.size(), GeneratedFramePlan::capacity + 2
@@ -146,6 +185,106 @@ void Swapchain::ensureFrameGenerationExecutionResources(
         this->postCopySemaphores.emplace_back(
             vk::Semaphore(vk), vk::Semaphore(vk)
         );
+    }
+}
+
+// The worker resubmits these copies, so they are recorded once per destination
+// and swapchain image set. The slot's staging copy runs on the game queue at
+// present time, before the source copy that releases the next backend batch.
+// The worker therefore copies only staging into each swapchain image.
+bool Swapchain::recordGeneratedCopies(const vk::Vulkan& vk, RenderSlot& slot) {
+    if (slot.staging && slot.generatedCopies.size() == this->info.images.size()) return true;
+    if (this->destinationImages.empty() || this->spatialScaler ||
+            this->info.images.size() > DeferredPresent::maxCopyImages)
+        return false;
+    try {
+        const auto& destinationImage = this->destinationImages.at(0);
+        const VkExtent2D extent = destinationImage.getExtent();
+        slot.staging.emplace(vk, extent, this->info.format,
+            VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+        const VkImage stagingImage = slot.staging->handle();
+        slot.staged.emplace(vk);
+        slot.stagingCopy.emplace(vk);
+        {
+            const auto& command = *slot.stagingCopy;
+            command.begin(vk, 0);
+            vk::acquireExternalImage(vk, command.handle(), destinationImage.handle(),
+                VK_ACCESS_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+            const std::array preBarriers{
+                present_detail::barrierHelper(destinationImage.handle(),
+                    VK_ACCESS_NONE,
+                    VK_ACCESS_TRANSFER_READ_BIT,
+                    VK_IMAGE_LAYOUT_GENERAL,
+                    VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL
+                ),
+                present_detail::barrierHelper(stagingImage,
+                    VK_ACCESS_NONE,
+                    VK_ACCESS_TRANSFER_WRITE_BIT,
+                    VK_IMAGE_LAYOUT_UNDEFINED,
+                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL
+                ),
+            };
+            // Leave staging readable by the worker's copies after the staged signal.
+            const std::array postBarriers{
+                present_detail::barrierHelper(stagingImage,
+                    VK_ACCESS_TRANSFER_WRITE_BIT,
+                    VK_ACCESS_TRANSFER_READ_BIT,
+                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL
+                ),
+            };
+            command.blitImage(vk, preBarriers,
+                {destinationImage.handle(), stagingImage},
+                extent, postBarriers);
+            command.end(vk);
+        }
+
+        std::vector<vk::CommandBuffer> copies;
+        copies.reserve(this->info.images.size());
+        for (const VkImage swapchainImage : this->info.images) {
+            copies.emplace_back(vk);
+            const auto& command = copies.back();
+            command.begin(vk, 0);
+            const std::array preBarriers{
+                present_detail::barrierHelper(swapchainImage,
+                    VK_ACCESS_NONE,
+                    VK_ACCESS_TRANSFER_WRITE_BIT,
+                    VK_IMAGE_LAYOUT_UNDEFINED,
+                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL
+                ),
+            };
+            const std::array postBarriers{
+                present_detail::barrierHelper(swapchainImage,
+                    VK_ACCESS_TRANSFER_WRITE_BIT,
+                    VK_ACCESS_MEMORY_READ_BIT,
+                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
+                ),
+            };
+            command.blitImage(vk, preBarriers,
+                {stagingImage, swapchainImage},
+                extent, postBarriers);
+            command.end(vk);
+        }
+        slot.generatedCopies = std::move(copies);
+        return true;
+    } catch (...) {
+        slot.generatedCopies.clear();
+        slot.stagingCopy.reset();
+        slot.staged.reset();
+        slot.staging.reset();
+        return false;
+    }
+}
+
+void Swapchain::initializeGpuPacingProfile(backend::Instance& backend,
+        backend::Context& context) noexcept {
+    if (!this->pacingProfile || !present_diagnostics::pacingGpuProfileEnabled()) return;
+    try {
+        backend.enableFrameProfiling(context, true);
+    } catch (const std::exception& error) {
+        std::cerr << "MAKO Renderer: GPU pacing profile unavailable; reason=query-initialization; "
+                  << error.what() << '\n';
     }
 }
 
@@ -209,6 +348,7 @@ Swapchain::buildFrameGenerationResources(const vk::Vulkan& vk,
             backend->closeContext(context);
         }
     );
+    this->initializeGpuPacingProfile(backendInstance, resources.context.get());
     backend::makeLeaking();
     return resources;
 }
@@ -220,6 +360,10 @@ void Swapchain::commitFrameGenerationResources(
     // Old backend work and application-device copies are proven idle by the
     // caller. The context is declared last in this aggregate and therefore
     // closes before its imported images and shared timeline are destroyed.
+    // An overlapped deferred batch may still wait on the retiring timeline.
+    // No batch is open here (replacement precedes this frame's admission).
+    static_cast<void>(this->completeDeferredPresent(UINT64_MAX));
+    if (this->nativeCopyProfile) this->nativeCopyProfile->completed();
     FrameGenerationResources retiring;
     retiring.sourceImages = std::move(this->sourceImages);
     retiring.destinationImages = std::move(this->destinationImages);
@@ -243,7 +387,18 @@ void Swapchain::commitFrameGenerationResources(
 
     this->frameState.backendTimelineIndex = 1;
     this->frameState.backendFrameIndex = 0;
-    this->frameState.renderFenceInFlight = false;
+    if (this->pacingProfile) this->pacingProfile->resetBackend();
+    for (auto& slot : this->renderSlots) {
+        slot.inFlight = false;
+        // Recorded copies name the replaced destination and swapchain images.
+        // Release them before the staging image they read.
+        slot.generatedCopies.clear();
+        slot.stagingCopy.reset();
+        slot.staged.reset();
+        slot.staging.reset();
+    }
+    this->frameState.sourceReleaseTimelineValue = 0;
+    this->frameState.nextSourceReleaseTimelineValue = 0;
     this->recoveryState.backendPending = false;
     this->recoveryState.generatedImageAdmission.reset();
     this->recoveryState.orderedAcquireRecovery.reset();
@@ -364,8 +519,7 @@ bool Swapchain::applyPendingColorPipeline(const vk::Vulkan& vk) {
             if (!this->instance ||
                     !this->instance->contextReady(this->ctx.get()))
                 return false;
-            if (this->frameState.renderFenceInFlight &&
-                    !this->renderFence->wait(vk, 0))
+            if (!this->pollRenderSlotsIdle(vk))
                 return false;
         } catch (const std::exception& error) {
             std::cerr << "MAKO Renderer: private colour transition readiness poll "
@@ -493,11 +647,8 @@ bool Swapchain::applyPendingFrameGenerationResources(
     try {
         if (!this->instance || !this->instance->contextReady(this->ctx.get()))
             return false;
-        if (this->frameState.renderFenceInFlight) {
-            if (!this->renderFence->wait(vk, 0))
-                return false;
-            this->frameState.renderFenceInFlight = false;
-        }
+        if (!this->pollRenderSlotsIdle(vk))
+            return false;
         if (this->spatialScaler && !this->spatialScalingPassesReady(vk))
             return false;
     } catch (const std::exception& error) {
@@ -623,12 +774,10 @@ void Swapchain::applyPendingSpatialScaler(const vk::Vulkan& vk) {
                 this->spatialFramePipelinePlacement
             );
         const auto generatedRenderWorkInFlight =
-            generatedRenderDrainRequired &&
-            this->frameState.renderFenceInFlight;
+            generatedRenderDrainRequired && this->renderSlotsInFlight();
         if (generatedRenderWorkInFlight) {
-            if (!this->renderFence->wait(vk, 0))
+            if (!this->pollRenderSlotsIdle(vk))
                 return;
-            this->frameState.renderFenceInFlight = false;
         }
         if (!this->spatialScalingPassesReady(vk))
             return;

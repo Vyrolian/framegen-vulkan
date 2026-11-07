@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 
 #include "swapchain/swapchain.hpp"
+#include "frame_content_capture.hpp"
 #include "swapchain/present/internal.hpp"
 #include "swapchain/retirement.hpp"
 #include "adaptive_scheduler.hpp"
@@ -47,6 +48,23 @@ VkResult Swapchain::presentGeneratedFrames(
     auto generatedPresentDuration = DiagnosticsClock::duration::zero();
     auto originalPresentDuration = DiagnosticsClock::duration::zero();
     bool acquireDeadlineExceeded = false;
+    std::optional<VkResult> deferredAcquireError;
+    const GeneratedPresentPNextChain generatedChain(
+        this->gamescopeDetected ? nullptr : invocation.nextChain);
+    const bool deferredFirst = invocation.deferredOutputEligible && invocation.pacedOutputs;
+    bool deferredTail = invocation.deferredOutputEligible && invocation.pacedOutputs &&
+        (deferredFirst || plan.scheduledGeneratedFrames.size() > 1) &&
+        this->beginDeferredPresentBatch(invocation.vk,
+            plan.scheduledGeneratedFrames.size() + (deferredFirst ? 1 : 0),
+            this->frameState.backendTimelineIndex + plan.scheduledGeneratedFrames.size() - 1,
+            invocation.readinessDeadline, invocation.capReadyOutputPacing,
+            invocation.releasedOutputLimit, invocation.releasedJoinTolerance,
+            invocation.releasedOverlap,
+            invocation.pacedOutputs ? invocation.pacedOutputs->interval : DiagnosticsClock::duration{});
+    struct CloseDeferredBatch {
+        DeferredPresent* worker;
+        ~CloseDeferredBatch() { if (worker) worker->closeBatch(); }
+    } closeDeferredBatch{deferredTail ? this->deferredPresent.get() : nullptr};
     uint64_t lastAcquireTimeout = 0;
     const auto reportOrderedAcquire = [&](const bool timedOut,
             const bool budgetExhausted,
@@ -146,7 +164,61 @@ VkResult Swapchain::presentGeneratedFrames(
             this->frameState.sequenceIndex % this->postCopySemaphores.size()
         );
         auto& destinationImage = this->destinationImages.at(i);
-        auto& pass = this->passes.at(i);
+        auto& pass = this->currentRenderSlot().passes.at(i);
+
+        // A released native batch with one generated image lets the worker acquire,
+        // copy and present it at its deadline. Any refusal keeps the path below.
+        if (deferredTail && invocation.releasedOverlap && i == 0 &&
+                plan.scheduledGeneratedFrames.size() == 1 &&
+                !plan.generatedImagesPreacquired && !this->spatialScaler &&
+                !this->frameContentCapture && !this->nativeCopyProfile &&
+                !this->gamescopeDetected && this->deferredPresent &&
+                this->recordGeneratedCopies(invocation.vk, this->currentRenderSlot())) {
+            auto& slot = this->currentRenderSlot();
+            // The staging copy stays on the game queue, ahead of the source copy
+            // that releases the next backend batch. Its signal is consumed below.
+            slot.stagingCopy->submit(invocation.vk, {}, this->syncSemaphore->handle(),
+                this->frameState.backendTimelineIndex, std::array{slot.staged->handle()},
+                VK_NULL_HANDLE, 0);
+            DeferredPresent::GeneratedCopy copy{
+                .device = invocation.vk.dev(),
+                .acquire = invocation.vk.df().AcquireNextImageKHR,
+                .submit = invocation.vk.df().QueueSubmit,
+                .acquireSemaphore = pass.acquireSemaphore.handle(),
+                .staged = slot.staged->handle(),
+                .continuation = this->postCopySemaphores.at(invocation.imageIndex).first.handle(),
+                .fence = slot.fence.handle(),
+                .imageCount = static_cast<uint32_t>(this->info.images.size()),
+                .giveUp = invocation.pacedOutputs->interval / 2,
+            };
+            for (uint32_t k = 0; k < copy.imageCount; ++k) {
+                copy.copies.at(k) = slot.generatedCopies.at(k).handle();
+                copy.presentWaits.at(k) = this->postCopySemaphores.at(k).first.handle();
+            }
+            if (this->deferredPresent->enqueueGeneratedCopy(invocation.swapchain, generatedChain.head(),
+                    invocation.pacedOutputs->at(i), copy)) {
+                this->deferredOutputQueuedThisFrame = true;
+                slot.inFlight = true;
+                // Worker copies are counted on completion, when a pressure
+                // skip can be distinguished from a submitted generated image.
+                this->frameState.sequenceIndex++;
+                this->frameState.backendTimelineIndex++;
+                continue;
+            }
+            // Refused: no worker copy or skip will wait the staged signal, so
+            // consume it here before the present-thread path.
+            const VkSemaphore stagedWait = slot.staged->handle();
+            const VkPipelineStageFlags stagedStage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+            const VkSubmitInfo release{
+                .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                .waitSemaphoreCount = 1, .pWaitSemaphores = &stagedWait,
+                .pWaitDstStageMask = &stagedStage,
+            };
+            const auto released = invocation.vk.df().QueueSubmit(
+                invocation.vk.queue(), 1, &release, VK_NULL_HANDLE);
+            if (released != VK_SUCCESS)
+                throw ls::vulkan_error(released, "vkQueueSubmit() failed");
+        }
 
         uint32_t acquiredImageIndex{};
         VkResult result{};
@@ -171,19 +243,68 @@ VkResult Swapchain::presentGeneratedFrames(
                 );
             acquireBudgetExhausted = remainingAcquireBudget &&
                 *remainingAcquireBudget == 0;
-            const uint64_t acquireTimeout = orderedGeneratedImageAcquireTimeout(
-                this->gamescopeRefreshHz, remainingAcquireBudget
-            );
+            // A stalled safety wait leaves later acquires nonblocking until
+            // one generated image is available again.
+            const uint64_t acquireTimeout = this->generatedAcquireStalled ? 0 :
+                orderedGeneratedImageAcquireTimeout(
+                    this->gamescopeRefreshHz, remainingAcquireBudget
+                );
             lastAcquireTimeout = acquireTimeout;
             if (acquireBudgetExhausted) {
                 result = VK_TIMEOUT;
                 acquireDeadlineExceeded = true;
             } else {
-                result = invocation.vk.df().AcquireNextImageKHR(
-                    invocation.vk.dev(), invocation.swapchain,
-                    acquireTimeout, pass.acquireSemaphore.handle(),
-                    VK_NULL_HANDLE, &acquiredImageIndex
-                );
+                // Never block acquisition while the worker may need to return
+                // another image. Poll under its host-access lock, then seal and
+                // drain the existing tail before ordinary bounded acquisition.
+                bool polled = false;
+                if (deferredTail) {
+                    polled = true;
+                    const auto pollSpareImage = [&] {
+                        return this->deferredPresent->pollAcquire([&] {
+                            return invocation.vk.df().AcquireNextImageKHR(
+                                invocation.vk.dev(), invocation.swapchain, 0,
+                                pass.acquireSemaphore.handle(), VK_NULL_HANDLE, &acquiredImageIndex);
+                        });
+                    };
+                    result = pollSpareImage();
+                    // While our batch is open, only the older overlapped batches can
+                    // return images. Wait for all of them, then poll once more.
+                    if ((result == VK_NOT_READY || result == VK_TIMEOUT) &&
+                            this->deferredPresent->olderBatchPending() && this->deferredPresent->newestOpen()) {
+                        static_cast<void>(this->completeDeferredPresent(UINT64_MAX, false, true));
+                        result = pollSpareImage();
+                    }
+                    if (result == VK_NOT_READY || result == VK_TIMEOUT) {
+                        this->deferredPresent->closeBatch();
+                        const auto drained = this->completeDeferredPresent(UINT64_MAX);
+                        deferredTail = false;
+                        if (drained < 0) {
+                            // Drain the scheduled backend and return the real
+                            // application image through the existing partial-
+                            // delivery path before propagating this error.
+                            deferredAcquireError = drained;
+                            result = VK_TIMEOUT;
+                        }
+                    }
+                }
+                if (!polled) {
+                    result = invocation.vk.df().AcquireNextImageKHR(
+                        invocation.vk.dev(), invocation.swapchain, acquireTimeout,
+                        pass.acquireSemaphore.handle(), VK_NULL_HANDLE, &acquiredImageIndex);
+                } else if (!deferredAcquireError && !deferredTail &&
+                        (result == VK_NOT_READY || result == VK_TIMEOUT)) {
+                    const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        DiagnosticsClock::now() - acquireStarted).count();
+                    const auto remaining = remainingGeneratedImageAcquireBudget(
+                        remainingAcquireBudget, static_cast<uint64_t>(std::max(int64_t{0}, elapsed)));
+                    result = remaining && *remaining == 0 ? VK_TIMEOUT :
+                        invocation.vk.df().AcquireNextImageKHR(
+                            invocation.vk.dev(), invocation.swapchain,
+                            this->generatedAcquireStalled ? 0 :
+                                orderedGeneratedImageAcquireTimeout(this->gamescopeRefreshHz, remaining),
+                            pass.acquireSemaphore.handle(), VK_NULL_HANDLE, &acquiredImageIndex);
+                }
             }
             const auto acquireDuration =
                 DiagnosticsClock::now() - acquireStarted;
@@ -234,8 +355,15 @@ VkResult Swapchain::presentGeneratedFrames(
             );
         }
 
-        if (plan.configuredAcquireTimeout &&
-                (result == VK_TIMEOUT || result == VK_NOT_READY)) {
+        if (result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR) {
+            this->generatedAcquireStalled = false;
+        } else if (result == VK_TIMEOUT && !plan.configuredAcquireTimeout &&
+                !deferredAcquireError) {
+            // The unconfigured safety bound fired, not an explicit budget.
+            this->generatedAcquireStalled = true;
+        }
+
+        if (result == VK_TIMEOUT || result == VK_NOT_READY) {
             // Record this normal batch's delivery loss before changing its
             // transport state. Otherwise intermittent timeouts separated by
             // healthy batches disappear from Adaptive's multiplier evaluation
@@ -267,22 +395,25 @@ VkResult Swapchain::presentGeneratedFrames(
                 this->diagnosticsState.fixedSkippedFrames += skippedFrames;
             const uint64_t finalGeneratedTimelineValue =
                 this->frameState.backendTimelineIndex + skippedFrames - 1;
-            auto& fallbackSemaphore = postCopy.second;
+            auto& fallbackSemaphore = this->postCopySemaphores.at(invocation.imageIndex).first;
+            std::array<VkSemaphore, 1> precedingCopy{};
+            if (i) precedingCopy[0] = this->postCopySemaphores.at(
+                (this->frameState.sequenceIndex - 1) % this->postCopySemaphores.size()).second.handle();
 
             const auto fallbackSubmitStarted = startPresentDiagnostic();
             auto& fallbackCommandBuffer = pass.commandBuffer;
             fallbackCommandBuffer.begin(invocation.vk);
             fallbackCommandBuffer.end(invocation.vk);
             fallbackCommandBuffer.submit(invocation.vk,
-                {}, this->syncSemaphore->handle(),
+                std::span{precedingCopy}.first(i ? 1 : 0), this->syncSemaphore->handle(),
                 finalGeneratedTimelineValue,
                 std::array{fallbackSemaphore.handle()}, VK_NULL_HANDLE, 0,
-                this->renderFence->handle()
+                this->currentRenderSlot().fence.handle()
             );
             generatedSubmitDuration += finishPresentDiagnostic(
                 fallbackSubmitStarted
             );
-            this->frameState.renderFenceInFlight = true;
+            this->currentRenderSlot().inFlight = true;
 
             logPresentFallback(
                 this->frameState.realFrameIndex, this->frameState.sequenceIndex, i, skippedFrames,
@@ -293,10 +424,15 @@ VkResult Swapchain::presentGeneratedFrames(
 
             result = this->presentOriginalImage(
                 invocation, fallbackSemaphore.handle(),
-                this->gamescopeDetected || i == 0
-                    ? invocation.nextChain : nullptr,
+                invocation.nextChain,
                 &originalPresentDuration
             );
+            if (deferredAcquireError) {
+                this->deferredPresent->closeBatch();
+                const auto drained = this->completeDeferredPresent(UINT64_MAX);
+                if (result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR)
+                    result = drained < 0 ? drained : *deferredAcquireError;
+            }
             if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR)
                 throw ls::vulkan_error(result, "vkQueuePresentKHR() failed");
 
@@ -362,6 +498,8 @@ VkResult Swapchain::presentGeneratedFrames(
         );
         auto& commandBuffer = pass.commandBuffer;
         commandBuffer.begin(invocation.vk);
+        if (this->nativeCopyProfile)
+            this->nativeCopyProfile->beginCopy(commandBuffer.handle(), invocation.vk.queue(), acquiredImageIndex, true, static_cast<uint32_t>(i));
         vk::acquireExternalImage(invocation.vk, commandBuffer.handle(), destinationImage.handle(),
             VK_ACCESS_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
         if (this->spatialScaler &&
@@ -410,25 +548,44 @@ VkResult Swapchain::presentGeneratedFrames(
             const auto& previousPostCopy = this->postCopySemaphores.at(
                 (this->frameState.sequenceIndex - 1) % this->postCopySemaphores.size()
             );
-            waitSemaphores.at(waitSemaphoreCount++) =
-                previousPostCopy.second.handle();
+            waitSemaphores.at(waitSemaphoreCount++) = previousPostCopy.second.handle();
         }
-        const std::array signalSemaphores{
-            postCopy.first.handle(), postCopy.second.handle()
-        };
+        // Presentation waits belong to acquired images, not a frame ring.
+        // Reacquisition proves the previous presentation wait was consumed;
+        // advancing sequenceIndex alone provides no such proof.
+        const auto& presentSemaphore = this->postCopySemaphores.at(acquiredImageIndex).first;
+        const VkSemaphore continuationSemaphore = i + 1 == plan.scheduledGeneratedFrames.size()
+            ? this->postCopySemaphores.at(invocation.imageIndex).first.handle()
+            : postCopy.second.handle();
+        const std::array signalSemaphores{presentSemaphore.handle(), continuationSemaphore};
 
+        if (i == 0 && this->frameContentCapture)
+            this->frameContentCapture->record(invocation.vk, commandBuffer.handle(),
+                acquiredSwapchainImage, this->info.extent, acquiredImageIndex, true);
+        if (this->nativeCopyProfile)
+            this->nativeCopyProfile->endCopy(commandBuffer.handle(), true, static_cast<uint32_t>(i));
         commandBuffer.end(invocation.vk);
         const auto generatedSubmitStarted = startPresentDiagnostic();
-        commandBuffer.submit(invocation.vk,
-            std::span{waitSemaphores}.first(waitSemaphoreCount),
-            this->syncSemaphore->handle(),
-            this->frameState.backendTimelineIndex,
-            signalSemaphores, VK_NULL_HANDLE, 0,
-            i == plan.scheduledGeneratedFrames.size() - 1
-                ? this->renderFence->handle() : VK_NULL_HANDLE
-        );
+        const auto copyFence = i == plan.scheduledGeneratedFrames.size() - 1
+            ? this->currentRenderSlot().fence.handle() : VK_NULL_HANDLE;
+        present_diagnostics::observeCopySubmission({
+            .context = this->diagnosticsState.contextId,
+            .source = this->pacingProfile ? this->pacingProfile->sourceOrdinal() : 0,
+            .swapchain = invocation.swapchain, .generated = true,
+            .imageIndex = acquiredImageIndex, .pass = static_cast<uint32_t>(i),
+            .device = invocation.vk.dev(), .queue = invocation.vk.queue(), .command = commandBuffer.handle(),
+            .waits = std::span{waitSemaphores}.first(waitSemaphoreCount), .signals = signalSemaphores,
+            .timelineWait = this->syncSemaphore->handle(), .waitValue = this->frameState.backendTimelineIndex,
+            .fence = copyFence,
+        }, [&] {
+            commandBuffer.submit(invocation.vk,
+                std::span{waitSemaphores}.first(waitSemaphoreCount),
+                this->syncSemaphore->handle(), this->frameState.backendTimelineIndex,
+                signalSemaphores, VK_NULL_HANDLE, 0, copyFence
+            );
+        });
         if (i == plan.scheduledGeneratedFrames.size() - 1)
-            this->frameState.renderFenceInFlight = true;
+            this->currentRenderSlot().inFlight = true;
         generatedSubmitDuration += finishPresentDiagnostic(
             generatedSubmitStarted
         );
@@ -440,21 +597,26 @@ VkResult Swapchain::presentGeneratedFrames(
 
         const VkPresentInfoKHR presentInfo{
             .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
-            .pNext = !this->gamescopeDetected && i == 0
-                ? invocation.nextChain : nullptr,
+            .pNext = generatedChain.head(),
             .waitSemaphoreCount = 1,
-            .pWaitSemaphores = &postCopy.first.handle(),
+            .pWaitSemaphores = &presentSemaphore.handle(),
             .swapchainCount = 1,
             .pSwapchains = &invocation.swapchain,
             .pImageIndices = &acquiredImageIndex,
         };
-        if (invocation.pacedOutputs)
+        if (deferredTail && (deferredFirst || i > 0))
+            this->deferredPresentDeadline = invocation.pacedOutputs->at(i);
+        else if (invocation.pacedOutputs)
             invocation.waitForOutput(invocation.pacedOutputs->at(i));
         else if (invocation.originalPresentDeadline)
             invocation.waitForOutput(*invocation.originalPresentDeadline);
         const auto generatedPresentStarted = startPresentDiagnostic();
         result = this->queuePresentWithRetirementFence(
-            invocation.vk, invocation.queue, presentInfo
+            invocation.vk, invocation.queue, presentInfo, {
+                .scheduled = invocation.pacedOutputs ? invocation.pacedOutputs->at(i)
+                    : invocation.originalPresentDeadline.value_or(DiagnosticsClock::time_point{}),
+                .generated = true, .copyExpected = true,
+            }
         );
         const auto oneGeneratedPresentDuration = finishPresentDiagnostic(
             generatedPresentStarted
@@ -473,8 +635,8 @@ VkResult Swapchain::presentGeneratedFrames(
             // OUT_OF_DATE, otherwise a game can block while tearing down an
             // acquired image that never reached the presentation engine.
             const auto originalResult = this->presentOriginalImage(
-                invocation, postCopy.second.handle(),
-                this->gamescopeDetected ? invocation.nextChain : nullptr,
+                invocation, continuationSemaphore,
+                invocation.nextChain,
                 &originalPresentDuration
             );
             if (presentDiagnosticsEnabled()) {
@@ -514,12 +676,9 @@ VkResult Swapchain::presentGeneratedFrames(
         this->frameState.backendTimelineIndex++;
     }
 
-    auto& lastPostCopy = this->postCopySemaphores.at(
-        (this->frameState.sequenceIndex - 1) % this->postCopySemaphores.size()
-    );
     const auto result = this->presentOriginalImage(
-        invocation, lastPostCopy.second.handle(),
-        this->gamescopeDetected ? invocation.nextChain : nullptr,
+        invocation, this->postCopySemaphores.at(invocation.imageIndex).first.handle(),
+        invocation.nextChain,
         &originalPresentDuration
     );
     const bool originalPresentRequestedRecreation =

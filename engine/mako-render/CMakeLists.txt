@@ -4,6 +4,8 @@ set(LAYER_SOURCES
     "src/gamescope_scaling_surface.cpp"
     "src/instance.cpp"
     "src/present_diagnostics.cpp"
+    "src/frame_content_capture.cpp"
+    "src/wayland_presentation_feedback.cpp"
     "src/runtime_health.cpp"
     "src/runtime_status.cpp"
     "src/swapchain/create.cpp"
@@ -208,6 +210,29 @@ if(BUILD_TESTING)
         COMMAND mako-steam-overlay-diagnostics-tests $<TARGET_FILE:mako-launch-preload-fixture>)
     mako_register_portable_policy_test(mako-steam-overlay-diagnostics-tests steam-overlay-library-diagnostics)
 
+    add_executable(mako-pacing-profile-tests
+        "tests/pacing_profile_tests.cpp" "src/present_diagnostics.cpp")
+    target_include_directories(mako-pacing-profile-tests PRIVATE "src")
+    target_link_libraries(mako-pacing-profile-tests PRIVATE mako-adaptive ${CMAKE_DL_LIBS})
+    add_test(NAME pacing-profile COMMAND mako-pacing-profile-tests)
+    mako_register_portable_policy_test(mako-pacing-profile-tests pacing-profile)
+    add_executable(mako-native-copy-profile-tests
+        "tests/native_copy_profile_tests.cpp" "src/present_diagnostics.cpp")
+    target_include_directories(mako-native-copy-profile-tests PRIVATE "src")
+    target_link_libraries(mako-native-copy-profile-tests PRIVATE mako-adaptive ${CMAKE_DL_LIBS})
+    add_test(NAME native-copy-profile COMMAND mako-native-copy-profile-tests)
+    mako_register_portable_policy_test(mako-native-copy-profile-tests native-copy-profile)
+    add_test(NAME pacing-profile-report
+        COMMAND "${MAKO_PYTHON3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_pacing_profile_report.py")
+    mako_register_portable_policy_test(mako-pacing-profile-tests pacing-profile-report)
+    add_test(NAME framegen-comparison-profiler
+        COMMAND "${MAKO_PYTHON3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_framegen_profiler.py")
+    mako_register_portable_policy_test(mako-pacing-profile-tests framegen-comparison-profiler)
+    add_executable(mako-pacing-profile-benchmark
+        "tests/pacing_profile_benchmark.cpp" "src/present_diagnostics.cpp")
+    target_include_directories(mako-pacing-profile-benchmark PRIVATE "src")
+    target_link_libraries(mako-pacing-profile-benchmark PRIVATE mako-adaptive ${CMAKE_DL_LIBS})
+
     add_executable(mako-runtime-health-tests
         "tests/runtime_health_tests.cpp" "src/runtime_health.cpp")
     target_link_libraries(mako-runtime-health-tests PRIVATE mako-common Threads::Threads)
@@ -337,7 +362,42 @@ if(BUILD_TESTING)
     mako_register_portable_policy_test(
         mako-presentation-policy-tests presentation-policy)
 
+    add_executable(mako-deferred-present-tests "tests/deferred_present_tests.cpp")
+    target_include_directories(mako-deferred-present-tests PRIVATE "src")
+    target_link_libraries(mako-deferred-present-tests PRIVATE Threads::Threads)
+    add_test(NAME deferred-present COMMAND mako-deferred-present-tests)
+    mako_register_portable_policy_test(mako-deferred-present-tests deferred-present)
+
+    add_executable(mako-release-gate-tests "tests/release_gate_tests.cpp")
+    target_include_directories(mako-release-gate-tests PRIVATE "src")
+    target_link_libraries(mako-release-gate-tests PRIVATE Threads::Threads)
+    add_test(NAME release-gate COMMAND mako-release-gate-tests)
+    mako_register_portable_policy_test(mako-release-gate-tests release-gate)
+
+    add_executable(mako-uncapped-auto-cap-tests "tests/uncapped_auto_cap_tests.cpp")
+    target_include_directories(mako-uncapped-auto-cap-tests PRIVATE "src")
+    add_test(NAME uncapped-auto-cap COMMAND mako-uncapped-auto-cap-tests)
+    mako_register_portable_policy_test(mako-uncapped-auto-cap-tests uncapped-auto-cap)
+
+    add_executable(mako-present-feedback-probe-tests "tests/present_feedback_probe_tests.cpp")
+    target_include_directories(mako-present-feedback-probe-tests PRIVATE "src")
+    add_test(NAME present-feedback-probe COMMAND mako-present-feedback-probe-tests)
+    mako_register_portable_policy_test(mako-present-feedback-probe-tests present-feedback-probe)
+
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        add_library(mako-wayland-presentation-fixture SHARED "tests/wayland_presentation_client_fixture.cpp")
+        target_include_directories(mako-wayland-presentation-fixture PRIVATE src)
+        set_target_properties(mako-wayland-presentation-fixture PROPERTIES
+            OUTPUT_NAME "wayland-client" SOVERSION 0
+            LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/wayland-presentation-fixture")
+        add_executable(mako-wayland-presentation-tests
+            "tests/wayland_presentation_feedback_tests.cpp" "src/wayland_presentation_feedback.cpp" "src/present_diagnostics.cpp")
+        target_include_directories(mako-wayland-presentation-tests PRIVATE src)
+        target_link_libraries(mako-wayland-presentation-tests PRIVATE mako-wayland-presentation-fixture mako-adaptive Threads::Threads ${CMAKE_DL_LIBS})
+        add_test(NAME wayland-presentation-feedback COMMAND ${CMAKE_COMMAND} -E env
+            "LD_LIBRARY_PATH=$<TARGET_FILE_DIR:mako-wayland-presentation-fixture>" $<TARGET_FILE:mako-wayland-presentation-tests>)
+        mako_register_portable_policy_test(mako-wayland-presentation-tests wayland-presentation-feedback)
+
         add_library(mako-feedback-client-fixture SHARED
             "tests/gamescope_feedback_client_fixture.cpp")
         set_target_properties(mako-feedback-client-fixture PROPERTIES
@@ -414,14 +474,15 @@ if(BUILD_TESTING)
     mako_register_portable_policy_test(
         mako-adaptive-matrix adaptive-scheduler-matrix)
 
-    if(MAKO_BUILD_VK_LAYER)
-        add_executable(mako-pnext-chain-tests
-            "tests/pnext_chain_tests.cpp")
-        target_include_directories(mako-pnext-chain-tests
-            PRIVATE "src")
-        add_test(NAME pnext-chain
-            COMMAND mako-pnext-chain-tests)
+    add_executable(mako-pnext-chain-tests
+        "tests/pnext_chain_tests.cpp")
+    target_include_directories(mako-pnext-chain-tests
+        PRIVATE "src")
+    add_test(NAME pnext-chain
+        COMMAND mako-pnext-chain-tests)
+    mako_register_portable_policy_test(mako-pnext-chain-tests pnext-chain)
 
+    if(MAKO_BUILD_VK_LAYER)
         add_executable(mako-color-tests
             "tests/color_pipeline_tests.cpp")
         target_link_libraries(mako-color-tests

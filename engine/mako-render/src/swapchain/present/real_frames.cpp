@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 
 #include "swapchain/swapchain.hpp"
+#include "frame_content_capture.hpp"
 #include "swapchain/present/internal.hpp"
 #include "swapchain/retirement.hpp"
 #include "adaptive_scheduler.hpp"
@@ -123,7 +124,9 @@ VkResult Swapchain::presentSpatiallyScaledFrame(
     };
     const auto originalPresentStarted = startPresentDiagnostic();
     const auto result = this->queuePresentWithRetirementFence(
-        invocation.vk, invocation.queue, presentInfo
+        invocation.vk, invocation.queue, presentInfo, {
+            .scheduled = invocation.originalPresentDeadline.value_or(DiagnosticsClock::time_point{}),
+        }
     );
     const auto originalPresentDuration = finishPresentDiagnostic(
         originalPresentStarted
@@ -175,7 +178,9 @@ VkResult Swapchain::presentDirectApplicationFrame(
     };
     const auto originalPresentStarted = startPresentDiagnostic();
     const auto result = this->queuePresentWithRetirementFence(
-        invocation.vk, invocation.queue, presentInfo
+        invocation.vk, invocation.queue, presentInfo, {
+            .scheduled = invocation.originalPresentDeadline.value_or(DiagnosticsClock::time_point{}),
+        }
     );
     const PresentPhaseDurations phases{
         .originalPresent = finishPresentDiagnostic(originalPresentStarted),
@@ -238,11 +243,24 @@ VkResult Swapchain::presentOriginalImage(
         .pSwapchains = &invocation.swapchain,
         .pImageIndices = &invocation.imageIndex,
     };
-    if (invocation.originalPresentDeadline)
+    // The retained real output can be paced independently while the
+    // game produces its next frame. The binary wait was already submitted by
+    // the generated copy. All other transports retain synchronous ownership.
+    if ((invocation.readyOutputPacing || invocation.capReadyOutputPacing) &&
+            invocation.deferredOutputEligible && invocation.pacedOutputs) {
+        this->deferredPresentDeadline = invocation.previousOutput
+            ? std::max(*invocation.originalPresentDeadline,
+                *invocation.previousOutput + invocation.pacedOutputs->interval)
+            : *invocation.originalPresentDeadline;
+    } else if (invocation.originalPresentDeadline) {
         invocation.waitForOutput(*invocation.originalPresentDeadline);
+    }
     const auto originalPresentStarted = startPresentDiagnostic();
     const auto result = this->queuePresentWithRetirementFence(
-        invocation.vk, invocation.queue, presentInfo
+        invocation.vk, invocation.queue, presentInfo, {
+            .scheduled = invocation.originalPresentDeadline.value_or(DiagnosticsClock::time_point{}),
+            .copyExpected = true,
+        }
     );
     if (duration)
         *duration = finishPresentDiagnostic(originalPresentStarted);
@@ -288,6 +306,9 @@ void Swapchain::submitSourceCopy(const PresentInvocation& invocation,
             pass.completionFence.handle(), invocation.queue
         );
         pass.completionInFlight = true;
+        this->frameState.sourceReleaseTimelineValue =
+            this->frameState.nextSourceReleaseTimelineValue;
+        this->frameState.nextSourceReleaseTimelineValue = 0;
         logSlowPresentOperation(
             "submit-spatial-source", this->frameState.realFrameIndex,
             this->frameState.sequenceIndex, sourceSubmitStarted,
@@ -296,7 +317,7 @@ void Swapchain::submitSourceCopy(const PresentInvocation& invocation,
         return;
     }
 
-    const auto& commandBuffer = *this->renderCommandBuffer;
+    const auto& commandBuffer = this->currentRenderSlot().sourceCopy;
     const std::array preBarriers{
         barrierHelper(swapchainImage,
             VK_ACCESS_NONE,
@@ -322,22 +343,50 @@ void Swapchain::submitSourceCopy(const PresentInvocation& invocation,
         ),
     };
     commandBuffer.begin(invocation.vk);
+    if (this->nativeCopyProfile)
+        this->nativeCopyProfile->beginCopy(commandBuffer.handle(), invocation.vk.queue(), invocation.imageIndex, false);
     commandBuffer.blitImage(invocation.vk,
         preBarriers,
         {swapchainImage, sourceImage.handle()},
         sourceImage.getExtent(),
         postBarriers
     );
+    if (this->frameContentCapture)
+        this->frameContentCapture->record(invocation.vk, commandBuffer.handle(),
+            swapchainImage, this->info.extent, invocation.imageIndex, false);
+    if (this->nativeCopyProfile)
+        this->nativeCopyProfile->endCopy(commandBuffer.handle(), false);
     commandBuffer.end(invocation.vk);
 
     const auto sourceSubmitStarted = startPresentDiagnostic();
     const auto sourceTimelineValue =
         this->frameState.backendTimelineIndex++;
     this->frameState.sequenceIndex++;
-    commandBuffer.submit(invocation.vk,
-        invocation.waitSemaphores, VK_NULL_HANDLE, 0,
-        {}, this->syncSemaphore->handle(), sourceTimelineValue
-    );
+    // The copy overwrites the source image that the previous backend batch
+    // read. That batch's S + G orders the overwrite. The source copy and the
+    // generated copies stay on one queue, which orders the next backend batch
+    // behind this batch's generated copies through the timeline signal.
+    const uint64_t reuseWait = this->frameState.sourceReleaseTimelineValue;
+    present_diagnostics::observeCopySubmission({
+        .context = this->diagnosticsState.contextId,
+        .source = this->pacingProfile ? this->pacingProfile->sourceOrdinal() : 0,
+        .swapchain = invocation.swapchain, .imageIndex = invocation.imageIndex,
+        .device = invocation.vk.dev(), .queue = invocation.vk.queue(), .command = commandBuffer.handle(),
+        .waits = invocation.waitSemaphores,
+        .timelineWait = reuseWait ? this->syncSemaphore->handle() : VK_NULL_HANDLE,
+        .timelineSignal = this->syncSemaphore->handle(),
+        .waitValue = reuseWait,
+        .signalValue = sourceTimelineValue,
+    }, [&] {
+        commandBuffer.submit(invocation.vk,
+            invocation.waitSemaphores,
+            reuseWait ? this->syncSemaphore->handle() : VK_NULL_HANDLE, reuseWait,
+            {}, this->syncSemaphore->handle(), sourceTimelineValue
+        );
+    });
+    this->frameState.sourceReleaseTimelineValue =
+        this->frameState.nextSourceReleaseTimelineValue;
+    this->frameState.nextSourceReleaseTimelineValue = 0;
     logSlowPresentOperation(
         "submit-source-copy", this->frameState.realFrameIndex,
         this->frameState.sequenceIndex, sourceSubmitStarted
@@ -353,11 +402,8 @@ VkResult Swapchain::presentHistoryOnly(
     };
     const uint64_t sourceTimelineValue =
         this->frameState.backendTimelineIndex - 1;
-    auto& fallbackPass = this->passes.front();
-    auto& fallbackSemaphores = this->postCopySemaphores.at(
-        this->frameState.sequenceIndex % this->postCopySemaphores.size()
-    );
-    auto& fallbackSemaphore = fallbackSemaphores.second;
+    auto& fallbackPass = this->currentRenderSlot().passes.front();
+    auto& fallbackSemaphore = this->postCopySemaphores.at(invocation.imageIndex).first;
 
     auto& fallbackCommandBuffer = fallbackPass.commandBuffer;
     const auto fallbackSubmitStarted = startPresentDiagnostic();
@@ -366,12 +412,12 @@ VkResult Swapchain::presentHistoryOnly(
     fallbackCommandBuffer.submit(invocation.vk,
         {}, this->syncSemaphore->handle(), sourceTimelineValue,
         std::array{fallbackSemaphore.handle()}, VK_NULL_HANDLE, 0,
-        this->renderFence->handle()
+        this->currentRenderSlot().fence.handle()
     );
     phases.generatedSubmit = finishPresentDiagnostic(
         fallbackSubmitStarted
     );
-    this->frameState.renderFenceInFlight = true;
+    this->currentRenderSlot().inFlight = true;
 
     const auto historyScheduleStarted = startPresentDiagnostic();
     try {
@@ -416,6 +462,7 @@ VkResult Swapchain::presentHistoryOnly(
     }
     phases.schedule = finishPresentDiagnostic(historyScheduleStarted);
 
+    if (this->pacingProfile) this->pacingProfile->backendScheduled(this->frameState.backendFrameIndex);
     this->frameState.backendFrameIndex++;
     if (plan.requestedGeneratedFrames.size() >
             plan.admittedGeneratedFrameCount) {

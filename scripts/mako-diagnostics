@@ -8,6 +8,7 @@ default_steam_logs=(
   "${HOME}/.var/app/com.valvesoftware.Steam/.steam/steam/logs/console-linux.txt"
 )
 log_path="${MAKO_PRESENT_DIAGNOSTICS_LOG:-}"
+pacing_capture=0
 retained_session_count=10
 session=latest
 line_count=800
@@ -19,7 +20,8 @@ Usage: mako-diagnostics [options] [PRESET ...]
 
 Filters retained MAKO Renderer diagnostics sessions. Multiple presets may be combined.
 The MAKO Decky private log is preferred. Otherwise, the newest native or
-Flatpak Steam console log is used.
+Flatpak Steam console log is used. --pacing selects the newest private pacing
+capture instead; these files contain only MAKO timing records.
 
 Presets:
   hdr          HDR/scRGB selection, transport packing, passthrough, and initialization
@@ -37,6 +39,7 @@ Presets:
 
 Options:
   --log PATH       Use PATH as the latest-session log instead of auto-selection
+  --pacing         Select the newest private pacing capture (latest only)
   --session NAME   Select latest, previous, oldest, previous-two, or all
                    (default: latest)
   --lines N        Return the last N matching trace lines per session (default: 800),
@@ -76,6 +79,10 @@ while (($#)); do
       fi
       line_count="$2"
       shift 2
+      ;;
+    --pacing)
+      pacing_capture=1
+      shift
       ;;
     --session)
       if (($# < 2)); then
@@ -118,8 +125,26 @@ case "$session" in
     ;;
 esac
 
+if [[ "$pacing_capture" == 1 && "$session" != latest ]]; then
+  echo "--pacing supports --session latest only; use --log PATH for an older capture." >&2
+  exit 2
+fi
+
 if ((${#presets[@]} == 0)); then
   presets=(all)
+fi
+
+if [[ -z "$log_path" && "$pacing_capture" == 1 ]]; then
+  for candidate in "${TMPDIR:-/tmp}/mako-pacing-${UID}-"*.log; do
+    if [[ -f "$candidate" && ! -L "$candidate" && -O "$candidate" &&
+          ( -z "$log_path" || "$candidate" -nt "$log_path" ) ]]; then
+      log_path="$candidate"
+    fi
+  done
+  if [[ -z "$log_path" ]]; then
+    echo "No private pacing capture found; restart the game with MAKO_PACING_PROFILE=1." >&2
+    exit 1
+  fi
 fi
 
 if [[ -z "$log_path" ]]; then
@@ -249,7 +274,7 @@ live_recreation_record="$renderer_prefix present diagnostics: operation=(generat
 add_pattern "$live_recreation_record"
 # Periodic health and collection failures are useful for every failure mode,
 # including memory/thermal degradation outside frame-generation presets.
-add_pattern "$renderer_prefix present diagnostics: operation=(runtime-health|present-phase-summary|gpu-headroom|adaptive-efficiency-probe-cancelled)"
+add_pattern "$renderer_prefix present diagnostics: operation=(runtime-health|present-phase-summary|pacing-profile|application-present-wait|gpu-headroom|adaptive-efficiency-probe-cancelled)"
 
 for preset in "${presets[@]}"; do
   case "$preset" in

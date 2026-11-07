@@ -414,7 +414,7 @@ int main() {
     }
     cappedFixedPacing.multiplier = 2;
     cappedFixedPacing.base_fps_cap = 30;
-    for (const int cap : {0, 30, 60}) {
+    for (const int cap : {0, 30, 60, 610}) {
         auto direct = cappedFixedPacing;
         direct.base_fps_cap = cap;
         expect(fixedReadyOutputPacingEligible(direct, true, false, false),
@@ -422,25 +422,108 @@ int main() {
         expect(!fixedReadyOutputPacingEligible(direct, false, false, false) &&
                 !fixedReadyOutputPacingEligible(direct, true, true, false) &&
                 !fixedReadyOutputPacingEligible(direct, true, false, true),
-            "ready-output pacing replaced FIFO, explicit timing or recovery");
+            "ready-output pacing replaced an ineligible transport, explicit timing or recovery");
         direct.adaptive_stable_cadence = false;
         expect(!fixedReadyOutputPacingEligible(direct, true, false, false), "Smooth Cadence Off added output waits");
+        expect(fixedReadyOutputPacingEligible(direct, true, false, false, true),
+            "detached Fixed output stayed unspaced with Smooth Cadence Off");
+        expect(!fixedReadyOutputPacingEligible(direct, false, false, false, true) &&
+                !fixedReadyOutputPacingEligible(direct, true, true, false, true) &&
+                !fixedReadyOutputPacingEligible(direct, true, false, true, true),
+            "detached spacing replaced an ineligible transport, explicit timing or recovery");
         direct.adaptive_stable_cadence = true;
         direct.adaptive = true;
         expect(!fixedReadyOutputPacingEligible(direct, true, false, false), "Fixed pacing replaced Adaptive");
+        expect(!fixedReadyOutputPacingEligible(direct, true, false, false, true), "detached pacing replaced Adaptive");
         direct.adaptive = false;
         direct.dynamic_cadence_recovery = true;
         expect(!fixedReadyOutputPacingEligible(direct, true, false, false), "Fixed pacing replaced cadence recovery");
+        expect(!fixedReadyOutputPacingEligible(direct, true, false, false, true), "detached pacing replaced cadence recovery");
         direct.dynamic_cadence_recovery = false;
         direct.gpu_headroom_percent = 10;
         expect(!fixedReadyOutputPacingEligible(direct, true, false, false), "Fixed pacing replaced GPU Headroom");
+        expect(!fixedReadyOutputPacingEligible(direct, true, false, false, true), "detached pacing replaced GPU Headroom");
         direct.gpu_headroom_percent = 0;
         direct.frame_generation_enabled = false;
         expect(!fixedReadyOutputPacingEligible(direct, true, false, false), "generation Off added output waits");
+        expect(!fixedReadyOutputPacingEligible(direct, true, false, false, true), "generation Off added detached pacing");
+    }
+    // Minecraft: Smooth Cadence off, game-owned limiter, and a deliberately
+    // nonbinding 610 FPS cap. Exercise qualification and ownership together.
+    for (const int cap : {0, 610, 60}) {
+        using Clock = RealFramePacer::Clock;
+        using namespace std::chrono_literals;
+        auto native = cappedFixedPacing;
+        native.adaptive_stable_cadence = false;
+        native.base_fps_cap = cap;
+        RealFramePacer pacer;
+        auto arrival = Clock::time_point{10s};
+        auto returnAt = arrival;
+        bool capBatchSeen = false;
+        bool readyAfterCap = false;
+        for (const int gameFps : {60, 30, 100, 30}) {
+            const auto sourcePeriod = std::chrono::duration_cast<Clock::duration>(
+                std::chrono::duration<double>(1.0 / gameFps));
+            const auto outputPeriod = std::chrono::duration_cast<Clock::duration>(
+                std::chrono::duration<double>(1.0 / (2 * (cap > 0 ? std::min(cap, gameFps) : gameFps))));
+            for (size_t frame = 0; frame < 120; ++frame) {
+                arrival = std::max(arrival + sourcePeriod, returnAt);
+                const auto deadline = pacer.schedule(arrival, cap);
+                const bool eligible = fixedReadyOutputPacingEligible(
+                    native, true, false, false, true);
+                pacer.observeSource(arrival, eligible, 2);
+                std::optional<RealFramePacer::OutputBatch> batch;
+                bool capOwned = false;
+                if (deadline > arrival && baseCapPacesOutputs(
+                        native, cap, true, {}, false, true)) {
+                    batch = pacer.scheduleOutputs(arrival + 100us, deadline,
+                        2.0 * cap, 2, false, true);
+                    capOwned = batch.has_value();
+                    capBatchSeen |= capOwned;
+                }
+                if (!batch && eligible)
+                    batch = pacer.scheduleReadyOutputs(arrival + 100us, 2, true);
+                if (frame >= 40) {
+                    expect(batch.has_value(), "native Fixed cap/source transition lost output spacing");
+                    expect(std::abs(std::chrono::duration<double>(batch->interval - outputPeriod).count()) < 0.00001,
+                        "native Fixed output spacing followed a nonbinding cap or stale source period");
+                    if (capBatchSeen && !capOwned) readyAfterCap = true;
+                }
+                if (cap == 0 || cap == 610)
+                    expect(deadline <= arrival, "nonbinding cap delayed the game-owned source");
+                pacer.recordOutputWait(Clock::duration{}, batch.has_value(), batch.has_value());
+                if (batch) pacer.completeOutputBatch(batch->at(1));
+                returnAt = std::max(arrival, deadline);
+            }
+        }
+        if (cap == 60)
+            expect(capBatchSeen && readyAfterCap, "binding cap failed to take over and release output ownership");
     }
     expect(baseCapPacesOutputs(cappedFixedPacing, 30., true, {}, false, true) &&
             baseCapPacesOutputs(cappedFixedPacing, 30., true, 50, false, true),
         "VSync-off Fixed output spacing must not depend on a refresh ceiling");
+    for (const bool smooth : {false, true}) {
+        auto native = cappedFixedPacing;
+        native.adaptive_stable_cadence = smooth;
+        expect(baseCapPacesOutputs(native, 30., true, {}, false, false, true),
+            "Native FIFO must prepare within the cap with Smooth Cadence on or off");
+        for (const uint32_t multiplier : {2U, 3U, 4U, 5U}) {
+            native.multiplier = multiplier;
+            expect(baseCapPacesOutputs(native, 30., true, {}, false, false, true, true),
+                "caller real-frame targets must not turn an active native Fixed cap into generated/real bursts");
+        }
+        native.base_fps_cap = 0;
+        expect(!baseCapPacesOutputs(native, 30., true, {}, false, false, true, true),
+            "caller timing must not invent an unconfigured source cap");
+        native.base_fps_cap = cappedFixedPacing.base_fps_cap;
+        native.dynamic_cadence_recovery = true;
+        expect(!baseCapPacesOutputs(native, 30., true, {}, false, false, true, true),
+            "caller-timed Fixed recovery must retain its own clock");
+        native.dynamic_cadence_recovery = false;
+        expect(!baseCapPacesOutputs(native, 30., false, {}, false, false, true) &&
+                !baseCapPacesOutputs(native, 0., true, {}, false, false, true),
+            "Native FIFO cap preparation must preserve timing ownership and require a cap");
+    }
     expect(!baseCapPacesOutputs(cappedFixedPacing, 30., false, {}, false, true) &&
             !baseCapPacesOutputs(cappedFixedPacing, 0., true, {}, false, true),
         "VSync-off pacing must preserve application timing and require a source cap");
@@ -449,6 +532,10 @@ int main() {
     directAdaptive.adaptive_auto_base_fps_cap = true;
     expect(baseCapPacesOutputs(directAdaptive, 45., true, {}, false, true),
         "VSync-off Adaptive automatic caps must space outputs without compositor feedback");
+    expect(!baseCapPacesOutputs(cappedFixedPacing, 30., true, {}, false, true, false, true) &&
+            !baseCapPacesOutputs(cappedFixedPacing, 30., true, 120, true, false, false, true) &&
+            !baseCapPacesOutputs(directAdaptive, 45., true, 120, false, false, true, true),
+        "caller timing must retain non-FIFO, compositor and Adaptive output ownership");
     expect(baseCapPacesOutputs(cappedFixedPacing, 30., true, 120),
         "below-refresh Fixed must use its existing source-cap slack");
     expect(!baseCapPacesOutputs(cappedFixedPacing, 30., false, 120) &&

@@ -27,12 +27,13 @@ namespace mako::layer::present_detail {
     }
 
     inline DiagnosticsClock::time_point startPresentDiagnostic() {
-        return present_diagnostics::start();
+        return presentDiagnosticsEnabled() || present_diagnostics::pacingProfileEnabled()
+            ? DiagnosticsClock::now() : DiagnosticsClock::time_point{};
     }
 
     inline DiagnosticsClock::duration finishPresentDiagnostic(
             const DiagnosticsClock::time_point started) {
-        if (!presentDiagnosticsEnabled())
+        if (!presentDiagnosticsEnabled() && !present_diagnostics::pacingProfileEnabled())
             return {};
         return DiagnosticsClock::now() - started;
     }
@@ -51,6 +52,14 @@ namespace mako::layer::present_detail {
             const size_t frameIndex, const size_t sequenceIndex,
             const DiagnosticsClock::duration totalDuration,
             const PresentPhaseDurations& phases) {
+        if (present_diagnostics::pacingProfileEnabled()) {
+            const auto attributed = phases.renderFence + phases.schedule + phases.sourceCopy +
+                phases.acquire + phases.generatedSubmit + phases.generatedPresent + phases.originalPresent;
+            present_diagnostics::recordPacingProfilePhases(contextId, {
+                totalDuration, phases.renderFence, phases.schedule, phases.sourceCopy,
+                phases.acquire, phases.generatedSubmit, phases.generatedPresent,
+                phases.originalPresent, std::max(DiagnosticsClock::duration{}, totalDuration - attributed)});
+        }
         if (!presentDiagnosticsEnabled())
             return;
 

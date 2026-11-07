@@ -17,6 +17,7 @@
 #include "profile_update.hpp"
 #include "presentation_policy.hpp"
 #include "present_diagnostics.hpp"
+#include "native_copy_profile.hpp"
 #include "runtime_status.hpp"
 #include "runtime_health.hpp"
 #include "runtime_transition.hpp"
@@ -24,6 +25,10 @@
 #include "spatial_scaling_policy.hpp"
 #include "spatial_command_recording.hpp"
 #include "present_timing.hpp"
+#include "swapchain/deferred_present.hpp"
+#include "swapchain/present_feedback_probe.hpp"
+#include "swapchain/release_gate.hpp"
+#include "swapchain/uncapped_auto_cap.hpp"
 
 #include <array>
 #include <chrono>
@@ -41,11 +46,16 @@
 namespace mako::layer {
 
     class GamescopeScalingSurface;
+    class WaylandPresentationFeedback;
+    class FrameContentCapture;
 
     /// swapchain info struct
     struct SwapchainInfo {
         std::vector<VkImage> images;
         VkSurfaceKHR surface;
+        SpatialSurfaceOrigin surfaceOrigin{SpatialSurfaceOrigin::Unknown};
+        std::shared_ptr<WaylandPresentationFeedback> waylandPresentation;
+        std::shared_ptr<DeferredPresentQueue> deferredPresentQueue;
         // Borrowed from the instance owner, whose surface and connection
         // outlive Vulkan swapchain retirement. Null for ordinary/WSI surfaces.
         GamescopeScalingSurface* gamescopeScalingSurface{nullptr};
@@ -53,6 +63,16 @@ namespace mako::layer {
         // application has not selected its own timing-feedback namespace.
         bool gamescopeDisplayTiming{false};
         bool ownedPresentTiming{false};
+        bool presentMetering{false};
+        // Observational device capability state, not a CPU-spacing exclusion.
+        // Actual timing nodes own output deadlines; IDs/waits remain on real.
+        bool applicationPresentTiming{false};
+        // Application timing plus the create-time timing bit, so the driver
+        // answers vkGetSwapchainTimingPropertiesEXT for this swapchain.
+        bool applicationSwapchainTiming{false};
+        // Application enabled presentId2+presentWait2 and created this swapchain with both bits.
+        bool applicationPresentFeedback{false};
+        bool copyTimestampCalibration{false};
         uint32_t ownedPresentTimingTargetStage{};
         VkFormat format;
         VkColorSpaceKHR colorSpace;
@@ -172,6 +192,43 @@ namespace mako::layer {
             VkQueue queue, VkSwapchainKHR swapchain,
             void* next_chain, uint32_t imageIdx,
             std::span<const VkSemaphore> semaphores);
+        // A spare image can be acquired before the deferred deadline. Join
+        // before blocking acquisition or reusing presentation resources.
+        // retainNewest waits only for an older overlapped batch, not the newest one.
+        VkResult completeDeferredPresent(uint64_t timeoutNs, bool acquisition = false,
+            bool retainNewest = false);
+        // Join retained output, but keep one sealed overlapped batch spacing.
+        VkResult completeDeferredPresentRetainingOverlap() {
+            return this->completeDeferredPresent(UINT64_MAX, false,
+                this->deferredPresent && this->deferredPresent->retainable());
+        }
+        void observeDeferredApplicationAcquire() {
+            if (deferredPresent) deferredPresent->applicationAcquire();
+        }
+        [[nodiscard]] bool beginDeferredPresentBatch(const vk::Vulkan& vk, size_t limit,
+            uint64_t readyValue, std::chrono::steady_clock::time_point readyDeadline, bool capOwned,
+            std::optional<std::chrono::steady_clock::time_point> releasedOutputLimit = std::nullopt,
+            std::chrono::steady_clock::duration releasedJoinTolerance = {},
+            bool overlap = false, std::chrono::steady_clock::duration outputInterval = {});
+        [[nodiscard]] bool hasDeferredPresent() const { return static_cast<bool>(this->deferredPresent); }
+        // True while an admitted batch is still outputting or waiting to be joined.
+        [[nodiscard]] bool deferredPresentPending() const {
+            return this->deferredPresent && this->deferredPresent->pending();
+        }
+        template<typename Acquire>
+        VkResult pollDeferredAcquire(Acquire&& acquire) {
+            return this->deferredPresent->pollAcquire(std::forward<Acquire>(acquire));
+        }
+        [[nodiscard]] bool deferredOverlapPending() const {
+            return this->deferredPresent && this->deferredPresent->retainable();
+        }
+        template<typename Acquire>
+        VkResult waitDeferredAcquire(uint64_t timeout, Acquire&& acquire) {
+            const auto started = DeferredPresent::Clock::now();
+            const auto result = this->deferredPresent->waitAcquire(timeout, std::forward<Acquire>(acquire));
+            this->realFramePacer.recordAcquireWait(DeferredPresent::Clock::now() - started);
+            return result;
+        }
         /// stable identifier used to correlate this context's diagnostics
         [[nodiscard]] uint64_t diagnosticsId() const {
             return this->diagnosticsState.contextId;
@@ -285,7 +342,18 @@ namespace mako::layer {
                 originalPresentDeadline;
             std::optional<RealFramePacer::OutputBatch> pacedOutputs;
             bool readyOutputPacing{false};
+            bool capReadyOutputPacing{false};
+            bool deferredOutputEligible{false};
+            std::chrono::steady_clock::time_point readinessDeadline{};
+            // Release-gated worker batches: latest output around the next
+            // expected source present, and how long its join may keep spacing.
+            std::optional<std::chrono::steady_clock::time_point> releasedOutputLimit;
+            std::chrono::steady_clock::duration releasedJoinTolerance{};
+            // The released batch may keep spacing while one newer source batch is admitted.
+            bool releasedOverlap{false};
             mutable std::chrono::steady_clock::duration outputWait{};
+            std::chrono::steady_clock::duration readinessWait{};
+            present_diagnostics::PacingProfile* profiler{};
             mutable std::optional<std::chrono::steady_clock::time_point> previousOutput;
 
             void waitForOutput(std::chrono::steady_clock::time_point deadline) const;
@@ -333,7 +401,12 @@ namespace mako::layer {
             size_t backendTimelineIndex{1};
             size_t realFrameIndex{0};
             size_t backendFrameIndex{0};
-            bool renderFenceInFlight{false};
+            // Timeline value whose signal proves the backend batch of the
+            // previous source no longer reads either source image; 0 = unknown.
+            uint64_t sourceReleaseTimelineValue{0};
+            // Value of the batch being scheduled in the current present; the
+            // source copy moves it into sourceReleaseTimelineValue.
+            uint64_t nextSourceReleaseTimelineValue{0};
         };
 
         struct RecoveryState {
@@ -418,13 +491,37 @@ namespace mako::layer {
         std::vector<vk::Image> destinationImages;
         ls::lazy<vk::TimelineSemaphore> syncSemaphore;
 
-        ls::lazy<vk::CommandBuffer> renderCommandBuffer;
-        ls::lazy<vk::Fence> renderFence;
         struct RenderPass {
             vk::CommandBuffer commandBuffer;
             vk::Semaphore acquireSemaphore;
         };
-        std::vector<RenderPass> passes;
+        // One slot per frame-generation batch. A slot is reused only after the
+        // fence of the batch three presents earlier signals; source-image
+        // reuse is ordered on the GPU by FrameState::sourceReleaseTimelineValue.
+        static constexpr size_t renderSlotDepth = 3;
+        struct RenderSlot {
+            vk::CommandBuffer sourceCopy;
+            vk::Fence fence;
+            std::vector<RenderPass> passes;
+            bool inFlight{false};
+            // Staging, its binary signal and its recorded game-queue copy are
+            // created with generatedCopies and released with them when the
+            // destination images are replaced.
+            std::optional<vk::Image> staging;
+            std::optional<vk::Semaphore> staged;
+            std::optional<vk::CommandBuffer> stagingCopy;
+            // One pre-recorded copy per swapchain image, from staging to that
+            // image, recorded lazily and cleared whenever the destination images
+            // are replaced.
+            std::vector<vk::CommandBuffer> generatedCopies;
+        };
+        std::vector<RenderSlot> renderSlots;
+        size_t renderSlotIndex{0};
+        RenderSlot& currentRenderSlot() {
+            return this->renderSlots.at(this->renderSlotIndex);
+        }
+        // first: presentation wait indexed by acquired WSI image; second:
+        // inter-copy dependency indexed by sequence ring, never presented.
         std::vector<std::pair<vk::Semaphore, vk::Semaphore>> postCopySemaphores;
 
         struct SpatialScalingPass {
@@ -456,6 +553,10 @@ namespace mako::layer {
         FrameState frameState;
         RecoveryState recoveryState;
         DiagnosticsState diagnosticsState;
+        std::unique_ptr<present_diagnostics::PacingProfile> pacingProfile;
+        std::unique_ptr<present_diagnostics::NativeCopyProfile> nativeCopyProfile;
+        bool nativeCopyProfileInitialized{};
+        std::shared_ptr<FrameContentCapture> frameContentCapture;
         ColorTransitionState colorTransitionState;
         PrivateResourceTransition<SpatialResourceRequest> spatialTransition;
         std::optional<SpatialScaler> preparedSpatialScaler;
@@ -475,6 +576,10 @@ namespace mako::layer {
         // Retain the observed lower ceiling until game-owned recreation.
         std::optional<size_t> adaptiveOrderedWsiGeneratedCapacityLimit;
         size_t configuredFixedGeneratedFrames{0};
+        // Set after a safety timeout; later generated acquires poll with
+        // timeout 0 until one succeeds, so a hidden window costs at most one
+        // safety wait.
+        bool generatedAcquireStalled{false};
 
         bool gamescopeDetected{false};
         // Immutable for this context; copied from SwapchainInfo rather than
@@ -485,6 +590,9 @@ namespace mako::layer {
         GamescopePresentationFeedback gamescopePresentationFeedback;
         FixedRefreshBudget fixedRefreshBudget;
         RealFramePacer realFramePacer;
+        // Source-cap deadline moved to the application's own release wait;
+        // see release_gate.hpp. Learns per context; holds presents until then.
+        ReleaseGateOwner releaseGate;
         std::shared_ptr<present_diagnostics::GpuLoadMonitor> gpuLoadMonitor;
         bool gpuLoadMonitorInitialized{false};
         GpuHeadroomController gpuHeadroom;
@@ -499,10 +607,32 @@ namespace mako::layer {
         std::optional<std::chrono::steady_clock::time_point> orderedPresentationDeadline;
         OrderedPresentTimeline wsiPresentTimeline;
         OwnedPresentTiming presentTiming;
+        // Last automatic cap value printed to the log; zero when no automatic cap applies.
+        double uncappedAutoCapLogged{0.0};
+        // True when the previous application present used an automatic cap value as baseFpsCap.
+        bool uncappedAutoCapApplied{false};
+        double applicationRefreshHz{0.0};
+        uint64_t refreshQuerySource{0};
+        int32_t refreshQueryLastResult{INT32_MIN};
+        uint64_t refreshQueryLastDuration{UINT64_MAX - 1};
+        uint64_t refreshQueryLastInterval{UINT64_MAX - 1};
+        bool refreshQueryPrinted{false};
+        PresentFeedbackProbe presentFeedback;
+#if defined(VK_KHR_present_wait2)
+        PFN_vkWaitForPresent2KHR presentWait2{};
+#endif
+        uint64_t presentFeedbackTag{};
+        bool refreshQueryConfirmed{false};
+#if defined(VK_EXT_present_timing) && defined(VK_KHR_present_id2)
+        PFN_vkGetSwapchainTimingPropertiesEXT swapchainTimingProperties{};
+#endif
         bool presentTimingInitialized{false};
         PFN_vkGetPastPresentationTimingGOOGLE wsiPresentTimingQuery{nullptr};
         uint32_t wsiTimingPresentsSinceDrain{0};
         bool wsiPresentTimingLogged{false};
+        VkResult deferredPresentResult{VK_SUCCESS};
+        bool deferredOutputQueuedThisFrame{false};
+        std::optional<std::chrono::steady_clock::time_point> deferredPresentDeadline;
         SmoothCadenceBaseCap smoothCadenceBaseCap;
         SmoothCadencePacerHandoff smoothCadencePacerHandoff;
         // A null-old replacement loses the driver's explicit WSI lineage.
@@ -537,6 +667,7 @@ namespace mako::layer {
         [[nodiscard]] static std::optional<uint64_t>
             generatedImageAcquireTimeoutNs();
         void ensureFrameGenerationExecutionResources(const vk::Vulkan& vk);
+        void initializeGpuPacingProfile(backend::Instance& backend, backend::Context& context) noexcept;
         [[nodiscard]] FrameGenerationResources buildFrameGenerationResources(
             const vk::Vulkan& vk, const SwapchainColorPipeline& pipeline,
             const ls::GameConf& resourceProfile);
@@ -584,6 +715,9 @@ namespace mako::layer {
             const PresentationFramePlan& plan,
             std::chrono::steady_clock::time_point presentNow);
         [[nodiscard]] bool prepareRenderFence(const vk::Vulkan& vk);
+        [[nodiscard]] bool recordGeneratedCopies(const vk::Vulkan& vk, RenderSlot& slot);
+        [[nodiscard]] bool renderSlotsInFlight() const;
+        [[nodiscard]] bool pollRenderSlotsIdle(const vk::Vulkan& vk);
         void handleRenderFenceBudgetMiss(
             const PresentationFramePlan& plan);
         void preacquireGeneratedImages(
@@ -611,13 +745,17 @@ namespace mako::layer {
             bool gamescopeHdrTransport);
         [[nodiscard]] VkResult queuePresentWithRetirementFence(
             const vk::Vulkan& vk, VkQueue queue,
-            const VkPresentInfoKHR& presentInfo);
+            const VkPresentInfoKHR& presentInfo,
+            const present_diagnostics::PacingProfile::OutputObservation& observation = {});
         VkResult retireAcquiredImagesAndPresent(const vk::Vulkan& vk,
             VkQueue queue, VkSwapchainKHR swapchain, const void* nextChain,
             uint32_t originalImageIndex,
             std::span<const VkSemaphore> applicationWaitSemaphores,
             std::span<const uint32_t> acquiredImageIndices,
             VkImage originalImage);
+        // Declared last: join before any semaphore, fence, image or backend
+        // context can be destroyed, including moved retirement contexts.
+        std::unique_ptr<DeferredPresent> deferredPresent;
     };
 
 }

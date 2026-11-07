@@ -5,6 +5,7 @@
 #include "swapchain/retirement.hpp"
 #include "layer_role.hpp"
 #include "present_diagnostics.hpp"
+#include "frame_content_capture.hpp"
 #include "mako-common/helpers/errors.hpp"
 #include "mako-common/helpers/file_descriptors.hpp"
 
@@ -126,12 +127,23 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance* backend,
         scalingShaderDll(scalingShaderDll),
         fp16Requested(fp16Requested),
         profile(std::move(profile)), info(std::move(info)) {
+    this->presentFeedback.configure(this->info.applicationPresentFeedback);
     if (this->info.gamescopeDisplayTiming) {
         this->wsiPresentTimingQuery = reinterpret_cast<
             PFN_vkGetPastPresentationTimingGOOGLE>(vk.fi().GetDeviceProcAddr(
                 vk.dev(), "vkGetPastPresentationTimingGOOGLE"));
     }
     this->diagnosticsState.contextId = allocateDiagnosticsContextId();
+    if (frameGenerationInteropForLayer(vk.frameGenerationInteropEnabled()) &&
+            !this->profile.adaptive && this->profile.multiplier == 2 &&
+            !this->profile.scaling_enabled && !this->colorPipeline.hdr)
+        this->frameContentCapture = FrameContentCapture::create(this->diagnosticsState.contextId);
+    if (present_diagnostics::pacingProfileEnabled()) {
+        present_diagnostics::initializePacingProfileLog();
+        try {
+            this->pacingProfile = std::make_unique<present_diagnostics::PacingProfile>();
+        } catch (...) {} // Optional observations cannot prevent swapchain creation.
+    }
     this->runtimeStatusPublisher = RuntimeStatusPublisher(
         this->diagnosticsState.contextId, layerRoleName
     );
@@ -449,6 +461,8 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance* backend,
                 }
             );
 
+            this->initializeGpuPacingProfile(*backend, this->ctx.get());
+
             // The backend's private VkDevice must outlive this layer on loader
             // combinations where destroying it during layer unload is unsafe.
             // This is process-lifetime retention, not active GPU work; see the
@@ -589,7 +603,8 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance* backend,
         this->ctx = {};
         this->sourceImages.clear();
         this->destinationImages.clear();
-        this->passes.clear();
+        this->renderSlots.clear();
+        this->renderSlotIndex = 0;
         this->postCopySemaphores.clear();
         this->adaptiveScheduler.reset();
         this->colorPipeline.generationSupported = false;

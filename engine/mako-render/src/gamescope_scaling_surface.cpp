@@ -4,6 +4,7 @@
 #include "spatial_scaling_policy.hpp"
 #include "presentation_policy.hpp"
 #include "present_diagnostics.hpp"
+#include "wayland_client_abi.hpp"
 
 #include <algorithm>
 #include <array>
@@ -30,32 +31,6 @@
 #include <vulkan/vulkan_xcb.h>
 #include <vulkan/vulkan_xlib.h>
 #include <vulkan/vulkan_wayland.h>
-
-// Public libwayland ABI declarations, kept private to this optional adapter.
-// Resolving the client at runtime preserves the existing non-Wayland launch
-// and package dependency boundary. No Wayland development package is needed.
-struct wl_proxy;
-struct wl_event_queue;
-struct wl_message;
-struct wl_interface {
-    const char* name;
-    int version;
-    int method_count;
-    const wl_message* methods;
-    int event_count;
-    const wl_message* events;
-};
-struct wl_message {
-    const char* name;
-    const char* signature;
-    const wl_interface** types;
-};
-union wl_argument {
-    int32_t i;
-    uint32_t u;
-    const char* s;
-    void* o;
-};
 
 using namespace mako::layer;
 

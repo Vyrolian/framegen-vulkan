@@ -4,6 +4,7 @@
 #include "shaders/spatial_scaling_spirv.hpp"
 #include <span>
 #include "swapchain/create_policy.hpp"
+#include "pnext_chain.hpp"
 
 #include <bit>
 #include <cstdlib>
@@ -1885,7 +1886,85 @@ int main() {
     }
     expect(!directUnthrottledPresentation(false, VK_PRESENT_MODE_FIFO_KHR) &&
             !directUnthrottledPresentation(false, VK_PRESENT_MODE_FIFO_RELAXED_KHR),
-        "FIFO transports must retain their existing pacing policy");
+        "FIFO must retain its own transport classification");
+    expect(nativePrivatePresentQueueEligible(false, false, true) &&
+            !nativePrivatePresentQueueEligible(true, false, true) &&
+            !nativePrivatePresentQueueEligible(false, true, true) &&
+            !nativePrivatePresentQueueEligible(false, false, false),
+        "native queue ownership must preserve Gamescope, bridge and unavailable-queue paths");
+    expect(nativeFifoOutputPacingEligible(false, VK_PRESENT_MODE_FIFO_KHR) &&
+            !nativeFifoOutputPacingEligible(true, VK_PRESENT_MODE_FIFO_KHR),
+        "native FIFO output spacing must preserve Gamescope ownership");
+    VkPhysicalDevicePresentWaitFeaturesKHR callerWait{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_FEATURES_KHR,
+        .presentWait = VK_TRUE,
+    };
+    const char* callerTimingExtension = "VK_GOOGLE_display_timing";
+    const VkDeviceCreateInfo callerDevice{
+        .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = &callerWait,
+        .enabledExtensionCount = 1, .ppEnabledExtensionNames = &callerTimingExtension,
+    };
+    const uint64_t callerId = 99;
+    const VkPresentIdKHR idOnly{
+        .sType = VK_STRUCTURE_TYPE_PRESENT_ID_KHR,
+        .swapchainCount = 1, .pPresentIds = &callerId,
+    };
+    const VkPresentTimesInfoGOOGLE callerTargets{
+        .sType = VK_STRUCTURE_TYPE_PRESENT_TIMES_INFO_GOOGLE,
+    };
+    auto callerProfile = scalingOnlyProfile;
+    callerProfile.frame_generation_provisioned = true;
+    callerProfile.frame_generation_enabled = true;
+    callerProfile.adaptive = false;
+    callerProfile.adaptive_stable_cadence = true;
+    callerProfile.base_fps_cap = 60;
+    callerProfile.multiplier = 2;
+    const bool callerTransport = nativeFifoOutputPacingEligible(false, VK_PRESENT_MODE_FIFO_KHR);
+    expect(applicationOwnsPresentationTiming(callerDevice) &&
+            fixedReadyOutputPacingEligible(callerProfile, callerTransport,
+                hasPresentTiming(&idOnly), false) &&
+            !fixedReadyOutputPacingEligible(callerProfile, callerTransport,
+                hasPresentTiming(&callerTargets), false) &&
+            baseCapPacesOutputs(callerProfile, 60., callerTransport, {}, false,
+                false, callerTransport, hasPresentTiming(&callerTargets)),
+        "caller targets must exclude learned ready-output pacing without disabling MAKO's existing FIFO cap spacing");
+    for (const auto mode : {VK_PRESENT_MODE_IMMEDIATE_KHR, VK_PRESENT_MODE_MAILBOX_KHR,
+            VK_PRESENT_MODE_FIFO_RELAXED_KHR, static_cast<VkPresentModeKHR>(1000361000)})
+        expect(!nativeFifoOutputPacingEligible(false, mode),
+            "FIFO fallback must not assume other presentation modes have FIFO semantics");
+    for (const uint32_t cap : {0U, 60U}) {
+        auto profile = scalingOnlyProfile;
+        profile.frame_generation_provisioned = true;
+        profile.frame_generation_enabled = true;
+        profile.adaptive = false;
+        profile.adaptive_stable_cadence = true;
+        profile.multiplier = 2;
+        profile.base_fps_cap = cap;
+        using Clock = RealFramePacer::Clock;
+        const auto period = std::chrono::duration_cast<Clock::duration>(
+            std::chrono::duration<double>(1. / 43));
+        const auto start = Clock::time_point{std::chrono::seconds{10}};
+        RealFramePacer pacer;
+        const bool transport = nativeFifoOutputPacingEligible(false, VK_PRESENT_MODE_FIFO_KHR);
+        for (size_t frame = 0; frame < 100; ++frame) {
+            const auto arrival = start + period * static_cast<int64_t>(frame);
+            (void)pacer.schedule(arrival, cap);
+            pacer.observeSource(arrival,
+                fixedReadyOutputPacingEligible(profile, transport, false, false), 2);
+            const auto ready = arrival + std::chrono::microseconds{1700};
+            const auto batch = pacer.scheduleReadyOutputs(ready, 2);
+            if (frame >= 8) {
+                expect(batch && batch->interval == period / 2 &&
+                        batch->at(1) < arrival + period,
+                    "43 FPS game cap under native FIFO lost its 86/s ready output clock");
+                pacer.recordOutputWait(batch->interval);
+            }
+        }
+        pacer.observeSource(start + 100 * period,
+            fixedReadyOutputPacingEligible(profile, transport, true, false), 2);
+        expect(!pacer.scheduleReadyOutputs(start + 100 * period, 2),
+            "a compositor/caller clock takeover must release learned FIFO output sleeps");
+    }
 
     auto combinedProfile = scalingOnlyProfile;
     combinedProfile.frame_generation_enabled = true;

@@ -517,9 +517,10 @@ Root::Root() :
     // find active profile
     const auto identification = ls::identify();
     const auto& profile = findProfile(this->config.get(), identification);
-    if (present_diagnostics::enabled()) {
+    if (present_diagnostics::enabled() || present_diagnostics::pacingProfileEnabled()) {
         const auto overlayLibraries = present_diagnostics::steamOverlayLibraries();
-        std::cerr << "MAKO Renderer: present diagnostics: "
+        std::ostringstream identity;
+        identity << "MAKO Renderer: present diagnostics: "
                      "operation=process-identity"
                   << " pid=" << ::getpid()
                   << " executable="
@@ -542,6 +543,8 @@ Root::Root() :
                   << " steam_overlay_hook_loaded=" << overlayLibraries.hookLoaded
                   << " steam_overlay_vulkan_loaded=" << overlayLibraries.vulkanLoaded
                   << '\n';
+        if (present_diagnostics::enabled()) std::cerr << identity.str();
+        present_diagnostics::writePacingProfileRecords(identity.str());
     }
     if (!profile.has_value()) {
         this->publishSurfaceScalingPolicy();

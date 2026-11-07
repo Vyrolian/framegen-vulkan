@@ -53,6 +53,7 @@
 #include <vector>
 
 #include <vulkan/vulkan_core.h>
+#include "helpers/completed_frame_profile.hpp"
 
 #ifdef MAKO_TESTING_RENDERDOC
 #include <renderdoc_app.h>
@@ -64,13 +65,15 @@ using namespace mako::backend;
 
 namespace mako::backend {
     struct FrameProfilingState {
-        FrameProfilingState(const vk::Vulkan& vk, const size_t outputs) :
+        FrameProfilingState(const vk::Vulkan& vk, const size_t outputs, const bool collectCompleted) :
             // Three prepass boundaries, batch completion, and three per output.
             // Round up for the pair-sized pool; readback excludes the spare slot.
-            queries(vk, static_cast<uint32_t>(((4 + outputs * 3 + 1) / 2) * 2)) {}
+            queries(vk, static_cast<uint32_t>(((4 + outputs * 3 + 1) / 2) * 2)),
+            completed(collectCompleted) {}
         vk::TimestampQueryPool queries;
         FrameProfile timings;
         size_t generatedCount{};
+        CompletedFrameProfile completed;
     };
 
     using ProfileClock = std::chrono::steady_clock;
@@ -137,7 +140,8 @@ namespace mako::backend {
         /// (see mako documentation)
         void scheduleFrames();
 
-        void enableFrameProfiling();
+        void enableFrameProfiling(bool collectCompleted);
+        [[nodiscard]] std::optional<FrameProfile> takeCompletedFrameProfile();
         [[nodiscard]] FrameProfile readFrameProfile() const;
 
         /// schedule a variable number of frames at explicit timestamps
@@ -147,7 +151,7 @@ namespace mako::backend {
         /// (see mako documentation)
         void scheduleFrameHistory();
 
-        /// wait for this context's most recently submitted work only
+        /// wait for all of this context's in-flight work
         [[nodiscard]] bool waitForIdle(uint64_t timeoutNs) const;
     private:
         std::pair<vk::Image, vk::Image> sourceImages;
@@ -160,7 +164,11 @@ namespace mako::backend {
         vk::TimelineSemaphore prepassSemaphore;
         size_t idx{1};
         size_t fidx{0}; // real frame index
-        bool workScheduled{false};
+
+        // Per-phase recordings are reused every commandPhaseCount batches, and
+        // waiting for batch n - inFlightDepth proves that they are idle.
+        static constexpr size_t inFlightDepth = 3;
+        static_assert(commandPhaseCount >= inFlightDepth);
 
         // Descriptor bindings repeat every lcm(2 source slots, 3 history slots).
         // Record lazily, once per phase and output; prepareWork serializes reuse.
@@ -168,12 +176,22 @@ namespace mako::backend {
         std::unique_ptr<FrameProfilingState> profiling;
         using RecordedCommands = std::array<std::optional<vk::CommandBuffer>, commandPhaseCount>;
         std::vector<RecordedCommands> cmdbufs;
-        std::optional<vk::CommandBuffer> prepassDependency;
-        std::optional<vk::CommandBuffer> sourceRelease;
-        vk::Fence cmdbufFence;
+        RecordedCommands prepassDependency;
+        RecordedCommands sourceRelease;
+        std::vector<vk::Fence> cmdbufFences; // one per in-flight batch slot
+        std::array<bool, inFlightDepth> fenceScheduled{};
         std::vector<float> constantBufferTimestamps;
 
-        void prepareWork();
+        /// fence of the batch that uses the current frame index
+        [[nodiscard]] VkFence currentFence() const {
+            return this->cmdbufFences.at(this->fidx % inFlightDepth).handle();
+        }
+        /// true from a batch's submission until prepareWork observes its fence
+        [[nodiscard]] bool hasScheduledWork() const {
+            return std::ranges::any_of(this->fenceScheduled, std::identity{});
+        }
+
+        void prepareWork(bool drainAll);
         const vk::CommandBuffer& recordPrepass();
         const vk::CommandBuffer& recordSourceRelease();
         void schedulePrepass(VkFence completionFence);
@@ -274,6 +292,17 @@ namespace {
         ).count()
     );
     constexpr size_t maximumRetiredContextCount = 2;
+
+    /// wait on a batch fence with the time left in a budget shared by several waits
+    /// @returns true if the fence signalled
+    bool waitWithBudget(const vk::Fence& fence, const vk::Vulkan& vulkan, uint64_t& remainingNs) {
+        const auto started = std::chrono::steady_clock::now();
+        const bool signalled = fence.wait(vulkan, remainingNs);
+        const auto spentNs = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - started).count());
+        remainingNs = spentNs >= remainingNs ? 0 : remainingNs - spentNs;
+        return signalled;
+    }
 
     vk::DeviceMemoryTotals memoryDelta(
             const vk::DeviceMemoryTotals& after,
@@ -504,6 +533,14 @@ namespace {
             throw backend::error("Unable to create prepass semaphore", e);
         }
     }
+    /// create one fence per in-flight batch slot
+    std::vector<vk::Fence> createCmdbufFences(const vk::Vulkan& vulkan, const size_t count) {
+        std::vector<vk::Fence> fences;
+        fences.reserve(count);
+        for (size_t i = 0; i < count; ++i)
+            fences.emplace_back(vulkan);
+        return fences;
+    }
     /// create context data
     bool usesHighPrecisionModel(const FrameEncoding encoding) {
         return encoding != FrameEncoding::Sdr8;
@@ -653,7 +690,7 @@ ContextImpl::ContextImpl(const InstanceImpl& instance,
         syncSemaphore(importTimelineSemaphore(instance.getVulkan(), syncFd.take())),
         prepassSemaphore(createPrepassSemaphore(instance.getVulkan())),
         cmdbufs(destFds.size() + 1),
-        cmdbufFence(instance.getVulkan()),
+        cmdbufFences(createCmdbufFences(instance.getVulkan(), inFlightDepth)),
         ctx(createCtx(instance, extent, encoding, flow, perf, destFds.size(), reducedHdrPrecision)),
         sourceColorConversion(createSourceColorConversion(
             ctx, sourceImages, workingSourceImages
@@ -879,26 +916,35 @@ void Instance::scheduleFrames(Context& context) { // NOLINT (static)
 #endif
 }
 
-void Instance::enableFrameProfiling(Context& context) { // NOLINT (static)
-    context.enableFrameProfiling();
+void Instance::enableFrameProfiling(Context& context, const bool collectCompleted) { // NOLINT (static)
+    context.enableFrameProfiling(collectCompleted);
+}
+
+std::optional<FrameProfile> Instance::takeCompletedFrameProfile(Context& context) { // NOLINT (static)
+    return context.takeCompletedFrameProfile();
 }
 
 FrameProfile Instance::readFrameProfile(const Context& context) const { // NOLINT (static)
     return context.readFrameProfile();
 }
 
-void Context::enableFrameProfiling() {
-    if (this->fidx != 0 || this->workScheduled || this->profiling)
+void Context::enableFrameProfiling(const bool collectCompleted) {
+    if (this->fidx != 0 || this->hasScheduledWork() || this->profiling)
         throw backend::error("Frame profiling requires a fresh unscheduled context");
-    this->profiling = std::make_unique<FrameProfilingState>(this->ctx.vk, this->destImages.size());
+    this->profiling = std::make_unique<FrameProfilingState>(this->ctx.vk, this->destImages.size(), collectCompleted);
+}
+
+std::optional<FrameProfile> Context::takeCompletedFrameProfile() {
+    return this->profiling ? this->profiling->completed.take() : std::nullopt;
 }
 
 FrameProfile Context::readFrameProfile() const {
-    if (!this->profiling || !this->workScheduled || this->profiling->generatedCount == 0)
+    if (!this->profiling || !this->hasScheduledWork() || this->profiling->generatedCount == 0)
         throw backend::error("No generated batch is available for frame profiling");
     const auto& state = *this->profiling;
     const auto ticks = state.queries.timestamps(static_cast<uint32_t>(4 + state.generatedCount * 3));
     auto result = state.timings;
+    result.backendFrameIndex = this->fidx - 1;
     result.gpuPrepassUs = state.queries.elapsedMicroseconds(ticks.at(0), ticks.at(2));
     result.gpuInputConversionUs = this->sourceColorConversion
         ? state.queries.elapsedMicroseconds(ticks.at(0), ticks.at(1)) : 0.0;
@@ -955,18 +1001,47 @@ bool Instance::contextReady(const Context& context) const {
     return context.waitForIdle(0);
 }
 
-void Context::prepareWork() {
+void Context::prepareWork(const bool drainAll) {
     const auto start = this->profiling ? ProfileClock::now() : ProfileClock::time_point{};
-    if (this->workScheduled && !this->cmdbufFence.wait(
-            this->ctx.vk, previousWorkFenceTimeoutNs)) {
-        std::cerr << "MAKO Renderer: backend work fence timed out after "
-                  << previousWorkFenceTimeout.count() << " ms; "
-                     "aborting frame scheduling\n";
-        throw backend::error("Timeout waiting for previous frame to complete");
+    // Profiling drains every batch so that its readback sees completed queries.
+    const bool waitAll = drainAll || this->profiling != nullptr;
+    const size_t current = this->fidx % inFlightDepth;
+    std::array<bool, inFlightDepth> signalled{};
+    uint64_t remainingNs = previousWorkFenceTimeoutNs;
+    for (size_t slot = 0; slot < inFlightDepth; ++slot) {
+        if (!this->fenceScheduled.at(slot) || (!waitAll && slot != current))
+            continue;
+        if (!waitWithBudget(this->cmdbufFences.at(slot), this->ctx.vk, remainingNs)) {
+            std::cerr << "MAKO Renderer: backend work fence timed out after "
+                      << previousWorkFenceTimeout.count() << " ms; "
+                         "aborting frame scheduling\n";
+            throw backend::error("Timeout waiting for previous frame to complete");
+        }
+        signalled.at(slot) = true;
     }
     if (this->profiling) {
-        this->profiling->timings.cpuPreviousWaitUs = profileMicroseconds(start);
+        const double previousWaitUs = profileMicroseconds(start);
+        // The fence waits above prove completion before queries are reused.
+        // Diagnostic readback must never change scheduling/recovery. It still
+        // reads the scheduled flags, so they are cleared only after it runs.
+        try {
+            this->profiling->completed.collectAfterCompletion(this->fidx,
+                this->hasScheduledWork() && this->profiling->generatedCount > 0, [&] {
+                const auto readStarted = ProfileClock::now();
+                auto completed = this->readFrameProfile();
+                completed.cpuReadbackUs = profileMicroseconds(readStarted);
+                return completed;
+            });
+        } catch (const std::exception& error) {
+            std::cerr << "MAKO Renderer: GPU pacing profile unavailable; reason=query-readback; "
+                      << error.what() << '\n';
+        }
+        this->profiling->timings.cpuPreviousWaitUs = previousWaitUs;
         this->profiling->timings.cpuGenerationSubmitUs = 0.0;
+    }
+    for (size_t slot = 0; slot < inFlightDepth; ++slot) {
+        if (signalled.at(slot))
+            this->fenceScheduled.at(slot) = false;
     }
 }
 
@@ -975,6 +1050,19 @@ const vk::CommandBuffer& Context::recordPrepass() {
     if (!recorded) {
         vk::CommandBuffer cmdbuf(ctx.vk);
         cmdbuf.begin(ctx.vk, 0);
+
+        // A pipeline barrier's first scope includes every earlier submission on
+        // this queue, so this batch's prepass starts only after all previous
+        // batches' work. This replaces the CPU wait that used to serialize the
+        // single-instance pyramid and history images.
+        const VkMemoryBarrier batchOrder{
+            .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+            .srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT,
+            .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
+        };
+        ctx.vk.get().df().CmdPipelineBarrier(cmdbuf.handle(),
+            VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+            0, 1, &batchOrder, 0, nullptr, 0, nullptr);
 
         if (this->profiling) {
             this->profiling->queries.reset(cmdbuf.handle());
@@ -1021,7 +1109,8 @@ const vk::CommandBuffer& Context::recordPrepass() {
 }
 
 const vk::CommandBuffer& Context::recordSourceRelease() {
-    if (!this->sourceRelease) {
+    auto& recorded = this->sourceRelease.at(this->fidx % commandPhaseCount);
+    if (!recorded) {
         vk::CommandBuffer command(ctx.vk);
         command.begin(ctx.vk, 0);
         const std::array releases{
@@ -1035,9 +1124,9 @@ const vk::CommandBuffer& Context::recordSourceRelease() {
         if (this->profiling)
             this->profiling->queries.write(command.handle(), VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 3);
         command.end(ctx.vk);
-        this->sourceRelease.emplace(std::move(command));
+        recorded.emplace(std::move(command));
     }
-    return *this->sourceRelease;
+    return *recorded;
 }
 
 void Context::schedulePrepass(const VkFence completionFence) {
@@ -1046,8 +1135,8 @@ void Context::schedulePrepass(const VkFence completionFence) {
     // Preserve the completed fence while allocation/recording can still fail.
     // From the first submit onward, retain the context even if a later submit
     // fails before the final fence can be signalled.
-    this->cmdbufFence.reset(this->ctx.vk);
-    this->workScheduled = true;
+    this->cmdbufFences.at(this->fidx % inFlightDepth).reset(this->ctx.vk);
+    this->fenceScheduled.at(this->fidx % inFlightDepth) = true;
     const auto start = this->profiling ? ProfileClock::now() : ProfileClock::time_point{};
     vk::CommandBuffer::submitCommands(this->ctx.vk,
         std::span{commands}.first(completionFence != VK_NULL_HANDLE ? 2 : 1),
@@ -1088,13 +1177,20 @@ void Context::scheduleFrames(std::span<const float> timestamps) {
         }
     }
 
-    this->prepareWork();
+    // A changed timestamp rewrites a constant buffer that in-flight batches may
+    // still read, so drain them all first. Unchanged timestamps write nothing.
+    bool drainAll = false;
+    if (explicitTimestamps) {
+        for (size_t i = 0; i < timestamps.size(); ++i)
+            drainAll = drainAll || timestamps[i] != this->constantBufferTimestamps.at(i);
+    }
+    this->prepareWork(drainAll);
     if (this->profiling)
         this->profiling->generatedCount = generatedFrameCount;
 
-    // Every generated pass has its own uniform buffer and descriptor sets.
-    // Previous GPU work is complete at this point, so a changed timestamp can
-    // be safely uploaded before submitting the next set of dispatches.
+    // Every generated pass has its own uniform buffer. prepareWork drained all
+    // in-flight batches before any changed timestamp, so this upload cannot
+    // race with a batch that still reads the old value.
     if (explicitTimestamps) {
         for (size_t i = 0; i < timestamps.size(); ++i) {
             backend::uploadChangedTimestamp(
@@ -1168,7 +1264,8 @@ void Context::scheduleFrames(std::span<const float> timestamps) {
 
     if (generatedFrameCount == 1) {
         const auto& prepass = this->recordPrepass();
-        if (!this->prepassDependency) {
+        auto& recordedDependency = this->prepassDependency.at(this->fidx % commandPhaseCount);
+        if (!recordedDependency) {
             // Keep this dependency separate from the phase recordings so the
             // multiple-output path retains its existing barriers and overlap.
             vk::CommandBuffer dependency(ctx.vk);
@@ -1182,20 +1279,20 @@ void Context::scheduleFrames(std::span<const float> timestamps) {
                 VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
                 0, 1, &barrier, 0, nullptr, 0, nullptr);
             dependency.end(ctx.vk);
-            this->prepassDependency.emplace(std::move(dependency));
+            recordedDependency.emplace(std::move(dependency));
         }
         const std::array commands{
-            prepass.handle(), this->prepassDependency->handle(),
+            prepass.handle(), recordedDependency->handle(),
             this->cmdbufs.at(1).at(this->fidx % commandPhaseCount)->handle(),
             sourceReleaseCommand.handle(),
         };
         // Finish fallible recording before resetting the completion fence.
-        this->cmdbufFence.reset(this->ctx.vk);
-        this->workScheduled = true;
+        this->cmdbufFences.at(this->fidx % inFlightDepth).reset(this->ctx.vk);
+        this->fenceScheduled.at(this->fidx % inFlightDepth) = true;
         const auto start = this->profiling ? ProfileClock::now() : ProfileClock::time_point{};
         vk::CommandBuffer::submitCommands(this->ctx.vk, commands,
             {}, this->syncSemaphore.handle(), this->idx,
-            {}, this->syncSemaphore.handle(), this->idx + 1, this->cmdbufFence.handle());
+            {}, this->syncSemaphore.handle(), this->idx + 1, this->currentFence());
         if (this->profiling) {
             this->profiling->timings.cpuPrepassSubmitUs = 0.0;
             this->profiling->timings.cpuGenerationSubmitUs = profileMicroseconds(start);
@@ -1211,7 +1308,7 @@ void Context::scheduleFrames(std::span<const float> timestamps) {
                 std::span{commands}.first(i == generatedFrameCount - 1 ? 2 : 1),
                 {}, this->prepassSemaphore.handle(), this->idx - 1,
                 {}, this->syncSemaphore.handle(), this->idx + i,
-                i == generatedFrameCount - 1 ? this->cmdbufFence.handle() : VK_NULL_HANDLE);
+                i == generatedFrameCount - 1 ? this->currentFence() : VK_NULL_HANDLE);
         }
         if (this->profiling)
             this->profiling->timings.cpuGenerationSubmitUs = profileMicroseconds(start);
@@ -1221,15 +1318,22 @@ void Context::scheduleFrames(std::span<const float> timestamps) {
 }
 
 void Context::scheduleFrameHistory() {
-    this->prepareWork();
+    this->prepareWork(false);
     if (this->profiling)
         this->profiling->generatedCount = 0;
-    this->schedulePrepass(this->cmdbufFence.handle());
+    this->schedulePrepass(this->currentFence());
     this->fidx++;
 }
 
 bool Context::waitForIdle(const uint64_t timeoutNs) const {
-    return !this->workScheduled || this->cmdbufFence.wait(this->ctx.vk, timeoutNs);
+    // One budget covers every scheduled batch, so timeoutNs == 0 only polls.
+    uint64_t remainingNs = timeoutNs;
+    bool idle = true;
+    for (size_t slot = 0; slot < inFlightDepth; ++slot) {
+        if (this->fenceScheduled.at(slot))
+            idle = waitWithBudget(this->cmdbufFences.at(slot), this->ctx.vk, remainingNs) && idle;
+    }
+    return idle;
 }
 
 void Instance::collectRetiredContexts() {

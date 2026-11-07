@@ -99,7 +99,7 @@ if(BUILD_TESTING)
     add_executable(mako-backend-hot-path-tests
         "tests/hot_path_tests.cpp")
     target_include_directories(mako-backend-hot-path-tests
-        PRIVATE src)
+        PRIVATE src include)
     add_test(NAME backend-hot-path
         COMMAND mako-backend-hot-path-tests)
 

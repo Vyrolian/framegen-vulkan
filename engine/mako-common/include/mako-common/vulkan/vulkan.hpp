@@ -97,6 +97,7 @@ namespace vk {
         PFN_vkCreateFence CreateFence;
         PFN_vkDestroyFence DestroyFence;
         PFN_vkResetFences ResetFences;
+        PFN_vkGetFenceStatus GetFenceStatus;
         PFN_vkWaitForFences WaitForFences;
         PFN_vkCreateImage CreateImage;
         PFN_vkDestroyImage DestroyImage;

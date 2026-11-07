@@ -394,6 +394,45 @@ class DiagnosticsHelperTests(unittest.TestCase):
         self.assertEqual(result.stdout.splitlines(), records + [recent])
         self.assertIn("earlier_context_records=12", result.stderr)
 
+    def test_pacing_profile_is_retained_without_verbose_diagnostics(self):
+        record = "MAKO Renderer: present diagnostics: operation=pacing-profile version=1 context=1 sources=60 within_batch_mean_ms=8.3 between_batches_mean_ms=8.4"
+        gpu = "MAKO Renderer: present diagnostics: operation=pacing-profile version=2 context=1 gpu_requested=1 gpu_span_samples=60 gpu_span_mean_ms=3 gpu_readback_mean_ms=0.02"
+        timing = "MAKO Renderer: present diagnostics: operation=pacing-profile version=2 context=1 timing_driver_attempts=0 timing_ext_attempts=120 fifo_caller_timing_sources=60 present_target_interval_samples=119 present_target_interval_mean_ms=8.333 present_target_discontinuities=0"
+        output = "MAKO Renderer: present diagnostics: operation=pacing-profile-output version=1 context=1 pid=42 ordinal=2 source=1 generated=0 deferred=1 image_index=3 scheduled_ns=100 started_ns=110 finished_ns=120 result=0 copy_checked=1 copy_status=1"
+        wait = "MAKO Renderer: present diagnostics: operation=application-present-wait pid=42 swapchain=123 api=KHR2 calls=60 successful=60 timeouts=0 errors=0 polls=0 duration_mean_ms=8 duration_max_ms=20"
+        wayland = "MAKO Renderer: present diagnostics: operation=pacing-profile-wayland version=1 pid=42 surface_token=5 feedback=2 event=discarded context=1 source=1 generated=1"
+        wayland_gap = "MAKO Renderer: present diagnostics: operation=pacing-profile-wayland-gap version=1 pid=42 surface_token=5 lost_records=1"
+        content = "MAKO Renderer: present diagnostics: operation=pacing-profile-content version=1 pid=42 context=1 state=armed trigger=/tmp/private.bin.trigger path=/tmp/private.bin"
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "pacing.log"
+            path.write_text(record + "\n" + gpu + "\n" + timing + "\n" + output + "\n" + wait + "\n" + wayland + "\n" + wayland_gap + "\n" + content + "\n", encoding="utf-8")
+            for preset in ("all", "adaptive", "recovery", "performance", "scaling", "hdr"):
+                result = self._run("--log", str(path), preset)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn(record, result.stdout)
+                self.assertIn(gpu, result.stdout)
+                self.assertIn(timing, result.stdout)
+                self.assertIn(output, result.stdout)
+                self.assertIn(wait, result.stdout)
+                self.assertIn(wayland, result.stdout)
+                self.assertIn(wayland_gap, result.stdout)
+                self.assertIn(content, result.stdout)
+
+    def test_detailed_frame_trace_records_survive_every_preset(self):
+        records = [
+            "MAKO Renderer: present diagnostics: operation=" + operation + " version=1 pid=42 context=1 source=8"
+            for operation in ("pacing-profile-source", "pacing-profile-gpu", "pacing-profile-application", "pacing-profile-wait",
+                              "pacing-profile-acquire-driver", "pacing-profile-copy", "pacing-profile-copy-gpu", "pacing-profile-copy-gpu-state",
+                              "pacing-profile-vulkan-setup")
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "detailed.log"
+            path.write_text("\n".join(records) + "\n", encoding="utf-8")
+            for preset in ("all", "adaptive", "recovery", "performance", "scaling", "hdr"):
+                result = self._run("--log", str(path), preset)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout.splitlines(), records)
+
     def test_frame_boundaries_are_retained_by_focused_presets(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             path = self._fixture_path(Path(temporary_directory))
@@ -775,6 +814,24 @@ class DiagnosticsHelperTests(unittest.TestCase):
         self.assertIn("initialization failed", result.stdout)
         self.assertIn(str(path), result.stderr)
         self.assertIn("session: latest", result.stderr)
+
+    def test_private_pacing_capture_selection(self):
+        record = "MAKO Renderer: present diagnostics: operation=pacing-profile version=2 context=1 sources=60"
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            path = root / f"mako-pacing-{os.getuid()}-100-1.log"
+            path.write_text(record + "\n", encoding="utf-8")
+            foreign = root / f"mako-pacing-{os.getuid()}-999-1.log"
+            foreign.symlink_to(path)
+            environment = {**os.environ, "TMPDIR": str(root)}
+            environment.pop("MAKO_PRESENT_DIAGNOSTICS_LOG", None)
+            result = self._run("--pacing", "performance", environment=environment)
+            previous = self._run("--pacing", "--session", "previous", environment=environment)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(record, result.stdout)
+        self.assertIn(str(path), result.stderr)
+        self.assertEqual(previous.returncode, 2)
+        self.assertIn("use --log PATH", previous.stderr)
 
     def test_retained_sessions_can_be_selected_or_combined(self):
         with tempfile.TemporaryDirectory() as temporary_directory:

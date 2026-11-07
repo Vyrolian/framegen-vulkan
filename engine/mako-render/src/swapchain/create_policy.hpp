@@ -20,6 +20,23 @@ namespace mako::layer {
             (mode == VK_PRESENT_MODE_MAILBOX_KHR || mode == VK_PRESENT_MODE_IMMEDIATE_KHR);
     }
 
+    /// Native FIFO supports CPU output spacing without taking a Vulkan timing
+    /// namespace. Source-cap and ready-output policies decide whether existing
+    /// caller timing permits that spacing.
+    [[nodiscard]] constexpr bool nativeFifoOutputPacingEligible(
+            const bool gamescopeDetected, const VkPresentModeKHR mode) noexcept {
+        return !gamescopeDetected && mode == VK_PRESENT_MODE_FIFO_KHR;
+    }
+
+    /// One native presentation queue for the complete context lifetime.
+    /// Clock changes, incomplete batches and live FG/scaling changes must not
+    /// split successive present requests between application/private queues.
+    [[nodiscard]] constexpr bool nativePrivatePresentQueueEligible(
+            const bool gamescopeDetected, const bool gamescopeBridge,
+            const bool privateQueueAvailable) noexcept {
+        return !gamescopeDetected && !gamescopeBridge && privateQueueAvailable;
+    }
+
     struct GamescopeScalingPresentContract {
         VkPresentModeKHR lowerPresentMode{VK_PRESENT_MODE_FIFO_KHR};
         std::optional<VkPresentModeKHR> compositorPresentMode;

@@ -38,6 +38,7 @@ namespace mako::backend {
     /// Diagnostic timings for the most recent completed generated-frame batch.
     /// GPU spans include commands/barriers; CPU submit times can overlap GPU work.
     struct FrameProfile {
+        uint64_t backendFrameIndex{}; // Zero-based scheduled batch, including history-only steps.
         double cpuPreviousWaitUs{};
         double cpuPrepassSubmitUs{}; // Separate prepass; zero for a combined single-output submission.
         double cpuGenerationSubmitUs{}; // Includes preprocessing for a combined single-output submission.
@@ -48,6 +49,7 @@ namespace mako::backend {
         std::vector<double> gpuSynthesisUs;
         std::vector<double> gpuOutputConversionUs;
         double gpuSpanUs{};
+        double cpuReadbackUs{}; // Automatic completed-batch collection only.
         uint32_t timestampValidBits{};
         float timestampPeriodNs{};
     };
@@ -179,7 +181,13 @@ namespace mako::backend {
 
         /// Enable diagnostic CPU clocks and GPU timestamps on a fresh context.
         /// Must precede its first schedule; ordinary contexts allocate no queries.
-        void enableFrameProfiling(Context& context);
+        /// collectCompleted reuses the next normal previous-work fence wait
+        /// to collect each completed batch. It adds no wait or polling loop.
+        void enableFrameProfiling(Context& context, bool collectCompleted = false);
+
+        /// Consume a collected batch once; history/unsupported/unavailable
+        /// observations return no sample. This performs no Vulkan operation.
+        [[nodiscard]] std::optional<FrameProfile> takeCompletedFrameProfile(Context& context);
 
         /// Read the latest batch after the caller establishes GPU completion with
         /// its normal output wait. No extra fence wait or blocking query-result

@@ -65,6 +65,31 @@ namespace mako::layer {
         return false;
     }
 
+    /// True only when the device chain enables both present-ID and wait2
+    /// features. Those features let MAKO tag real output and poll presentation
+    /// feedback with timeout 0; either one alone is not enough.
+    [[nodiscard]] inline bool enablesApplicationPresentId2Wait2(const void* chain) noexcept {
+#if defined(VK_KHR_present_id2) && defined(VK_KHR_present_wait2)
+        bool presentId2{};
+        bool presentWait2{};
+        while (chain) {
+            VkBaseInStructure node{};
+            std::memcpy(&node, chain, sizeof(node));
+            if (node.sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_2_FEATURES_KHR &&
+                    static_cast<const VkPhysicalDevicePresentId2FeaturesKHR*>(chain)->presentId2)
+                presentId2 = true;
+            if (node.sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_2_FEATURES_KHR &&
+                    static_cast<const VkPhysicalDevicePresentWait2FeaturesKHR*>(chain)->presentWait2)
+                presentWait2 = true;
+            chain = node.pNext;
+        }
+        return presentId2 && presentWait2;
+#else
+        (void)chain;
+        return false;
+#endif
+    }
+
     [[nodiscard]] inline bool hasPresentTiming(const void* chain) {
         while (chain) {
             VkBaseInStructure node{};
@@ -76,6 +101,42 @@ namespace mako::layer {
         }
         return false;
     }
+
+    /// A generated output inherits only a persistent swapchain mode override.
+    /// IDs, fences, timing targets and other caller frame metadata belong to
+    /// the final real image. Borrow only its immutable mode array; detach the
+    /// copied node from the rest of the caller's chain.
+    class GeneratedPresentPNextChain {
+    public:
+        explicit GeneratedPresentPNextChain(const void* original) {
+            while (original) {
+                // Vulkan structs share an ABI prefix, not a C++ base class.
+                // Inspect the ABI bytes and keep the next pointer untyped,
+                // avoiding aliases between unrelated Vulkan structure types.
+                VkStructureType type{};
+                std::memcpy(&type, original, sizeof(type));
+                if (type != VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_MODE_INFO_EXT) {
+                    const void* next{};
+                    std::memcpy(&next, static_cast<const std::byte*>(original) +
+                        offsetof(VkBaseInStructure, pNext), sizeof(next));
+                    original = next;
+                    continue;
+                }
+                VkSwapchainPresentModeInfoEXT modes{};
+                std::memcpy(&modes, original, sizeof(modes));
+                if (modes.swapchainCount == 1 && modes.pPresentModes) {
+                    this->mode = modes;
+                    this->mode.pNext = nullptr;
+                    this->hasMode = true;
+                }
+                break;
+            }
+        }
+        [[nodiscard]] const void* head() const { return this->hasMode ? &this->mode : nullptr; }
+    private:
+        VkSwapchainPresentModeInfoEXT mode{};
+        bool hasMode{};
+    };
 
     /// Optional Renderer timing must never share a consuming feedback queue
     /// or present-ID namespace with the application.

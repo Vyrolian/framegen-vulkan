@@ -4,6 +4,7 @@
 #include "helpers/delta_scratch.hpp"
 #include "helpers/temporal_phases.hpp"
 #include "helpers/timestamp_upload_cache.hpp"
+#include "helpers/completed_frame_profile.hpp"
 
 #include <cmath>
 #include <cstddef>
@@ -131,6 +132,33 @@ namespace {
 
 int main() {
     try {
+        using mako::backend::CompletedFrameProfile;
+        using mako::backend::FrameProfile;
+        size_t reads{};
+        const auto read = [&] { ++reads; return FrameProfile{.gpuSpanUs = 2000}; };
+        CompletedFrameProfile off;
+        off.collectAfterCompletion(1, true, read);
+        require(reads == 0 && !off.take(), "disabled GPU collection read a query");
+        CompletedFrameProfile stream(true);
+        stream.collectAfterCompletion(0, true, read);
+        stream.collectAfterCompletion(1, false, read);
+        require(reads == 0, "history or startup fabricated a generated batch");
+        stream.collectAfterCompletion(2, true, read);
+        auto sample = stream.take();
+        require(reads == 1 && sample && sample->gpuSpanUs == 2000 && !stream.take(),
+            "completed profile was lost or consumed twice");
+        stream.collectAfterCompletion(2, true, read);
+        require(reads == 1 && !stream.take(), "a retry duplicated a completed GPU batch");
+        stream.collectAfterCompletion(3, true, read);
+        stream.collectAfterCompletion(4, true, read);
+        require(reads == 3 && stream.take() && !stream.take(), "profile storage did not stay bounded");
+        try {
+            stream.collectAfterCompletion(5, true, [&]() -> FrameProfile {
+                ++reads; throw std::runtime_error("query unavailable");
+            });
+        } catch (const std::runtime_error&) {}
+        stream.collectAfterCompletion(6, true, read);
+        require(reads == 4 && !stream.take(), "failed diagnostic readback was retried indefinitely");
         testStableAndChangingCounts();
         testFailedWriteDoesNotCommit();
         testRequiredImagePrefixIsExactAndFailsClosed();

@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <limits>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -21,6 +22,117 @@ namespace {
             return;
         std::cerr << "FAIL: " << message << '\n';
         std::exit(1);
+    }
+
+    void testReleasedCadenceUsesBurstThroughput() {
+        using Clock = RealFramePacer::Clock;
+        RealFramePacer pacer;
+        auto arrival = Clock::time_point{100s};
+        constexpr auto capPeriod = 8333333ns;
+        pacer.observeSource(arrival, true, 2, true);
+        for (const auto period : {12500us, 25000us, 16666us, 8333us}) {
+            // Two GPU-queued groups plus the next queue refill. Most calls
+            // arrive early, but all eight together represent eight sources.
+            const std::array burst{period / 50, period / 50, 3 * period - period / 25,
+                period / 50, period / 50, 3 * period - period / 25,
+                period / 50, 2 * period - period / 50};
+            for (size_t window = 0; window < 8; ++window) {
+                for (const auto elapsed : burst) {
+                    arrival += elapsed;
+                    static_cast<void>(pacer.schedule(arrival, 120.0));
+                    pacer.observeSource(arrival, true, 2, true);
+                    pacer.recordOutputWait(0ns, true);
+                }
+                const auto batch = pacer.scheduleReleasedOutputs(arrival, capPeriod, 2);
+                const auto expected = std::max(Clock::duration{period}, Clock::duration{capPeriod}) / 2;
+                expect(batch && batch->interval == expected,
+                    "released source bursts changed spacing away from measured throughput");
+            }
+        }
+        arrival += 2s;
+        pacer.observeSource(arrival, true, 2, true);
+        auto batch = pacer.scheduleReleasedOutputs(arrival, capPeriod, 2);
+        expect(batch && batch->interval == capPeriod / 2,
+            "a long pause contaminated the released throughput estimate");
+        for (size_t i = 0; i < 8; ++i) {
+            arrival += 12500us;
+            pacer.observeSource(arrival, true, 2, true);
+        }
+        batch = pacer.scheduleReleasedOutputs(arrival, capPeriod, 2);
+        expect(batch && batch->interval == 6250us,
+            "released cadence did not recover after a long pause");
+        // Returning to ordinary delivery must discard the released window.
+        for (size_t i = 0; i < 12; ++i) {
+            arrival += 16666us;
+            pacer.observeSource(arrival, true);
+        }
+        batch = pacer.scheduleReleasedOutputs(arrival, capPeriod, 2);
+        expect(batch && batch->interval == 8333us,
+            "released qualification leaked into ordinary source observation");
+    }
+
+    // Release-gated caps return the application present immediately, so the
+    // worker spaces each batch from readiness on the cap's output interval.
+    void testReleasedOutputsStayInsideTheSourceInterval() {
+        using Clock = RealFramePacer::Clock;
+        const Clock::time_point start{};
+        const auto source = std::chrono::duration_cast<Clock::duration>(
+            std::chrono::duration<double>(1.0 / 60.0));
+        RealFramePacer pacer;
+        expect(!pacer.scheduleReleasedOutputs(start, source, 1) &&
+                !pacer.scheduleReleasedOutputs(start, Clock::duration{}, 2),
+            "released output pacing accepted an empty batch or interval");
+        std::optional<Clock::time_point> previousLast;
+        auto arrival = start;
+        for (size_t frame = 0; frame < 120; ++frame) {
+            // Producer jitter around the cap, as the release wait allows.
+            arrival += source + (frame % 3 == 0 ? 400us : frame % 3 == 1 ? -400us : 0us);
+            const auto ready = arrival + 1ms;
+            const auto batch = pacer.scheduleReleasedOutputs(ready, source, 2);
+            expect(batch && batch->interval == source / 2,
+                "released output pacing did not use the cap output interval");
+            expect(batch->at(0) >= ready && batch->at(0) - ready <= RealFramePacer::maximumDetachedHold(batch->interval),
+                "released output pacing held a batch beyond its bounded phase");
+            expect(batch->at(1) < arrival + source,
+                "a released batch outlived its source interval and would join the producer");
+            if (previousLast && frame > 2)
+                expect(batch->at(0) - *previousLast >= batch->interval - 400us,
+                    "released output pacing compressed a generated slot beyond producer jitter");
+            pacer.completeOutputBatch(batch->at(1));
+            previousLast = batch->at(1);
+        }
+
+        // An arrival 0.9 output slot early shortens one gap instead of
+        // retaining a phase that would end after the next arrival.
+        arrival += source - source * 9 / 20;
+        const auto early = pacer.scheduleReleasedOutputs(arrival + 1ms, source, 2);
+        expect(early && early->at(0) - (arrival + 1ms) <= RealFramePacer::maximumDetachedHold(early->interval) &&
+                early->at(1) < arrival + source,
+            "an early source kept a retained phase past its own interval");
+    }
+
+    // A GPU-bound source slower than a non-binding release cap is spaced on
+    // its measured period. A source faster than the cap never shortens it.
+    void testReleasedOutputsUseMeasuredSourcePeriod() {
+        using Clock = RealFramePacer::Clock;
+        const Clock::time_point start{};
+        const auto releasedIntervalMs = [&](const Clock::duration source, const size_t arrivals) {
+            RealFramePacer pacer;
+            auto arrival = start;
+            for (size_t frame = 0; frame < arrivals; ++frame) {
+                arrival += source;
+                pacer.observeSource(arrival, true, 2);
+            }
+            const auto batch = pacer.scheduleReleasedOutputs(arrival + 1ms, 8333us, 2);
+            expect(batch.has_value(), "released output pacing rejected a valid cap batch");
+            return std::chrono::duration<double, std::milli>(batch->interval).count();
+        };
+        expect(std::abs(releasedIntervalMs(12500us, 12) - 6.25) < 0.05,
+            "released batches ignored a slower measured GPU-bound source period");
+        expect(std::abs(releasedIntervalMs(8333us, 12) - 4.1667) < 0.05,
+            "a measured source period shortened the released cap interval");
+        expect(std::abs(releasedIntervalMs(12500us, 0) - 4.1667) < 0.05,
+            "released batches without an observed source ignored the cap interval");
     }
 
     void testSmoothCadenceCapFollowsActivePlan() {
@@ -779,59 +891,81 @@ void testFixedCapRecoversAfterLateArrival() {
     }
 }
 
-void testReadyFixedCapOwnershipRequalification() {
+void testLateNativeFixedCapKeepsSpacing() {
     using Clock = RealFramePacer::Clock;
-    constexpr auto period = 16666666ns;
-    const auto start = Clock::time_point{10s};
-    for (const size_t count : {2U, 3U, 4U, 5U}) {
-        RealFramePacer pacer;
-        auto arrival = start;
-        for (size_t frame = 0; frame < 40; ++frame) {
-            const auto deadline = pacer.schedule(arrival, 60.);
-            pacer.observeSource(arrival, true);
-            if (deadline > arrival) {
-                const auto batch = pacer.scheduleOutputs(arrival + 100us,
-                    deadline, 60. * count, count, false);
-                expect(batch.has_value(), "healthy source cap did not establish output ownership");
-                pacer.recordOutputWait(batch->at(count - 1) - arrival - 100us);
-                arrival = deadline + 1ms;
-            } else {
-                arrival += 1ms;
+    for (const double cap : {30., 60., 70., 90.}) {
+        const auto period = std::chrono::duration_cast<Clock::duration>(
+            std::chrono::duration<double>(1. / cap));
+        for (const size_t count : {2U, 3U, 4U, 5U}) {
+            RealFramePacer pacer;
+            const auto slot = std::chrono::duration_cast<Clock::duration>(
+                std::chrono::duration<double>(1. / (cap * count)));
+            auto returned = Clock::time_point{10s};
+            auto previousReal = returned;
+            (void)pacer.schedule(returned, cap);
+            for (size_t frame = 0; frame < 180; ++frame) {
+                const auto arrival = returned + slot / 8;
+                const auto deadline = pacer.schedule(arrival, cap);
+                pacer.observeSource(arrival, true, count);
+                expect(deadline == returned + period,
+                    "late detached output shifted the application's configured source cap");
+                const auto prepared = frame % 17 == 8
+                    ? deadline - slot / 2 : returned + slot / 4;
+                const auto batch = pacer.scheduleOutputs(prepared, deadline,
+                    cap * count, count, false, true);
+                expect(batch && batch->first >= prepared && batch->interval == slot,
+                    "late native Fixed preparation dropped or compressed output spacing");
+                expect(batch->at(count - 1) < deadline + slot * static_cast<int64_t>(count - 1),
+                    "late native Fixed pacing retained more than one batch span of debt");
+                if (frame > 0)
+                    expect(batch->at(count - 1) >= previousReal + slot * static_cast<int64_t>(count),
+                        "a rephased Fixed cap compressed the following output batch");
+                previousReal = batch->at(count - 1);
+                pacer.recordOutputWait(slot / 8, true);
+                // The final image is detached. The application returns at the
+                // existing source-cap boundary, without serializing its next
+                // frame's preparation behind the shifted real output.
+                returned = deadline;
             }
+            const auto lateArrival = returned + period + slot / 16;
+            expect(pacer.schedule(lateArrival, cap) == lateArrival,
+                "a missed source-cap deadline unexpectedly reserved output slack");
+            pacer.observeSource(lateArrival, true, count);
+            expect(!pacer.scheduleReadyOutputs(lateArrival + slot / 4, count),
+                "a synchronous cap gained an independent readiness wait");
+            expect(pacer.scheduleReadyOutputs(lateArrival + slot / 4, count, true).has_value(),
+                "a short cap miss dropped pacing despite proven detached delivery");
+            pacer.recordOutputWait(slot / 4, false);
+            expect(!pacer.scheduleReadyOutputs(lateArrival + slot / 4, count, true),
+                "private queue availability replaced actual detached-delivery evidence");
+            const auto deadline = pacer.schedule(returned + slot / 8, cap);
+            expect(!pacer.scheduleOutputs(deadline + period, deadline,
+                    cap * count, count, false, true),
+                "native Fixed phase correction accumulated a missed source interval");
+            RealFramePacer target;
+            (void)target.schedule(returned, cap);
+            expect(!target.scheduleOutputs(returned + period - slot / 2,
+                    returned + period, cap * count, count, true, true),
+                "native Fixed phase correction moved an Adaptive target clock");
         }
-        expect(pacer.sourceReadinessBudget(arrival, count) == Clock::duration{},
-            "proven source cap allowed an independent readiness clock");
-
-        // Real work that stays slower than the cap must still qualify the
-        // game-owned fallback. Do not turn one successful cap into a latch
-        // that survives a permanent scene or game-limiter change.
-        std::optional<RealFramePacer::OutputBatch> batch;
-        for (size_t frame = 0; frame < 40; ++frame) {
-            arrival += 2 * period;
-            (void)pacer.schedule(arrival, 60.);
-            pacer.observeSource(arrival, true);
-            batch = pacer.scheduleReadyOutputs(arrival + 100us, count);
-            pacer.recordOutputWait(batch
-                ? batch->interval * static_cast<int64_t>(count - 1) : Clock::duration{});
-        }
-        expect(batch && batch->interval == 2 * period / static_cast<int64_t>(count),
-            "sustained slower source could not release configured-cap ownership");
-
-        pacer.reset();
-        (void)pacer.schedule(arrival, 60.);
-        pacer.observeSource(arrival, true);
-        const auto deadline = pacer.schedule(arrival + 1ms, 60.);
-        pacer.observeSource(arrival + 1ms, true);
-        expect(pacer.scheduleOutputs(arrival + 1100us, deadline,
-                60. * count, count, false).has_value(),
-            "reset source cap could not regain output ownership");
-        (void)pacer.schedule(arrival + 2ms, 0.);
-        for (size_t frame = 1; frame <= 10; ++frame) {
-            pacer.observeSource(arrival + frame * period, true);
-        }
-        expect(pacer.scheduleReadyOutputs(arrival + 10 * period + 100us, count).has_value(),
-            "disabling the configured cap retained its output ownership");
     }
+}
+
+void testWorkerReadinessPreservesCapAndOutputPhase() {
+    RealFramePacer pacer;
+    const auto start = RealFramePacer::TimePoint{} + 1s;
+    static_cast<void>(pacer.schedule(start, 60.));
+    const auto cap = pacer.schedule(start + 1ms, 60.);
+    const auto batch = pacer.scheduleOutputs(start + 2ms, cap, 120., 2, false, true);
+    expect(batch.has_value(), "native cap could not prepare its first batch");
+    const auto gpuShift = 9ms;
+    pacer.completeOutputBatch(batch->at(1) + gpuShift, gpuShift);
+    const auto nextCap = pacer.schedule(cap + 1ms, 60.);
+    const auto next = pacer.scheduleOutputs(cap + 2ms, nextCap, 120., 2, false, true);
+    expect(next && next->first == batch->at(1) + gpuShift + batch->interval,
+        "worker GPU readiness shift was lost at the next batch boundary");
+    expect(nextCap - cap == batch->interval * 2,
+        "worker GPU readiness added another source-cap interval");
 }
 
 void testReadyFixedOutputs() {
@@ -910,6 +1044,651 @@ void testReadyFixedOutputs() {
             pacer.reset();
             expect(pacer.sourceReadinessBudget(arrival) == Clock::duration::zero(),
                 "live pacer reset retained source-readiness state");
+        }
+    }
+}
+
+void testReadyFixedCapOwnershipRequalification() {
+    using Clock = RealFramePacer::Clock;
+    constexpr auto period = 16666666ns;
+    const auto start = Clock::time_point{10s};
+    for (const size_t count : {2U, 3U, 4U, 5U}) {
+        RealFramePacer pacer;
+        auto arrival = start;
+        for (size_t frame = 0; frame < 40; ++frame) {
+            const auto deadline = pacer.schedule(arrival, 60.);
+            pacer.observeSource(arrival, true);
+            if (deadline > arrival) {
+                const auto batch = pacer.scheduleOutputs(arrival + 100us,
+                    deadline, 60. * count, count, false);
+                expect(batch.has_value(), "healthy source cap did not establish output ownership");
+                pacer.recordOutputWait(batch->at(count - 1) - arrival - 100us);
+                arrival = deadline + 1ms;
+            } else {
+                arrival += 1ms;
+            }
+        }
+        expect(pacer.sourceReadinessBudget(arrival, count) == Clock::duration{},
+            "proven source cap allowed an independent readiness clock");
+
+        // Real work that stays slower than the cap must still qualify the
+        // game-owned fallback. Do not turn one successful cap into a latch
+        // that survives a permanent scene or game-limiter change.
+        std::optional<RealFramePacer::OutputBatch> batch;
+        for (size_t frame = 0; frame < 40; ++frame) {
+            arrival += 2 * period;
+            (void)pacer.schedule(arrival, 60.);
+            pacer.observeSource(arrival, true);
+            batch = pacer.scheduleReadyOutputs(arrival + 100us, count);
+            pacer.recordOutputWait(batch
+                ? batch->interval * static_cast<int64_t>(count - 1) : Clock::duration{});
+        }
+        expect(batch && batch->interval == 2 * period / static_cast<int64_t>(count),
+            "sustained slower source could not release configured-cap ownership");
+
+        pacer.reset();
+        (void)pacer.schedule(arrival, 60.);
+        pacer.observeSource(arrival, true);
+        const auto deadline = pacer.schedule(arrival + 1ms, 60.);
+        pacer.observeSource(arrival + 1ms, true);
+        expect(pacer.scheduleOutputs(arrival + 1100us, deadline,
+                60. * count, count, false).has_value(),
+            "reset source cap could not regain output ownership");
+        (void)pacer.schedule(arrival + 2ms, 0.);
+        for (size_t frame = 1; frame <= 10; ++frame) {
+            pacer.observeSource(arrival + frame * period, true);
+        }
+        expect(pacer.scheduleReadyOutputs(arrival + 10 * period + 100us, count).has_value(),
+            "disabling the configured cap retained its output ownership");
+    }
+}
+
+void testGameCapRetainsFallbackAfterIsolatedCapBatch() {
+    using Clock = RealFramePacer::Clock;
+    constexpr auto period = 16666666ns;
+    for (const size_t count : {2U, 3U, 4U, 5U}) {
+        RealFramePacer pacer;
+        auto arrival = Clock::time_point{10s};
+        for (size_t frame = 0; frame < 200; ++frame) {
+            // An absolute 60 FPS game limiter below MAKO's 70 FPS cap.
+            // A partial batch returns promptly, allowing one fast source
+            // arrival followed by a compensating long game-limiter interval.
+            if (frame) arrival += frame == 80 ? 1ms : frame == 81 ? 2 * period - 1ms : period;
+            const auto deadline = pacer.schedule(arrival, 70.);
+            pacer.observeSource(arrival, true, count);
+            auto batch = frame != 79 && deadline > arrival
+                ? pacer.scheduleOutputs(arrival + 500us, deadline, 70. * count, count, false)
+                : std::nullopt;
+            if (!batch && frame != 79)
+                batch = pacer.scheduleReadyOutputs(arrival + 500us, count);
+            if (frame >= 83)
+                expect(batch && batch->interval == period / static_cast<int64_t>(count),
+                    "one nonbinding-cap batch permanently disabled game-owned output spacing");
+            pacer.recordOutputWait(batch
+                ? batch->at(count - 1) - arrival - 500us : Clock::duration{});
+        }
+
+        // Cold startup may initially give the cap ownership before a source
+        // period exists. A subsequently learned slower game period must not
+        // keep that ownership alive indefinitely either.
+        RealFramePacer cold;
+        arrival = Clock::time_point{20s};
+        (void)cold.schedule(arrival, 70.);
+        cold.observeSource(arrival, true, count);
+        arrival += 1ms;
+        const auto deadline = cold.schedule(arrival, 70.);
+        cold.observeSource(arrival, true, count);
+        const auto first = cold.scheduleOutputs(arrival + 500us, deadline, 70. * count, count, false);
+        expect(first.has_value(), "cold cap did not establish its ordinary output owner");
+        cold.recordOutputWait(first->at(count - 1) - arrival - 500us);
+        for (size_t frame = 0; frame < 40; ++frame) {
+            arrival += period;
+            (void)cold.schedule(arrival, 70.);
+            cold.observeSource(arrival, true, count);
+            const auto batch = cold.scheduleReadyOutputs(arrival + 500us, count);
+            if (frame >= 28)
+                expect(batch && batch->interval == period / static_cast<int64_t>(count),
+                    "cold cap ownership survived a genuinely slower game limiter");
+            cold.recordOutputWait(batch
+                ? batch->at(count - 1) - arrival - 500us : Clock::duration{});
+        }
+    }
+}
+
+void testStableGameCadenceWithChangingReadiness() {
+    using Clock = RealFramePacer::Clock;
+    constexpr auto period = 16666666ns;
+    for (const size_t count : {2U, 3U, 4U, 5U}) {
+        RealFramePacer pacer;
+        auto arrival = Clock::time_point{30s};
+        for (size_t frame = 0; frame < 600; ++frame) {
+            pacer.observeSource(arrival, true, count);
+            // The absolute game limiter absorbs readiness changes in its
+            // outside wait. A shorter wait-excluded interval is not a game
+            // speedup when complete source intervals remain unchanged.
+            const auto readiness = period / static_cast<int64_t>(count * (frame / 40 % 2 ? 2 : 4));
+            const auto batch = pacer.scheduleReadyOutputs(arrival + readiness, count);
+            if (frame >= 8)
+                expect(batch && batch->interval == period / static_cast<int64_t>(count),
+                    "changing GPU readiness restarted unpaced qualification at a constant game rate");
+            pacer.recordOutputWait(batch
+                ? readiness + batch->interval * static_cast<int64_t>(count - 1) : Clock::duration{});
+            arrival += period;
+        }
+    }
+}
+
+void testReadyFixedSourceJitterAndCapIncrease() {
+    using Clock = RealFramePacer::Clock;
+    constexpr auto period = 16666666ns;
+    const auto start = Clock::time_point{10s};
+    auto arrival = start;
+    for (const auto recordedWait : {Clock::duration{}, Clock::duration{period / 2}}) {
+        RealFramePacer jitter;
+        arrival = start;
+        for (size_t frame = 0; frame < 9; ++frame) {
+            jitter.observeSource(arrival, true);
+            arrival += period;
+        }
+        for (size_t frame = 0; frame < 600; ++frame) {
+            jitter.observeSource(arrival, true);
+            const auto batch = jitter.scheduleReadyOutputs(arrival + 1ms, 2);
+            expect(batch && batch->interval == period / 2,
+                "source jitter biased the learned output interval toward faster outliers");
+            jitter.recordOutputWait(recordedWait);
+            arrival += period + (frame % 2 == 0 ? 2ms : -2ms);
+        }
+    }
+
+    // The game owns a 20 FPS cap while MAKO is uncapped or already permits
+    // 40 FPS. Raising/removing the game cap must release the old 25 ms output
+    // sleep, rather than learning each step of its own gradual acceleration.
+    for (const double cap : {0., 40.}) {
+        RealFramePacer pacer;
+        arrival = start;
+        for (size_t frame = 0; frame < 40; ++frame) {
+            (void)pacer.schedule(arrival, cap);
+            pacer.observeSource(arrival, true);
+            const auto batch = pacer.scheduleReadyOutputs(arrival + 1ms, 2);
+            if (batch) pacer.recordOutputWait(batch->interval);
+            arrival += 50ms;
+        }
+        for (size_t frame = 0; frame < 12; ++frame) {
+            // One last paced frame can hold the first faster arrival back.
+            arrival += frame == 0 ? -23ms : 25ms;
+            (void)pacer.schedule(arrival, cap);
+            pacer.observeSource(arrival, true);
+            const auto batch = pacer.scheduleReadyOutputs(arrival + 1ms, 2);
+            if (frame == 1)
+                expect(!batch, "faster source retained the previous limiter's output sleep");
+            if (frame >= 9)
+                expect(batch && batch->interval == 12500us,
+                    "source-cap increase did not requalify directly at the new cadence");
+            if (batch) pacer.recordOutputWait(batch->interval);
+        }
+    }
+}
+
+void testDetachedOutputSourceJitter() {
+    using Clock = RealFramePacer::Clock;
+    constexpr auto period = 16666666ns;
+    RealFramePacer pacer;
+    auto arrival = Clock::time_point{30s};
+    for (size_t frame = 0; frame < 9; ++frame) {
+        pacer.observeSource(arrival, true);
+        arrival += period;
+    }
+    // Paired early arrivals followed by paired late arrivals preserve 60 FPS.
+    // Real captures show these small changes without a change in game cap.
+    // A detached real output contributes no synchronous output-slot sleep.
+    for (size_t frame = 0; frame < 1200; ++frame) {
+        pacer.observeSource(arrival, true);
+        const auto batch = pacer.scheduleReadyOutputs(arrival + 4ms, 2);
+        expect(batch.has_value(), "source jitter released eight independently paced batches");
+        if (frame > 16)
+            expect(batch->interval == period / 2,
+                "independent source median ratcheted toward faster jitter");
+        pacer.recordOutputWait(4ms, true);
+        if (frame % 4 < 2) pacer.recordAcquireWait(1ms);
+        arrival += period + (frame % 4 < 2 ? -1500us : 1500us);
+    }
+    // Four or more early samples also occur without a change in mean rate.
+    // Recovery must keep a usable output interval even when that run passes
+    // the acceleration threshold. Extending a consecutive-sample threshold
+    // merely moves the same eight-frame gap to a different jitter pattern.
+    for (const size_t run : {4U, 6U, 16U}) {
+        RealFramePacer jitter;
+        auto source = Clock::time_point{120s};
+        for (size_t frame = 0; frame < 9; ++frame) {
+            jitter.observeSource(source, true);
+            source += period;
+        }
+        for (size_t frame = 0; frame < 1200; ++frame) {
+            jitter.observeSource(source, true);
+            const auto batch = jitter.scheduleReadyOutputs(source + 6ms, 2);
+            expect(batch.has_value(), "a longer jitter run discarded qualified detached pacing");
+            if (run == 4 && frame >= 16 && frame % 8 == 7)
+                expect(batch->interval == period / 2,
+                    "acceleration discarded slower samples from a balanced source window");
+            jitter.recordOutputWait(6ms, true);
+            if (frame % (2 * run) < run) jitter.recordAcquireWait(1ms);
+            source += period + (frame % (2 * run) < run ? -1500us : 1500us);
+        }
+    }
+    // A sustained faster source retunes without discarding output pacing.
+    for (const auto changed : {14286us, 12500us, 14286us, 16667us}) {
+        for (size_t frame = 0; frame < 40; ++frame) {
+            arrival += changed;
+            pacer.observeSource(arrival, true);
+            const auto batch = pacer.scheduleReadyOutputs(arrival + 2ms, 2);
+            expect(batch.has_value(), "a detached rate change discarded output spacing");
+            if (frame >= 16)
+                expect(batch && batch->interval == std::chrono::duration_cast<Clock::duration>(changed) / 2,
+                    "independent output retained stale faster or slower spacing");
+            pacer.recordOutputWait(2ms, batch.has_value());
+        }
+    }
+
+    // A sustained slower source still updates its full-source median when
+    // some of its time is spent joining a detached output.
+    for (size_t frame = 0; frame < 40; ++frame) {
+        arrival += 50ms;
+        pacer.observeSource(arrival, true);
+        const auto batch = pacer.scheduleReadyOutputs(arrival + 1ms, 2);
+        if (frame >= 24)
+            expect(batch && batch->interval == 25ms,
+                "detached output retained stale spacing after sustained slower arrivals");
+        pacer.recordOutputWait(1ms, batch.has_value());
+        if (batch) pacer.recordAcquireWait(20ms);
+    }
+    RealFramePacer recovery;
+    arrival = Clock::time_point{60s};
+    for (const auto work : {50ms, 5ms, 50ms, 5ms}) {
+        for (size_t frame = 0; frame < 120; ++frame) {
+            recovery.observeSource(arrival, true);
+            const auto ready = arrival + 100us;
+            const auto batch = recovery.scheduleReadyOutputs(ready, 2);
+            if (work == 5ms)
+                expect(batch.has_value(), "detached recovery discarded output spacing");
+            if (frame >= 24)
+                expect(batch && batch->interval <= (work + 100us) / 2,
+                    "detached acquisition feedback retained a slow-scene output slot");
+            if (work == 5ms && frame == 3)
+                expect(batch && batch->interval < 20ms,
+                    "a large detached-source recovery retained old pacing debt");
+            const auto nextWork = ready + work;
+            const auto acquired = batch ? std::max(nextWork, batch->at(1)) : nextWork;
+            recovery.recordOutputWait(100us, batch.has_value());
+            if (acquired > nextWork) recovery.recordAcquireWait(acquired - nextWork);
+            arrival = acquired;
+        }
+    }
+    // Readiness and a late acquisition hide most of the work improvement.
+    // With an old 28 ms source period, 8 ms readiness plus the retained
+    // 14 ms slot makes the first recovered arrival 22 ms: less than a 25%
+    // improvement. Feed that actual join back instead of prescribing a new
+    // source rate. Sustained recovery must retune promptly and retain pacing.
+    RealFramePacer loaded;
+    arrival = Clock::time_point{90s};
+    for (const auto work : {20ms, 10ms, 20ms, 10ms}) {
+        for (size_t frame = 0; frame < 120; ++frame) {
+            loaded.observeSource(arrival, true);
+            const auto ready = arrival + 8ms;
+            const auto batch = loaded.scheduleReadyOutputs(ready, 2);
+            if (work == 10ms && frame == 5)
+                expect(batch && batch->interval <= 11ms,
+                    "readiness and acquisition concealed a post-load recovery");
+            if (work == 10ms)
+                expect(batch.has_value(), "readiness-heavy recovery discarded output spacing");
+            if (frame >= 32)
+                expect(batch && batch->interval <= (work + 8ms) / 2,
+                    "post-load pacing continued to learn its own acquisition delay");
+            const auto nextWork = ready + work;
+            const auto acquired = batch ? std::max(nextWork, batch->at(1)) : nextWork;
+            loaded.recordOutputWait(8ms, batch.has_value());
+            if (acquired > nextWork) loaded.recordAcquireWait(acquired - nextWork);
+            arrival = acquired;
+        }
+    }
+}
+
+void testCompletionThreadDoesNotTeachItsOutputWait() {
+    using Clock = RealFramePacer::Clock;
+    RealFramePacer pacer;
+    auto arrival = Clock::time_point{140s};
+    for (size_t frame = 0; frame < 240; ++frame) {
+        (void)pacer.schedule(arrival, 0);
+        if (frame >= 16) pacer.recordCompletionPacingWait(8ms);
+        pacer.observeSource(arrival, true, 2);
+        const auto batch = pacer.scheduleReadyOutputs(arrival + 1ms, 2, true);
+        if (frame >= 8)
+            expect(batch && batch->interval == 8ms,
+                "another thread's completion event taught the source estimator its own output delay");
+        if (frame >= 18)
+            expect(pacer.completionPacingBlocksSource(),
+                "two slower completion-gated sources did not release the conflicting ready-output owner");
+        pacer.recordOutputWait(0ns, batch.has_value(), batch.has_value());
+        arrival += frame >= 15 ? 24ms : 16ms;
+    }
+    for (unsigned interruption = 0; interruption < 2; ++interruption) {
+        arrival += 1s;
+        pacer.recordCompletionPacingWait(8ms);
+        pacer.observeSource(arrival, true, 2);
+        expect(!pacer.completionPacingBlocksSource(),
+            "an interrupted source was classified as serialized completion pacing");
+    }
+}
+
+void testDetachedBatchPhaseContinuity() {
+    using Clock = RealFramePacer::Clock;
+    constexpr auto period = 22222200ns; // Integral slots for every 2x-5x rung.
+    for (const size_t count : {2U, 3U, 4U, 5U}) {
+        RealFramePacer pacer;
+        const auto slot = period / static_cast<int64_t>(count);
+        auto arrival = Clock::time_point{150s};
+        std::optional<Clock::time_point> previous;
+        for (size_t frame = 0; frame < 240; ++frame) {
+            // Exercise the production uncapped entry as well as the ready
+            // planner. An inactive cap must not erase its output phase.
+            (void)pacer.schedule(arrival, 0);
+            pacer.observeSource(arrival, true, count);
+            const auto readiness = frame % 2 ? 7ms : 4ms;
+            const auto ready = arrival + readiness;
+            const auto batch = pacer.scheduleReadyOutputs(ready, count, true);
+            if (batch) {
+                expect(batch->first >= ready && batch->first - ready < slot,
+                    "ready phase waited before GPU completion or banked a full output slot");
+                if (frame >= 16) {
+                    expect(previous && batch->first + 100us - *previous ==
+                            slot - (frame == 121 ? 200us : 0us),
+                        "changing GPU readiness left a short/long gap between detached batches: count=" +
+                            std::to_string(count) + " frame=" + std::to_string(frame) +
+                            " gap_ns=" + std::to_string(previous
+                                ? (batch->first - *previous).count() : 0) +
+                            " slot_ns=" + std::to_string(slot.count()));
+                    expect(batch->interval == slot,
+                        "phase preservation changed the learned source rate");
+                }
+                previous = batch->at(count - 1) + 100us;
+                // Ordinary wake lateness must not accumulate into the source
+                // estimate or the output phase, even after hundreds of slots.
+                if (frame == 120) *previous += 200us;
+                pacer.completeOutputBatch(*previous);
+            }
+            pacer.recordOutputWait(readiness, batch.has_value(), batch.has_value());
+            arrival += period;
+        }
+    }
+}
+
+void testDetachedBatchPhaseRecovery() {
+    using Clock = RealFramePacer::Clock;
+    for (const size_t count : {2U, 3U, 4U, 5U}) {
+        for (const bool absoluteLimiter : {false, true}) {
+            RealFramePacer pacer;
+            auto deadline = Clock::time_point{155s};
+            auto returned = deadline - 50ms;
+            auto retained = returned;
+            auto previousReadiness = 4ms;
+            std::optional<Clock::time_point> recoveredAt;
+            for (size_t frame = 0; frame < 400; ++frame) {
+                const auto period = frame < 80 || frame >= 240 ? 50ms : 25ms;
+                const auto readiness = frame % 2 ? 7ms : 4ms;
+                const auto work = period - previousReadiness;
+                const auto entry = absoluteLimiter ? std::max(deadline, returned + work)
+                    : returned + work;
+                const auto joined = std::max(entry, retained);
+                pacer.recordAcquireWait(joined - entry);
+                (void)pacer.schedule(joined, 0);
+                pacer.observeSource(joined, true, count);
+                const auto ready = std::max(joined, entry + readiness);
+                const auto batch = pacer.scheduleReadyOutputs(ready, count, true);
+                // The complete ready batch is retained: its first deadline
+                // must not delay the application's next-frame CPU/GPU work.
+                returned = ready;
+                retained = batch ? batch->at(count - 1) + 100us : returned;
+                if (batch) pacer.completeOutputBatch(retained);
+                pacer.recordOutputWait(returned - joined, batch.has_value(), batch.has_value());
+                if (frame >= 112 && frame < 240) {
+                    expect(batch && batch->interval <= Clock::duration{26ms} / static_cast<int64_t>(count),
+                        "continuous output phase concealed a faster source behind its own holds: count=" +
+                            std::to_string(count) + " frame=" + std::to_string(frame) +
+                            " absolute=" + std::to_string(absoluteLimiter) + " interval_ns=" +
+                            std::to_string(batch ? batch->interval.count() : 0));
+                    if (frame == 112) recoveredAt = joined;
+                    if (frame == 239)
+                        expect(recoveredAt && joined - *recoveredAt <= 127 * 26ms,
+                            "phase recovery retained the old slower producer rate");
+                }
+                if (frame >= 288)
+                    expect(batch && batch->interval >= Clock::duration{49ms} / static_cast<int64_t>(count),
+                        "slower source failed to replace the previous output phase: count=" +
+                            std::to_string(count) + " frame=" + std::to_string(frame) +
+                            " absolute=" + std::to_string(absoluteLimiter) + " interval_ns=" +
+                            std::to_string(batch ? batch->interval.count() : 0));
+                previousReadiness = readiness;
+                deadline = std::max(deadline + period, entry);
+            }
+        }
+    }
+}
+
+void testDetachedLoadedReadiness() {
+    using Clock = RealFramePacer::Clock;
+    constexpr auto period = 17543859ns; // Gameplay's observed ~57 FPS.
+    for (const size_t count : {2U, 3U, 4U, 5U}) {
+        RealFramePacer pacer;
+        auto arrival = Clock::time_point{170s};
+        const auto slot = period / static_cast<int64_t>(count);
+        // GPU work misses the old one-slot readiness budget but still leaves
+        // room for the generated outputs and the game's next-frame work.
+        const auto readiness = slot + 2ms;
+        const auto generatedSpan = Clock::duration{};
+        const auto gameWork = period - readiness - generatedSpan;
+        for (size_t frame = 0; frame < 160; ++frame) {
+            pacer.observeSource(arrival, true, count);
+            const auto budget = pacer.sourceReadinessBudget(arrival, count, true);
+            const auto waited = std::min(Clock::duration{readiness}, budget);
+            const auto batch = waited == readiness
+                ? pacer.scheduleReadyOutputs(arrival + waited, count, true) : std::nullopt;
+            if (frame >= 16) {
+                expect(batch && batch->interval == slot,
+                    "gameplay readiness exhausted the detached FIFO output budget");
+                expect(std::max(batch->at(0), arrival + readiness) + gameWork == arrival + period,
+                    "retained real output serialized next-frame game work");
+                expect(batch->at(count - 1) < arrival + 2 * period,
+                    "worker accumulated a second source interval of output debt");
+            }
+            const auto returned = arrival + waited;
+            pacer.recordOutputWait(returned - arrival, batch.has_value(), batch.has_value());
+            arrival = std::max(arrival + period, returned + gameWork);
+        }
+        expect(!pacer.scheduleReadyOutputs(arrival + period, count, true),
+            "detached FIFO kept a whole expired source interval");
+    }
+}
+
+void testDetachedBatchWakeFeedback() {
+    using Clock = RealFramePacer::Clock;
+    constexpr auto period = 23255820ns; // Integral 43 FPS slots at 2x-5x.
+    for (const size_t count : {2U, 3U, 4U, 5U}) {
+        RealFramePacer pacer;
+        auto deadline = Clock::time_point{180s};
+        auto returned = deadline - period;
+        auto retained = returned;
+        std::optional<Clock::time_point> began;
+        for (size_t frame = 0; frame <= 2400; ++frame) {
+            const auto entry = std::max(deadline, returned + 4ms);
+            const auto joined = std::max(entry, retained);
+            pacer.recordAcquireWait(joined - entry);
+            (void)pacer.schedule(joined, 60);
+            pacer.observeSource(joined, true, count);
+            const auto ready = std::max(joined, entry + 9ms) + 1500us;
+            const auto batch = pacer.scheduleReadyOutputs(ready, count, true);
+            returned = ready;
+            retained = batch ? batch->at(count - 1) + 100us : ready;
+            if (batch) pacer.completeOutputBatch(retained);
+            pacer.recordOutputWait(returned - joined, batch.has_value(), batch.has_value());
+            if (frame >= 1200) {
+                expect(batch && batch->interval <= period * 102 / static_cast<int64_t>(100 * count),
+                    "ordinary worker wake lateness inflated the learned source period");
+                if (frame == 1200) began = joined;
+                if (frame == 2400)
+                    expect(began && joined - *began <= 1200 * period * 102 / 100,
+                        "retained output feedback progressively slowed the producer");
+            }
+            deadline = std::max(deadline + period, entry);
+        }
+    }
+}
+
+void testDetachedTailGpuFeedback() {
+    using Clock = RealFramePacer::Clock;
+    constexpr auto period = 17543859ns;
+    for (const size_t count : {2U, 3U, 4U, 5U}) {
+        RealFramePacer pacer;
+        auto deadline = Clock::time_point{175s};
+        auto returned = deadline - period;
+        auto retained = returned;
+        const auto began = deadline;
+        size_t paced = 0;
+        for (size_t frame = 0; frame < 320; ++frame) {
+            // Submit real application GPU work at the game's absolute cap,
+            // before MAKO joins the previous output tail. GPU work can run
+            // during that join; no host event or prescribed ready arrival.
+            const auto entry = std::max(deadline, returned + 4ms);
+            const auto gpuDone = entry + 9ms;
+            const auto joined = std::max(entry, retained);
+            pacer.observeSource(joined, true, count);
+            const auto ready = std::max(joined, gpuDone) + 1500us;
+            const auto budget = pacer.sourceReadinessBudget(joined, count, true);
+            const auto waited = std::min(budget, ready - joined);
+            const auto batch = joined + waited == ready
+                ? pacer.scheduleReadyOutputs(ready, count, true) : std::nullopt;
+            returned = joined + waited;
+            retained = batch ? batch->at(count - 1) : returned;
+            pacer.recordOutputWait(returned - joined, batch.has_value(), batch.has_value());
+            if (frame >= 32 && batch) ++paced;
+            deadline = std::max(deadline + period, entry);
+        }
+        expect(paced == 288, "loaded GPU/retained-tail feedback dropped qualified output batches");
+        expect(returned - began < 321 * period,
+            "output-tail joins fed their own delay back into source throughput");
+    }
+}
+
+void testDetachedCadenceAfterReadinessMiss() {
+    using Clock = RealFramePacer::Clock;
+    constexpr auto period = 16666666ns;
+    RealFramePacer pacer;
+    auto arrival = Clock::time_point{180s};
+    size_t missed = 0;
+    for (size_t frame = 0; frame < 160; ++frame) {
+        // Four early arrivals can underestimate the output slot until the
+        // compensating late arrivals enter the same window. Six milliseconds
+        // of preparation then exceeds the shortened half-period budget.
+        auto elapsed = period;
+        if (frame >= 32 && frame < 36) elapsed -= 5ms;
+        if (frame >= 36 && frame < 40) elapsed += 5ms;
+        arrival += elapsed;
+        pacer.observeSource(arrival, true);
+        const auto budget = pacer.sourceReadinessBudget(arrival, 2);
+        const auto wait = std::min(budget, Clock::duration{6ms});
+        const auto batch = wait == 6ms
+            ? pacer.scheduleReadyOutputs(arrival + wait, 2) : std::nullopt;
+        if (frame >= 32 && !batch) ++missed;
+        pacer.recordOutputWait(wait, batch.has_value(), batch.has_value());
+        if (frame >= 48) {
+            expect(batch && batch->interval == period / 2,
+                "one readiness miss trapped detached cadence in an underestimated interval");
+        }
+    }
+    expect(missed <= 8,
+        "a readiness miss cascaded into repeated unpaced qualification windows");
+}
+
+void testDetachedCapYieldsToGameLimiter() {
+    using Clock = RealFramePacer::Clock;
+    constexpr auto gamePeriod = 16666666ns;
+    RealFramePacer pacer;
+    auto arrival = Clock::time_point{210s};
+    for (size_t frame = 0; frame < 40; ++frame) {
+        const auto deadline = pacer.schedule(arrival, 70.);
+        pacer.observeSource(arrival, true);
+        const auto batch = deadline > arrival
+            ? pacer.scheduleOutputs(arrival + 1ms, deadline, 140., 2, false, true)
+            : std::nullopt;
+        pacer.recordOutputWait(1ms, batch.has_value(), batch.has_value());
+        arrival = deadline + 1ms;
+    }
+    for (size_t frame = 0; frame < 40; ++frame) {
+        arrival += gamePeriod;
+        (void)pacer.schedule(arrival, 70.);
+        pacer.observeSource(arrival, true);
+        const auto budget = pacer.sourceReadinessBudget(arrival, 2);
+        const auto waited = std::min(budget, Clock::duration{6ms});
+        const auto batch = waited == 6ms
+            ? pacer.scheduleReadyOutputs(arrival + waited, 2) : std::nullopt;
+        if (frame >= 16)
+            expect(batch && batch->interval == gamePeriod / 2,
+                "detached cap ownership suppressed a slower game's ready-output pacing");
+        pacer.recordOutputWait(waited, batch.has_value(), batch.has_value());
+    }
+}
+
+void testReadyFixedChangingWorkload() {
+    using Clock = RealFramePacer::Clock;
+    for (const size_t count : {2U, 3U, 4U, 5U}) {
+        for (const double cap : {0., 90., 180.}) {
+            for (const bool relative : {false, true}) {
+                RealFramePacer pacer;
+                auto arrival = Clock::time_point{10s};
+                // A minute of slow work, a large recovery, then repeated
+                // camera-like changes. Feed actual output sleeps back into
+                // arrivals: prescribing faster arrivals hides a pacing ramp.
+                for (const double rate : {20., 180., 70., 80., 70., 80.}) {
+                    const auto work = std::chrono::duration_cast<Clock::duration>(
+                        std::chrono::duration<double>(1. / rate));
+                    const auto cappedPeriod = cap > 0. ? std::chrono::duration_cast<Clock::duration>(
+                        std::chrono::duration<double>(1. / cap)) : Clock::duration{};
+                    const auto expectedInterval = std::max(work + 100us, cappedPeriod) /
+                        static_cast<int64_t>(count);
+                    const size_t frames = rate == 20. ? 1200 : 120;
+                    bool released = rate == 20.;
+                    for (size_t frame = 0; frame < frames; ++frame) {
+                        const auto deadline = pacer.schedule(arrival, cap);
+                        pacer.observeSource(arrival, true, count);
+                        const auto ready = arrival + 100us;
+                        auto batch = deadline > arrival
+                            ? pacer.scheduleOutputs(ready, deadline, cap * count, count, false)
+                            : std::nullopt;
+                        if (!batch) batch = pacer.scheduleReadyOutputs(ready, count);
+                        if (frame >= 40)
+                            expect(batch.has_value(), "settled workload lost smooth output spacing");
+                        if (!batch) released = true;
+                        auto returned = std::max(ready, deadline);
+                        Clock::duration wait{};
+                        if (batch) {
+                            if (rate == 70. && frame >= 40)
+                                expect(batch->interval >= std::max(work, cappedPeriod) /
+                                        static_cast<int64_t>(count),
+                                    "slower camera work retained the faster scene's uneven output spacing");
+                            returned = std::max(returned, batch->at(count - 1));
+                            wait = std::max(Clock::duration{}, batch->at(count - 1) - ready);
+                            if (rate == 180. && frame >= 12)
+                                expect(batch->interval <= expectedInterval,
+                                    "output sleeps retained a slow-scene period after fast work returned");
+                            if (rate == 80. && frame >= 12)
+                                expect(batch->interval <= expectedInterval,
+                                    "a modest camera-rate increase retained stale output spacing");
+                        }
+                        pacer.recordOutputWait(wait);
+                        arrival = relative ? returned + work : std::max(arrival + work, returned);
+                        if (rate == 180. && frame == 3)
+                            expect(released, "a minute-long dip retained pacing debt after recovery");
+                    }
+                }
+            }
         }
     }
 }
@@ -1162,8 +1941,23 @@ int main() {
     testFractionalUsesExistingSourceDeadline();
     testFixedUsesExistingSourceDeadline();
     testFixedCapRecoversAfterLateArrival();
+    testLateNativeFixedCapKeepsSpacing();
     testReadyFixedOutputs();
+    testWorkerReadinessPreservesCapAndOutputPhase();
     testReadyFixedCapOwnershipRequalification();
+    testCompletionThreadDoesNotTeachItsOutputWait();
+    testGameCapRetainsFallbackAfterIsolatedCapBatch();
+    testStableGameCadenceWithChangingReadiness();
+    testReadyFixedSourceJitterAndCapIncrease();
+    testDetachedOutputSourceJitter();
+    testDetachedLoadedReadiness();
+    testDetachedBatchPhaseContinuity();
+    testDetachedBatchPhaseRecovery();
+    testDetachedBatchWakeFeedback();
+    testDetachedTailGpuFeedback();
+    testDetachedCadenceAfterReadinessMiss();
+    testDetachedCapYieldsToGameLimiter();
+    testReadyFixedChangingWorkload();
     testSmoothCadenceCapFollowsActivePlan();
     testOrderedPresentationTimeline();
     testBridgeCompositorReadiness();
@@ -1434,8 +2228,8 @@ int main() {
             std::nullopt, acquireBudget) == acquireBudget,
         "unknown refresh changed the configured acquire budget");
     expect(orderedGeneratedImageAcquireTimeout(120, std::nullopt) ==
-            std::numeric_limits<uint64_t>::max(),
-        "an unconfigured ordered path unexpectedly gained a finite timeout");
+            generatedImageAcquireSafetyTimeoutNs,
+        "an unconfigured ordered path lost its safety timeout");
 
     GeneratedImageAdmission admission;
     expect(!admission.underPressure(),
@@ -2042,6 +2836,9 @@ int main() {
     expect(generated >= 179 && generated <= 181,
         "slow-source timing credit defeated the later display budget");
 
+    testReleasedCadenceUsesBurstThroughput();
+    testReleasedOutputsStayInsideTheSourceInterval();
+    testReleasedOutputsUseMeasuredSourcePeriod();
     std::cout << "presentation policy tests passed\n";
     return 0;
 }

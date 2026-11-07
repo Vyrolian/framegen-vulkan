@@ -551,6 +551,23 @@ int main() {
     expect(!requestsApplicationPresentWait(nullptr) &&
             !requestsApplicationPresentWait(&emptyFeatures),
         "absent wait features must remain supported");
+    VkDeviceCreateInfo timingRequest{
+        .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+        .pNext = &features,
+    };
+    expect(applicationOwnsPresentationTiming(timingRequest),
+        "caller capability observation must detect enabled waits behind unrelated feature nodes");
+    timingRequest.pNext = &emptyFeatures;
+    const char* callerIdExtension = "VK_KHR_present_id";
+    timingRequest.enabledExtensionCount = 1;
+    timingRequest.ppEnabledExtensionNames = &callerIdExtension;
+    expect(!applicationOwnsPresentationTiming(timingRequest),
+        "an ID namespace alone must not exclude CPU spacing that adds no present IDs");
+    for (const char* timingExtension : {"VK_EXT_present_timing", "VK_GOOGLE_display_timing"}) {
+        timingRequest.ppEnabledExtensionNames = &timingExtension;
+        expect(applicationOwnsPresentationTiming(timingRequest),
+            "caller timing-extension capability observation must remain distinct from per-present target ownership");
+    }
     using namespace std::chrono_literals;
     using present_diagnostics::ApplicationPresentWait;
     using present_diagnostics::PresentWaitApi;
@@ -595,6 +612,43 @@ int main() {
     }
     expect(forwardedWaits == 3, "wait diagnostics retried or skipped an application wait");
     using present_diagnostics::ApplicationFrameTiming;
+    using present_diagnostics::PacingProfile;
+    PacingProfile profiler;
+    profiler.beginSource(start);
+    profiler.output(start + 1ms, start + 2ms, VK_SUCCESS);
+    profiler.output(start + 9ms, start + 10ms, VK_SUBOPTIMAL_KHR);
+    profiler.wait(PacingProfile::ReadinessWait, 1ms);
+    profiler.wait(PacingProfile::OutputWait, 8ms);
+    profiler.pacedBatch(true, false);
+    expect(!profiler.finishSource(start + 10ms), "pacing profile emitted before its window");
+    profiler.beginSource(start + 17ms);
+    profiler.output(start + 18ms, start + 19ms, VK_ERROR_OUT_OF_DATE_KHR);
+    profiler.pacedBatch(false, true);
+    const auto pacingWindow = profiler.finishSource(start + 1010ms);
+    expect(pacingWindow && pacingWindow->sources == 2 && pacingWindow->outputs == 3 &&
+        pacingWindow->errors == 1 && pacingWindow->readyBatches == 1 && pacingWindow->capBatches == 1 &&
+        pacingWindow->metrics[PacingProfile::WithinBatch].mean() == 8 &&
+        pacingWindow->metrics[PacingProfile::BetweenBatches].mean() == 9 &&
+        pacingWindow->metrics[PacingProfile::OutsideLayer].mean() == 7 &&
+        pacingWindow->metrics[PacingProfile::SourceInterval].mean() == 17 &&
+        pacingWindow->metrics[PacingProfile::LayerPresent].over33ms == 1 &&
+        pacingWindow->metrics[PacingProfile::ReadinessWait].mean() == 1 &&
+        pacingWindow->metrics[PacingProfile::OutputWait].mean() == 8,
+        "pacing profile mixed source/output boundaries, wait kinds or result counts");
+    profiler.beginSource(start + 2h);
+    profiler.output(start + 2h + 1ms, start + 2h + 2ms, VK_SUCCESS);
+    const auto longPacingWindow = profiler.finishSource(start + 2h + 3ms);
+    expect(longPacingWindow && longPacingWindow->sources == 1 && longPacingWindow->outputs == 1 &&
+        longPacingWindow->metrics[PacingProfile::WithinBatch].count == 0 &&
+        longPacingWindow->metrics[PacingProfile::BetweenBatches].count == 1 &&
+        longPacingWindow->metrics[PacingProfile::BetweenBatches].maximum > 1000,
+        "pacing profile lost a source hitch or retained samples from a completed window");
+    PacingProfile otherProfiler;
+    otherProfiler.beginSource(start);
+    otherProfiler.output(start, start, VK_SUCCESS);
+    const auto isolatedPacingWindow = otherProfiler.finishSource(start + 1s);
+    expect(isolatedPacingWindow && isolatedPacingWindow->metrics[PacingProfile::OutputInterval].count == 0,
+        "pacing profile mixed swapchain lifetimes");
     present_diagnostics::PresentPhaseTiming phaseTiming;
     const std::array<double, 9> healthyPhases{2, .2, .3, .4, .1, .2, .3, .4, .1};
     auto slowerPhases = healthyPhases;

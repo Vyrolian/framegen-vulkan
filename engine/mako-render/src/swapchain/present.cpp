@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 
 #include "swapchain/swapchain.hpp"
+#include "frame_content_capture.hpp"
 #include "swapchain/create_policy.hpp"
 #include "swapchain/present/internal.hpp"
 #include "swapchain/retirement.hpp"
@@ -12,10 +13,12 @@
 #include "mako-common/vulkan/vulkan.hpp"
 #include "present_diagnostics.hpp"
 #include "pnext_chain.hpp"
+#include "wayland_presentation_feedback.hpp"
 
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <exception>
@@ -39,12 +42,15 @@ using namespace mako::layer::present_detail;
 void Swapchain::PresentInvocation::waitForOutput(
         const DiagnosticsClock::time_point deadline) const {
     const auto waitStarted = DiagnosticsClock::now();
-    const auto effectiveDeadline = this->readyOutputPacing && this->previousOutput
+    const bool readyPacing = this->readyOutputPacing || this->capReadyOutputPacing;
+    auto effectiveDeadline = readyPacing && this->previousOutput
         ? std::max(deadline, *this->previousOutput + this->pacedOutputs->interval) : deadline;
     std::this_thread::sleep_until(effectiveDeadline);
     const auto finished = DiagnosticsClock::now();
     this->outputWait += finished - waitStarted;
-    if (this->readyOutputPacing)
+    if (this->profiler) this->profiler->wait(present_diagnostics::PacingProfile::OutputWakeLateness,
+        finished - std::max(effectiveDeadline, waitStarted));
+    if (readyPacing)
         this->previousOutput = finished;
     // The old source-cap sleep preceded present diagnostics. Moving that
     // wait between outputs must not report intentional limiting as slow GPU
@@ -56,8 +62,71 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         const VkQueue queue, const VkSwapchainKHR swapchain,
         void* nextChain, const uint32_t imageIndex,
         const std::span<const VkSemaphore> waitSemaphores) {
+    // Applications may acquire several images before their first present.
+    // Such a caller can reach another present without an intervening acquire
+    // to observe the retained operation's error. Return its current image and
+    // consume the current waits exactly once before propagating that error.
+    // A previous present's token must not attach to an unrelated submit.
+    ReleaseGate::disarm();
+    const auto deferred = this->completeDeferredPresentRetainingOverlap();
+    this->deferredOutputQueuedThisFrame = false;
+    if (deferred < 0) {
+        const VkPresentInfoKHR original{
+            .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, .pNext = nextChain,
+            .waitSemaphoreCount = static_cast<uint32_t>(waitSemaphores.size()),
+            .pWaitSemaphores = waitSemaphores.data(), .swapchainCount = 1,
+            .pSwapchains = &swapchain, .pImageIndices = &imageIndex,
+        };
+        const auto drained = this->queuePresentWithRetirementFence(vk, queue, original);
+        return drained < 0 ? drained : deferred;
+    }
+    using PacingProfile = present_diagnostics::PacingProfile;
+    struct ProfileCompletion {
+        Swapchain& owner;
+        VkSwapchainKHR swapchain;
+        ~ProfileCompletion() {
+            if (!owner.pacingProfile) return;
+            const auto now = DiagnosticsClock::now();
+            if (present_diagnostics::pacingFrameTraceEnabled())
+                present_diagnostics::logPacingSource(owner.diagnosticsState.contextId, swapchain,
+                    owner.pacingProfile->sourceSample(now));
+            const auto window = owner.pacingProfile->finishSource(now);
+            if (window) present_diagnostics::logPacingProfile(
+                owner.diagnosticsState.contextId, owner.currentPresentMode, now, *window, swapchain,
+                spatialSurfaceOriginName(owner.info.surfaceOrigin), static_cast<bool>(owner.info.waylandPresentation));
+            owner.pacingProfile->publicationCost(DiagnosticsClock::now() - now);
+        }
+    } profileCompletion{*this, swapchain};
+    if (this->pacingProfile) {
+        this->pacingProfile->beginSource(DiagnosticsClock::now());
+        present_diagnostics::bindApplicationPresentSource(this->diagnosticsState.contextId,
+            this->pacingProfile->sourceOrdinal());
+    }
+    if (this->pacingProfile && present_diagnostics::pacingGpuProfileEnabled() &&
+            this->instance && !this->destinationImages.empty()) {
+        // Already collected after the backend's normal previous-work fence
+        // wait. Consuming the sample adds no Vulkan query or GPU wait here.
+        if (auto gpu = this->instance->takeCompletedFrameProfile(this->ctx.get())) {
+            using Profile = present_diagnostics::PacingProfile;
+            if (present_diagnostics::pacingFrameTraceEnabled())
+                present_diagnostics::logPacingGpuFrame(this->diagnosticsState.contextId,
+                    this->pacingProfile->sourceForBackend(gpu->backendFrameIndex),
+                    this->pacingProfile->backendGeneration(), gpu->backendFrameIndex,
+                    gpu->cpuPreviousWaitUs, gpu->cpuPrepassSubmitUs, gpu->cpuGenerationSubmitUs,
+                    gpu->gpuPrepassUs, gpu->gpuSpanUs, gpu->cpuReadbackUs, gpu->gpuGeneratedUs);
+            this->pacingProfile->gpuMicroseconds(Profile::GpuPrepass, gpu->gpuPrepassUs);
+            double generatedUs{};
+            for (const double outputUs : gpu->gpuGeneratedUs) {
+                generatedUs += outputUs;
+                this->pacingProfile->gpuMicroseconds(Profile::GpuOutput, outputUs);
+            }
+            this->pacingProfile->gpuMicroseconds(Profile::GpuGeneration, generatedUs);
+            this->pacingProfile->gpuMicroseconds(Profile::GpuSpan, gpu->gpuSpanUs);
+            this->pacingProfile->gpuMicroseconds(Profile::GpuReadback, gpu->cpuReadbackUs);
+        }
+    }
     const DiagnosticsContextScope diagnosticsContext(
-        this->diagnosticsState.contextId
+        this->diagnosticsState.contextId, this->pacingProfile.get()
     );
     this->bridgeOutputBatchSize = 1;
     this->outputSourceDeadline.reset();
@@ -143,6 +212,69 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         );
     }
     const void* lowerNextChain = filteredPresentChain.head();
+#if defined(VK_KHR_present_id2) && defined(VK_KHR_present_wait2)
+    VkPresentId2KHR feedbackId{.sType = VK_STRUCTURE_TYPE_PRESENT_ID_2_KHR};
+    if (this->info.applicationPresentFeedback) {
+        const auto logProbeStop = [this](const int result) {
+            const char* reason = "error";
+            if (this->presentFeedback.stopReason() == PresentFeedbackProbe::Stop::ApplicationIds)
+                reason = "application-ids";
+            else if (this->presentFeedback.stopReason() == PresentFeedbackProbe::Stop::Collision)
+                reason = "collision";
+            std::clog << "MAKO Renderer: present feedback probe: state=stopped reason=" << reason
+                      << " last_tagged=" << this->presentFeedback.lastTagged()
+                      << " result=" << result << '\n';
+        };
+        std::optional<uint64_t> applicationId;
+        bool applicationIdNode{};
+        for (auto* node = static_cast<const VkBaseInStructure*>(nextChain); node; node = node->pNext) {
+            // VkPresentIdKHR and VkPresentId2KHR share {sType, pNext, swapchainCount, pPresentIds}.
+            if (node->sType == VK_STRUCTURE_TYPE_PRESENT_ID_KHR || node->sType == VK_STRUCTURE_TYPE_PRESENT_ID_2_KHR) {
+                applicationIdNode = true;
+                const auto* ids = reinterpret_cast<const VkPresentId2KHR*>(node);
+                if (ids->swapchainCount >= 1 && ids->pPresentIds && ids->pPresentIds[0])
+                    applicationId = std::max(applicationId.value_or(0), ids->pPresentIds[0]);
+            }
+        }
+        if (this->presentFeedback.observeApplicationId(applicationId))
+            logProbeStop(0);
+        // Poll before tagging, never blocking.
+        if (const auto target = this->presentFeedback.pollTarget()) {
+            if (!this->presentWait2)
+                this->presentWait2 = reinterpret_cast<PFN_vkWaitForPresent2KHR>(
+                    vk.fi().GetDeviceProcAddr(vk.dev(), "vkWaitForPresent2KHR"));
+            PresentFeedbackProbe::PollResult poll = PresentFeedbackProbe::PollResult::Error;
+            VkResult waited = VK_ERROR_EXTENSION_NOT_PRESENT;
+            if (this->presentWait2) {
+                const VkPresentWait2InfoKHR wait{.sType = VK_STRUCTURE_TYPE_PRESENT_WAIT_2_INFO_KHR, .presentId = *target, .timeout = 0};
+                waited = this->presentWait2(vk.dev(), swapchain, &wait);
+                poll = waited == VK_SUCCESS || waited == VK_SUBOPTIMAL_KHR ? PresentFeedbackProbe::PollResult::Success
+                    : waited == VK_TIMEOUT || waited == VK_NOT_READY ? PresentFeedbackProbe::PollResult::Timeout
+                    : PresentFeedbackProbe::PollResult::Error;
+            }
+            if (this->presentFeedback.pollResult(*target, poll))
+                std::clog << "MAKO Renderer: present feedback probe: state=confirmed polls="
+                          << this->presentFeedback.successes() << " id=" << *target << '\n';
+            if (poll == PresentFeedbackProbe::PollResult::Error)
+                logProbeStop(static_cast<int>(waited));
+        }
+        const bool firstTag = this->presentFeedbackTag == 0;
+        // An application ID node of any value keeps this present untagged:
+        // the deferred worker rejects a second ID node in one chain.
+        std::optional<uint64_t> tag;
+        if (!applicationIdNode)
+            tag = this->presentFeedback.nextTag();
+        if (tag) {
+            if (firstTag)
+                std::clog << "MAKO Renderer: present feedback probe: state=active\n";
+            this->presentFeedbackTag = *tag;
+            feedbackId.pNext = lowerNextChain;
+            feedbackId.swapchainCount = 1;
+            feedbackId.pPresentIds = &this->presentFeedbackTag;
+            lowerNextChain = &feedbackId;
+        }
+    }
+#endif
     for (auto* node = static_cast<const VkBaseInStructure*>(lowerNextChain); node; node = node->pNext) {
         if (node->sType == VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_MODE_INFO_EXT) {
             const auto* modes = reinterpret_cast<const VkSwapchainPresentModeInfoEXT*>(node);
@@ -311,6 +443,14 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
                     : "guard-restored-long-retry")
         );
     }
+    // Transport half of worker admission; the pacing half is decided below.
+    const bool detachedOutputTransport =
+        !(this->deferredPresent && this->deferredPresent->serialWaitObserved()) &&
+        (directUnthrottled ? this->configuredFixedGeneratedFrames == 1 :
+            this->currentPresentMode == VK_PRESENT_MODE_FIFO_KHR) &&
+        !this->spatialScaler && !this->gamescopeDetected &&
+        DeferredPresent::supportsChain(lowerNextChain) &&
+        this->info.deferredPresentQueue && queue == vk.queue();
     double baseFpsCap = this->steamMenuSuspended || handoff.active
         ? 0.0
         : cadenceBaseCap.framesPerSecond.value_or(
@@ -322,8 +462,130 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
     if (this->gpuHeadroomResult.capFps > 0)
         baseFpsCap = baseFpsCap > 0 ? std::min(baseFpsCap, this->gpuHeadroomResult.capFps)
             : this->gpuHeadroomResult.capFps;
+    // Refresh bounds the automatic cap only. Query on each of the first 64
+    // presents until a rate is known, then once per 240 presents, from the
+    // owner that already has it.
+    const bool query = this->refreshQuerySource < 64
+        ? this->applicationRefreshHz <= 0 : this->refreshQuerySource % 240 == 0;
+    ++this->refreshQuerySource;
+    if (query) {
+        double refreshHz = 0.0;
+        const char* refreshSource = "none";
+        const char* branch = "none";
+        const bool ownedTiming = this->presentTiming.active();
+        int32_t timingResult = 0;
+        uint64_t timingDuration = 0;
+        uint64_t timingInterval = 0;
+#if defined(VK_EXT_present_timing) && defined(VK_KHR_present_id2)
+        if (ownedTiming) {
+            refreshHz = this->presentTiming.refreshRate(0);
+            refreshSource = "owned";
+            branch = "owned";
+        } else if (this->info.applicationSwapchainTiming) {
+            branch = "application";
+            if (!this->swapchainTimingProperties)
+                this->swapchainTimingProperties = reinterpret_cast<PFN_vkGetSwapchainTimingPropertiesEXT>(
+                    vk.fi().GetDeviceProcAddr(vk.dev(), "vkGetSwapchainTimingPropertiesEXT"));
+            VkSwapchainTimingPropertiesEXT timing{.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_TIMING_PROPERTIES_EXT};
+            uint64_t counter{};
+            VkResult timingQuery = VK_ERROR_EXTENSION_NOT_PRESENT;
+            if (this->swapchainTimingProperties)
+                timingQuery = this->swapchainTimingProperties(vk.dev(), swapchain, &timing, &counter);
+            timingResult = static_cast<int32_t>(timingQuery);
+            timingDuration = timing.refreshDuration;
+            timingInterval = timing.refreshInterval;
+            if (timingQuery == VK_SUCCESS) {
+                refreshHz = UncappedAutoCap::refreshHzFromTiming(timing.refreshDuration, timing.refreshInterval);
+                refreshSource = "application";
+                // The driver reports refresh only after presentation feedback
+                // was requested; keep the reported timing but distrust it until
+                // timeout-0 polls have succeeded.
+                if (!this->presentFeedback.confirmed()) {
+                    refreshHz = 0.0;
+                    refreshSource = "application-unconfirmed";
+                }
+            }
+        } else
+#endif
+        if (this->gamescopeRefreshHz) {
+            refreshHz = static_cast<double>(*this->gamescopeRefreshHz);
+            refreshSource = "gamescope";
+            branch = "gamescope";
+        }
+        if (refreshHz <= 0)
+            refreshSource = "none";
+        const bool feedbackConfirmed = this->presentFeedback.confirmed();
+        if (!this->refreshQueryPrinted || timingResult != this->refreshQueryLastResult ||
+                timingDuration != this->refreshQueryLastDuration ||
+                timingInterval != this->refreshQueryLastInterval ||
+                feedbackConfirmed != this->refreshQueryConfirmed) {
+            std::clog << "MAKO Renderer: uncapped auto cap refresh query: branch=" << branch
+                      << " application_timing=" << (this->info.applicationSwapchainTiming ? 1 : 0)
+                      << " owned_timing=" << (ownedTiming ? 1 : 0)
+                      << " result=" << timingResult
+                      << " refresh_duration=" << timingDuration
+                      << " refresh_interval=" << timingInterval
+                      << " hz=" << refreshHz
+                      << " feedback=" << (feedbackConfirmed ? 1 : 0)
+                      << " feedback_polls=" << this->presentFeedback.successes()
+                      << " presents=" << this->refreshQuerySource << '\n';
+            this->refreshQueryLastResult = timingResult;
+            this->refreshQueryLastDuration = timingDuration;
+            this->refreshQueryLastInterval = timingInterval;
+            this->refreshQueryConfirmed = feedbackConfirmed;
+            this->refreshQueryPrinted = true;
+        }
+        if (std::abs(refreshHz - this->applicationRefreshHz) > 0.5) {
+            std::clog << "MAKO Renderer: uncapped auto cap refresh: hz=" << refreshHz
+                      << " source=" << refreshSource << '\n';
+        }
+        this->applicationRefreshHz = refreshHz;
+    }
+    // Uncapped Fixed frame generation gets an automatic cap so the proven
+    // capped path (release gate, worker spacing) runs. A binding user cap wins.
+    const double autoCapCeiling = this->applicationRefreshHz > 0 && this->profile.multiplier > 0
+        ? this->applicationRefreshHz / static_cast<double>(this->profile.multiplier) : 0.0;
+    const bool uncappedAutoCapEligible =
+        effectiveFrameGenerationEnabled(this->profile, std::nullopt) &&
+        !this->profile.adaptive && !this->profile.adaptive_stable_cadence &&
+        !this->profile.dynamic_cadence_recovery && this->profile.gpu_headroom_percent == 0 &&
+        this->gpuHeadroomResult.capFps <= 0 && !this->steamMenuSuspended && !handoff.active &&
+        !this->recoveryState.orderedAcquireRecovery.active() &&
+        detachedOutputTransport && this->profile.multiplier >= 2;
+    const bool userCapBinding = baseFpsCap > 0 &&
+        (autoCapCeiling <= 0 || baseFpsCap <= autoCapCeiling);
+    bool autoCapApplied = false;
+    if (uncappedAutoCapEligible && !userCapBinding) {
+        const double autoCap = autoCapCeiling;
+        if (autoCap > 0) {
+            baseFpsCap = autoCap;
+            autoCapApplied = true;
+        }
+        if (std::abs(autoCap - this->uncappedAutoCapLogged) > 0.01) {
+            std::clog << "MAKO Renderer: uncapped auto cap: fps=" << autoCap
+                      << " ceiling=" << autoCapCeiling
+                      << " configured=" << this->profile.base_fps_cap
+                      << " reason=refresh" << '\n';
+            this->uncappedAutoCapLogged = autoCap;
+        }
+    } else {
+        this->uncappedAutoCapLogged = 0.0;
+    }
+    const bool autoCapRetune = autoCapApplied && this->uncappedAutoCapApplied;
+    this->uncappedAutoCapApplied = autoCapApplied;
+    if (this->pacingProfile) this->pacingProfile->policy(
+        this->profile.adaptive_stable_cadence, baseFpsCap,
+        this->currentPresentMode == VK_PRESENT_MODE_FIFO_KHR &&
+            this->info.applicationPresentTiming);
+    if (this->pacingProfile) this->pacingProfile->settings(
+        this->profile.frame_generation_enabled, this->profile.adaptive,
+        this->profile.multiplier, this->profile.base_fps_cap);
+    // An automatic cap change between two automatic values must move the next
+    // source boundary, not grant a free frame; a free frame deepens the GPU
+    // queue by one frame and costs about 0.3 s of render-fence holds near the
+    // GPU limit.
     const auto limiterDeadline = this->realFramePacer.schedule(
-        limiterArrival, baseFpsCap, this->gpuHeadroomResult.capFps > 0
+        limiterArrival, baseFpsCap, this->gpuHeadroomResult.capFps > 0 || autoCapRetune
     );
     const bool ownedTimingControlsOutput = this->presentTiming.controlsOutput(
         this->gamescopeRefreshHz.value_or(0));
@@ -341,18 +603,58 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         displayTimingControlsOutput(this->wsiPresentTimingQuery != nullptr,
             this->privateOrderedTransport, this->gamescopeRefreshHz.value_or(0)) ||
         ownedTimingControlsOutput;
-    const bool readyOutputPacing = fixedReadyOutputPacingEligible(
-        this->profile, directUnthrottled,
-        compositorOutputTiming || hasPresentTiming(lowerNextChain),
-        this->steamMenuSuspended || this->recoveryState.orderedAcquireRecovery.active());
-    this->realFramePacer.observeSource(limiterArrival, readyOutputPacing);
-    const bool sourceDeadlinePreparation = limiterDeadline > limiterArrival &&
+    const bool applicationTimingOwner = hasPresentTiming(lowerNextChain);
+    const bool nativeFifoOutputPacing = !compositorOutputTiming && nativeFifoOutputPacingEligible(
+        this->gamescopeDetected, this->currentPresentMode);
+    const auto capInterval = baseFpsCap > 0
+        ? std::chrono::duration_cast<DiagnosticsClock::duration>(
+            std::chrono::duration<double>(1.0 / baseFpsCap))
+        : DiagnosticsClock::duration{};
+    // The application releases its producer through its own wait for a
+    // token recorded after this present (VKD3D-Proton without a present
+    // ID). Apply the cap there instead of holding its queue-submission
+    // thread. A deadline far ahead means the producer is not throttled by
+    // that wait; keep the ordinary hold so the cap clock cannot run away.
+    const bool releaseGated = baseFpsCap > 0 && this->releaseGate.active() &&
+        detachedOutputTransport && !this->profile.adaptive &&
+        !this->profile.dynamic_cadence_recovery && this->gpuHeadroomResult.capFps <= 0 &&
+        !this->steamMenuSuspended && !this->recoveryState.orderedAcquireRecovery.active() &&
+        limiterDeadline - limiterArrival <= 3 * capInterval;
+    bool readyOutputPacing = fixedReadyOutputPacingEligible(
+        this->profile, directUnthrottled || nativeFifoOutputPacing,
+        compositorOutputTiming || applicationTimingOwner,
+        this->steamMenuSuspended || this->recoveryState.orderedAcquireRecovery.active(),
+        detachedOutputTransport) &&
+        !(this->deferredPresent && this->deferredPresent->serialWaitObserved());
+    const auto completionWait = this->deferredPresent
+        ? this->deferredPresent->takeCompletionPacingWait() : DeferredPresent::CompletionWait{};
+    const auto completionDelay = completionWait.finished <= limiterArrival
+        ? completionWait.waited : DiagnosticsClock::duration{};
+    const bool completionHoldsCap = completionDelay > DiagnosticsClock::duration{} &&
+        baseFpsCap > 0 && completionWait.capOwned &&
+        std::chrono::duration<double>(limiterArrival - completionWait.finished).count() <= 2.0 / baseFpsCap;
+    this->realFramePacer.recordCompletionPacingWait(completionDelay);
+    this->realFramePacer.observeSource(limiterArrival, readyOutputPacing || releaseGated,
+        this->configuredFixedGeneratedFrames + 1, releaseGated);
+    if (this->deferredPresent &&
+            (completionHoldsCap || this->realFramePacer.completionPacingBlocksSource())) {
+        // VKD3D can signal a frame-latency event from a separate wait thread.
+        // Two slower sources with no acquisition overlapping that wait show
+        // that our retained output is gating production through that event.
+        // An established MAKO cap already supplies the output interval; a
+        // completion-gated producer cannot overlap that worker, including
+        // with Smooth Cadence off. Keep its synchronous cap-owned delivery.
+        this->deferredPresent->completionPacingBlocksSource();
+        readyOutputPacing = false;
+    }
+    const bool sourceDeadlinePreparation = !releaseGated && limiterDeadline > limiterArrival &&
         baseCapPacesOutputs(
             this->profile, baseFpsCap,
-            (this->privateOrderedTransport || ownedTimingControlsOutput || directUnthrottled) &&
-                !hasPresentTiming(lowerNextChain) &&
+            (this->privateOrderedTransport || ownedTimingControlsOutput || directUnthrottled ||
+                (!this->profile.adaptive && nativeFifoOutputPacing)) &&
                 !this->recoveryState.orderedAcquireRecovery.active(),
-            sourceRefreshHz, compositorOutputTiming, directUnthrottled) &&
+            sourceRefreshHz, compositorOutputTiming, directUnthrottled, nativeFifoOutputPacing,
+            applicationTimingOwner) &&
         orderedGeneratedBatchCanPrepareBeforeCap(
             this->info.requestedMinImageCount, this->info.images.size(),
             generatedFrameCapacityForActivePolicy(this->profile),
@@ -363,21 +665,51 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         !compositorOutputTiming;
     if (sourceDeadlinePreparation && compositorOutputTiming)
         this->outputSourceDeadline = limiterDeadline;
-    if (!sourceDeadlinePacing)
+    if (!sourceDeadlinePacing && !readyOutputPacing && !releaseGated)
         this->realFramePacer.resetOutputs();
-    if (!sourceDeadlinePreparation && limiterDeadline > limiterArrival)
+    // Destroyed after the return-deadline sleep below. Arm on every capped
+    // return, including holds, so the release wait can be observed first.
+    struct ReleaseArm {
+        const ReleaseGateOwner& gate;
+        VkQueue queue;
+        std::optional<DiagnosticsClock::time_point> deadline;
+        ~ReleaseArm() { if (deadline) try { gate.arm(queue, *deadline); } catch (...) {} }
+    } releaseArm{this->releaseGate, queue,
+        baseFpsCap > 0 ? std::optional{limiterDeadline} : std::nullopt};
+    if (!releaseGated && !sourceDeadlinePreparation && limiterDeadline > limiterArrival) {
+        const auto waitStarted = this->pacingProfile ? DiagnosticsClock::now() : DiagnosticsClock::time_point{};
         std::this_thread::sleep_until(limiterDeadline);
+        if (this->pacingProfile) {
+            const auto finished = DiagnosticsClock::now();
+            this->pacingProfile->wait(PacingProfile::SourceCapWait, finished - waitStarted);
+            this->pacingProfile->wait(PacingProfile::SourceCapWakeLateness,
+                finished - std::max(limiterDeadline, waitStarted));
+            this->pacingProfile->wait(PacingProfile::SourceDeadlineLateness,
+                std::max(DiagnosticsClock::duration{}, finished - limiterDeadline));
+        }
+    }
     // Output deadlines may put the last image before the cap boundary. Keep
     // the existing application-return deadline on every exit, including
     // fallback and exception paths, without adding another frame of latency.
     struct SourceCapCompletion {
         std::optional<DiagnosticsClock::time_point> deadline;
+        PacingProfile* profiler;
         ~SourceCapCompletion() {
-            if (deadline)
+            if (deadline) {
+                const auto waitStarted = profiler ? DiagnosticsClock::now() : DiagnosticsClock::time_point{};
                 std::this_thread::sleep_until(*deadline);
+                if (profiler) {
+                    const auto finished = DiagnosticsClock::now();
+                    profiler->wait(PacingProfile::SourceCapWait, finished - waitStarted);
+                    profiler->wait(PacingProfile::SourceCapWakeLateness,
+                        finished - std::max(*deadline, waitStarted));
+                    profiler->wait(PacingProfile::SourceDeadlineLateness,
+                        std::max(DiagnosticsClock::duration{}, finished - *deadline));
+                }
+            }
         }
     } sourceCapCompletion{sourceDeadlinePreparation
-        ? std::optional{limiterDeadline} : std::nullopt};
+        ? std::optional{limiterDeadline} : std::nullopt, this->pacingProfile.get()};
 
     const auto presentNow = DiagnosticsClock::now();
     // Observe the reserved real-frame cadence, while resource/recovery clocks
@@ -396,12 +728,30 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         .started = startPresentDiagnostic(),
         .originalPresentDeadline = sourceDeadlinePacing
             ? std::optional{limiterDeadline} : std::nullopt,
+        .deferredOutputEligible = (readyOutputPacing || releaseGated ||
+            (sourceDeadlinePacing && !this->profile.adaptive &&
+                this->profile.gpu_headroom_percent == 0)) && detachedOutputTransport,
+        .profiler = this->pacingProfile.get(),
     };
     struct OutputWaitObservation {
         RealFramePacer& pacer;
         const PresentInvocation& invocation;
-        ~OutputWaitObservation() { pacer.recordOutputWait(invocation.outputWait); }
-    } outputWaitObservation{this->realFramePacer, invocation};
+        PacingProfile* profiler;
+        const bool& detachedOutput;
+        ~OutputWaitObservation() {
+            pacer.recordOutputWait(invocation.outputWait, detachedOutput,
+                invocation.pacedOutputs.has_value());
+            if (profiler) {
+                profiler->wait(PacingProfile::ReadinessWait, invocation.readinessWait);
+                profiler->wait(PacingProfile::OutputWait, invocation.outputWait - invocation.readinessWait);
+                profiler->pacedBatch(invocation.readyOutputPacing,
+                    invocation.pacedOutputs.has_value() && !invocation.readyOutputPacing);
+                if (invocation.pacedOutputs) profiler->wait(PacingProfile::PlannedOutputInterval,
+                    invocation.pacedOutputs->interval);
+            }
+        }
+    } outputWaitObservation{this->realFramePacer, invocation, this->pacingProfile.get(),
+        this->deferredOutputQueuedThisFrame};
     this->recordPresentCadence(cadenceNow);
 
     if (std::exchange(this->replacementWsiPrimePending, false)) {
@@ -441,7 +791,7 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
                       << " context=" << this->diagnosticsState.contextId
                       << " reason=spatial-scaler"
                       << " generated_render_work_in_flight="
-                      << this->frameState.renderFenceInFlight
+                      << this->renderSlotsInFlight()
                       << " frame=" << this->frameState.realFrameIndex
                       << " sequence=" << this->frameState.sequenceIndex
                       << " action=real-frame-only\n";
@@ -575,6 +925,7 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         this->diagnosticsState.fixedSkippedFrames +=
             plan.requestedGeneratedFrames.size();
 
+    this->frameState.nextSourceReleaseTimelineValue = 0;
     // Resolve prior work before acquiring any generated images or reusing
     // their acquire semaphores. A fence-budget miss must leave no new image
     // held by this plan when it falls back to native presentation.
@@ -587,6 +938,15 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         this->handleRenderFenceBudgetMiss(plan);
         return this->presentNativeFrame(invocation);
     }
+    if (this->nativeCopyProfile)
+        this->nativeCopyProfile->beginSource(this->pacingProfile->sourceOrdinal(),
+            this->pacingProfile->backendGeneration(), invocation.swapchain);
+    if (this->frameContentCapture && !this->spatialScaler &&
+            !this->profile.adaptive && this->profile.multiplier == 2)
+        this->frameContentCapture->beginSource(vk, this->info.format,
+            this->pacingProfile ? this->pacingProfile->sourceOrdinal() : this->frameState.realFrameIndex,
+            this->frameState.backendFrameIndex, queue,
+            this->info.deferredPresentQueue ? this->info.deferredPresentQueue->queue : queue);
 
     if (this->privateOrderedTransport) {
         plan.configuredAcquireTimeout = orderedGeneratedBatchAcquireBudget(
@@ -725,6 +1085,12 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
             this->instance->scheduleFrames(
                 this->ctx.get(), plan.scheduledGeneratedFrames.timestamps()
             );
+            // The source copy has not advanced the timeline yet, so S is the
+            // value it will signal. The backend's last generated frame signals
+            // S + G, after which the batch no longer reads the source image.
+            this->frameState.nextSourceReleaseTimelineValue =
+                this->frameState.backendTimelineIndex +
+                plan.scheduledGeneratedFrames.size();
         } catch (const std::exception& error) {
             std::cerr << "MAKO Renderer: temporarily bypassing frame generation after "
                          "backend scheduling failure; native presentation retained: "
@@ -755,6 +1121,7 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
                 swapchainImage
             );
         }
+        if (this->pacingProfile) this->pacingProfile->backendScheduled(this->frameState.backendFrameIndex);
         this->frameState.backendFrameIndex++;
         plan.scheduleFramesDuration = finishPresentDiagnostic(
             scheduleStarted
@@ -775,6 +1142,9 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
                 this->configuredFixedGeneratedFrames) &&
             plan.scheduledGeneratedFrames.size() ==
                 plan.requestedGeneratedFrames.size()) {
+        // Prepare inside the cap interval in native FIFO too, independent of
+        // Smooth Cadence. Sleeping before preparation leaves no cap slack
+        // and sends generated/real images as one burst.
         invocation.pacedOutputs = this->realFramePacer.scheduleOutputs(
             DiagnosticsClock::now(), limiterDeadline,
             this->profile.adaptive
@@ -783,12 +1153,49 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
                 : baseFpsCap * this->profile.multiplier,
             plan.scheduledGeneratedFrames.size() + 1,
             this->adaptiveScheduler &&
-                this->adaptiveScheduler->snapshot().targetOutputClockActive);
-        if (invocation.pacedOutputs)
+                this->adaptiveScheduler->snapshot().targetOutputClockActive,
+            invocation.deferredOutputEligible);
+        if (invocation.pacedOutputs) {
+            invocation.capReadyOutputPacing = invocation.deferredOutputEligible;
+            // The worker can overlap a full source period with next-frame
+            // production. The shorter remaining return-cap slack is not its
+            // readiness budget: using it discards spacing after CPU jitter.
+            invocation.readinessDeadline = limiterArrival +
+                std::chrono::duration_cast<DiagnosticsClock::duration>(
+                    std::chrono::duration<double>(1.0 / baseFpsCap));
             invocation.originalPresentDeadline = invocation.pacedOutputs->at(
                 invocation.pacedOutputs->count - 1);
-    } else {
+        }
+    } else if (!readyOutputPacing && !releaseGated) {
         this->realFramePacer.resetOutputs();
+    }
+    if (releaseGated && invocation.deferredOutputEligible && !invocation.pacedOutputs &&
+            !bypassGeneratedFrames && !plan.historyWarmupActive &&
+            plan.scheduledGeneratedFrames.size() == this->configuredFixedGeneratedFrames &&
+            plan.scheduledGeneratedFrames.size() == plan.requestedGeneratedFrames.size()) {
+        // The worker spaces the batch from readiness on the cap's output
+        // interval, or on the measured source period when a GPU-bound source
+        // is slower, while the game continues; the release wait owns the cap.
+        const auto count = plan.scheduledGeneratedFrames.size() + 1;
+        invocation.pacedOutputs = this->realFramePacer.scheduleReleasedOutputs(
+            DiagnosticsClock::now(), capInterval, count);
+        if (invocation.pacedOutputs) {
+            const auto batchPeriod = invocation.pacedOutputs->interval * static_cast<int64_t>(count);
+            invocation.readyOutputPacing = true;
+            // Two older batches may keep spacing while the next two sources are
+            // admitted, so a GPU frame ending up to about two batch periods
+            // after Present keeps even spacing. Late readiness otherwise shifts
+            // the real output past the next source present, whose start-of-
+            // present join then sleeps through output spacing on VKD3D's D3D12
+            // queue thread. The join at the third source after is still bounded:
+            // at most a quarter output slot of spacing is kept.
+            invocation.readinessDeadline = limiterArrival + 3 * batchPeriod;
+            invocation.releasedOverlap = true;
+            invocation.releasedJoinTolerance = invocation.pacedOutputs->interval / 4;
+            invocation.releasedOutputLimit = limiterArrival + 3 * batchPeriod +
+                invocation.pacedOutputs->interval / 8;
+            invocation.originalPresentDeadline = invocation.pacedOutputs->at(count - 1);
+        }
     }
     if (readyOutputPacing && !invocation.pacedOutputs && !bypassGeneratedFrames &&
             !plan.historyWarmupActive &&
@@ -796,16 +1203,23 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
             plan.scheduledGeneratedFrames.size() == plan.requestedGeneratedFrames.size()) {
         const auto waiting = DiagnosticsClock::now();
         const auto budget = this->realFramePacer.sourceReadinessBudget(
-            waiting, plan.scheduledGeneratedFrames.size() + 1);
+            waiting, plan.scheduledGeneratedFrames.size() + 1, invocation.deferredOutputEligible);
         if (budget > DiagnosticsClock::duration::zero()) {
-            const bool ready = this->syncSemaphore->wait(vk, this->frameState.backendTimelineIndex,
+            // A retained batch waits on the worker. Waiting here would add
+            // GPU time after the game's limiter, then teach our estimator
+            // that the combined delay was the game's new source cadence.
+            const bool ready = invocation.deferredOutputEligible || this->syncSemaphore->wait(vk, this->frameState.backendTimelineIndex,
                 static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(budget).count()));
-            invocation.outputWait += DiagnosticsClock::now() - waiting;
+            const auto waited = DiagnosticsClock::now() - waiting;
+            invocation.readinessWait += waited;
+            invocation.outputWait += waited;
             if (ready) {
                 invocation.pacedOutputs = this->realFramePacer.scheduleReadyOutputs(
-                    DiagnosticsClock::now(), plan.scheduledGeneratedFrames.size() + 1);
+                    DiagnosticsClock::now(), plan.scheduledGeneratedFrames.size() + 1,
+                    invocation.deferredOutputEligible);
                 if (invocation.pacedOutputs) {
                     invocation.readyOutputPacing = true;
+                    invocation.readinessDeadline = waiting + budget;
                     invocation.originalPresentDeadline = invocation.pacedOutputs->at(
                         invocation.pacedOutputs->count - 1);
                 }

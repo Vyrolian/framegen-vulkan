@@ -792,13 +792,19 @@ namespace mako::layer {
         bool recreationSignaled{false};
     };
 
+    /// A generated image is optional, so MAKO never waits without bound for
+    /// one. A hidden or destroyed window can stop FIFO image release
+    /// indefinitely, and an unbounded wait on the application's present thread
+    /// hangs the game (VKD3D-Proton presents on its D3D12 queue thread).
+    inline constexpr uint64_t generatedImageAcquireSafetyTimeoutNs = 100'000'000;
+
     /// The configured application-present budget is the transport contract.
     /// Do not derive a second per-image failure threshold from refresh rate or
     /// measured duration; the remaining cumulative budget is authoritative.
     [[nodiscard]] inline uint64_t orderedGeneratedImageAcquireTimeout(
             const std::optional<uint32_t>,
             const std::optional<uint64_t> remainingBudget) {
-        return remainingBudget.value_or(std::numeric_limits<uint64_t>::max());
+        return remainingBudget.value_or(generatedImageAcquireSafetyTimeoutNs);
     }
 
     struct PipelineBusyDecision {
@@ -1258,91 +1264,341 @@ namespace mako::layer {
         /// measured waits when detecting sustained slower application work.
         /// This prevents a relative game limiter from feeding our waits back
         /// into an ever-increasing output interval.
-        void observeSource(const TimePoint now, const bool directFixed) {
+        void observeSource(const TimePoint now, const bool directFixed, const size_t outputCount = 2,
+                const bool releasedSource = false) {
             if (!directFixed) {
+                if (this->readyOutputCount) this->resetOutputs();
                 this->resetSource();
                 return;
+            }
+            if (this->sourceReleased != releasedSource) {
+                this->resetSource();
+                this->sourceReleased = releasedSource;
             }
             const auto previous = this->sourceAt;
             this->sourceAt = now;
             const auto wait = std::exchange(this->sourceOutputWait, Clock::duration{});
+            const auto acquireWait = std::exchange(this->sourceAcquireWait, Clock::duration{});
+            // A separate wait thread can gate the producer through its frame
+            // latency event. A completed real-ID wait with no overlapping
+            // acquire makes that source interval completion-paced, even
+            // though the output itself was delivered by our worker.
+            const bool completionPaced = std::exchange(this->sourceCompletionPaced, false);
+            const bool detachedOutput = this->sourceDetachedOutput && !completionPaced;
+            this->sourceCapBatchRun = std::exchange(this->sourceCapBatchUsed, false)
+                ? std::min(this->sourceCapBatchRun + 1, this->sourceSamples.size()) : 0;
             this->sourceInterrupted = false;
             if (!previous)
                 return;
             const auto elapsed = now - *previous;
+            const auto work = std::max(Clock::duration{}, elapsed - wait);
+            const bool completionBlocksSource = completionPaced && this->sourcePeriod > Clock::duration{} &&
+                elapsed <= std::chrono::milliseconds{250} && elapsed <= 2 * this->sourcePeriod &&
+                elapsed > this->sourcePeriod + this->sourcePeriod /
+                    static_cast<int64_t>(2 * std::clamp(outputCount, size_t{2}, GeneratedFramePlan::capacity + 1));
+            this->completionBlockedSamples = completionBlocksSource
+                ? std::min(size_t{2}, this->completionBlockedSamples + 1) : 0;
             if (elapsed <= Clock::duration::zero() || elapsed > std::chrono::milliseconds{250}) {
                 this->sourceInterrupted = true;
-                this->sourceSampleCount = this->slowerSourceSamples = 0;
+                this->sourcePacedPeriod = this->sourceWorkPeriod = Clock::duration{};
+                this->sourceCapBatchRun = 0;
+                this->sourceSampleCount = this->slowerSourceSamples = this->fasterSourceSamples = 0;
+                this->sourceDetachedSamples = 0;
+                if (releasedSource) {
+                    this->sourcePeriod = {};
+                    this->sourceHasQualifiedCadence = false;
+                }
+                return;
+            }
+            if (releasedSource) {
+                // A queued producer can submit several sources together, then
+                // pause for their GPU work. Individual arrivals and their median
+                // measure that burst, not throughput. Keep the entire window.
+                this->sourceSamples[this->sourceSampleCount++] = elapsed;
+                if (this->sourceSampleCount == this->sourceSamples.size()) {
+                    Clock::duration total{};
+                    for (const auto sample : this->sourceSamples) total += sample;
+                    this->sourcePeriod = total / static_cast<int64_t>(this->sourceSamples.size());
+                    this->sourceHasQualifiedCadence = true;
+                    this->sourceSampleCount = 0;
+                }
                 return;
             }
             if (this->sourcePeriod > Clock::duration::zero()) {
                 this->sourceInterrupted = elapsed > 2 * this->sourcePeriod;
-                if (elapsed - wait > this->sourcePeriod) {
-                    if (++this->slowerSourceSamples == this->sourceSamples.size()) {
-                        this->sourcePeriod = Clock::duration::zero();
+                if (this->sourceInterrupted) {
+                    this->sourceSampleCount = 0;
+                    this->sourceDetachedSamples = 0;
+                    this->sourcePacedPeriod = this->sourceWorkPeriod = Clock::duration{};
+                    this->sourceCapBatchRun = 0;
+                    this->fasterSourceSamples = 0;
+                    // One hitch skips pacing without losing the estimate.
+                    // Sustained >2-period arrivals are a changed workload,
+                    // not eight independent hitches that can never qualify.
+                    if (++this->slowerSourceSamples >= this->sourceSamples.size()) {
+                        this->sourcePeriod = Clock::duration{};
                         this->sourceCapOwnsOutputs = false;
-                        this->sourceSampleCount = this->slowerSourceSamples = 0;
+                        this->slowerSourceSamples = this->fasterSourceSamples = 0;
                     }
                     return;
                 }
-                this->slowerSourceSamples = 0;
-                if (elapsed >= this->sourcePeriod)
-                    return;
+                // A higher game cap can be hidden by our old output sleep.
+                // Two arrivals at least an eighth output slot faster release that sleep and
+                // qualify the new source directly, without pacing each step
+                // of an artificial ramp. Ordinary alternating jitter cannot
+                // accumulate evidence across slower frames.
+                // Scale the margin with the batch: at 5x our own waits can
+                // occupy four fifths of the old period even after work recovers.
+                const auto fasterMargin = this->sourcePeriod / static_cast<int64_t>(
+                    8 * std::clamp(outputCount, size_t{2}, GeneratedFramePlan::capacity + 1));
+                // A first-output phase hold can move into the next acquire.
+                // Unlike readiness trading with an absolute game limiter,
+                // this is measured blocking on our own retained outputs.
+                // Release only the phase when faster wait-excluded work is
+                // hidden by that join; keep the qualified batch interval.
+                const bool phaseBlockedRecovery = this->readyOutputCount &&
+                    this->readyOutputHold > fasterMargin && acquireWait > fasterMargin &&
+                    this->sourceWorkPeriod > fasterMargin &&
+                    elapsed <= this->sourcePacedPeriod + fasterMargin &&
+                    work <= this->sourceWorkPeriod - fasterMargin;
+                // A relative game limiter can hide even a modest speedup
+                // behind our output span. Compare wait-excluded work only
+                // with a complete previously paced window, never with the
+                // initial unpaced period or the full application interval.
+                // Detached delivery still has bounded joins when WSI has no
+                // spare image. Preserve the acceleration test for these waits;
+                // a quarter-period threshold can hide real recovery behind
+                // readiness and acquisition. Detached acceleration retunes
+                // the interval in place: longer jitter runs can pass any
+                // consecutive-sample threshold, and must not discard eight
+                // paced batches. Keep the complete source window so its
+                // slower samples can correct an early-arrival estimate.
+                if (elapsed <= this->sourcePeriod - fasterMargin ||
+                        (wait > Clock::duration{} && this->sourceWorkPeriod > fasterMargin &&
+                            elapsed <= this->sourcePacedPeriod - fasterMargin &&
+                            work <= this->sourceWorkPeriod - fasterMargin) || phaseBlockedRecovery) {
+                    const size_t requiredFasterSamples = !phaseBlockedRecovery && detachedOutput &&
+                        elapsed > this->sourcePeriod - this->sourcePeriod / 4 ? 4 : 2;
+                    if (++this->fasterSourceSamples >= requiredFasterSamples) {
+                        if (detachedOutput) {
+                            if (phaseBlockedRecovery)
+                                this->readyOutputRequalification = 2 * this->sourceSamples.size();
+                            this->sourcePeriod = std::min(this->sourcePeriod, elapsed);
+                            this->fasterSourceSamples = 0;
+                        } else {
+                            this->sourcePeriod = Clock::duration::zero();
+                            this->sourcePacedPeriod = this->sourceWorkPeriod = Clock::duration{};
+                            this->sourceSampleCount = this->slowerSourceSamples = this->fasterSourceSamples = 0;
+                            this->sourceDetachedSamples = 0;
+                            return;
+                        }
+                    }
+                } else {
+                    this->fasterSourceSamples = 0;
+                }
+                // A learned game period may already be slower than a
+                // nonbinding configured cap. Compare against that cap when
+                // releasing its ownership, rather than the slower estimate.
+                const auto slowerReference = this->sourceCapOwnsOutputs && this->activeFramesPerSecond > 0
+                    ? std::min(this->sourcePeriod, std::chrono::duration_cast<Clock::duration>(
+                        std::chrono::duration<double>(1.0 / this->activeFramesPerSecond)))
+                    : this->sourcePeriod;
+                if (detachedOutput && this->sourceCapOwnsOutputs && this->sourceCapBatchRun == 0 &&
+                        elapsed > slowerReference + fasterMargin) {
+                    // Detached cap delivery observes the game's full cadence.
+                    // A slower game limiter must be able to replace the cap
+                    // owner even though no synchronous output wait grew.
+                    if (++this->slowerSourceSamples == this->sourceSamples.size()) {
+                        this->sourceCapOwnsOutputs = false;
+                        this->slowerSourceSamples = 0;
+                    }
+                } else if (!detachedOutput && (work > slowerReference ||
+                        (wait > Clock::duration{} && this->sourceWorkPeriod > Clock::duration{} &&
+                            elapsed >= this->sourcePacedPeriod + fasterMargin &&
+                            work >= this->sourceWorkPeriod + fasterMargin))) {
+                    if (++this->slowerSourceSamples == this->sourceSamples.size()) {
+                        this->sourcePeriod = Clock::duration::zero();
+                        this->sourcePacedPeriod = this->sourceWorkPeriod = Clock::duration{};
+                        this->sourceCapOwnsOutputs = false;
+                        this->sourceSampleCount = this->slowerSourceSamples = this->fasterSourceSamples = 0;
+                        this->sourceDetachedSamples = 0;
+                        return;
+                    }
+                } else {
+                    this->slowerSourceSamples = 0;
+                }
             }
+            this->sourceWorkSamples[this->sourceSampleCount] = wait > Clock::duration{}
+                ? work : Clock::duration{};
             this->sourceSamples[this->sourceSampleCount++] = elapsed;
+            this->sourceDetachedSamples += detachedOutput;
             if (this->sourceSampleCount == this->sourceSamples.size()) {
                 auto sorted = this->sourceSamples;
                 std::sort(sorted.begin(), sorted.end());
-                this->sourcePeriod = sorted[sorted.size() / 2 - 1] +
+                const auto measuredPeriod = sorted[sorted.size() / 2 - 1] +
                     (sorted[sorted.size() / 2] - sorted[sorted.size() / 2 - 1]) / 2;
+                // Sample complete windows, including their slower arrivals.
+                // Synchronous windows retain their existing one-way bound.
+                // Complete detached-output windows retain pacing while their
+                // full-source median moves in either direction. A brief host
+                // acquisition wait must not switch back to one-way sampling
+                // or create an eight-frame hole for ordinary timing jitter.
+                this->sourcePeriod = this->sourceDetachedSamples == this->sourceSamples.size()
+                    ? measuredPeriod : this->sourcePeriod > Clock::duration::zero()
+                    ? std::min(this->sourcePeriod, measuredPeriod) : measuredPeriod;
+                this->sourceHasQualifiedCadence = true;
+                auto sortedWork = this->sourceWorkSamples;
+                std::sort(sortedWork.begin(), sortedWork.end());
+                if (this->fasterSourceSamples == 0 && this->slowerSourceSamples == 0) {
+                    this->sourceWorkPeriod = sortedWork.front() > Clock::duration{}
+                        ? sortedWork[sortedWork.size() / 2 - 1] +
+                            (sortedWork[sortedWork.size() / 2] - sortedWork[sortedWork.size() / 2 - 1]) / 2
+                        : Clock::duration{};
+                    // Readiness can trade time with an absolute game limiter.
+                    // Require the full interval to change in the same direction
+                    // before treating a wait-excluded change as a new cadence.
+                    this->sourcePacedPeriod = this->sourceWorkPeriod > Clock::duration{}
+                        ? measuredPeriod : Clock::duration{};
+                }
                 this->sourceSampleCount = 0;
+                this->sourceDetachedSamples = 0;
             }
         }
 
-        void recordOutputWait(const Clock::duration wait) { this->sourceOutputWait = wait; }
+        void recordOutputWait(const Clock::duration wait, const bool detachedOutput = false,
+                const bool pacedOutput = true) {
+            this->sourceOutputWait = wait;
+            if (this->readyOutputCount && (!detachedOutput || !pacedOutput))
+                this->resetOutputs();
+            // A readiness miss delivers no paced batch. It must not erase
+            // the cadence's actual detached-delivery history: a shortened
+            // estimate can cause that miss, and the following slower samples
+            // must still be able to correct it. A synchronous paced batch or
+            // an ordinary policy reset ends the detached episode.
+            if (pacedOutput)
+                this->sourceDetachedOutput = detachedOutput;
+        }
+        void recordAcquireWait(const Clock::duration wait) {
+            // Keep evidence of how the output was submitted. A host join is
+            // real wait cost, but it does not turn a detached slot into the
+            // synchronous delivery path used by other transports.
+            this->sourceOutputWait += wait;
+            this->sourceAcquireWait += wait;
+        }
+
+        void recordCompletionPacingWait(const Clock::duration wait) {
+            this->sourceOutputWait += wait;
+            this->sourceCompletionPaced = wait > Clock::duration::zero();
+        }
+        [[nodiscard]] bool completionPacingBlocksSource() const { return this->completionBlockedSamples >= 2; }
 
         /// No fallback delay on a missed source interval or when preparation
         /// has already consumed a whole interval. GPU readiness shares this
         /// same bound and never starts an independent unbounded wait.
-        [[nodiscard]] Clock::duration sourceReadinessBudget(const TimePoint now, const size_t count = 1) const {
+        [[nodiscard]] Clock::duration sourceReadinessBudget(const TimePoint now, const size_t count = 1,
+                const bool allowDetachedOutput = false) const {
             // Once the configured cap has spaced a complete batch, a brief
             // miss must not replace that owner with readiness + output waits.
             // Those waits can consume the next cap interval and perpetuate
             // the miss. Sustained slower work requalifies in observeSource;
             // a game-owned limiter with no proven cap keeps its fallback.
-            if (!this->sourceAt || this->sourceInterrupted || this->sourceCapOwnsOutputs ||
+            if (!this->sourceAt || this->sourceInterrupted ||
+                    (this->sourceCapOwnsOutputs && !(allowDetachedOutput && this->sourceDetachedOutput)) ||
                     this->sourcePeriod <= Clock::duration::zero() || now < *this->sourceAt ||
                     count == 0 || count > GeneratedFramePlan::capacity + 1)
                 return {};
-            const auto span = (this->sourcePeriod / static_cast<int64_t>(count)) *
-                static_cast<int64_t>(count - 1);
+            // A bounded detached batch consumes no synchronous output span.
+            // Its first output follows readiness on the retained phase; the
+            // worker never retains a second source batch.
+            const auto span = allowDetachedOutput ? Clock::duration{} :
+                (this->sourcePeriod / static_cast<int64_t>(count)) * static_cast<int64_t>(count - 1);
             return std::max(Clock::duration::zero(), std::min(
                 this->sourcePeriod - span - (now - *this->sourceAt),
                 std::chrono::duration_cast<Clock::duration>(std::chrono::milliseconds{50})));
         }
 
-        /// Game-owned caps have no reserved MAKO cap slack. Space a complete
-        /// ready Fixed batch from now, retaining no expired output slots.
+        /// Game-owned caps have no reserved MAKO cap slack. Detached batches
+        /// share one output phase, including the gap after the prior real.
+        /// Bound first-output holds to one slot. On exhaustion, observe a
+        /// complete source window without those holds so faster work cannot
+        /// remain hidden behind the old phase. Within-batch spacing stays on.
         [[nodiscard]] std::optional<OutputBatch> scheduleReadyOutputs(
-                const TimePoint now, const size_t count) {
+                const TimePoint now, const size_t count, const bool allowDetachedOutput = false) {
             if (count < 2 || count > GeneratedFramePlan::capacity + 1 ||
-                    this->sourceReadinessBudget(now, count) <= Clock::duration::zero())
+                    this->sourceReadinessBudget(now, count, allowDetachedOutput) <= Clock::duration::zero()) {
+                this->resetOutputs();
                 return std::nullopt;
+            }
             const auto interval = this->sourcePeriod / static_cast<int64_t>(count);
-            if (!OrderedPresentTimeline::validRate(1.0 / std::chrono::duration<double>(interval).count()))
+            if (!OrderedPresentTimeline::validRate(1.0 / std::chrono::duration<double>(interval).count())) {
+                this->resetOutputs();
                 return std::nullopt;
-            this->resetOutputs();
-            return OutputBatch{now, interval, count};
+            }
+            if (!allowDetachedOutput) {
+                this->resetOutputs();
+                return OutputBatch{now, interval, count};
+            }
+            return this->chainDetachedOutputs(now, interval, count);
         }
 
-        /// Spend only the existing source-cap interval. Keep a target-output
+        /// A source-cap deadline owned by the application's release wait
+        /// (see swapchain/release_gate.hpp) no longer holds the present call,
+        /// so there is no return deadline to plan against. Space the batch
+        /// from GPU readiness, as the worker does for an uncapped source; the
+        /// release wait enforces the cap itself. The cap interval is the
+        /// shortest batch period. A GPU-bound source slower than a non-binding
+        /// cap is spaced on its measured period (the median observeSource
+        /// learns), so each generated frame sits midway between reals instead
+        /// of on the cap's half slot.
+        [[nodiscard]] std::optional<OutputBatch> scheduleReleasedOutputs(
+                const TimePoint now, const Clock::duration sourceInterval, const size_t count) {
+            if (count < 2 || count > GeneratedFramePlan::capacity + 1 ||
+                    sourceInterval <= Clock::duration::zero()) {
+                this->resetOutputs();
+                return std::nullopt;
+            }
+            auto batchPeriod = sourceInterval;
+            if (this->sourceHasQualifiedCadence && !this->sourceInterrupted &&
+                    this->sourcePeriod > sourceInterval && this->sourcePeriod <= 4 * sourceInterval)
+                batchPeriod = this->sourcePeriod;
+            const auto interval = batchPeriod / static_cast<int64_t>(count);
+            if (!OrderedPresentTimeline::validRate(1.0 / std::chrono::duration<double>(interval).count())) {
+                this->resetOutputs();
+                return std::nullopt;
+            }
+            return this->chainDetachedOutputs(now, interval, count);
+        }
+
+        /// Rephase a substantially late retained tail. Normal sleep overshoot
+        /// stays on its absolute clock instead of extending every period and
+        /// teaching the source estimator an ever-slower cadence.
+        void completeOutputBatch(const TimePoint lastOutput,
+                const Clock::duration readinessShift = {}) {
+            if (this->lastOutputAt)
+                *this->lastOutputAt += readinessShift;
+            if (this->readyOutputCount && this->lastOutputAt &&
+                    lastOutput > *this->lastOutputAt +
+                        this->sourcePeriod / static_cast<int64_t>(2 * this->readyOutputCount))
+                this->lastOutputAt = lastOutput;
+        }
+
+        /// Admission/acquisition fallback can finish a ready batch on the
+        /// caller. Read the clock only for that active output episode.
+        void synchronousOutput() {
+            if (this->readyOutputCount && this->lastOutputAt)
+                this->completeOutputBatch(Clock::now());
+        }
+
+        /// Plan against the existing source-cap interval. Keep a target-output
         /// clock across changing batch counts: spacing each batch separately
         /// would produce 12.5/25 ms gaps for a 40 -> 60 FPS source/target pair.
-        /// The final output may precede the source deadline; the caller still
-        /// retains that deadline before returning control to the application.
+        /// Detached Fixed delivery may extend the final slot past the source
+        /// deadline; the caller retains that application-return deadline.
         [[nodiscard]] std::optional<OutputBatch> scheduleOutputs(
                 const TimePoint readyAt, const TimePoint realFrameAt, const double outputFps,
-                const size_t count, const bool targetClockActive) {
+                const size_t count, const bool targetClockActive,
+                const bool rephaseLateFixed = false) {
+            if (this->readyOutputCount) this->resetOutputs();
             if (!OrderedPresentTimeline::validRate(outputFps) ||
                     this->activeFramesPerSecond <= 0.0 || count == 0 ||
                     count > GeneratedFramePlan::capacity + 1 ||
@@ -1369,25 +1625,81 @@ namespace mako::layer {
             if (this->outputFramesPerSecond == outputFps && this->lastOutputAt) {
                 const auto next = *this->lastOutputAt + interval;
                 if (next > realFrameAt - sourceInterval)
-                    first = std::min(next, latestFirst);
+                    first = rephaseLateFixed && !targetClockActive
+                        ? std::max(next, latestFirst) : std::min(next, latestFirst);
             }
-            // Never borrow time from the next real frame or compress an
-            // overdue output batch into catch-up submissions. A late source
-            // or slow preparation retains the ordinary source-cap deadline.
+            // A GPU-ready native Fixed batch with detached final delivery may
+            // miss its first slot. Retain the complete interval and the prior
+            // output's phase while the source cap keeps its original clock.
+            // Never retain a whole missed source interval of output debt.
+            if (rephaseLateFixed && !targetClockActive && count > 1) {
+                first = std::max(first, readyAt);
+                // Readiness can shift the preceding batch just across the
+                // source-return boundary. Keep that phase within one output
+                // slot of the boundary rather than dropping the next pair.
+                // Only one source batch is retained, so this cannot queue a
+                // second source interval of output debt.
+                if (first >= realFrameAt + interval) {
+                    this->resetOutputs();
+                    return std::nullopt;
+                }
+            }
+            // Never compress an overdue output batch into catch-up presents.
             if (first < readyAt || (this->lastOutputAt && first <= *this->lastOutputAt)) {
                 this->resetOutputs();
                 return std::nullopt;
             }
             this->outputFramesPerSecond = outputFps;
             this->lastOutputAt = first + span;
-            if (this->sourceAt && !targetClockActive)
-                this->sourceCapOwnsOutputs = true;
+            if (this->sourceAt && !targetClockActive) {
+                this->sourceCapBatchUsed = true;
+                // Cold cap startup keeps its immediate owner. Once a game
+                // cadence is learned, one burst or partial-batch return must
+                // not permanently suppress its ready-output fallback.
+                if (!this->sourceHasQualifiedCadence || this->sourceCapOwnsOutputs ||
+                        this->sourceCapBatchRun + 1 >= this->sourceSamples.size())
+                    this->sourceCapOwnsOutputs = true;
+            }
             return OutputBatch{first, interval, count};
+        }
+
+        /// Continue the previous detached batch's output phase. The worker
+        /// retains one source batch, so its final output must leave before
+        /// the next source normally arrives: otherwise that present, or the
+        /// acquire before it, joins the worker on the application's producing
+        /// thread. VKD3D-Proton runs both on its D3D12 queue-submission
+        /// thread, where any join stalls later game submissions. Bound the
+        /// phase hold to three quarters of a slot and shorten only that gap.
+        [[nodiscard]] OutputBatch chainDetachedOutputs(
+                const TimePoint now, const Clock::duration interval, const size_t count) {
+            auto first = now;
+            if (this->readyOutputCount != count) {
+                this->resetOutputs();
+            } else if (this->readyOutputRequalification) {
+                --this->readyOutputRequalification;
+            } else if (this->lastOutputAt) {
+                const auto next = *this->lastOutputAt + interval;
+                if (next > now) {
+                    if (next - now < interval)
+                        first = std::min(next, now + maximumDetachedHold(interval));
+                    else
+                        this->readyOutputRequalification = 2 * this->sourceSamples.size();
+                }
+            }
+            this->readyOutputCount = count;
+            this->readyOutputHold = first - now;
+            this->lastOutputAt = first + interval * static_cast<int64_t>(count - 1);
+            return OutputBatch{first, interval, count};
+        }
+        [[nodiscard]] static constexpr Clock::duration maximumDetachedHold(const Clock::duration interval) {
+            return interval - interval / 4;
         }
 
         void resetOutputs() {
             this->lastOutputAt.reset();
             this->outputFramesPerSecond = 0.0;
+            this->readyOutputCount = this->readyOutputRequalification = 0;
+            this->readyOutputHold = Clock::duration{};
         }
 
         [[nodiscard]] TimePoint schedule(
@@ -1396,13 +1708,15 @@ namespace mako::layer {
             if (!std::isfinite(framesPerSecond) || framesPerSecond <= 0.0) {
                 if (this->activeFramesPerSecond > 0.0 || this->nextFrameAt)
                     this->reset();
-                else
+                else if (!this->readyOutputCount)
                     this->resetOutputs();
                 return now;
             }
 
             if (this->activeFramesPerSecond != framesPerSecond) {
                 this->sourceCapOwnsOutputs = false;
+                this->sourceCapBatchRun = 0;
+                this->sourceCapBatchUsed = false;
                 if (preserveRatePhase && this->activeFramesPerSecond > 0.0 && this->nextFrameAt) {
                     // A governor's small rate adjustment belongs to the same
                     // pacing episode. Move its next boundary without granting
@@ -1446,21 +1760,40 @@ namespace mako::layer {
     private:
         void resetSource() {
             this->sourceAt.reset();
-            this->sourcePeriod = this->sourceOutputWait = Clock::duration::zero();
+            this->sourcePeriod = this->sourceOutputWait = this->sourceAcquireWait = Clock::duration::zero();
+            this->sourcePacedPeriod = this->sourceWorkPeriod = Clock::duration{};
             this->sourceCapOwnsOutputs = false;
-            this->sourceSampleCount = this->slowerSourceSamples = 0;
+            this->sourceHasQualifiedCadence = this->sourceCapBatchUsed = false;
+            this->sourceCapBatchRun = 0;
+            this->sourceSampleCount = this->slowerSourceSamples = this->fasterSourceSamples = 0;
+            this->sourceDetachedSamples = 0;
+            this->sourceDetachedOutput = false;
+            this->sourceCompletionPaced = false;
+            this->completionBlockedSamples = 0;
             this->sourceInterrupted = false;
+            this->sourceReleased = false;
         }
         std::optional<TimePoint> sourceAt;
         std::array<Clock::duration, 8> sourceSamples{};
+        std::array<Clock::duration, 8> sourceWorkSamples{};
+        Clock::duration sourceWorkPeriod{}, sourcePacedPeriod{};
         Clock::duration sourcePeriod{}, sourceOutputWait{};
-        size_t sourceSampleCount{}, slowerSourceSamples{};
+        Clock::duration sourceAcquireWait{}, readyOutputHold{};
+        size_t sourceSampleCount{}, slowerSourceSamples{}, fasterSourceSamples{};
+        size_t sourceDetachedSamples{};
         bool sourceInterrupted{};
+        bool sourceReleased{};
+        bool sourceDetachedOutput{};
+        bool sourceCompletionPaced{};
+        size_t completionBlockedSamples{};
         bool sourceCapOwnsOutputs{};
+        bool sourceHasQualifiedCadence{}, sourceCapBatchUsed{};
+        size_t sourceCapBatchRun{};
         double activeFramesPerSecond{0.0};
         std::optional<TimePoint> nextFrameAt;
         double outputFramesPerSecond{0.0};
         std::optional<TimePoint> lastOutputAt;
+        size_t readyOutputCount{}, readyOutputRequalification{};
     };
 
     /// When Steady Adaptive has already proven that it needs at least 3x, a

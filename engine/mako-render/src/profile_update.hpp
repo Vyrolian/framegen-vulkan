@@ -430,29 +430,41 @@ namespace mako::layer {
             *gamescopeRefreshHz > profile.frame_generation_refresh_threshold;
     }
 
+    /// Smooth Cadence opts into ready-output spacing. A Fixed batch that the
+    /// private worker can deliver detached is eligible regardless of cap:
+    /// a positive nonbinding cap leaves no cap-owned output slots. The worker
+    /// spaces that batch without waiting in the application's present call.
     [[nodiscard]] inline bool fixedReadyOutputPacingEligible(
-            const ls::GameConf& profile, const bool directUnthrottled,
-            const bool anotherTimingOwner, const bool recovering) {
-        return directUnthrottled && !anotherTimingOwner && !recovering &&
+            const ls::GameConf& profile, const bool nativeOutputPacingEligible,
+            const bool anotherTimingOwner, const bool recovering,
+            const bool detachedOutput = false) {
+        return nativeOutputPacingEligible && !anotherTimingOwner && !recovering &&
             effectiveFrameGenerationEnabled(profile, std::nullopt) &&
-            !profile.adaptive && profile.adaptive_stable_cadence &&
+            !profile.adaptive && (profile.adaptive_stable_cadence || detachedOutput) &&
             !profile.dynamic_cadence_recovery && profile.gpu_headroom_percent == 0;
     }
 
     /// Use the existing cap interval for Fractional, below-refresh automatic
     /// caps, and exact Fixed batches that fit the known refresh. A compositor
     /// output clock can also prepare inside a target-matched automatic cap;
-    /// direct FIFO retains its existing target-matched source pacing. Direct
-    /// VSync-off output uses the configured cap without a display clock.
+    /// native Fixed FIFO and VSync-off output use the configured cap without
+    /// requiring a compositor refresh estimate. Native Fixed can space its
+    /// existing cap even with caller timing: those targets remain on the real
+    /// image and do not supply deadlines for generated images. Other timing
+    /// owners and Adaptive automatic-cap policy retain their existing rules.
     [[nodiscard]] inline bool baseCapPacesOutputs(
             const ls::GameConf& profile, const double effectiveCap,
             const bool outputSpacingEligible,
             const std::optional<uint32_t> gamescopeRefreshHz = std::nullopt,
             const bool compositorOutputTiming = false,
-            const bool directUnthrottled = false) {
+            const bool directUnthrottled = false,
+            const bool nativeFifo = false,
+            const bool applicationTimingOwner = false) {
         if (!effectiveFrameGenerationEnabled(profile, gamescopeRefreshHz) ||
                 !outputSpacingEligible || !std::isfinite(effectiveCap) ||
                 effectiveCap <= 0.0)
+            return false;
+        if (applicationTimingOwner && !(nativeFifo && !profile.adaptive))
             return false;
         if (profile.adaptive)
             return static_cast<double>(profile.target_fps) > effectiveCap &&
@@ -465,7 +477,7 @@ namespace mako::layer {
             (profile.base_fps_cap > 0 || profile.gpu_headroom_percent > 0) &&
             profile.multiplier >= ls::GameConfLimits::minimumMultiplier &&
             profile.multiplier <= ls::GameConfLimits::maximumMultiplier &&
-            (directUnthrottled || (gamescopeRefreshHz &&
+            (directUnthrottled || nativeFifo || (gamescopeRefreshHz &&
                 effectiveCap * profile.multiplier <= *gamescopeRefreshHz));
     }
 

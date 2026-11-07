@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 
 #include "swapchain/swapchain.hpp"
+#include "frame_content_capture.hpp"
 #include "swapchain/present/internal.hpp"
 #include "swapchain/retirement.hpp"
 #include "adaptive_scheduler.hpp"
@@ -61,11 +62,11 @@ bool Swapchain::recoverBackendIfReady(const vk::Vulkan& vk) {
     // A fence-budget miss leaves the previous application-device submission
     // in flight. Backend readiness alone does not make that fence reusable,
     // so retain nonblocking native presentation until both sides are idle.
-    if (this->frameState.renderFenceInFlight) {
+    if (this->renderSlotsInFlight()) {
         try {
-            if (!this->renderFence->wait(vk, 0))
+            if (!this->pollRenderSlotsIdle(vk))
                 return false;
-            this->frameState.renderFenceInFlight = false;
+            if (this->nativeCopyProfile) this->nativeCopyProfile->completed();
         } catch (const std::exception& error) {
             std::cerr << "MAKO Renderer: render fence recovery poll failed; "
                          "native presentation retained: "
@@ -192,10 +193,8 @@ bool Swapchain::generationPipelineReady(const vk::Vulkan& vk,
         const PresentationFramePlan& plan,
         const DiagnosticsClock::time_point presentNow) {
     bool pipelineReady = true;
-    if (gamescopeHdrTransport && this->frameState.renderFenceInFlight) {
-        pipelineReady = this->renderFence->wait(vk, 0);
-        if (pipelineReady)
-            this->frameState.renderFenceInFlight = false;
+    if (gamescopeHdrTransport && this->renderSlotsInFlight()) {
+        pipelineReady = this->pollRenderSlotsIdle(vk);
     }
     if (gamescopeHdrTransport && pipelineReady) {
         try {
@@ -256,16 +255,81 @@ bool Swapchain::generationPipelineReady(const vk::Vulkan& vk,
     return true;
 }
 
-bool Swapchain::prepareRenderFence(const vk::Vulkan& vk) {
-    if (this->frameState.renderFenceInFlight) {
-        const bool fenceSignaled = this->renderFence->wait(
-            vk, renderFenceWaitBudgetNs
-        );
-        if (!fenceSignaled)
-            return false;
-        this->frameState.renderFenceInFlight = false;
+bool Swapchain::renderSlotsInFlight() const {
+    return std::any_of(this->renderSlots.begin(), this->renderSlots.end(),
+        [](const RenderSlot& slot) { return slot.inFlight; });
+}
+
+bool Swapchain::pollRenderSlotsIdle(const vk::Vulkan& vk) {
+    bool idle = true;
+    for (auto& slot : this->renderSlots) {
+        if (!slot.inFlight)
+            continue;
+        if (slot.fence.wait(vk, 0))
+            slot.inFlight = false;
+        else
+            idle = false;
     }
-    this->renderFence->reset(vk);
+    return idle;
+}
+
+bool Swapchain::prepareRenderFence(const vk::Vulkan& vk) {
+    const size_t next = (this->renderSlotIndex + 1) % renderSlotDepth;
+    if (!this->spatialScaler && !this->frameContentCapture &&
+            !this->nativeCopyProfile &&
+            this->frameState.sourceReleaseTimelineValue != 0) {
+        // Source-image reuse is ordered on the GPU by the timeline, so only the
+        // batch three presents ago must retire before its slot is reused.
+        // A worker copy or skip signals that slot's fence only when its submit
+        // completes, after the slot's acquire semaphore and staged signal were
+        // consumed; a copy has also read the slot's staging image by then.
+        if (this->deferredPresent && this->deferredPresent->overlapRingFull()) {
+            // With all three overlap slots pending, the batch three presents ago
+            // is the oldest one and may still be waiting for this slot. Its
+            // fence is not submitted until its output deadline, so join only
+            // that batch rather than letting the fence wait sleep through it.
+            static_cast<void>(this->completeDeferredPresent(UINT64_MAX, false, true));
+        }
+        auto& slot = this->renderSlots.at(next);
+        if (slot.inFlight) {
+            if (!slot.fence.wait(vk, renderFenceWaitBudgetNs))
+                return false;
+            slot.inFlight = false;
+        }
+        this->renderSlotIndex = next;
+        slot.fence.reset(vk);
+        return true;
+    }
+
+    // Other paths keep the CPU drain. Every in-flight slot shares one budget,
+    // and a timeout leaves the ring index and fences unchanged.
+    // A deferred generated copy submits its slot's fence on the worker, so every
+    // admitted batch must be joined before any in-flight fence is waited.
+    if (this->deferredPresent && this->deferredPresent->pending())
+        static_cast<void>(this->completeDeferredPresent(UINT64_MAX));
+    const auto deadline = DiagnosticsClock::now() + renderFenceWaitBudget;
+    bool waitedForInFlight = false;
+    for (auto& slot : this->renderSlots) {
+        if (!slot.inFlight)
+            continue;
+        waitedForInFlight = true;
+        const auto now = DiagnosticsClock::now();
+        const uint64_t remainingNs = deadline > now
+            ? static_cast<uint64_t>(std::chrono::duration_cast<
+                std::chrono::nanoseconds>(deadline - now).count())
+            : 0;
+        if (!slot.fence.wait(vk, remainingNs))
+            return false;
+        slot.inFlight = false;
+    }
+    if (waitedForInFlight) {
+        if (this->frameContentCapture)
+            this->frameContentCapture->completed(vk);
+        if (this->nativeCopyProfile)
+            this->nativeCopyProfile->completed();
+    }
+    this->renderSlotIndex = next;
+    this->renderSlots.at(next).fence.reset(vk);
     return true;
 }
 
@@ -418,7 +482,8 @@ void Swapchain::preacquireGeneratedImages(
         lastAcquireResult = invocation.vk.df().AcquireNextImageKHR(
             invocation.vk.dev(), invocation.swapchain,
             acquireTimeout,
-            this->passes.at(i).acquireSemaphore.handle(), VK_NULL_HANDLE,
+            this->currentRenderSlot().passes.at(i).acquireSemaphore.handle(),
+            VK_NULL_HANDLE,
             &acquiredImage
         );
         plan.preacquireDuration += finishPresentDiagnostic(acquireStarted);
