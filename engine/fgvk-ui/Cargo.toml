@@ -1,0 +1,15 @@
+[package]
+name = "fgvk-ui"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Settings editor for framegen-vulkan frame generation profiles"
+
+[[bin]]
+name = "fgvk"
+path = "src/main.rs"
+
+[dependencies]
+eframe = { version = "0.37", default-features = false, features = ["glow", "wayland", "x11", "default_fonts"] }
+egui = "0.37"
+toml_edit = "0.25"
