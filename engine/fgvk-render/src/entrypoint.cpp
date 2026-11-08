@@ -1144,12 +1144,10 @@ namespace {
                 // The emulated acquire's queue exists only when the family had room
                 // for both. Like the present queue, it is never registered in
                 // queueIdentities, so the application cannot see it.
-                // F9 is opt-in: with the emulated acquire on its own queue Cyberpunk froze on
-                // the GPU within 5-15 s (2026-11-08; no layer lock held, VKD3D waiting on its
-                // blit semaphores). Only FGVK_INTERNAL_ACQUIRE_QUEUE=1 enables it; otherwise the
-                // acquire submits on the present queue under its mutex (F8 behaviour).
+                // F9 switch for isolating the 2026-11-08 freeze: FGVK_INTERNAL_ACQUIRE_QUEUE=0
+                // keeps the emulated acquire on the present queue (F8 behaviour).
                 const char* acquireQueueSwitch = std::getenv("FGVK_INTERNAL_ACQUIRE_QUEUE");
-                const bool acquireQueueAllowed = acquireQueueSwitch && std::strcmp(acquireQueueSwitch, "1") == 0;
+                const bool acquireQueueAllowed = !(acquireQueueSwitch && std::strcmp(acquireQueueSwitch, "0") == 0);
                 if (privatePresentQueue.acquireIndex && acquireQueueAllowed) {
                     wrapper->second.df().GetDeviceQueue(*device, *layerQueueFamily,
                         *privatePresentQueue.acquireIndex, &privateQueue->acquireQueue);
