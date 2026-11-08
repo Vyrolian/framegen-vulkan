@@ -92,19 +92,21 @@ uint64_t handleBits(const Handle handle) {
 // share the lock, but never hold it while sleeping.
 //
 // acquireQueue is a second private queue, present only when the family had room
-// for it. The emulated acquire submits on it under acquireMutex, so the acquire
-// does not wait behind the worker's submits under mutex. Lock order everywhere
-// both are held: mutex before acquireMutex. No path takes mutex while holding
-// acquireMutex.
+// for it. F10: the emulated acquire no longer submits on it. It is still created
+// and wait-idled under acquireMutex, and lock order everywhere both are held stays
+// mutex before acquireMutex. No path takes mutex while holding acquireMutex.
 struct DeferredPresentQueue {
     VkQueue queue{};
     std::mutex mutex;
     VkQueue acquireQueue{};
     std::mutex acquireMutex;
-    // F9c: a timeline that every submit on `queue` signals with its next value (see
-    // submitPrivate). The emulated acquire waits tailSubmitted on its own queue, which
-    // restores the order a same-queue acquire had. Null when the timeline could not be
-    // created: then nothing is signalled or waited for it.
+    // F10: set by the first failed host acquire signal (ImportSemaphoreFdKHR). It is never
+    // cleared, so the device uses the queued acquire from then on.
+    std::atomic<bool> hostAcquireDisabled{false};
+    // F9c: a timeline that every tailed submit on `queue` signals with its next value (copies,
+    // releases and generated work, through submitPrivate; the queued acquire is not tailed). F10: the emulated acquire reads tailSubmitted and this counter, and
+    // signals on the host once both are reached. Null when the timeline could not be
+    // created: then nothing is signalled or waited for it, and the host path is off.
     VkSemaphore tail{};
     // Last tail value submitted with VK_SUCCESS. Only read and written under mutex.
     uint64_t tailNext{0};
@@ -129,8 +131,8 @@ struct DeferredPresentQueue {
     std::atomic<uint32_t> callLower{UINT32_MAX};
     std::atomic<int64_t> callSinceNs{0};
 
-    // The queue and lock the emulated acquire must use. Without acquireQueue,
-    // this is the present queue and its mutex, as before the second queue existed.
+    // The queue and lock for an acquire submit. F10: the emulated acquire no longer calls
+    // this (it submits on queue under mutex). Kept only for acquireTargetAvoidsPresentLock.
     [[nodiscard]] std::pair<VkQueue, std::mutex&> acquireTarget() {
         if (acquireQueue != VK_NULL_HANDLE) return {acquireQueue, acquireMutex};
         return {queue, mutex};

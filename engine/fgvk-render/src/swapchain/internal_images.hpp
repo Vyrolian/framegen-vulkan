@@ -130,6 +130,23 @@ namespace fgvk::layer {
         return std::min(maxCount, std::max(minImageCount, 3u) + 2u);
     }
 
+    /// F10: whether an emulated acquire may complete on the host, with no queue submit. Every
+    /// condition must hold: the application semaphore is set and no fence is (a host signal cannot
+    /// signal a fence), the tail timeline exists, both counter functions are loaded and the host path
+    /// is not disabled. A zero value needs no counter. A counter below its value refuses. The caller
+    /// reads the counters (they never wait) and passes zero for a failed read.
+    [[nodiscard]] inline bool hostAcquireEligible(const VkFence fence, const VkSemaphore semaphore,
+            const bool disabled, const bool tailPresent, const bool functionsLoaded,
+            const uint64_t waitValue, const uint64_t releaseCounter,
+            const uint64_t tailValue, const uint64_t tailCounter) noexcept {
+        if (fence != VK_NULL_HANDLE || semaphore == VK_NULL_HANDLE || disabled || !tailPresent ||
+                !functionsLoaded)
+            return false;
+        if (waitValue != 0 && releaseCounter < waitValue)
+            return false;
+        return tailValue == 0 || tailCounter >= tailValue;
+    }
+
     /// Free-image ring for the application-visible images. Each index moves
     /// through three states:
     ///   Free     -> Acquired  by acquire / acquireWait

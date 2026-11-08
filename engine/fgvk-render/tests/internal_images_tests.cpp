@@ -14,6 +14,7 @@
 #include <stdexcept>
 #include <string_view>
 #include <thread>
+#include <type_traits>
 #include <vector>
 
 using namespace fgvk::layer;
@@ -395,6 +396,60 @@ namespace {
         expect(!internalSwapchainEnvironmentAllows("0"), "FGVK_INTERNAL_SWAPCHAIN=0 did not disable the feature");
     }
 
+    template<class T> T handleOf(uintptr_t value) {
+        if constexpr (std::is_pointer_v<T>) return reinterpret_cast<T>(value);
+        else return static_cast<T>(value);
+    }
+
+    // F10: the host acquire decision. Every condition is checked alone, and counters only refuse
+    // when a nonzero value has not been reached.
+    void testHostAcquireEligibility() {
+        const auto semaphore = handleOf<VkSemaphore>(0x10);
+        const auto fence = handleOf<VkFence>(0x20);
+        const VkFence none = VK_NULL_HANDLE;
+        const VkSemaphore noSemaphore = VK_NULL_HANDLE;
+
+        // Baseline: the release value is reached and the tail counter has passed its value.
+        expect(hostAcquireEligible(none, semaphore, false, true, true, 5, 5, 7, 9),
+            "a host acquire with both values reached was refused");
+        // A counter equal to its value is reached.
+        expect(hostAcquireEligible(none, semaphore, false, true, true, 5, 5, 7, 7),
+            "a counter equal to its waited value was refused");
+
+        // Each condition alone refuses the host path.
+        expect(!hostAcquireEligible(fence, semaphore, false, true, true, 5, 5, 7, 9),
+            "a fence did not refuse the host path");
+        expect(!hostAcquireEligible(none, noSemaphore, false, true, true, 5, 5, 7, 9),
+            "a missing semaphore did not refuse the host path");
+        expect(!hostAcquireEligible(none, semaphore, true, true, true, 5, 5, 7, 9),
+            "a disabled host path was still used");
+        expect(!hostAcquireEligible(none, semaphore, false, false, true, 5, 5, 7, 9),
+            "a missing tail timeline did not refuse the host path");
+        expect(!hostAcquireEligible(none, semaphore, false, true, false, 5, 5, 7, 9),
+            "missing counter functions did not refuse the host path");
+
+        // A zero value needs no counter, so a zero counter is accepted.
+        expect(hostAcquireEligible(none, semaphore, false, true, true, 0, 0, 7, 9),
+            "a zero release value was refused for lack of a release counter");
+        expect(hostAcquireEligible(none, semaphore, false, true, true, 5, 5, 0, 0),
+            "a zero tail value was refused for lack of a tail counter");
+        expect(hostAcquireEligible(none, semaphore, false, true, true, 0, 0, 0, 0),
+            "an acquire with no outstanding work was refused");
+        expect(hostAcquireEligible(none, semaphore, false, true, true, 0, 3, 0, 4),
+            "nonzero counters with zero values refused the host path");
+
+        // A counter below its nonzero value refuses, whichever wait it belongs to.
+        expect(!hostAcquireEligible(none, semaphore, false, true, true, 5, 4, 7, 9),
+            "a release counter below its value did not refuse the host path");
+        expect(!hostAcquireEligible(none, semaphore, false, true, true, 5, 5, 7, 6),
+            "a tail counter below its value did not refuse the host path");
+        // A failed counter read is passed as zero, which refuses a nonzero value.
+        expect(!hostAcquireEligible(none, semaphore, false, true, true, 5, 0, 0, 0),
+            "a failed release read was treated as reached");
+        expect(!hostAcquireEligible(none, semaphore, false, true, true, 0, 0, 7, 0),
+            "a failed tail read was treated as reached");
+    }
+
     void testImageCountRule() {
         struct Case {
             uint32_t minImages;
@@ -439,6 +494,7 @@ int main() {
     testAllowedCreateFlags();
     testEnvironmentSwitch();
     testImageCountRule();
+    testHostAcquireEligibility();
     std::cout << "internal images tests passed\n";
     return 0;
 }

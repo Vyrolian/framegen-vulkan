@@ -457,11 +457,14 @@ namespace fgvk::layer::present_diagnostics {
 
     /// One F5 emulated acquire: the wait for a free private image, the wait to
     /// take the acquire submit's lock, and the QueueSubmit call itself (zero when
-    /// no submit is made). Measured only with the pacing profile.
+    /// no submit is made). F10: host is true when the acquire signalled the
+    /// application's semaphore on the host, with no lock and no submit, so the
+    /// last two are zero. Measured only with the pacing profile.
     struct InternalAcquireTiming {
         Clock::duration ringWait{};
         Clock::duration queueLock{};
         Clock::duration submit{};
+        bool host{};
     };
 
     /// Bounded CPU observations at the application's layer entrypoints. These
@@ -483,6 +486,9 @@ namespace fgvk::layer::present_diagnostics {
             BridgePresentTiming::Samples internalRingWait;
             BridgePresentTiming::Samples internalQueueLock;
             BridgePresentTiming::Samples internalSubmit;
+            // F10: emulated acquires that signalled on the host, and those that took the queued submit.
+            size_t internalHost{};
+            size_t internalQueued{};
         };
 
         [[nodiscard]] std::optional<Window> observe(uintptr_t caller,
@@ -519,6 +525,10 @@ namespace fgvk::layer::present_diagnostics {
                 window.internalRingWait.add(milliseconds(internal->ringWait));
                 window.internalQueueLock.add(milliseconds(internal->queueLock));
                 window.internalSubmit.add(milliseconds(internal->submit));
+                if (internal->host)
+                    ++window.internalHost;
+                else
+                    ++window.internalQueued;
             }
             if (finished - *windowStarted < std::chrono::seconds(1))
                 return std::nullopt;
@@ -559,7 +569,7 @@ namespace fgvk::layer::present_diagnostics {
         friend void bindApplicationAcquireContext(uint64_t) noexcept;
         friend void recordApplicationAcquireDriver(uint64_t, VkResult, Clock::time_point,
             Clock::time_point, std::optional<uint32_t>) noexcept;
-        friend void recordInternalAcquire(Clock::duration, Clock::duration, Clock::duration) noexcept;
+        friend void recordInternalAcquire(Clock::duration, Clock::duration, Clock::duration, bool) noexcept;
         ApplicationAcquireScope* previous{};
         bool installed{};
         ApplicationAcquireDetails observation;
@@ -568,9 +578,10 @@ namespace fgvk::layer::present_diagnostics {
     void bindApplicationAcquireContext(uint64_t context) noexcept;
 
     /// Attach an F5 emulated acquire's split to the application acquire in progress
-    /// on this thread. Does nothing outside an application acquire scope.
+    /// on this thread. host is the F10 host path (queueLock and submit are then zero).
+    /// Does nothing outside an application acquire scope.
     void recordInternalAcquire(Clock::duration ringWait, Clock::duration queueLock,
-        Clock::duration submit) noexcept;
+        Clock::duration submit, bool host) noexcept;
 
     void recordApplicationAcquireDriver(uint64_t timeout, VkResult result,
         Clock::time_point started, Clock::time_point finished,

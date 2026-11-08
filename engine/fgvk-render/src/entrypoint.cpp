@@ -1160,11 +1160,11 @@ namespace {
                     // D7b: the submit history exists only with the pacing profile.
                     privateQueue->history = present_diagnostics::pacingProfileEnabled();
                 }
-                // The emulated acquire's queue exists only when the family had room
-                // for both. Like the present queue, it is never registered in
-                // queueIdentities, so the application cannot see it.
-                // F9 switch for isolating the 2026-11-08 freeze: FGVK_INTERNAL_ACQUIRE_QUEUE=0
-                // keeps the emulated acquire on the present queue (F8 behaviour).
+                // The second private queue exists only when the family had room for both. Like
+                // the present queue, it is never registered in queueIdentities, so the application
+                // cannot see it. F10: no emulated acquire submits on it any more, so
+                // FGVK_INTERNAL_ACQUIRE_QUEUE only changes whether it is created (the acquire
+                // path itself is the same either way).
                 const char* acquireQueueSwitch = std::getenv("FGVK_INTERNAL_ACQUIRE_QUEUE");
                 const bool acquireQueueAllowed = !(acquireQueueSwitch && std::strcmp(acquireQueueSwitch, "0") == 0);
                 if (privatePresentQueue.acquireIndex && acquireQueueAllowed) {
@@ -1177,10 +1177,16 @@ namespace {
                 }
                 const bool acquireQueueActive = privateQueue->queue != VK_NULL_HANDLE &&
                     privateQueue->acquireQueue != VK_NULL_HANDLE;
+                // F10: the host acquire signal needs the tail timeline and both counter functions.
+                // It is also refused for the device's lifetime after a failed import.
+                const bool hostAcquireAvailable = privateQueue->tail != VK_NULL_HANDLE &&
+                    wrapper->second.df().GetSemaphoreCounterValueKHR != nullptr &&
+                    wrapper->second.df().ImportSemaphoreFdKHR != nullptr;
                 std::cerr << "framegen-vulkan: internal acquire queue: active="
                           << (acquireQueueActive ? 1 : 0) << " internal_prepare="
                           << (std::getenv("FGVK_INTERNAL_PREPARE") && std::strcmp(std::getenv("FGVK_INTERNAL_PREPARE"), "0") == 0 ? 0 : 1)
                           << " acquire_tail=" << (privateQueue->tail != VK_NULL_HANDLE ? 1 : 0)
+                          << " host_acquire=" << (hostAcquireAvailable ? 1 : 0)
                           << '\n';
                 if (privateQueue->queue)
                     instance_info->deferredPresentQueues.emplace(*device, std::move(privateQueue));

@@ -58,6 +58,17 @@ namespace fgvk::layer {
                 },
             };
         }
+
+        // F10: a timeline counter read for the host acquire path. It never waits, and a failed
+        // read reads as zero, which refuses every nonzero wait value. The caller checks that
+        // GetSemaphoreCounterValueKHR is loaded.
+        uint64_t timelineCounter(const vk::VulkanDeviceFuncs& funcs, const VkDevice device,
+                const VkSemaphore semaphore) {
+            uint64_t value = 0;
+            if (funcs.GetSemaphoreCounterValueKHR(device, semaphore, &value) != VK_SUCCESS)
+                return 0;
+            return value;
+        }
     }
 
     struct InternalSwapchainImages::Impl {
@@ -77,8 +88,8 @@ namespace fgvk::layer {
         std::optional<vk::TimelineSemaphore> release;
         // Serialised by queue->mutex: the release value and everything the copy and
         // release paths write. The emulated acquire never touches these. It reads only
-        // the ring (its own mutex) and the release handle, fixed at creation, and it
-        // submits under acquireTarget()'s mutex, never queue->mutex.
+        // the ring (its own mutex) and the release and tail counters, and it takes
+        // queue->mutex only for the queued submit (F10).
         uint64_t lastReleaseValue{0};
         std::vector<vk::Semaphore> copied;
         // R1: one binary semaphore per application image. releaseNotHandedOff signals it on
@@ -130,6 +141,9 @@ namespace fgvk::layer {
         // failure the image is freed at the last submitted value and the error is sticky.
         VkResult releaseLocked(VkQueue submitQueue, uint32_t applicationIndex,
                 std::span<const VkSemaphore> waits);
+        // D7, D7d (pacing profile only): stores one emulated acquire's release wait value, tail
+        // value and time for the stall probe. The caller checks the profile first.
+        void noteAcquireProbe(uint32_t applicationIndex, uint64_t waitValue, uint64_t tailValue);
     };
 
     bool InternalSwapchainImages::Impl::initialize(const vk::Vulkan& vk,
@@ -301,6 +315,20 @@ namespace fgvk::layer {
             static_cast<void>(ring.complete(applicationIndex, lastReleaseValue));
         }
         return result;
+    }
+
+    void InternalSwapchainImages::Impl::noteAcquireProbe(const uint32_t applicationIndex,
+            const uint64_t waitValue, const uint64_t tailValue) {
+        probeAcquireWait.store(waitValue, std::memory_order_relaxed);
+        probeAcquireIndex.store(applicationIndex, std::memory_order_relaxed);
+        probeAcquireTail.store(tailValue, std::memory_order_relaxed);
+        // D7d: the same values for this application index. The time is stored last.
+        if (applicationIndex < stallProbeIndexSlots) {
+            probeWaitOf[applicationIndex].store(waitValue, std::memory_order_relaxed);
+            probeTailOf[applicationIndex].store(tailValue, std::memory_order_relaxed);
+            probeAtOf[applicationIndex].store(steadyNanoseconds(present_diagnostics::Clock::now()),
+                std::memory_order_release);
+        }
     }
 
     InternalSwapchainImages::Impl::~Impl() {
@@ -665,63 +693,92 @@ namespace fgvk::layer {
         const auto index = impl->ring.acquireWait(timeout);
         if (!index)
             return timeout == 0 ? VK_NOT_READY : VK_TIMEOUT;
-        const auto lockStarted = measured ? present_diagnostics::Clock::now() : present_diagnostics::Clock::time_point{};
-        const auto ringWait = measured ? lockStarted - ringStarted : present_diagnostics::Clock::duration{};
+        const auto ringDone = measured ? present_diagnostics::Clock::now() : present_diagnostics::Clock::time_point{};
+        const auto ringWait = measured ? ringDone - ringStarted : present_diagnostics::Clock::duration{};
 
         // The release timeline orders the acquired image after its last copy.
         // Safety of the wait value: an index returns to Free only through complete(),
         // which stores a value whose release-timeline signal submit already returned
         // VK_SUCCESS (submitCopyLocked and releaseLocked; after a failed submit, the last
         // value that was submitted), or through release/releaseAll, which keep the value
-        // already stored. So the release signal is submitted before this submit. The
-        // application's binary semaphore, signalled here, depends on that wait, and
-        // VUID-vkQueueSubmit-pWaitSemaphores-03238 requires every signal it depends on
-        // to be submitted before a binary wait on it. The timeline wait may cross queues.
-        // The index is Acquired by this call, so complete() cannot change its value
-        // between the read and the submit. The application's semaphore and fence are
-        // signalled on the acquire queue, which no other submit uses. Without a second
-        // queue the submit runs on the present queue under its mutex, as before F9.
-        // F9c: with a second queue the submit also waits the private tail at
-        // tailSubmitted, the last value whose signal submit returned VK_SUCCESS, so the
-        // same VUID holds for that wait. A same-queue acquire needs no tail wait: queue
-        // order already runs it after every earlier private batch, and so does the
-        // tail wait on the acquire queue, which restores that ordering.
-        // D5's internal_queue_lock_* fields keep their names. They now measure the wait
-        // for submitMutex, the acquire queue's lock (or the present queue's lock).
-        {
-            const auto [submitQueue, submitMutex] = impl->queue->acquireTarget();
-            const std::lock_guard lock(submitMutex);
+        // already stored. So the release signal is submitted before this acquire. The
+        // index is Acquired by this call, so complete() cannot change its value between
+        // the read and the signal.
+        const uint64_t waitValue = impl->ring.releaseValueOf(*index);
+
+        // F10, host path. Both waited values are checked on the host, and counter reads never
+        // wait. Once the release value and the tail value are reached, the GPU would pass both
+        // waits at once, so the application's semaphore can be signalled on the host. The signal
+        // is a temporary import of an already-signalled SYNC_FD payload (fd -1, the sync-fd rule
+        // of the Vulkan specification; Mesa's WSI signals an acquire this way). The application's
+        // acquire semaphore has no pending operations (VUID-vkAcquireNextImageKHR-semaphore-01286),
+        // and a SYNC_FD import has copy transference, so it takes the temporary flag
+        // (VUID-VkImportSemaphoreFdInfoKHR-handleType-03263).
+        // Ordering: a queued submit runs its signal after every private batch submitted before it.
+        // tailSubmitted is the last tail value whose submit returned VK_SUCCESS, so the tail counter
+        // reaching it means every such batch has completed. A batch still inside its submit under
+        // queue->mutex is not covered. The queued path waits for that lock; this path does not, the
+        // same gap as F9c.
+        const bool hostDisabled = impl->queue->hostAcquireDisabled.load(std::memory_order_acquire);
+        const bool tailPresent = impl->queue->tail != VK_NULL_HANDLE;
+        const bool functionsLoaded = impl->funcs.GetSemaphoreCounterValueKHR != nullptr &&
+            impl->funcs.ImportSemaphoreFdKHR != nullptr;
+        // Counters are read only when every other condition holds, and only for a nonzero value.
+        const bool hostCandidate = fence == VK_NULL_HANDLE && semaphore != VK_NULL_HANDLE &&
+            tailPresent && functionsLoaded && !hostDisabled;
+        const uint64_t tailValue = hostCandidate
+            ? impl->queue->tailSubmitted.load(std::memory_order_acquire) : 0;
+        const uint64_t releaseCounter = hostCandidate && waitValue != 0
+            ? timelineCounter(impl->funcs, impl->device, impl->release->handle()) : 0;
+        const uint64_t tailCounter = hostCandidate && tailValue != 0
+            ? timelineCounter(impl->funcs, impl->device, impl->queue->tail) : 0;
+        bool signalledOnHost = false;
+        if (hostAcquireEligible(fence, semaphore, hostDisabled, tailPresent, functionsLoaded,
+                waitValue, releaseCounter, tailValue, tailCounter)) {
+            if (measured)
+                impl->noteAcquireProbe(*index, waitValue, tailValue);
+            const VkImportSemaphoreFdInfoKHR importInfo{
+                .sType = VK_STRUCTURE_TYPE_IMPORT_SEMAPHORE_FD_INFO_KHR,
+                .semaphore = semaphore,
+                .flags = VK_SEMAPHORE_IMPORT_TEMPORARY_BIT,
+                .handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT,
+                .fd = -1,
+            };
+            const VkResult imported = impl->funcs.ImportSemaphoreFdKHR(impl->device, &importInfo);
+            if (imported == VK_SUCCESS) {
+                signalledOnHost = true;
+                if (measured)
+                    present_diagnostics::recordInternalAcquire(ringWait, {}, {}, true);
+            } else if (!impl->queue->hostAcquireDisabled.exchange(true)) {
+                // A failed import is not an acquire error: this acquire takes the queued path.
+                std::cerr << "framegen-vulkan: host acquire signal disabled: result="
+                          << static_cast<int>(imported) << '\n';
+            }
+        }
+
+        if (!signalledOnHost) {
+            // F10, queued path: the acquire runs on the private queue under queue->mutex, as F8
+            // ran it. It waits only the release value. No tail wait is needed: this submit is on
+            // the queue that holds every earlier private batch, so queue order runs its signal
+            // after them. The release value's signal was submitted before (see above), so the
+            // wait satisfies VUID-vkQueueSubmit-pWaitSemaphores-03238.
+            const auto lockRequested = measured ? present_diagnostics::Clock::now() : present_diagnostics::Clock::time_point{};
+            const std::lock_guard lock(impl->queue->mutex);
             const auto lockAcquired = measured ? present_diagnostics::Clock::now() : present_diagnostics::Clock::time_point{};
-            const auto lockWait = measured ? lockAcquired - lockStarted : present_diagnostics::Clock::duration{};
-            const uint64_t waitValue = impl->ring.releaseValueOf(*index);
-            const bool waitRelease = waitValue != 0;
-            const bool signalSemaphore = semaphore != VK_NULL_HANDLE;
-            const bool tailWait = impl->queue->acquireQueue != VK_NULL_HANDLE &&
-                impl->queue->tail != VK_NULL_HANDLE;
-            const uint64_t tailValue = tailWait
-                ? impl->queue->tailSubmitted.load(std::memory_order_acquire) : 0;
+            const auto lockWait = measured ? lockAcquired - lockRequested : present_diagnostics::Clock::duration{};
             present_diagnostics::Clock::duration submitWait{};
             VkResult submitted = VK_SUCCESS;
+            const bool waitRelease = waitValue != 0;
+            const bool signalSemaphore = semaphore != VK_NULL_HANDLE;
             if (waitRelease || signalSemaphore || fence != VK_NULL_HANDLE) {
                 const VkSemaphore releaseHandle = impl->release->handle();
-                std::array<VkSemaphore, 2> waitSemaphores{};
-                std::array<uint64_t, 2> waitValues{};
-                uint32_t waitCount = 0;
-                if (waitRelease) {
-                    waitSemaphores[waitCount] = releaseHandle;
-                    waitValues[waitCount++] = waitValue;
-                }
-                if (tailValue != 0) {
-                    waitSemaphores[waitCount] = impl->queue->tail;
-                    waitValues[waitCount++] = tailValue;
-                }
-                const std::array<VkPipelineStageFlags, 2> stages{
-                    VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT};
+                const uint32_t waitCount = waitRelease ? 1u : 0u;
+                const VkPipelineStageFlags stage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
                 const uint64_t zero = 0;
                 const VkTimelineSemaphoreSubmitInfo timeline{
                     .sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
                     .waitSemaphoreValueCount = waitCount,
-                    .pWaitSemaphoreValues = waitValues.data(),
+                    .pWaitSemaphoreValues = &waitValue,
                     .signalSemaphoreValueCount = signalSemaphore ? 1u : 0u,
                     .pSignalSemaphoreValues = &zero,
                 };
@@ -729,27 +786,17 @@ namespace fgvk::layer {
                     .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
                     .pNext = &timeline,
                     .waitSemaphoreCount = waitCount,
-                    .pWaitSemaphores = waitSemaphores.data(),
-                    .pWaitDstStageMask = stages.data(),
+                    .pWaitSemaphores = &releaseHandle,
+                    .pWaitDstStageMask = &stage,
                     .commandBufferCount = 0,
                     .pCommandBuffers = nullptr,
                     .signalSemaphoreCount = signalSemaphore ? 1u : 0u,
                     .pSignalSemaphores = &semaphore,
                 };
-                if (measured) {
-                    impl->probeAcquireWait.store(waitValue, std::memory_order_relaxed);
-                    impl->probeAcquireIndex.store(*index, std::memory_order_relaxed);
-                    impl->probeAcquireTail.store(tailValue, std::memory_order_relaxed);
-                    // D7d: the same values for this application index. The time is stored last.
-                    if (*index < stallProbeIndexSlots) {
-                        impl->probeWaitOf[*index].store(waitValue, std::memory_order_relaxed);
-                        impl->probeTailOf[*index].store(tailValue, std::memory_order_relaxed);
-                        impl->probeAtOf[*index].store(steadyNanoseconds(present_diagnostics::Clock::now()),
-                            std::memory_order_release);
-                    }
-                }
+                if (measured)
+                    impl->noteAcquireProbe(*index, waitValue, 0);
                 const auto submitStarted = measured ? present_diagnostics::Clock::now() : present_diagnostics::Clock::time_point{};
-                submitted = impl->funcs.QueueSubmit(submitQueue, 1, &submit, fence);
+                submitted = impl->funcs.QueueSubmit(impl->queue->queue, 1, &submit, fence);
                 if (measured)
                     submitWait = present_diagnostics::Clock::now() - submitStarted;
                 if (submitted != VK_SUCCESS) {
@@ -758,7 +805,7 @@ namespace fgvk::layer {
                 }
             }
             if (measured)
-                present_diagnostics::recordInternalAcquire(ringWait, lockWait, submitWait);
+                present_diagnostics::recordInternalAcquire(ringWait, lockWait, submitWait, false);
             if (submitted != VK_SUCCESS)
                 return submitted;
         }

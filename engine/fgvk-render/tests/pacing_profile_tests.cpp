@@ -439,6 +439,21 @@ void copyProfileSwitches() {
             "copy profile switch regression failed");
     }
 }
+// F10: the acquire window counts the emulated acquires that signalled on the host and those that were queued.
+void internalAcquireSplitCounts() {
+    ApplicationFrameTiming timing;
+    const auto start = Clock::now();
+    const auto swapchain = fgHandle<VkSwapchainKHR>(0x3000);
+    // Three acquires in one window, two on the host and one queued. The window closes at 1 s.
+    const auto first = timing.observe(1, swapchain, start, start + 1ms, VK_SUCCESS, 0, {}, {},
+        InternalAcquireTiming{0ns, 0ns, 0ns, true});
+    const auto second = timing.observe(1, swapchain, start + 100ms, start + 101ms, VK_SUCCESS, 0, {}, {},
+        InternalAcquireTiming{1ms, 2ms, 3ms, false});
+    const auto third = timing.observe(1, swapchain, start + 1s, start + 1s + 1ms, VK_SUCCESS, 0, {}, {},
+        InternalAcquireTiming{0ns, 0ns, 0ns, true});
+    expect(!first && !second && third && third->internalHost == 2 && third->internalQueued == 1,
+        "the acquire window did not count host and queued emulated acquires");
+}
 }
 int main() {
     // Before any gate is read here: the forked profile-on child must read its own environment.
@@ -446,6 +461,7 @@ int main() {
     // Inherited copy state must not change the isolated cases below.
     unsetenv("FGVK_PACING_PROFILE_COPY");
     timingObservations();
+    internalAcquireSplitCounts();
     outputSequence();
     sourceIdentity();
     copyProfileSwitches();
