@@ -1,7 +1,9 @@
-# The pacing recorder: the bounded record queue, and the writer that formats it.
+# The pacing recorder: the bounded record queue, the writer that formats it, and the pin that keeps
+# the layer mapped while that writer thread runs.
 set(PRESENT_RECORD_SOURCES
     "src/trace_recorder.cpp"
-    "src/present_records.cpp")
+    "src/present_records.cpp"
+    "src/library_pin.cpp")
 
 set(LAYER_SOURCES
     "src/entrypoint.cpp"
@@ -223,6 +225,21 @@ if(BUILD_TESTING)
     target_link_libraries(fgvk-pacing-profile-tests PRIVATE fgvk-adaptive ${CMAKE_DL_LIBS})
     add_test(NAME pacing-profile COMMAND fgvk-pacing-profile-tests)
     fgvk_register_portable_policy_test(fgvk-pacing-profile-tests pacing-profile)
+
+    # The layer pin: the module starts a detached thread inside its own DSO, then the executable
+    # unloads it. Without the pin the thread wakes into unmapped code and the test crashes.
+    add_library(fgvk-library-pin-module MODULE
+        "src/library_pin.cpp" "tests/library_pin_tests.cpp")
+    target_include_directories(fgvk-library-pin-module PRIVATE "src")
+    target_compile_definitions(fgvk-library-pin-module PRIVATE FGVK_LIBRARY_PIN_MODULE)
+    target_link_libraries(fgvk-library-pin-module PRIVATE Threads::Threads ${CMAKE_DL_LIBS})
+    add_executable(fgvk-library-pin-tests "tests/library_pin_tests.cpp")
+    target_include_directories(fgvk-library-pin-tests PRIVATE "src")
+    target_link_libraries(fgvk-library-pin-tests PRIVATE ${CMAKE_DL_LIBS})
+    add_dependencies(fgvk-library-pin-tests fgvk-library-pin-module)
+    add_test(NAME library-pin COMMAND fgvk-library-pin-tests $<TARGET_FILE:fgvk-library-pin-module>)
+    fgvk_register_portable_policy_test(fgvk-library-pin-tests library-pin)
+
     add_executable(fgvk-native-copy-profile-tests
         "tests/native_copy_profile_tests.cpp" "src/present_diagnostics.cpp" ${PRESENT_RECORD_SOURCES})
     target_include_directories(fgvk-native-copy-profile-tests PRIVATE "src")

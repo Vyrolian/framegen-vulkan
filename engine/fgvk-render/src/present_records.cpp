@@ -6,6 +6,8 @@
 
 #include "present_records.hpp"
 
+#include "library_pin.hpp"
+
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -1073,7 +1075,9 @@ void initialize() noexcept {
         if (state()) return;
         auto* s = new Recorder;
         activeState.store(s, std::memory_order_release);
-        std::thread([s] { writerMain(*s); }).detach();
+        // The writer runs inside this DSO. Pin it first; if the pin fails, no writer starts and
+        // records wait for flushRecords() or drainAtExit.
+        if (pinLayerLibrary()) std::thread([s] { writerMain(*s); }).detach();
         std::atexit(drainAtExit);
     } catch (...) {}
 }

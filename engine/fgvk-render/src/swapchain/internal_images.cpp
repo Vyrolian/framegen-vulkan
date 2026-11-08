@@ -3,6 +3,7 @@
 #include "swapchain/internal_images.hpp"
 
 #include "swapchain/deferred_present.hpp"
+#include "library_pin.hpp"
 #include "present_diagnostics.hpp"
 #include "fgvk-common/helpers/errors.hpp"
 #include "fgvk-common/vulkan/command_buffer.hpp"
@@ -480,7 +481,9 @@ namespace fgvk::layer {
         const std::lock_guard lock(stallRegistryMutex());
         try {
             stallRegistry().push_back(owner);
-            if (!stallWatchdogStarted()) {
+            // The watchdog runs inside this DSO. When the pin fails, it does not start and no stall
+            // dumps are written.
+            if (!stallWatchdogStarted() && pinLayerLibrary()) {
                 std::thread(&InternalSwapchainImages::stallWatchdogLoop).detach();
                 stallWatchdogStarted() = true;
             }
