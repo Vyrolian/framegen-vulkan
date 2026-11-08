@@ -1,6 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "swapchain/internal_images.hpp"
 
+#include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -31,25 +33,33 @@ namespace {
         expect(ring.acquiredCount() == 3, "three acquisitions did not count as acquired");
         expect(!ring.acquire().has_value(), "acquire succeeded with every image held");
 
-        // Presents join the tail in call order. Acquires return the oldest first.
+        // A presented image stays unavailable until its copy completes.
         expect(ring.present(1) && ring.present(0),
             "presenting acquired images failed");
+        expect(!ring.acquire().has_value(), "a presented image was reused before its copy completed");
+        expect(ring.pendingCount() == 2 && ring.acquiredCount() == 1,
+            "presented images were not counted as pending");
+        // Completion joins the tail in call order. Acquires return the oldest first.
+        expect(ring.complete(1, 0) && ring.complete(0, 0),
+            "completing presented images failed");
         expect(ring.acquire() == 1u && ring.acquire() == 0u,
-            "the FIFO did not return released images in release order");
-        expect(!ring.acquire().has_value(), "a presented image was acquired twice");
+            "the FIFO did not return completed images in completion order");
+        expect(!ring.acquire().has_value(), "a completed image was acquired twice");
 
-        expect(ring.present(2), "presenting the last held image failed");
-        expect(ring.acquire() == 2u, "the last presented image was not reused");
+        expect(ring.present(2) && ring.complete(2, 0),
+            "presenting and completing the last held image failed");
+        expect(ring.acquire() == 2u, "the last completed image was not reused");
         expect(ring.acquiredCount() == 3, "steady-state acquired count drifted");
     }
 
-    void testReleaseJoinsTailWithPresent() {
+    void testReleaseJoinsTailWithComplete() {
         InternalImageRing ring(3);
         expect(ring.acquire() == 0u && ring.acquire() == 1u && ring.acquire() == 2u,
             "setup acquisitions failed");
-        expect(ring.present(2) && ring.present(1) && ring.present(0),
+        expect(ring.present(2) && ring.complete(2, 0) && ring.present(1) && ring.complete(1, 0) &&
+                ring.present(0) && ring.complete(0, 0),
             "setup presents failed");
-        // Release shares the tail with present; it is never an unordered list.
+        // Release shares the tail with completion; it is never an unordered list.
         expect(ring.acquire() == 2u, "the first released index was not first");
         expect(ring.release(2), "releasing an acquired image without a copy failed");
         expect(ring.acquire() == 1u && ring.acquire() == 0u && ring.acquire() == 2u,
@@ -60,21 +70,27 @@ namespace {
         InternalImageRing ring(3);
         expect(!ring.present(0), "presenting a free image succeeded");
         expect(!ring.release(0), "releasing a free image succeeded");
-        expect(!ring.present(3) && !ring.release(3) && !ring.present(UINT32_MAX),
+        expect(!ring.complete(0, 1), "completing a free image succeeded");
+        expect(!ring.present(3) && !ring.release(3) && !ring.present(UINT32_MAX) &&
+                !ring.complete(3, 1),
             "an out-of-range index was accepted");
-        expect(ring.acquiredCount() == 0, "invalid operations changed the acquired count");
+        expect(ring.acquiredCount() == 0 && ring.pendingCount() == 0,
+            "invalid operations changed the counts");
         expect(ring.acquire() == 0u, "invalid operations changed the free order");
 
         expect(ring.present(0), "presenting the acquired image failed");
         expect(!ring.present(0) && !ring.release(0),
             "a second present or release of the same image succeeded");
-        expect(ring.acquiredCount() == 0, "a rejected second present changed the count");
+        expect(ring.acquiredCount() == 0 && ring.pendingCount() == 1,
+            "a rejected second present changed the count");
+        // A pending image is neither free nor acquired: the others are handed out first.
+        expect(ring.acquire() == 1u && ring.acquire() == 2u,
+            "a pending image was handed out before its copy completed");
+        expect(!ring.acquire().has_value(), "a pending image was acquired");
 
         // releaseAll is atomic: one bad index means no image is released.
-        expect(ring.acquire() == 1u && ring.acquire() == 2u,
-            "setup acquisitions failed");
-        const std::vector<uint32_t> withFree{1, 0};
-        expect(!ring.releaseAll(withFree), "releaseAll accepted a free image");
+        const std::vector<uint32_t> withPending{1, 0};
+        expect(!ring.releaseAll(withPending), "releaseAll accepted a pending image");
         expect(ring.acquiredCount() == 2 && ring.isAcquired(1) && ring.isAcquired(2),
             "a rejected releaseAll changed an image");
         const std::vector<uint32_t> duplicate{1, 1};
@@ -83,8 +99,9 @@ namespace {
         const std::vector<uint32_t> valid{2, 1};
         expect(ring.releaseAll(valid) && ring.acquiredCount() == 0,
             "a valid releaseAll did not release every listed image");
-        expect(ring.acquire() == 0u && ring.acquire() == 2u && ring.acquire() == 1u,
-            "releaseAll did not append in the listed order");
+        expect(ring.complete(0, 0), "completing the pending image failed");
+        expect(ring.acquire() == 2u && ring.acquire() == 1u && ring.acquire() == 0u,
+            "releaseAll and complete did not append in order");
     }
 
     void testAcquiredCountAndAcquiredState() {
@@ -94,8 +111,9 @@ namespace {
             "one acquire did not count as one held image");
         expect(ring.acquire().has_value() && ring.acquiredCount() == 2,
             "two acquires did not count as two held images");
-        expect(ring.present(0) && ring.acquiredCount() == 1 && !ring.isAcquired(0),
-            "presenting did not reduce the held count");
+        expect(ring.present(0) && ring.acquiredCount() == 1 && !ring.isAcquired(0) &&
+                ring.pendingCount() == 1,
+            "presenting did not move the image from held to pending");
     }
 
     void testReleaseValuesPerIndex() {
@@ -115,6 +133,14 @@ namespace {
         expect(outOfRange, "an out-of-range release value was not rejected");
     }
 
+    void testCompleteStoresReleaseValue() {
+        InternalImageRing ring(2);
+        expect(ring.acquire() == 0u && ring.present(0), "setup failed");
+        expect(ring.releaseValue(0) == 0, "a pending image already had a release value");
+        expect(ring.complete(0, 42) && ring.releaseValue(0) == 42,
+            "complete did not record the release value");
+    }
+
     void testRingSizeBounds() {
         for (const uint32_t count : {2u, 8u}) {
             InternalImageRing ring(count);
@@ -129,6 +155,47 @@ namespace {
             }
             expect(rejected, "a ring size outside [2, 8] was accepted");
         }
+    }
+
+    void testAcquireWaitsForComplete() {
+        // The acquire blocks until a presented image completes on another thread.
+        InternalImageRing ring(2);
+        expect(ring.acquire() == 0u && ring.acquire() == 1u, "setup acquisitions failed");
+        expect(ring.present(0), "presenting the held image failed");
+        std::atomic<bool> returned{false};
+        std::optional<uint32_t> got;
+        std::thread waiter([&] {
+            got = ring.acquireWait(UINT64_MAX);
+            returned = true;
+        });
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        expect(!returned.load(), "an unlimited acquire returned before any image was completed");
+        expect(ring.complete(0, 5), "completing the pending image failed");
+        waiter.join();
+        expect(got && *got == 0u && ring.releaseValue(0) == 5,
+            "the blocked acquire did not receive the completed image");
+    }
+
+    void testAcquireWaitZeroNeverWaits() {
+        InternalImageRing ring(2);
+        expect(ring.acquire().has_value() && ring.acquire().has_value(), "setup acquisitions failed");
+        const auto started = std::chrono::steady_clock::now();
+        expect(!ring.acquireWait(0).has_value(), "a zero-timeout acquire returned an image");
+        expect(std::chrono::steady_clock::now() - started < std::chrono::seconds(1),
+            "a zero-timeout acquire waited");
+        expect(ring.acquiredCount() == 2, "a rejected zero-timeout acquire changed the ring");
+    }
+
+    void testAcquireWaitTimesOut() {
+        InternalImageRing ring(2);
+        expect(ring.acquire().has_value() && ring.acquire().has_value(), "setup acquisitions failed");
+        const auto started = std::chrono::steady_clock::now();
+        expect(!ring.acquireWait(20'000'000).has_value(),
+            "a finite acquire returned an image while none was free");
+        const auto waited = std::chrono::steady_clock::now() - started;
+        expect(waited >= std::chrono::milliseconds(10) && waited < std::chrono::seconds(5),
+            "a finite acquire did not wait for its timeout");
+        expect(ring.acquiredCount() == 2, "a timed-out acquire changed the ring");
     }
 
     void testCrossThreadExchange() {
@@ -153,7 +220,8 @@ namespace {
                     std::this_thread::yield();
                     continue;
                 }
-                expect(ring.present(*index), "a handed-off image was not held");
+                expect(ring.present(*index) && ring.complete(*index, 0),
+                    "a handed-off image was not held");
                 ++presented;
             }
         });
@@ -169,7 +237,8 @@ namespace {
             handoff.push_back(*index);
         }
         presenter.join();
-        expect(ring.acquiredCount() == 0, "the cross-thread exchange left images held");
+        expect(ring.acquiredCount() == 0 && ring.pendingCount() == 0,
+            "the cross-thread exchange left images held");
     }
 
     InternalImageGateInput eligibleInput() {
@@ -180,6 +249,7 @@ namespace {
             .frameGenerationEnabled = true,
             .adaptive = false,
             .deferredPresentQueue = true,
+            .diagnosticCopyPath = false,
             .gamescopeScalingSurface = false,
             .gamescopeDetected = false,
             .spatialScalingActive = false,
@@ -216,6 +286,7 @@ namespace {
             {"frame-generation-disabled", [](auto& in) { in.frameGenerationEnabled = false; }},
             {"adaptive", [](auto& in) { in.adaptive = true; }},
             {"no-deferred-present-queue", [](auto& in) { in.deferredPresentQueue = false; }},
+            {"diagnostic-copy-path", [](auto& in) { in.diagnosticCopyPath = true; }},
             {"gamescope", [](auto& in) { in.gamescopeScalingSurface = true; }},
             {"gamescope", [](auto& in) { in.gamescopeDetected = true; }},
             {"spatial-scaling", [](auto& in) { in.spatialScalingActive = true; }},
@@ -280,13 +351,13 @@ namespace {
             uint32_t expected;
         };
         const std::vector<Case> cases{
-            {0, 3, 3},   // max(min, 3) gives three
-            {2, 4, 3},   // three is the floor when the lower count allows it
-            {5, 8, 5},   // the application minimum is honoured
-            {9, 8, 8},   // the lower count caps the private count
-            {3, 2, 2},   // two lower images still yield two private images
+            {0, 3, 5},   // max(min, 3) + 2 gives five
+            {2, 4, 5},   // three is the floor before the two extra images
+            {5, 8, 7},   // the application minimum is honoured, plus two
+            {9, 8, 8},   // the eight-image ceiling caps a large minimum
+            {3, 2, 5},   // two lower images do not limit the private count
             {3, 1, 0},   // one lower image cannot host the ring
-            {0, 12, 3},  // the eight-image ceiling does not raise a small minimum
+            {0, 12, 5},  // the ceiling does not raise a small minimum
             {12, 12, 8}, // the eight-image ceiling caps a large minimum
         };
         for (const auto& testCase : cases) {
@@ -298,11 +369,15 @@ namespace {
 
 int main() {
     testRingFifoOrder();
-    testReleaseJoinsTailWithPresent();
+    testReleaseJoinsTailWithComplete();
     testInvalidOperationsChangeNothing();
     testAcquiredCountAndAcquiredState();
     testReleaseValuesPerIndex();
+    testCompleteStoresReleaseValue();
     testRingSizeBounds();
+    testAcquireWaitsForComplete();
+    testAcquireWaitZeroNeverWaits();
+    testAcquireWaitTimesOut();
     testCrossThreadExchange();
     testEligibleBaseline();
     testEachFailingConditionAlone();

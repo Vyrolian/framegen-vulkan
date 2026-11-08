@@ -2529,6 +2529,16 @@ namespace {
             ? nullptr : found->second.get();
     }
 
+    // Diagnostic copy paths assume the lower image is the application's image.
+    // FGVK_PACING_PROFILE_COPY=1 selects the native copy profile, and
+    // FGVK_PACING_PROFILE_CONTENT=1 enables frame-content capture (see
+    // FrameContentCapture::create). Either keeps internal images off.
+    bool internalDiagnosticCopyPathConfigured() {
+        const char* content = std::getenv("FGVK_PACING_PROFILE_CONTENT");
+        return present_diagnostics::pacingCopyProfileEnabled() ||
+            (content && std::string_view(content) == "1");
+    }
+
     // F5 gate and creation for one context-backed swapchain. Refusal or any
     // allocation failure keeps the direct lower-image path. The decision is
     // logged once for each swapchain created with a Frame Generation context.
@@ -2550,6 +2560,7 @@ namespace {
                 .frameGenerationEnabled = profile.frame_generation_enabled,
                 .adaptive = profile.adaptive,
                 .deferredPresentQueue = static_cast<bool>(swapchainInfo.deferredPresentQueue),
+                .diagnosticCopyPath = internalDiagnosticCopyPathConfigured(),
                 .gamescopeScalingSurface = swapchainInfo.gamescopeScalingSurface != nullptr,
                 .gamescopeDetected = context.gamescopeDetectedAtCreation(),
                 .spatialScalingActive = swapchainInfo.spatialScalingActive,
@@ -2569,7 +2580,7 @@ namespace {
             if (!reason) {
                 imageCount = internalImageCount(application.minImageCount,
                     static_cast<uint32_t>(swapchainInfo.images.size()));
-                images = InternalSwapchainImages::create(vk, application,
+                images = InternalSwapchainImages::create(vk, swapchain, application,
                     swapchainInfo.applicationExtent, swapchainInfo.images,
                     imageCount, swapchainInfo.deferredPresentQueue);
                 if (!images) {
@@ -3326,7 +3337,8 @@ namespace {
 
     // Defined after the acquire helpers, which it shares with the lower path.
     VkResult presentInternalSwapchainImage(Swapchain& context, vk::Vulkan& vk,
-        VkQueue queue, VkSwapchainKHR swapchain, InternalSwapchainImages& internal,
+        VkQueue queue, VkSwapchainKHR swapchain,
+        const std::shared_ptr<InternalSwapchainImages>& internal,
         const VkPresentInfoKHR& presentInfo, uint32_t presentIndex);
 
     VkResult myvkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR* info) {
@@ -3496,9 +3508,12 @@ namespace {
 
                 auto& context = layer_info->root.getSwapchainContext(swapchain, it->second);
                 presentingContextId = context.diagnosticsId();
-                if (auto* internal = internalImagesFor(swapchain)) {
+                if (const auto found = instance_info->internalSwapchains.find(swapchain);
+                        found != instance_info->internalSwapchains.end()) {
+                    // A copy keeps the images alive for this whole present call.
+                    const auto internal = found->second;
                     result = presentInternalSwapchainImage(context, it->second,
-                        queue, swapchain, *internal, *info, static_cast<uint32_t>(i));
+                        queue, swapchain, internal, *info, static_cast<uint32_t>(i));
                 } else {
                     result = context.present(it->second,
                         queue, swapchain,
@@ -3724,63 +3739,64 @@ namespace {
             completed == VK_SUBOPTIMAL_KHR, imageIndex);
     }
 
-    // The application presents a private image. The layer acquires the lower
-    // image on this thread, copies the private image into it, and then
-    // presents the lower index through the existing Swapchain path. The
-    // copied semaphore takes the place of the application's wait semaphores.
+    // The application presents a private image. The real output's lower acquire,
+    // copy and present happen on the deferred worker at the output deadline, or
+    // synchronously when the present is not deferred. The descriptor carries
+    // what either path needs. A copy that was never handed off releases the
+    // image here, and the swapchain turns OUT_OF_DATE so the game recreates it.
     VkResult presentInternalSwapchainImage(Swapchain& context, vk::Vulkan& vk,
             const VkQueue queue, const VkSwapchainKHR swapchain,
-            InternalSwapchainImages& internal, const VkPresentInfoKHR& presentInfo,
-            const uint32_t presentIndex) {
+            const std::shared_ptr<InternalSwapchainImages>& internal,
+            const VkPresentInfoKHR& presentInfo, const uint32_t presentIndex) {
+        InternalSwapchainImages& images = *internal;
         const uint32_t applicationIndex = presentInfo.pImageIndices[presentIndex];
         const auto applicationWaits = presentInfo.waitSemaphoreCount > 0
             ? std::span<const VkSemaphore>(
                 presentInfo.pWaitSemaphores, presentInfo.waitSemaphoreCount)
             : std::span<const VkSemaphore>{};
-        if (!internal.isAcquired(applicationIndex))
+        if (!images.isAcquired(applicationIndex))
             return VK_ERROR_VALIDATION_FAILED_EXT;
-        if (const VkResult sticky = internal.stickyError(); sticky != VK_SUCCESS) {
-            static_cast<void>(internal.presentWithoutCopy(applicationIndex, applicationWaits));
+        if (const VkResult sticky = images.stickyError(); sticky != VK_SUCCESS) {
+            static_cast<void>(images.consumeWithoutCopy(applicationIndex, applicationWaits));
             return sticky;
         }
 
-        uint32_t lowerIndex = 0;
-        uint32_t slot = 0;
-        const VkResult acquired = acquireAfterDeferredPresent(swapchain, UINT64_MAX,
-            [&](uint64_t timeout) {
-                // A poll (timeout 0) reports NOT_READY while the slot is busy.
-                const VkResult waited = internal.waitLowerAcquireSlot(timeout);
-                if (waited != VK_SUCCESS) return waited;
-                uint32_t index = 0;
-                const VkResult lower = vk.df().AcquireNextImageKHR(vk.dev(), swapchain,
-                    timeout, internal.lowerAcquireSemaphore(), VK_NULL_HANDLE, &index);
-                if (lower == VK_SUCCESS || lower == VK_SUBOPTIMAL_KHR) {
-                    lowerIndex = index;
-                    slot = internal.commitLowerAcquire();
-                }
-                return lower;
-            }, false);
-        if (acquired != VK_SUCCESS && acquired != VK_SUBOPTIMAL_KHR) {
-            internal.noteLowerError(acquired);
-            const VkResult error = acquired < 0 ? acquired : VK_ERROR_UNKNOWN;
-            static_cast<void>(internal.presentWithoutCopy(applicationIndex, applicationWaits));
-            return error;
+        images.markPending(applicationIndex);
+        InternalPresentImage descriptor{
+            .applicationIndex = applicationIndex,
+            .image = images.images()[applicationIndex],
+            .realSlot = images.lowerImageCount() + applicationIndex,
+            .owner = &images,
+            .keepAlive = internal,
+            .lowerAcquire = [&](const uint64_t timeout, const VkSemaphore semaphore,
+                    uint32_t* const index) {
+                return acquireAfterDeferredPresent(swapchain, timeout, [&](uint64_t remaining) {
+                    // A poll (timeout 0) reports NOT_READY while the slot is busy.
+                    const VkResult waited = images.waitLowerAcquireSlot(remaining);
+                    if (waited != VK_SUCCESS) return waited;
+                    const VkResult lower = vk.df().AcquireNextImageKHR(vk.dev(), swapchain,
+                        remaining, semaphore, VK_NULL_HANDLE, index);
+                    if (lower == VK_SUCCESS || lower == VK_SUBOPTIMAL_KHR)
+                        static_cast<void>(images.commitLowerAcquire());
+                    return lower;
+                }, false);
+            },
+        };
+
+        VkResult result = VK_SUCCESS;
+        try {
+            result = context.present(vk, queue, swapchain,
+                const_cast<void*>(presentInfo.pNext), applicationIndex,
+                applicationWaits, &descriptor);
+        } catch (...) {
+            if (!descriptor.handedOff)
+                images.releaseNotHandedOff(queue, applicationIndex);
+            throw;
         }
-
-        const bool lowerSuboptimal = acquired == VK_SUBOPTIMAL_KHR;
-        if (lowerSuboptimal)
-            internal.markLowerSuboptimal();
-        VkResult result = internal.presentCopy(vk, applicationIndex, lowerIndex, slot,
-            applicationWaits);
-        if (result != VK_SUCCESS)
-            return result;
-
-        const VkSemaphore copied = internal.copiedSemaphore(lowerIndex);
-        result = context.present(vk, queue, swapchain,
-            const_cast<void*>(presentInfo.pNext), lowerIndex,
-            std::span<const VkSemaphore>(&copied, 1));
-        if (result == VK_SUCCESS && lowerSuboptimal)
-            return VK_SUBOPTIMAL_KHR;
+        if (!descriptor.handedOff) {
+            images.releaseNotHandedOff(queue, applicationIndex);
+            return result < 0 ? result : VK_ERROR_OUT_OF_DATE_KHR;
+        }
         return result;
     }
 

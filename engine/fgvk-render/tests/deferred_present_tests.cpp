@@ -1421,6 +1421,230 @@ void unboundedDrainWaitsForLatchedPresent() {
         "released unbounded drain dropped or duplicated the latched image");
 }
 
+// Internal real outputs. The fake callbacks script the lower acquire and record
+// what the worker submitted, so the worker's contract is observable without Vulkan.
+namespace {
+struct InternalFake {
+    int notReadyPolls{};
+    VkResult failure{VK_SUCCESS};
+    uint32_t lowerIndex{7};
+    VkSemaphore presentWait{};
+    VkResult submitResult{VK_SUCCESS};
+    int tryCalls{}, submits{}, abandons{};
+    uint32_t submittedApplication{}, submittedLower{}, abandonedApplication{};
+    VkSemaphore submittedContinuation{}, abandonedContinuation{};
+};
+VkResult fakeTryAcquire(void* owner, uint32_t* lowerIndex) {
+    auto& state = *static_cast<InternalFake*>(owner);
+    ++state.tryCalls;
+    if (state.notReadyPolls > 0) {
+        --state.notReadyPolls;
+        return VK_NOT_READY;
+    }
+    if (state.failure < 0) return state.failure;
+    *lowerIndex = state.lowerIndex;
+    return VK_SUCCESS;
+}
+VkResult fakeSubmit(void* owner, VkQueue queue, uint32_t applicationIndex, uint32_t lowerIndex,
+        VkSemaphore continuation, VkSemaphore* presentWait) {
+    auto& state = *static_cast<InternalFake*>(owner);
+    expect(queue == handle<VkQueue>(7), "internal copy submitted on the wrong queue");
+    ++state.submits;
+    state.submittedApplication = applicationIndex;
+    state.submittedLower = lowerIndex;
+    state.submittedContinuation = continuation;
+    *presentWait = state.presentWait;
+    return state.submitResult;
+}
+VkResult fakeAbandon(void* owner, VkQueue queue, uint32_t applicationIndex, VkSemaphore continuation) {
+    auto& state = *static_cast<InternalFake*>(owner);
+    expect(queue == handle<VkQueue>(7), "abandon submitted on the wrong queue");
+    ++state.abandons;
+    state.abandonedApplication = applicationIndex;
+    state.abandonedContinuation = continuation;
+    return VK_SUCCESS;
+}
+DeferredPresent::InternalRealCopy internalCopy(const std::shared_ptr<InternalFake>& fake, uint32_t applicationIndex) {
+    return DeferredPresent::InternalRealCopy{
+        .owner = fake, .tryAcquire = fakeTryAcquire, .submit = fakeSubmit,
+        .abandon = fakeAbandon, .applicationIndex = applicationIndex,
+    };
+}
+}
+
+// (a) Lower images that are not ready are polled, never skipped: the output is
+// presented once, after its deadline, with the lower index and presentWait the
+// worker obtained from its callbacks.
+void internalRealRetriesThenPresents() {
+    auto queue = std::make_shared<DeferredPresentQueue>();
+    queue->queue = handle<VkQueue>(7);
+    DeferredPresent worker(queue, recordingPresent);
+    copyPresents.clear();
+    const auto swapchain = handle<VkSwapchainKHR>(11);
+    const auto continuation = handle<VkSemaphore>(12);
+    uint32_t applicationImage = 1;
+    const VkPresentInfoKHR info{.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+        .waitSemaphoreCount = 1, .pWaitSemaphores = &continuation,
+        .swapchainCount = 1, .pSwapchains = &swapchain, .pImageIndices = &applicationImage};
+    auto fake = std::make_shared<InternalFake>();
+    fake->notReadyPolls = 3;
+    fake->lowerIndex = 6;
+    fake->presentWait = handle<VkSemaphore>(95);
+    const auto copy = internalCopy(fake, 1);
+    auto broken = copy;
+    broken.submit = nullptr;
+    const auto deadline = DeferredPresent::Clock::now() + 5ms;
+    expect(worker.beginBatch(1), "internal real batch rejected");
+    expect(!worker.enqueueInternalReal(info, deadline, broken),
+        "internal real output admitted without every callback");
+    expect(worker.enqueueInternalReal(info, deadline, copy), "internal real output rejected");
+    worker.closeBatch();
+    const auto completion = worker.finish(UINT64_MAX);
+    expect(completion && completion->count == 1 && completion->result == VK_SUCCESS &&
+        !completion->calls[0].skipped, "internal real output was skipped or failed");
+    expect(completion->calls[0].started >= deadline, "internal real output presented before its deadline");
+    expect(completion->calls[0].imageIndex == 6 && completion->calls[0].workerCopy &&
+        !completion->calls[0].generated && completion->calls[0].presentWait == handle<VkSemaphore>(95),
+        "internal real output did not record the lower index, presentWait and worker copy");
+    expect(fake->tryCalls == 4 && fake->submits == 1 && fake->abandons == 0,
+        "internal real output did not poll three times and then submit once");
+    expect(fake->submittedApplication == 1 && fake->submittedLower == 6 &&
+        fake->submittedContinuation == continuation,
+        "internal copy used the wrong application image, lower index or continuation");
+    expect(copyPresents.size() == 1 && copyPresents[0] == std::pair{6u, handle<VkSemaphore>(95)},
+        "internal real output was not presented exactly once with the lower index and presentWait");
+}
+
+// (b) Expedite and joins never skip an internal real output. The worker keeps
+// polling while the caller finishes with a timeout, and the output still presents.
+void internalRealNeverSkippedUnderExpedite() {
+    auto queue = std::make_shared<DeferredPresentQueue>();
+    queue->queue = handle<VkQueue>(7);
+    DeferredPresent worker(queue, recordingPresent);
+    copyPresents.clear();
+    const auto swapchain = handle<VkSwapchainKHR>(11);
+    const auto continuation = handle<VkSemaphore>(12);
+    uint32_t applicationImage = 0;
+    const VkPresentInfoKHR info{.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+        .waitSemaphoreCount = 1, .pWaitSemaphores = &continuation,
+        .swapchainCount = 1, .pSwapchains = &swapchain, .pImageIndices = &applicationImage};
+    auto fake = std::make_shared<InternalFake>();
+    fake->notReadyPolls = 20;
+    fake->lowerIndex = 3;
+    fake->presentWait = handle<VkSemaphore>(96);
+    const auto now = DeferredPresent::Clock::now();
+    expect(worker.beginBatch(1, {.latestOutput = now, .expediteOnJoin = true,
+        .outputInterval = 10ms}), "expedited internal batch rejected");
+    expect(worker.enqueueInternalReal(info, now, internalCopy(fake, 0)), "expedited internal output rejected");
+    worker.closeBatch();
+    std::optional<DeferredPresent::Completion> completion;
+    for (int attempt = 0; attempt < 5000 && !completion; ++attempt)
+        completion = worker.finish(1'000'000);
+    expect(completion && completion->count == 1 && completion->result == VK_SUCCESS &&
+        !completion->calls[0].skipped, "expedite skipped the internal real output");
+    expect(fake->abandons == 0 && fake->submits == 1 && copyPresents.size() == 1 &&
+        copyPresents[0] == std::pair{3u, handle<VkSemaphore>(96)},
+        "expedite did not present the internal real output exactly once");
+}
+
+// (c) A lower error abandons the application image once and the batch carries the error.
+void internalRealErrorAbandonsOnce() {
+    auto queue = std::make_shared<DeferredPresentQueue>();
+    queue->queue = handle<VkQueue>(7);
+    DeferredPresent worker(queue, recordingPresent);
+    copyPresents.clear();
+    const auto swapchain = handle<VkSwapchainKHR>(11);
+    const auto continuation = handle<VkSemaphore>(12);
+    uint32_t applicationImage = 2;
+    const VkPresentInfoKHR info{.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+        .waitSemaphoreCount = 1, .pWaitSemaphores = &continuation,
+        .swapchainCount = 1, .pSwapchains = &swapchain, .pImageIndices = &applicationImage};
+    auto fake = std::make_shared<InternalFake>();
+    fake->notReadyPolls = 1;
+    fake->failure = VK_ERROR_OUT_OF_DATE_KHR;
+    expect(worker.beginBatch(1), "failing internal batch rejected");
+    expect(worker.enqueueInternalReal(info, DeferredPresent::Clock::now(), internalCopy(fake, 2)),
+        "failing internal output rejected");
+    worker.closeBatch();
+    const auto completion = worker.finish(UINT64_MAX);
+    expect(completion && completion->count == 1 && completion->result == VK_ERROR_OUT_OF_DATE_KHR &&
+        completion->calls[0].skipped && completion->calls[0].result == VK_ERROR_OUT_OF_DATE_KHR,
+        "a lower error was not carried by the completion");
+    expect(fake->abandons == 1 && fake->abandonedApplication == 2 &&
+        fake->abandonedContinuation == continuation && fake->submits == 0 && copyPresents.empty(),
+        "a lower error did not abandon the application image exactly once without presenting");
+}
+
+// (d) An internal real output after a worker generated copy keeps the full copy-tail spacing.
+void internalRealAfterGeneratedKeepsCopyTail() {
+    auto queue = std::make_shared<DeferredPresentQueue>();
+    queue->queue = handle<VkQueue>(7);
+    DeferredPresent worker(queue, recordingPresent);
+    copySubmits.clear(); copyPresents.clear(); copyAcquireCalls = 0;
+    copyAcquireResult = VK_SUCCESS; copyAcquireImage = 2;
+    const auto swapchain = handle<VkSwapchainKHR>(11);
+    uint32_t applicationImage = 1;
+    const auto continuation = handle<VkSemaphore>(63);
+    const VkPresentInfoKHR info{.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+        .waitSemaphoreCount = 1, .pWaitSemaphores = &continuation,
+        .swapchainCount = 1, .pSwapchains = &swapchain, .pImageIndices = &applicationImage};
+    auto fake = std::make_shared<InternalFake>();
+    fake->lowerIndex = 5;
+    fake->presentWait = handle<VkSemaphore>(97);
+    const auto interval = 80ms;
+    const auto now = DeferredPresent::Clock::now();
+    auto generated = generatedCopy();
+    generated.giveUp = 1s;
+    expect(worker.beginBatch(2, {.overlap = true, .outputInterval = interval}),
+        "internal copy-tail batch rejected");
+    expect(worker.enqueueGeneratedCopy(swapchain, nullptr, now, generated) &&
+        worker.enqueueInternalReal(info, now + 1ms, internalCopy(fake, 1)),
+        "internal copy-tail outputs rejected");
+    worker.closeBatch();
+    const auto completion = worker.finish(UINT64_MAX);
+    expect(completion && completion->count == 2 && completion->result == VK_SUCCESS &&
+        !completion->calls[0].skipped && !completion->calls[1].skipped,
+        "internal output after a generated copy was skipped");
+    expect(completion->calls[1].started >= completion->calls[0].started + interval,
+        "the real output after a worker generated copy lost its copy-tail spacing");
+    expect(copyPresents.size() == 2 && copyPresents[0] == std::pair{2u, handle<VkSemaphore>(72)} &&
+        copyPresents[1] == std::pair{5u, handle<VkSemaphore>(97)},
+        "the generated copy and the internal real output were presented in the wrong order");
+}
+
+// (e) Teardown while an internal output polls ends with exactly one outcome: the
+// output is presented or the application image is abandoned, never neither.
+void internalRealTeardownPresentsOrAbandons() {
+    for (unsigned mode = 0; mode < 2; ++mode) {
+        auto queue = std::make_shared<DeferredPresentQueue>();
+        queue->queue = handle<VkQueue>(7);
+        copyPresents.clear();
+        const auto swapchain = handle<VkSwapchainKHR>(11);
+        const auto continuation = handle<VkSemaphore>(12);
+        uint32_t applicationImage = 0;
+        const VkPresentInfoKHR info{.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+            .waitSemaphoreCount = 1, .pWaitSemaphores = &continuation,
+            .swapchainCount = 1, .pSwapchains = &swapchain, .pImageIndices = &applicationImage};
+        auto fake = std::make_shared<InternalFake>();
+        fake->notReadyPolls = 2;
+        fake->lowerIndex = 4;
+        fake->presentWait = handle<VkSemaphore>(98);
+        if (mode == 1) fake->failure = VK_ERROR_SURFACE_LOST_KHR;
+        {
+            DeferredPresent worker(queue, recordingPresent);
+            expect(worker.beginBatch(1), "teardown batch rejected");
+            expect(worker.enqueueInternalReal(info, DeferredPresent::Clock::now(), internalCopy(fake, 0)),
+                "teardown internal output rejected");
+            worker.closeBatch();
+        }
+        const auto presented = copyPresents.size();
+        const auto abandoned = static_cast<size_t>(fake->abandons);
+        expect(presented + abandoned == 1, "teardown neither presented nor abandoned the polling output");
+        expect(mode == 0 ? presented == 1 && fake->submits == 1 : abandoned == 1 && fake->submits == 0,
+            "teardown ended the polling output with the wrong outcome");
+    }
+}
+
 int main() {
     queueRequest(); lifecycle(); boundedBatch(); completePresentationOrder(); readinessDoesNotBlockProducer();
     waitForRetainedId(); observeCopiesWithoutChangingDelivery(); observerLifetimeAndForwarding();
@@ -1434,4 +1658,7 @@ int main() {
     lateGeneratedCopyPresentsBeforeLimit(); lateGeneratedCopyPastQuarterSkips();
     generatedCopyTailKeepsSpacingWithoutLimit();
     unboundedDrainWaitsForLatchedPresent();
+    internalRealRetriesThenPresents(); internalRealNeverSkippedUnderExpedite();
+    internalRealErrorAbandonsOnce(); internalRealAfterGeneratedKeepsCopyTail();
+    internalRealTeardownPresentsOrAbandons();
 }

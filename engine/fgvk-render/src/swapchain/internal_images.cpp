@@ -55,6 +55,7 @@ namespace fgvk::layer {
         vk::VulkanDeviceFuncs funcs{};
         std::shared_ptr<vk::DeviceMemoryAccounting> accounting;
         std::shared_ptr<DeferredPresentQueue> queue;
+        VkSwapchainKHR lowerSwapchain{VK_NULL_HANDLE};
         VkExtent2D extent{};
         InternalImageRing ring;
 
@@ -64,22 +65,28 @@ namespace fgvk::layer {
         std::vector<VkImage> lowerImages;
 
         std::optional<vk::TimelineSemaphore> release;
+        // Every value read or written here is serialised by queue->mutex.
         uint64_t lastReleaseValue{0};
         std::vector<vk::Semaphore> copied;
         std::vector<vk::Semaphore> lowerAcquire;
         std::vector<VkFence> lowerFences;
         uint32_t lowerHead{0};
-        // Index applicationIndex * lowerImages.size() + lowerIndex.
+        // Lower-acquire slot committed by the last worker acquire. Only the
+        // worker sets it, under queue->mutex, and submit reads it under the same lock.
+        uint32_t workerSlot{0};
+        // Index applicationIndex * lowerImages.size() + lowerIndex. Recorded on
+        // the game thread by ensureCopies and only read afterwards.
         std::vector<std::optional<vk::CommandBuffer>> copies;
 
         std::atomic<VkResult> sticky{VK_SUCCESS};
         std::atomic<bool> lowerSuboptimal{false};
 
-        Impl(const vk::Vulkan& vk, const uint32_t imageCount,
+        Impl(const vk::Vulkan& vk, const VkSwapchainKHR lower, const uint32_t imageCount,
                 std::shared_ptr<DeferredPresentQueue> presentQueue)
             : device(vk.dev()), funcs(vk.df()),
               accounting(vk.deviceMemoryAccounting()),
-              queue(std::move(presentQueue)), ring(imageCount) {}
+              queue(std::move(presentQueue)), lowerSwapchain(lower),
+              ring(imageCount) {}
 
         ~Impl();
 
@@ -90,6 +97,11 @@ namespace fgvk::layer {
                 uint32_t imageCount);
         VkCommandBuffer copyCommandFor(const vk::Vulkan& vk, uint32_t applicationIndex,
                 uint32_t lowerIndex);
+        // Caller holds queue->mutex. Submits one release-timeline signal on
+        // submitQueue, after waits, and frees applicationIndex at that value. On
+        // failure the image is freed at the last submitted value and the error is sticky.
+        VkResult releaseLocked(VkQueue submitQueue, uint32_t applicationIndex,
+                std::span<const VkSemaphore> waits);
     };
 
     bool InternalSwapchainImages::Impl::initialize(const vk::Vulkan& vk,
@@ -221,6 +233,41 @@ namespace fgvk::layer {
         return slot->handle();
     }
 
+    VkResult InternalSwapchainImages::Impl::releaseLocked(const VkQueue submitQueue,
+            const uint32_t applicationIndex, const std::span<const VkSemaphore> waits) {
+        const uint64_t value = lastReleaseValue + 1;
+        const std::vector<VkPipelineStageFlags> stages(waits.size(), VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+        const std::vector<uint64_t> waitValues(waits.size(), 0);
+        const VkSemaphore releaseHandle = release->handle();
+        const VkTimelineSemaphoreSubmitInfo timeline{
+            .sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
+            .waitSemaphoreValueCount = static_cast<uint32_t>(waitValues.size()),
+            .pWaitSemaphoreValues = waitValues.data(),
+            .signalSemaphoreValueCount = 1,
+            .pSignalSemaphoreValues = &value,
+        };
+        const VkSubmitInfo submit{
+            .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+            .pNext = &timeline,
+            .waitSemaphoreCount = static_cast<uint32_t>(waits.size()),
+            .pWaitSemaphores = waits.data(),
+            .pWaitDstStageMask = stages.data(),
+            .commandBufferCount = 0,
+            .pCommandBuffers = nullptr,
+            .signalSemaphoreCount = 1,
+            .pSignalSemaphores = &releaseHandle,
+        };
+        const VkResult result = funcs.QueueSubmit(submitQueue, 1, &submit, VK_NULL_HANDLE);
+        if (result == VK_SUCCESS) {
+            lastReleaseValue = value;
+            static_cast<void>(ring.complete(applicationIndex, value));
+        } else {
+            sticky.store(result);
+            static_cast<void>(ring.complete(applicationIndex, lastReleaseValue));
+        }
+        return result;
+    }
+
     InternalSwapchainImages::Impl::~Impl() {
         // Wait for the last copy so no pending GPU work reads the images or
         // signals the semaphores that are destroyed below.
@@ -262,14 +309,16 @@ namespace fgvk::layer {
     }
 
     std::shared_ptr<InternalSwapchainImages> InternalSwapchainImages::create(
-            const vk::Vulkan& vk, const VkSwapchainCreateInfoKHR& application,
+            const vk::Vulkan& vk, const VkSwapchainKHR lowerSwapchain,
+            const VkSwapchainCreateInfoKHR& application,
             const VkExtent2D extent, const std::span<const VkImage> lowerImages,
             const uint32_t imageCount, std::shared_ptr<DeferredPresentQueue> queue) {
         if (imageCount < InternalImageRing::minCount || imageCount > InternalImageRing::maxCount ||
-                lowerImages.size() < 2 || !queue || queue->queue == VK_NULL_HANDLE) {
+                lowerImages.size() < 2 || !queue || queue->queue == VK_NULL_HANDLE ||
+                lowerSwapchain == VK_NULL_HANDLE) {
             return nullptr;
         }
-        auto state = std::make_unique<Impl>(vk, imageCount, std::move(queue));
+        auto state = std::make_unique<Impl>(vk, lowerSwapchain, imageCount, std::move(queue));
         try {
             if (!state->initialize(vk, application, extent, lowerImages, imageCount))
                 return nullptr;
@@ -295,6 +344,10 @@ namespace fgvk::layer {
         return static_cast<uint32_t>(impl->lowerImages.size());
     }
 
+    uint32_t InternalSwapchainImages::applicationImageCount() const noexcept {
+        return static_cast<uint32_t>(impl->images.size());
+    }
+
     bool InternalSwapchainImages::isAcquired(const uint32_t index) const {
         return impl->ring.isAcquired(index);
     }
@@ -304,7 +357,9 @@ namespace fgvk::layer {
             const bool deferredSuboptimal, uint32_t* const imageIndex) {
         if (const auto sticky = impl->sticky.load(); sticky != VK_SUCCESS)
             return sticky;
-        const auto index = impl->ring.acquire();
+        // Waits without any lock held when the timeout is finite or unlimited.
+        // complete() wakes the wait when a presented image finishes its copy.
+        const auto index = impl->ring.acquireWait(timeout);
         if (!index)
             return timeout == 0 ? VK_NOT_READY : VK_TIMEOUT;
 
@@ -377,110 +432,183 @@ namespace fgvk::layer {
         return slot;
     }
 
-    VkResult InternalSwapchainImages::presentCopy(const vk::Vulkan& vk,
-            const uint32_t applicationIndex, const uint32_t lowerIndex, const uint32_t slot,
+    void InternalSwapchainImages::markPending(const uint32_t applicationIndex) {
+        static_cast<void>(impl->ring.present(applicationIndex));
+    }
+
+    VkResult InternalSwapchainImages::consumeWithoutCopy(const uint32_t applicationIndex,
             const std::span<const VkSemaphore> applicationWaits) {
-        VkCommandBuffer command{VK_NULL_HANDLE};
+        markPending(applicationIndex);
+        const std::lock_guard lock(impl->queue->mutex);
+        return impl->releaseLocked(impl->queue->queue, applicationIndex, applicationWaits);
+    }
+
+    void InternalSwapchainImages::releaseNotHandedOff(const VkQueue applicationQueue,
+            const uint32_t applicationIndex) {
+        // The application's queue is the one this present call was made on, so
+        // the empty submit is ordered after any source copy already submitted there.
+        {
+            const std::lock_guard lock(impl->queue->mutex);
+            static_cast<void>(impl->releaseLocked(applicationQueue, applicationIndex, {}));
+        }
+        VkResult expected = VK_SUCCESS;
+        impl->sticky.compare_exchange_strong(expected, VK_ERROR_OUT_OF_DATE_KHR);
+    }
+
+    VkResult InternalSwapchainImages::ensureCopies(const vk::Vulkan& vk,
+            const uint32_t applicationIndex) {
         try {
-            command = impl->copyCommandFor(vk, applicationIndex, lowerIndex);
+            for (uint32_t lowerIndex = 0; lowerIndex < impl->lowerImages.size(); ++lowerIndex)
+                static_cast<void>(impl->copyCommandFor(vk, applicationIndex, lowerIndex));
+            return VK_SUCCESS;
         } catch (const ls::vulkan_error& error) {
-            // The lower image is already acquired, so the failure is sticky.
-            impl->sticky.store(error.error());
-            static_cast<void>(presentWithoutCopy(applicationIndex, applicationWaits));
             return error.error();
         } catch (const std::exception&) {
-            impl->sticky.store(VK_ERROR_UNKNOWN);
-            static_cast<void>(presentWithoutCopy(applicationIndex, applicationWaits));
             return VK_ERROR_UNKNOWN;
         }
+    }
+
+    VkResult InternalSwapchainImages::submitCopyLocked(const VkQueue queue,
+            const uint32_t applicationIndex, const uint32_t lowerIndex, const uint32_t slot,
+            const std::span<const VkSemaphore> waits) {
+        VkResult result = VK_ERROR_UNKNOWN;
+        try {
+            const auto& recorded = impl->copies.at(
+                static_cast<size_t>(applicationIndex) * impl->lowerImages.size() + lowerIndex);
+            if (recorded) {
+                const VkCommandBuffer command = recorded->handle();
+                std::vector<VkSemaphore> allWaits(waits.begin(), waits.end());
+                allWaits.push_back(impl->lowerAcquire.at(slot).handle());
+                const std::vector<VkPipelineStageFlags> stages(allWaits.size(), VK_PIPELINE_STAGE_TRANSFER_BIT);
+                const std::vector<uint64_t> waitValues(allWaits.size(), 0);
+                const uint64_t value = impl->lastReleaseValue + 1;
+                const std::array<VkSemaphore, 2> signals{
+                    impl->copied.at(lowerIndex).handle(), impl->release->handle(),
+                };
+                const std::array<uint64_t, 2> signalValues{0, value};
+                const VkTimelineSemaphoreSubmitInfo timeline{
+                    .sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
+                    .waitSemaphoreValueCount = static_cast<uint32_t>(waitValues.size()),
+                    .pWaitSemaphoreValues = waitValues.data(),
+                    .signalSemaphoreValueCount = static_cast<uint32_t>(signalValues.size()),
+                    .pSignalSemaphoreValues = signalValues.data(),
+                };
+                const VkSubmitInfo submit{
+                    .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                    .pNext = &timeline,
+                    .waitSemaphoreCount = static_cast<uint32_t>(allWaits.size()),
+                    .pWaitSemaphores = allWaits.data(),
+                    .pWaitDstStageMask = stages.data(),
+                    .commandBufferCount = 1,
+                    .pCommandBuffers = &command,
+                    .signalSemaphoreCount = static_cast<uint32_t>(signals.size()),
+                    .pSignalSemaphores = signals.data(),
+                };
+                result = impl->funcs.QueueSubmit(queue, 1, &submit, impl->lowerFences.at(slot));
+                if (result == VK_SUCCESS) {
+                    impl->lastReleaseValue = value;
+                    static_cast<void>(impl->ring.complete(applicationIndex, value));
+                    return VK_SUCCESS;
+                }
+            }
+        } catch (const std::exception&) {
+            result = VK_ERROR_UNKNOWN;
+        }
+        // Nothing was submitted. Free the image at the last value that was, and keep the failure.
+        impl->sticky.store(result);
+        static_cast<void>(impl->ring.complete(applicationIndex, impl->lastReleaseValue));
+        return result;
+    }
+
+    VkResult InternalSwapchainImages::materialize(const vk::Vulkan& vk,
+            const InternalPresentImage& image, const std::span<const VkSemaphore> waits,
+            uint32_t* const lowerIndex, VkSemaphore* const copied) {
+        if (!image.lowerAcquire)
+            return VK_ERROR_UNKNOWN;
+        const VkResult recorded = ensureCopies(vk, image.applicationIndex);
+        if (recorded != VK_SUCCESS)
+            return recorded;
+
+        // Synchronous paths reach here only after every older deferred batch was
+        // joined, so no worker callback is using the lower-acquire slots.
+        const uint32_t slot = impl->lowerHead;
+        uint32_t index = 0;
+        const VkResult acquired = image.lowerAcquire(UINT64_MAX,
+            impl->lowerAcquire.at(slot).handle(), &index);
+        if (acquired != VK_SUCCESS && acquired != VK_SUBOPTIMAL_KHR) {
+            noteLowerError(acquired);
+            return acquired < 0 ? acquired : VK_ERROR_UNKNOWN;
+        }
+        if (acquired == VK_SUBOPTIMAL_KHR)
+            markLowerSuboptimal();
 
         VkResult result = VK_SUCCESS;
         {
             const std::lock_guard lock(impl->queue->mutex);
-            const uint64_t value = impl->lastReleaseValue + 1;
-
-            std::vector<VkSemaphore> waits(applicationWaits.begin(), applicationWaits.end());
-            waits.push_back(impl->lowerAcquire.at(slot).handle());
-            const std::vector<VkPipelineStageFlags> stages(waits.size(), VK_PIPELINE_STAGE_TRANSFER_BIT);
-            const std::vector<uint64_t> waitValues(waits.size(), 0);
-            const std::array<VkSemaphore, 2> signals{
-                impl->copied.at(lowerIndex).handle(), impl->release->handle(),
-            };
-            const std::array<uint64_t, 2> signalValues{0, value};
-            const VkTimelineSemaphoreSubmitInfo timeline{
-                .sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
-                .waitSemaphoreValueCount = static_cast<uint32_t>(waitValues.size()),
-                .pWaitSemaphoreValues = waitValues.data(),
-                .signalSemaphoreValueCount = static_cast<uint32_t>(signalValues.size()),
-                .pSignalSemaphoreValues = signalValues.data(),
-            };
-            const VkSubmitInfo submit{
-                .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
-                .pNext = &timeline,
-                .waitSemaphoreCount = static_cast<uint32_t>(waits.size()),
-                .pWaitSemaphores = waits.data(),
-                .pWaitDstStageMask = stages.data(),
-                .commandBufferCount = 1,
-                .pCommandBuffers = &command,
-                .signalSemaphoreCount = static_cast<uint32_t>(signals.size()),
-                .pSignalSemaphores = signals.data(),
-            };
-            result = impl->funcs.QueueSubmit(impl->queue->queue, 1, &submit,
-                impl->lowerFences.at(slot));
-            if (result == VK_SUCCESS) {
-                impl->lastReleaseValue = value;
-                impl->ring.releaseValue(applicationIndex) = value;
-            } else {
-                impl->sticky.store(result);
-            }
+            result = submitCopyLocked(impl->queue->queue, image.applicationIndex, index, slot, waits);
         }
-        static_cast<void>(impl->ring.present(applicationIndex));
+        if (result == VK_SUCCESS) {
+            *lowerIndex = index;
+            if (copied)
+                *copied = impl->copied.at(index).handle();
+        }
         return result;
     }
 
-    VkResult InternalSwapchainImages::presentWithoutCopy(const uint32_t applicationIndex,
-            const std::span<const VkSemaphore> applicationWaits) {
-        VkResult result = VK_SUCCESS;
-        {
-            const std::lock_guard lock(impl->queue->mutex);
-            const uint64_t value = impl->lastReleaseValue + 1;
-            const std::vector<VkPipelineStageFlags> stages(applicationWaits.size(),
-                VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
-            const std::vector<uint64_t> waitValues(applicationWaits.size(), 0);
-            const VkSemaphore releaseHandle = impl->release->handle();
-            const uint64_t signalValue = value;
-            const VkTimelineSemaphoreSubmitInfo timeline{
-                .sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
-                .waitSemaphoreValueCount = static_cast<uint32_t>(waitValues.size()),
-                .pWaitSemaphoreValues = waitValues.data(),
-                .signalSemaphoreValueCount = 1,
-                .pSignalSemaphoreValues = &signalValue,
-            };
-            const VkSubmitInfo submit{
-                .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
-                .pNext = &timeline,
-                .waitSemaphoreCount = static_cast<uint32_t>(applicationWaits.size()),
-                .pWaitSemaphores = applicationWaits.data(),
-                .pWaitDstStageMask = stages.data(),
-                .commandBufferCount = 0,
-                .pCommandBuffers = nullptr,
-                .signalSemaphoreCount = 1,
-                .pSignalSemaphores = &releaseHandle,
-            };
-            result = impl->funcs.QueueSubmit(impl->queue->queue, 1, &submit, VK_NULL_HANDLE);
-            if (result == VK_SUCCESS) {
-                impl->lastReleaseValue = value;
-                impl->ring.releaseValue(applicationIndex) = value;
-            } else {
-                impl->sticky.store(result);
-            }
+    VkResult InternalSwapchainImages::workerTryAcquire(uint32_t* const lowerIndex) {
+        if (const auto sticky = impl->sticky.load(); sticky < 0)
+            return sticky;
+        // Poll only: this runs under the queue lock and must never sleep.
+        const VkFence fence = impl->lowerFences.at(impl->lowerHead);
+        const VkResult ready = impl->funcs.GetFenceStatus(impl->device, fence);
+        if (ready != VK_SUCCESS)
+            return ready < 0 ? ready : VK_NOT_READY;
+        uint32_t index = 0;
+        const VkResult lower = impl->funcs.AcquireNextImageKHR(impl->device, impl->lowerSwapchain,
+            0, impl->lowerAcquire.at(impl->lowerHead).handle(), VK_NULL_HANDLE, &index);
+        if (lower != VK_SUCCESS && lower != VK_SUBOPTIMAL_KHR) {
+            noteLowerError(lower);
+            return lower;
         }
-        static_cast<void>(impl->ring.present(applicationIndex));
+        *lowerIndex = index;
+        impl->workerSlot = commitLowerAcquire();
+        if (lower == VK_SUBOPTIMAL_KHR)
+            markLowerSuboptimal();
+        return VK_SUCCESS;
+    }
+
+    VkResult InternalSwapchainImages::workerSubmit(const VkQueue queue,
+            const uint32_t applicationIndex, const uint32_t lowerIndex,
+            const VkSemaphore continuation, VkSemaphore* const presentWait) {
+        const std::array waits{continuation};
+        const VkResult result = submitCopyLocked(queue, applicationIndex, lowerIndex,
+            impl->workerSlot, waits);
+        if (result == VK_SUCCESS && presentWait)
+            *presentWait = impl->copied.at(lowerIndex).handle();
         return result;
     }
 
-    VkSemaphore InternalSwapchainImages::copiedSemaphore(const uint32_t lowerIndex) const {
-        return impl->copied.at(lowerIndex).handle();
+    VkResult InternalSwapchainImages::workerAbandon(const VkQueue queue,
+            const uint32_t applicationIndex, const VkSemaphore continuation) {
+        const std::array waits{continuation};
+        return impl->releaseLocked(queue, applicationIndex, waits);
+    }
+
+    VkResult internalRealTryAcquire(void* const owner, uint32_t* const lowerIndex) {
+        return static_cast<InternalSwapchainImages*>(owner)->workerTryAcquire(lowerIndex);
+    }
+
+    VkResult internalRealSubmit(void* const owner, const VkQueue queue,
+            const uint32_t applicationIndex, const uint32_t lowerIndex,
+            const VkSemaphore continuation, VkSemaphore* const presentWait) {
+        return static_cast<InternalSwapchainImages*>(owner)->workerSubmit(
+            queue, applicationIndex, lowerIndex, continuation, presentWait);
+    }
+
+    VkResult internalRealAbandon(void* const owner, const VkQueue queue,
+            const uint32_t applicationIndex, const VkSemaphore continuation) {
+        return static_cast<InternalSwapchainImages*>(owner)->workerAbandon(
+            queue, applicationIndex, continuation);
     }
 
     VkResult InternalSwapchainImages::stickyError() const noexcept {

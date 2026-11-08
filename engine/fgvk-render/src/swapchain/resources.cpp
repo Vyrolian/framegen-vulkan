@@ -729,6 +729,16 @@ bool Swapchain::applyPendingFrameGenerationResources(
 void Swapchain::applyPendingSpatialScaler(const vk::Vulkan& vk) {
     if (!this->spatialTransition.pendingRequest() || !this->spatialScaler)
         return;
+    // An internal application image is a private copy that the lower image is
+    // made from. A scaler would change that lower contract, so the request stays
+    // pending until the game recreates the swapchain.
+    if (this->internalPresent) {
+        if (!this->internalScalingWaitLogged) {
+            this->internalScalingWaitLogged = true;
+            std::cerr << "framegen-vulkan: internal swapchain images: scaling waits for swapchain recreation\n";
+        }
+        return;
+    }
 
     const auto now = DiagnosticsClock::now();
     if (this->spatialTransition.beginPreparation(now)) {

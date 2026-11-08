@@ -61,7 +61,18 @@ void Swapchain::PresentInvocation::waitForOutput(
 VkResult Swapchain::present(const vk::Vulkan& vk,
         const VkQueue queue, const VkSwapchainKHR swapchain,
         void* nextChain, const uint32_t imageIndex,
-        const std::span<const VkSemaphore> waitSemaphores) {
+        const std::span<const VkSemaphore> waitSemaphores,
+        InternalPresentImage* const internal) {
+    // The descriptor is visible to this call only. Clear it on every return and exception.
+    struct InternalPresentBinding {
+        InternalPresentImage*& slot;
+        ~InternalPresentBinding() { slot = nullptr; }
+    } internalBinding{this->internalPresent};
+    this->internalPresent = internal;
+    if (internal && internal->applicationIndex != imageIndex)
+        throw ls::vulkan_error(VK_ERROR_VALIDATION_FAILED_EXT,
+            "internal image descriptor does not match the presented index");
+    this->ensureInternalPresentSlots(vk);
     // Applications may acquire several images before their first present.
     // Such a caller can reach another present without an intervening acquire
     // to observe the retained operation's error. Return its current image and
@@ -77,7 +88,8 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
             .pWaitSemaphores = waitSemaphores.data(), .swapchainCount = 1,
             .pSwapchains = &swapchain, .pImageIndices = &imageIndex,
         };
-        const auto drained = this->queuePresentWithRetirementFence(vk, queue, original);
+        const auto drained = this->queuePresentWithRetirementFence(vk, queue, original,
+            {.applicationImage = true});
         return drained < 0 ? drained : deferred;
     }
     using PacingProfile = present_diagnostics::PacingProfile;
@@ -916,7 +928,7 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         }
     }
 
-    const auto swapchainImage = this->info.images.at(imageIndex);
+    const auto swapchainImage = this->applicationImageFor(imageIndex);
     // Presentation counters continue across live-off intervals, while the
     // backend's temporal history does not. Index sources by frames actually
     // submitted to the backend so native-only frames cannot invert history.

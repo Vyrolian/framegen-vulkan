@@ -48,7 +48,8 @@ VkResult Swapchain::completeDeferredPresent(const uint64_t timeoutNs, const bool
     const auto report = [this](const DeferredPresent::Completion& completion) {
         if (!this->adaptiveScheduler)
             for (size_t i = 0; i < completion.count; ++i)
-                if (completion.calls[i].workerCopy) {
+                // An internal real output is a worker copy too, but it is not a generated frame.
+                if (completion.calls[i].workerCopy && completion.calls[i].generated) {
                     if (completion.calls[i].skipped)
                         ++this->diagnosticsState.fixedSkippedFrames;
                     else
@@ -123,6 +124,80 @@ bool Swapchain::beginDeferredPresentBatch(const vk::Vulkan& vk, const size_t lim
         .source = this->pacingProfile ? this->pacingProfile->sourceOrdinal() : 0,
         .trace = present_diagnostics::pacingFrameTraceEnabled(),
     });
+}
+
+// F5 internal images. Outside a present with an internal descriptor these
+// helpers return the existing lower-image contract unchanged.
+VkImage Swapchain::applicationImageFor(const uint32_t applicationIndex) const {
+    if (this->internalPresent)
+        return this->internalPresent->image;
+    return this->info.images.at(applicationIndex);
+}
+
+size_t Swapchain::presentationSlotFor(const uint32_t applicationIndex) const {
+    return this->internalPresent ? this->internalPresent->realSlot : applicationIndex;
+}
+
+// The real output's presentation wait and retirement fence live after the lower
+// slots. Grow them to lowerImages + private images on the first internal present.
+void Swapchain::ensureInternalPresentSlots(const vk::Vulkan& vk) {
+    if (!this->internalPresent || !this->internalPresent->owner)
+        return;
+    const size_t slots = this->info.images.size() +
+        this->internalPresent->owner->applicationImageCount();
+    while (this->postCopySemaphores.size() < slots) {
+        this->postCopySemaphores.emplace_back(
+            vk::Semaphore(vk), vk::Semaphore(vk)
+        );
+    }
+    // Retirement fences exist only when maintenance1 retirement is enabled. An
+    // empty list means no fence is used, so nothing grows.
+    while (!this->presentRetirementFences.empty() &&
+            this->presentRetirementFences.size() < slots) {
+        this->presentRetirementFences.emplace_back(
+            PresentRetirementFence{.fence = vk::Fence(vk)}
+        );
+    }
+}
+
+// Worker branch of the real output. The copy and the lower acquire happen on the
+// worker at the deadline. Returns false when the worker refuses, and the caller
+// then materializes synchronously.
+bool Swapchain::enqueueInternalRealPresent(const vk::Vulkan& vk,
+        const VkPresentInfoKHR& presentInfo, const DeferredPresent::Clock::time_point deadline) {
+    InternalPresentImage& image = *this->internalPresent;
+    if (!image.owner || !image.keepAlive || !this->deferredPresent ||
+            presentInfo.waitSemaphoreCount != 1)
+        return false;
+    if (image.owner->ensureCopies(vk, image.applicationIndex) != VK_SUCCESS)
+        return false;
+    const DeferredPresent::InternalRealCopy copy{
+        .owner = image.keepAlive,
+        .tryAcquire = &internalRealTryAcquire,
+        .submit = &internalRealSubmit,
+        .abandon = &internalRealAbandon,
+        .applicationIndex = image.applicationIndex,
+    };
+    if (!this->deferredPresent->enqueueInternalReal(presentInfo, deadline, copy))
+        return false;
+    image.handedOff = true;
+    return true;
+}
+
+// Synchronous branch of the real output. Acquires and copies the application
+// image into a lower image after the present's waits, so the present waits the copy.
+VkResult Swapchain::materializeInternalPresent(const vk::Vulkan& vk,
+        const VkPresentInfoKHR& presentInfo, uint32_t* const lowerIndex, VkSemaphore* const copied) {
+    InternalPresentImage& image = *this->internalPresent;
+    if (!image.owner)
+        return VK_ERROR_UNKNOWN;
+    const auto waits = presentInfo.waitSemaphoreCount > 0
+        ? std::span<const VkSemaphore>(presentInfo.pWaitSemaphores, presentInfo.waitSemaphoreCount)
+        : std::span<const VkSemaphore>{};
+    const VkResult result = image.owner->materialize(vk, image, waits, lowerIndex, copied);
+    if (result == VK_SUCCESS)
+        image.handedOff = true;
+    return result;
 }
 
 VkResult Swapchain::queuePresentWithRetirementFence(
@@ -260,9 +335,12 @@ VkResult Swapchain::queuePresentWithRetirementFence(
         timingOwner = PacingProfile::BridgeTiming;
         timingTarget.reset();
     }
-    const auto lowerPresent = [&](const VkPresentInfoKHR& info) {
+    const auto lowerPresent = [&](VkPresentInfoKHR info) {
         if (this->pacingProfile)
             this->pacingProfile->outputTiming(timingOwner, timingTarget);
+        // The real output of an internal application image: its lower image is
+        // acquired and copied on the worker or synchronously below, never by the caller.
+        const bool internalReal = this->internalPresent && observation.applicationImage;
         if (this->deferredPresentDeadline && this->info.deferredPresentQueue) {
             if (!this->deferredPresent) {
                 try {
@@ -273,8 +351,10 @@ VkResult Swapchain::queuePresentWithRetirementFence(
                     // Thread/resource exhaustion retains synchronous delivery.
                 }
             }
-            if (this->deferredPresent && this->deferredPresent->enqueue(info,
-                    *this->deferredPresentDeadline, observation.generated)) {
+            const bool admitted = this->deferredPresent && (internalReal
+                ? this->enqueueInternalRealPresent(vk, info, *this->deferredPresentDeadline)
+                : this->deferredPresent->enqueue(info, *this->deferredPresentDeadline, observation.generated));
+            if (admitted) {
                 this->deferredOutputQueuedThisFrame = true;
                 this->deferredPresentDeadline.reset();
                 return VK_SUCCESS;
@@ -293,6 +373,20 @@ VkResult Swapchain::queuePresentWithRetirementFence(
         if (this->deferredPresent && this->deferredPresent->olderBatchPending())
             static_cast<void>(this->completeDeferredPresent(UINT64_MAX, false,
                 this->deferredPresent->newestOpen()));
+        // The synchronous real output: copy the application image into a lower image
+        // first, then present that lower image after the copy. The copy takes over the
+        // present's waits, so the lower image is never presented with a wait it did not consume.
+        uint32_t materializedIndex{};
+        VkSemaphore materializedWait{};
+        if (internalReal) {
+            const VkResult materialized = this->materializeInternalPresent(
+                vk, info, &materializedIndex, &materializedWait);
+            if (materialized < 0)
+                return materialized;
+            info.waitSemaphoreCount = 1;
+            info.pWaitSemaphores = &materializedWait;
+            info.pImageIndices = &materializedIndex;
+        }
         const auto submit = [&] {
             this->realFramePacer.synchronousOutput();
             const auto observedPresent = [&](VkQueue selectedQueue, const VkPresentInfoKHR& selectedInfo) {
@@ -364,7 +458,9 @@ VkResult Swapchain::queuePresentWithRetirementFence(
         return result;
     }
 
-    const uint32_t imageIndex = presentInfo.pImageIndices[0];
+    // The application image's real output uses its own slot, not the index of the lower image it will copy into.
+    const uint32_t imageIndex = observation.applicationImage && this->internalPresent
+        ? this->internalPresent->realSlot : presentInfo.pImageIndices[0];
     if (imageIndex >= this->presentRetirementFences.size())
         return lowerPresent(presentInfo);
 
@@ -488,6 +584,12 @@ VkResult Swapchain::retireAcquiredImagesAndPresent(const vk::Vulkan& vk,
         spatialScalingReady = scalingPass.readySemaphore.handle();
     }
 
+    // With an internal descriptor the application image is the private image, and
+    // its real output uses the realSlot wait and fence.
+    const VkImage originalSource = this->internalPresent
+        ? this->internalPresent->image : originalImage;
+    const size_t originalSlot = this->presentationSlotFor(originalImageIndex);
+
     const size_t semaphoreBase = (
         this->frameState.sequenceIndex + acquiredImageIndices.size() + 1
     ) % this->postCopySemaphores.size();
@@ -507,7 +609,7 @@ VkResult Swapchain::retireAcquiredImagesAndPresent(const vk::Vulkan& vk,
         size_t preBarrierCount = 0;
         if (first) {
             preBarriers.at(preBarrierCount++) = barrierHelper(
-                originalImage,
+                originalSource,
                 VK_ACCESS_NONE,
                 VK_ACCESS_TRANSFER_READ_BIT,
                 VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
@@ -533,7 +635,7 @@ VkResult Swapchain::retireAcquiredImagesAndPresent(const vk::Vulkan& vk,
         );
         if (last) {
             postBarriers.at(postBarrierCount++) = barrierHelper(
-                originalImage,
+                originalSource,
                 VK_ACCESS_TRANSFER_READ_BIT,
                 VK_ACCESS_MEMORY_READ_BIT,
                 VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
@@ -545,7 +647,7 @@ VkResult Swapchain::retireAcquiredImagesAndPresent(const vk::Vulkan& vk,
         commandBuffer.begin(vk);
         commandBuffer.blitImage(
             vk, std::span{preBarriers}.first(preBarrierCount),
-            {originalImage, acquiredImage}, this->info.extent,
+            {originalSource, acquiredImage}, this->info.extent,
             std::span{postBarriers}.first(postBarrierCount)
         );
         commandBuffer.end(vk);
@@ -573,7 +675,7 @@ VkResult Swapchain::retireAcquiredImagesAndPresent(const vk::Vulkan& vk,
         commandBuffer.submit(
             vk, waits, VK_NULL_HANDLE, 0,
             std::array{this->postCopySemaphores.at(acquiredImageIndices[i]).first.handle(),
-                last ? this->postCopySemaphores.at(originalImageIndex).first.handle() : pcs.second.handle()},
+                last ? this->postCopySemaphores.at(originalSlot).first.handle() : pcs.second.handle()},
             VK_NULL_HANDLE, 0,
             last ? this->currentRenderSlot().fence.handle() : VK_NULL_HANDLE
         );
@@ -605,7 +707,7 @@ VkResult Swapchain::retireAcquiredImagesAndPresent(const vk::Vulkan& vk,
     }
 
     const VkSemaphore originalWaitSemaphore =
-        this->postCopySemaphores.at(originalImageIndex).first.handle();
+        this->postCopySemaphores.at(originalSlot).first.handle();
     const VkPresentInfoKHR originalPresentInfo{
         .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
         .pNext = nextChain,
@@ -616,7 +718,7 @@ VkResult Swapchain::retireAcquiredImagesAndPresent(const vk::Vulkan& vk,
         .pImageIndices = &originalImageIndex,
     };
     const auto result = this->queuePresentWithRetirementFence(
-        vk, queue, originalPresentInfo
+        vk, queue, originalPresentInfo, {.applicationImage = true}
     );
     if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR)
         throw ls::vulkan_error(result, "vkQueuePresentKHR() failed");

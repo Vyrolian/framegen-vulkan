@@ -4,9 +4,12 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -24,6 +27,7 @@ namespace vk {
 namespace fgvk::layer {
 
     struct DeferredPresentQueue;
+    class InternalSwapchainImages;
 
     /// Facts the F5 internal-image gate reads from create-time state. Every
     /// field is plain data so the gate can be unit-tested without Vulkan.
@@ -35,6 +39,9 @@ namespace fgvk::layer {
         bool frameGenerationEnabled{false};
         bool adaptive{false};
         bool deferredPresentQueue{false};
+        // FGVK_PACING_PROFILE_COPY=1 or frame-content capture is configured:
+        // both replace the copy path with diagnostic work that assumes lower images.
+        bool diagnosticCopyPath{false};
         // gamescopeScalingSurface != nullptr; the detection flag is separate.
         bool gamescopeScalingSurface{false};
         bool gamescopeDetected{false};
@@ -85,6 +92,7 @@ namespace fgvk::layer {
         if (!input.frameGenerationEnabled) return "frame-generation-disabled";
         if (input.adaptive) return "adaptive";
         if (!input.deferredPresentQueue) return "no-deferred-present-queue";
+        if (input.diagnosticCopyPath) return "diagnostic-copy-path";
         if (input.gamescopeScalingSurface || input.gamescopeDetected) return "gamescope";
         if (input.spatialScalingActive) return "spatial-scaling";
         if (input.hdrDisplayResize) return "hdr-display-resize";
@@ -106,22 +114,25 @@ namespace fgvk::layer {
         return internalImagesIneligibleReason(input) == nullptr;
     }
 
-    /// Private image count: clamp(max(minImageCount, 3), 2, min(8, lower)).
-    /// Returns zero when the lower swapchain cannot host two private images.
+    /// Private image count: min(8, max(minImageCount, 3) + 2). The extra two
+    /// let the worker hold up to three pending real images in its depth-3 batch
+    /// ring while the application keeps acquiring. Returns zero when the lower
+    /// swapchain has fewer than two images.
     [[nodiscard]] constexpr uint32_t internalImageCount(
             const uint32_t minImageCount, const uint32_t lowerImageCount) noexcept {
-        constexpr uint32_t minCount = 2;
         constexpr uint32_t maxCount = 8;
-        const uint32_t upper = std::min(maxCount, lowerImageCount);
-        if (upper < minCount) return 0;
-        return std::clamp(std::max(minImageCount, 3u), minCount, upper);
+        if (lowerImageCount < 2) return 0;
+        return std::min(maxCount, std::max(minImageCount, 3u) + 2u);
     }
 
-    /// Free-image ring for the application-visible images. Acquire returns the
-    /// least recently released index. Present and release return an index to
-    /// the tail; GPU reuse safety is ordered by the release timeline, not here.
-    /// The CPU state tracks only Free and Acquired. A presented index is Free
-    /// here while its GPU copy may still be pending.
+    /// Free-image ring for the application-visible images. Each index moves
+    /// through three states:
+    ///   Free     -> Acquired  by acquire / acquireWait
+    ///   Acquired -> Pending   by present (the application's copy is queued)
+    ///   Pending  -> Free      by complete, which records the release value
+    /// Acquired -> Free also covers release (vkReleaseSwapchainImages). Free
+    /// images are handed out in the order they were freed. GPU reuse safety is
+    /// ordered by the release timeline value stored by complete, not here.
     class InternalImageRing {
     public:
         static constexpr uint32_t minCount = 2;
@@ -134,25 +145,60 @@ namespace fgvk::layer {
                 freeOrder.push_back(index);
         }
 
-        /// Takes the least recently released free index.
+        /// Takes the least recently released free index without waiting.
         [[nodiscard]] std::optional<uint32_t> acquire() {
             const std::lock_guard lock(mutex);
-            if (freeOrder.empty())
-                return std::nullopt;
-            const uint32_t index = freeOrder.front();
-            freeOrder.pop_front();
-            states[index] = State::Acquired;
-            return index;
+            return takeFreeLocked();
         }
 
-        /// Returns an acquired index after its copy has been submitted.
+        /// Takes the least recently released free index. A zero timeout never
+        /// waits; UINT64_MAX waits until an index is freed. Only the ring's own
+        /// mutex is held while waiting.
+        [[nodiscard]] std::optional<uint32_t> acquireWait(const uint64_t timeoutNs) {
+            std::unique_lock lock(mutex);
+            if (freeOrder.empty() && timeoutNs != 0) {
+                const auto ready = [this] { return !freeOrder.empty(); };
+                if (timeoutNs == UINT64_MAX) {
+                    changed.wait(lock, ready);
+                } else {
+                    const auto budget = std::chrono::nanoseconds(std::min<uint64_t>(timeoutNs, INT64_MAX));
+                    static_cast<void>(changed.wait_for(lock, budget, ready));
+                }
+            }
+            return takeFreeLocked();
+        }
+
+        /// Marks an acquired index as presented. The index stays unavailable until complete.
         [[nodiscard]] bool present(const uint32_t index) {
-            return returnToTail(index);
+            const std::lock_guard lock(mutex);
+            if (index >= states.size() || states[index] != State::Acquired)
+                return false;
+            states[index] = State::Pending;
+            return true;
+        }
+
+        /// Frees a presented index once its copy has been submitted. The
+        /// release value is the timeline value the next reuse must wait for.
+        [[nodiscard]] bool complete(const uint32_t index, const uint64_t releaseValue) {
+            const std::lock_guard lock(mutex);
+            if (index >= states.size() || states[index] != State::Pending)
+                return false;
+            states[index] = State::Free;
+            values[index] = releaseValue;
+            freeOrder.push_back(index);
+            changed.notify_all();
+            return true;
         }
 
         /// Returns an acquired index that was never presented.
         [[nodiscard]] bool release(const uint32_t index) {
-            return returnToTail(index);
+            const std::lock_guard lock(mutex);
+            if (index >= states.size() || states[index] != State::Acquired)
+                return false;
+            states[index] = State::Free;
+            freeOrder.push_back(index);
+            changed.notify_all();
+            return true;
         }
 
         /// Returns every listed index only if all of them are distinct and acquired.
@@ -171,6 +217,7 @@ namespace fgvk::layer {
                 states[index] = State::Free;
                 freeOrder.push_back(index);
             }
+            changed.notify_all();
             return true;
         }
 
@@ -181,9 +228,14 @@ namespace fgvk::layer {
             return values.at(index);
         }
 
+        /// Indices the application holds (Acquired, not yet presented).
         [[nodiscard]] size_t acquiredCount() const {
-            const std::lock_guard lock(mutex);
-            return states.size() - freeOrder.size();
+            return countState(State::Acquired);
+        }
+
+        /// Indices presented whose copy has not completed (Pending).
+        [[nodiscard]] size_t pendingCount() const {
+            return countState(State::Pending);
         }
 
         [[nodiscard]] bool isAcquired(const uint32_t index) const {
@@ -192,7 +244,7 @@ namespace fgvk::layer {
         }
 
     private:
-        enum class State : uint8_t { Free, Acquired };
+        enum class State : uint8_t { Free, Acquired, Pending };
 
         static size_t checkedCount(const uint32_t count) {
             if (count < minCount || count > maxCount)
@@ -200,16 +252,22 @@ namespace fgvk::layer {
             return count;
         }
 
-        bool returnToTail(const uint32_t index) {
+        std::optional<uint32_t> takeFreeLocked() {
+            if (freeOrder.empty())
+                return std::nullopt;
+            const uint32_t index = freeOrder.front();
+            freeOrder.pop_front();
+            states[index] = State::Acquired;
+            return index;
+        }
+
+        size_t countState(const State wanted) const {
             const std::lock_guard lock(mutex);
-            if (index >= states.size() || states[index] != State::Acquired)
-                return false;
-            states[index] = State::Free;
-            freeOrder.push_back(index);
-            return true;
+            return static_cast<size_t>(std::count(states.begin(), states.end(), wanted));
         }
 
         mutable std::mutex mutex;
+        std::condition_variable changed;
         std::vector<State> states;
         std::vector<uint64_t> values;
         std::deque<uint32_t> freeOrder;
@@ -222,16 +280,37 @@ namespace fgvk::layer {
         bool imageFormatSupported{false};
     };
 
+    /// Per-present view of one application-visible image, built by the entrypoint
+    /// and passed to Swapchain::present for the duration of that call.
+    struct InternalPresentImage {
+        uint32_t applicationIndex{};
+        VkImage image{VK_NULL_HANDLE};
+        // Presentation-wait and retirement-fence slot of the real output:
+        // lowerImageCount + applicationIndex. Lower indices keep their own slots,
+        // so a generated copy into lower image k never shares a slot with the real output.
+        uint32_t realSlot{};
+        InternalSwapchainImages* owner{};
+        // Keeps the owner alive while a worker job still references it.
+        std::shared_ptr<InternalSwapchainImages> keepAlive;
+        // Synchronous lower acquire. The entrypoint wraps its deferred join
+        // around the driver call and commits the lower-acquire slot.
+        std::function<VkResult(uint64_t timeout, VkSemaphore semaphore, uint32_t* index)> lowerAcquire;
+        // True once the copy that reads this image has been submitted or queued
+        // to the worker. A present that ends without it must be recovered.
+        bool handedOff{};
+    };
+
     /// Layer-owned application images for one eligible swapchain. The
-    /// application renders into these images. Present copies the selected
-    /// image into a lower swapchain image and then uses the existing
-    /// Swapchain::present path with that lower index.
-    class InternalSwapchainImages {
+    /// application renders into these images. A real output is copied into a
+    /// lower swapchain image either on the DeferredPresent worker at its deadline
+    /// or synchronously at the moment it presents.
+    class InternalSwapchainImages : public std::enable_shared_from_this<InternalSwapchainImages> {
     public:
         /// Creates the private images and their synchronization objects.
         /// Returns nullptr on any failure. Partial resources are destroyed.
         [[nodiscard]] static std::shared_ptr<InternalSwapchainImages> create(
-            const vk::Vulkan& vk, const VkSwapchainCreateInfoKHR& application,
+            const vk::Vulkan& vk, VkSwapchainKHR lowerSwapchain,
+            const VkSwapchainCreateInfoKHR& application,
             VkExtent2D extent, std::span<const VkImage> lowerImages,
             uint32_t imageCount, std::shared_ptr<DeferredPresentQueue> queue);
 
@@ -243,10 +322,12 @@ namespace fgvk::layer {
 
         [[nodiscard]] std::span<const VkImage> images() const noexcept;
         [[nodiscard]] uint32_t lowerImageCount() const noexcept;
+        [[nodiscard]] uint32_t applicationImageCount() const noexcept;
         [[nodiscard]] bool isAcquired(uint32_t index) const;
 
         /// Emulated vkAcquireNextImage*. The caller has already joined the
         /// deferred present. deferredSuboptimal is the caller's suboptimal state.
+        /// A finite timeout waits for a presented image to complete; zero polls.
         [[nodiscard]] VkResult acquireApplicationImage(uint64_t timeout,
             VkSemaphore semaphore, VkFence fence, bool deferredSuboptimal,
             uint32_t* imageIndex);
@@ -262,15 +343,33 @@ namespace fgvk::layer {
         /// returns the slot that the copy will wait on.
         [[nodiscard]] uint32_t commitLowerAcquire();
 
-        /// Submits the pre-recorded copy from application image p to lower
-        /// image L. Waits the application waits and lowerAcquire[slot]. On
-        /// success it signals copied[L] and the release timeline.
-        [[nodiscard]] VkResult presentCopy(const vk::Vulkan& vk, uint32_t applicationIndex,
-            uint32_t lowerIndex, uint32_t slot, std::span<const VkSemaphore> applicationWaits);
-        /// Consumes the application waits without copying, so the image returns to the ring.
-        [[nodiscard]] VkResult presentWithoutCopy(uint32_t applicationIndex,
+        /// Acquired -> Pending. Called when the application presents the image.
+        void markPending(uint32_t applicationIndex);
+        /// Consumes the application waits without copying, then frees the image.
+        /// Used only on the sticky-error path, which never reaches a lower acquire.
+        [[nodiscard]] VkResult consumeWithoutCopy(uint32_t applicationIndex,
             std::span<const VkSemaphore> applicationWaits);
-        [[nodiscard]] VkSemaphore copiedSemaphore(uint32_t lowerIndex) const;
+        /// Image not handed off: queue order on the application queue covers any
+        /// source copy already submitted there. Signals the release timeline, frees
+        /// the image and makes the swapchain sticky OUT_OF_DATE. Waits no semaphores.
+        void releaseNotHandedOff(VkQueue applicationQueue, uint32_t applicationIndex);
+
+        /// Records the copies from one application image to every lower image.
+        /// Game thread only; the worker resubmits recorded copies and never records.
+        [[nodiscard]] VkResult ensureCopies(const vk::Vulkan& vk, uint32_t applicationIndex);
+        /// Synchronous path. Acquires a lower image through image.lowerAcquire,
+        /// copies the application image into it after waits, and frees the image.
+        /// On success image.handedOff is set by the caller.
+        [[nodiscard]] VkResult materialize(const vk::Vulkan& vk, const InternalPresentImage& image,
+            std::span<const VkSemaphore> waits, uint32_t* lowerIndex, VkSemaphore* copied);
+
+        /// Worker callbacks, reached through the free functions below. The caller
+        /// holds DeferredPresentQueue::mutex and never sleeps there.
+        [[nodiscard]] VkResult workerTryAcquire(uint32_t* lowerIndex);
+        [[nodiscard]] VkResult workerSubmit(VkQueue queue, uint32_t applicationIndex,
+            uint32_t lowerIndex, VkSemaphore continuation, VkSemaphore* presentWait);
+        [[nodiscard]] VkResult workerAbandon(VkQueue queue, uint32_t applicationIndex,
+            VkSemaphore continuation);
 
         /// Sticky failure. OUT_OF_DATE, SURFACE_LOST and full-screen-exclusive
         /// loss from the lower path are kept. Submit failures are also kept.
@@ -281,8 +380,23 @@ namespace fgvk::layer {
     private:
         struct Impl;
         explicit InternalSwapchainImages(std::unique_ptr<Impl> state);
+        // Caller holds queue->mutex. Copies application image p into lower image
+        // lower after the waits and the lower-acquire slot. On success it signals
+        // copied[lower] and the release timeline and frees p. On failure it records
+        // the sticky error and frees p at the last submitted release value.
+        [[nodiscard]] VkResult submitCopyLocked(VkQueue queue, uint32_t applicationIndex,
+            uint32_t lowerIndex, uint32_t slot, std::span<const VkSemaphore> waits);
         std::unique_ptr<Impl> impl;
     };
+
+    /// Worker callbacks for DeferredPresent's internal real output. They cast owner
+    /// back to InternalSwapchainImages and forward to the members above.
+    [[nodiscard]] VkResult internalRealTryAcquire(void* owner, uint32_t* lowerIndex);
+    [[nodiscard]] VkResult internalRealSubmit(void* owner, VkQueue queue,
+        uint32_t applicationIndex, uint32_t lowerIndex, VkSemaphore continuation,
+        VkSemaphore* presentWait);
+    [[nodiscard]] VkResult internalRealAbandon(void* owner, VkQueue queue,
+        uint32_t applicationIndex, VkSemaphore continuation);
 
     /// Device support queries for the private image format and usage.
     [[nodiscard]] InternalImageDeviceSupport queryInternalImageSupport(

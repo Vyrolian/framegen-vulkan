@@ -132,6 +132,24 @@ public:
         std::array<VkSemaphore, maxCopyImages> presentWaits{};
         Clock::duration giveUp{};
     };
+    // The real output of an internal application image. The worker polls for a
+    // lower image at its deadline and never skips the output. The callbacks get
+    // owner.get(); this header names no swapchain or wrapper type. Each callback
+    // runs with DeferredPresentQueue::mutex held and never sleeps.
+    //   tryAcquire: non-blocking lower acquire. Returns VK_SUCCESS with the index,
+    //     VK_NOT_READY/VK_TIMEOUT to retry, or an error to abandon.
+    //   submit: copies the application image into the lower image, waiting
+    //     continuation, and returns the semaphore the presentation waits.
+    //   abandon: frees the application image without presenting, after continuation.
+    struct InternalRealCopy {
+        std::shared_ptr<void> owner;
+        VkResult (*tryAcquire)(void* owner, uint32_t* lowerIndex) = nullptr;
+        VkResult (*submit)(void* owner, VkQueue queue, uint32_t applicationIndex,
+            uint32_t lowerIndex, VkSemaphore continuation, VkSemaphore* presentWait) = nullptr;
+        VkResult (*abandon)(void* owner, VkQueue queue, uint32_t applicationIndex,
+            VkSemaphore continuation) = nullptr;
+        uint32_t applicationIndex{};
+    };
 
     // Keep absolute slots through ordinary wake lateness; rephase a start
     // over half a slot late. Adding every wake or lower-call duration to the
@@ -288,39 +306,16 @@ public:
         return snapshotChain(chain).has_value();
     }
     bool enqueue(const VkPresentInfoKHR& info, Clock::time_point deadline, bool generated = false) {
-        if (info.swapchainCount != 1 || info.waitSemaphoreCount != 1 || info.pResults ||
-                !info.pSwapchains || !info.pImageIndices || !info.pWaitSemaphores)
-            return false;
-        const auto metadata = snapshotChain(info.pNext, this->ownedIdStorage);
-        if (!metadata) return false;
-        const bool identified = applicationIdentified(*metadata);
-        {
-            const std::lock_guard lock(mutex);
-            if (stopping) return false;
-            const bool implicit = !newestOpenLocked();
-            // The implicit single-image batch is sealed at creation and needs an
-            // empty pipeline, as before overlap existed.
-            if (implicit && (count || completedQueue[0])) return false;
-            if (!implicit) {
-                const Batch& open = batches[slotAt(count - 1)];
-                // An overlapping batch behind a pending one cannot own the single present-ID registry.
-                if (open.produced == open.limit || (count >= 2 && identified)) return false;
-            }
-            if (implicit) openSlotLocked(1, Readiness{}, false);
-            Batch& batch = batches[slotAt(count - 1)];
-            if (identified && !registerDeliveryLocked(*metadata, info.pSwapchains[0], batch.readiness.capOwned)) {
-                if (implicit) --count;
-                return false;
-            }
-            if (identified) batch.registersId = true;
-            batch.jobs[batch.produced++] = {info.pSwapchains[0], info.pImageIndices[0], info.pWaitSemaphores[0],
-                *metadata, deadline, generated, batch.readiness.trace ? Clock::now() : Clock::time_point{}};
-        }
-        waitTarget() = {serialWait, info.pSwapchains[0],
-            metadata->hasId ? metadata->id : 0,
-            metadata->hasId2 && !metadata->ownedId2 ? metadata->id2 : 0};
-        changed.notify_all();
-        return true;
+        return admit(info, deadline, generated, nullptr);
+    }
+    // The real output of an internal application image. Admission matches
+    // enqueue. At its deadline the worker acquires a lower image, copies the
+    // application image into it and presents it (see presentInternalReal).
+    // info.pWaitSemaphores[0] is the continuation that copy waits.
+    bool enqueueInternalReal(const VkPresentInfoKHR& info, Clock::time_point deadline,
+            const InternalRealCopy& copy) {
+        return copy.tryAcquire && copy.submit && copy.abandon && copy.owner &&
+            admit(info, deadline, false, &copy);
     }
     // A generated output whose image the worker acquires at its deadline. Only
     // the newest open batch admits it, so the real output follows in that batch.
@@ -576,7 +571,52 @@ private:
         Clock::time_point enqueued{};
         bool copyActive{};
         GeneratedCopy copy{};
+        bool internalActive{};
+        InternalRealCopy internal{};
     };
+    // Shared admission for enqueue and enqueueInternalReal. The metadata snapshot,
+    // present-ID registration and batch rules are the same for both.
+    bool admit(const VkPresentInfoKHR& info, Clock::time_point deadline, bool generated,
+            const InternalRealCopy* internal) {
+        if (info.swapchainCount != 1 || info.waitSemaphoreCount != 1 || info.pResults ||
+                !info.pSwapchains || !info.pImageIndices || !info.pWaitSemaphores)
+            return false;
+        const auto metadata = snapshotChain(info.pNext, this->ownedIdStorage);
+        if (!metadata) return false;
+        const bool identified = applicationIdentified(*metadata);
+        {
+            const std::lock_guard lock(mutex);
+            if (stopping) return false;
+            const bool implicit = !newestOpenLocked();
+            // The implicit single-image batch is sealed at creation and needs an
+            // empty pipeline, as before overlap existed.
+            if (implicit && (count || completedQueue[0])) return false;
+            if (!implicit) {
+                const Batch& open = batches[slotAt(count - 1)];
+                // An overlapping batch behind a pending one cannot own the single present-ID registry.
+                if (open.produced == open.limit || (count >= 2 && identified)) return false;
+            }
+            if (implicit) openSlotLocked(1, Readiness{}, false);
+            Batch& batch = batches[slotAt(count - 1)];
+            if (identified && !registerDeliveryLocked(*metadata, info.pSwapchains[0], batch.readiness.capOwned)) {
+                if (implicit) --count;
+                return false;
+            }
+            if (identified) batch.registersId = true;
+            Job job{info.pSwapchains[0], info.pImageIndices[0], info.pWaitSemaphores[0],
+                *metadata, deadline, generated, batch.readiness.trace ? Clock::now() : Clock::time_point{}};
+            if (internal) {
+                job.internalActive = true;
+                job.internal = *internal;
+            }
+            batch.jobs[batch.produced++] = std::move(job);
+        }
+        waitTarget() = {serialWait, info.pSwapchains[0],
+            metadata->hasId ? metadata->id : 0,
+            metadata->hasId2 && !metadata->ownedId2 ? metadata->id2 : 0};
+        changed.notify_all();
+        return true;
+    }
     struct Batch {
         std::array<Job, capacity> jobs{};
         size_t produced{}, consumed{}, limit{1};
@@ -701,6 +741,83 @@ private:
             .pSignalSemaphores = signals.data() + (2 - signalCount),
         };
         return copy.submit(queue, 1, &submit, copy.fence);
+    }
+
+    // The real output of an internal application image, produced by this worker
+    // at its deadline. It never gives up or skips: the loop ends when a lower image
+    // is copied and presented, or when the application image is abandoned on a lower
+    // error or while stopping. Each attempt holds queue->mutex for tryAcquire and
+    // the copy/present only, and sleeps outside it.
+    void presentInternalReal(Job& job, const Readiness& ready, const void* chain, Completion& result) {
+        const InternalRealCopy& copy = job.internal;
+        void* const owner = copy.owner.get();
+        result.workerCopy = true;
+        uint32_t lowerIndex{};
+        VkSemaphore presentWait{};
+        bool lockStarted{};
+        for (;;) {
+            bool stopped{};
+            {
+                const std::lock_guard lock(mutex);
+                stopped = stopping;
+            }
+            if (ready.trace && !lockStarted) result.queueLockStarted = Clock::now();
+            lockStarted = true;
+            VkResult error = VK_SUCCESS;
+            {
+                const std::lock_guard queueLock(queue->mutex);
+                if (ready.trace) result.queueLockAcquired = Clock::now();
+                if (stopped) {
+                    error = VK_ERROR_UNKNOWN;
+                } else {
+                    const VkResult acquired = copy.tryAcquire(owner, &lowerIndex);
+                    if (acquired == VK_SUCCESS) {
+                        const VkResult submitted = copy.submit(owner, queue->queue,
+                            copy.applicationIndex, lowerIndex, job.wait, &presentWait);
+                        if (submitted < 0) {
+                            result.imageIndex = lowerIndex;
+                            result.skipped = true;
+                            result.started = result.finished = Clock::now();
+                            result.result = submitted;
+                            return;
+                        }
+                        const VkPresentInfoKHR info{
+                            .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+                            .pNext = chain,
+                            .waitSemaphoreCount = 1, .pWaitSemaphores = &presentWait,
+                            .swapchainCount = 1, .pSwapchains = &job.swapchain,
+                            .pImageIndices = &lowerIndex,
+                        };
+                        result.imageIndex = lowerIndex;
+                        result.presentWait = presentWait;
+                        result.started = Clock::now();
+                        result.result = ready.observer && ready.observe
+                            ? ready.observe(ready.observer.get(), present, queue->queue,
+                                info, ready.context, ready.source, job.generated)
+                            : present(queue->queue, &info);
+                        result.finished = Clock::now();
+                        if (ready.copyStatus && ready.copyFence) {
+                            result.copyChecked = true;
+                            result.copyStatus = ready.copyStatus(ready.device, ready.copyFence);
+                            result.copySampledAt = Clock::now();
+                        }
+                        return;
+                    }
+                    if (acquired < 0) {
+                        error = acquired;
+                    }
+                }
+                if (error != VK_SUCCESS) {
+                    // Frees the application image without a present. Nothing is left acquired.
+                    static_cast<void>(copy.abandon(owner, queue->queue, copy.applicationIndex, job.wait));
+                    result.skipped = true;
+                    result.started = result.finished = Clock::now();
+                    result.result = error;
+                    return;
+                }
+            }
+            std::this_thread::sleep_for(std::chrono::microseconds{250});
+        }
     }
 
     void run() {
@@ -843,93 +960,97 @@ private:
             // A generated output takes its image only at its deadline. Polling
             // never sleeps under queue->mutex, and every path below signals the
             // continuation and the render-slot fence.
-            VkResult skipResult = VK_SUCCESS;
-            bool acquired{};
-            bool copyPending{};
-            if (job.copyActive) {
-                uint32_t image{};
-                VkResult acquireResult = VK_NOT_READY;
-                auto giveUpAt = deadline + job.copy.giveUp;
-                // Generated outputs may start up to a quarter output interval before the
-                // batch limit. FIFO still shows each image at least one refresh.
-                if (ready.latestOutput != Clock::time_point::max())
-                    giveUpAt = std::min(giveUpAt, ready.latestOutput - ready.outputInterval / 4);
-                lock.lock();
-                const bool skipGenerated = readinessMiss || stopping ||
-                    batch.expediteAt != Clock::time_point::max() ||
-                    (ready.overlap && Clock::now() >= giveUpAt);
-                lock.unlock();
-                while (!skipGenerated) {
-                    {
-                        const std::lock_guard queueLock(queue->mutex);
-                        acquireResult = job.copy.acquire(job.copy.device, job.swapchain, 0,
-                            job.copy.acquireSemaphore, VK_NULL_HANDLE, &image);
-                    }
-                    if (acquireResult < 0 || acquireResult == VK_SUCCESS ||
-                            acquireResult == VK_SUBOPTIMAL_KHR || Clock::now() >= giveUpAt)
-                        break;
-                    lock.lock();
-                    const bool expedited = stopping || batch.expediteAt != Clock::time_point::max();
-                    lock.unlock();
-                    if (expedited) break;
-                    std::this_thread::sleep_for(std::chrono::microseconds{250});
-                }
-                acquired = acquireResult == VK_SUCCESS || acquireResult == VK_SUBOPTIMAL_KHR;
-                if (acquireResult < 0) {
-                    skipResult = acquireResult;
-                } else if (acquired && image < job.copy.imageCount) {
-                    job.image = image;
-                    job.wait = job.copy.presentWaits.at(image);
-                    copyPending = true;
-                } else if (acquired) {
-                    // The image cannot be returned, so it is reported as an error.
-                    skipResult = VK_ERROR_UNKNOWN;
-                }
-            }
-            result.imageIndex = job.image;
-            result.presentWait = job.wait;
-            const VkPresentInfoKHR info{
-                .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
-                .pNext = chain,
-                .waitSemaphoreCount = 1, .pWaitSemaphores = &job.wait,
-                .swapchainCount = 1, .pSwapchains = &job.swapchain,
-                .pImageIndices = &job.image,
-            };
-            {
-                if (ready.trace) result.queueLockStarted = Clock::now();
-                const std::lock_guard queueLock(queue->mutex);
-                if (ready.trace) result.queueLockAcquired = Clock::now();
-                bool presentOutput = !job.copyActive;
+            if (job.internalActive) {
+                presentInternalReal(job, ready, chain, result);
+            } else {
+                VkResult skipResult = VK_SUCCESS;
+                bool acquired{};
+                bool copyPending{};
                 if (job.copyActive) {
-                    if (copyPending) {
-                        const VkResult copied = submitGeneratedWork(queue->queue, job.copy, true,
-                            job.copy.copies.at(job.image), job.wait);
-                        presentOutput = copied == VK_SUCCESS;
-                        if (copied < 0) skipResult = copied;
+                    uint32_t image{};
+                    VkResult acquireResult = VK_NOT_READY;
+                    auto giveUpAt = deadline + job.copy.giveUp;
+                    // Generated outputs may start up to a quarter output interval before the
+                    // batch limit. FIFO still shows each image at least one refresh.
+                    if (ready.latestOutput != Clock::time_point::max())
+                        giveUpAt = std::min(giveUpAt, ready.latestOutput - ready.outputInterval / 4);
+                    lock.lock();
+                    const bool skipGenerated = readinessMiss || stopping ||
+                        batch.expediteAt != Clock::time_point::max() ||
+                        (ready.overlap && Clock::now() >= giveUpAt);
+                    lock.unlock();
+                    while (!skipGenerated) {
+                        {
+                            const std::lock_guard queueLock(queue->mutex);
+                            acquireResult = job.copy.acquire(job.copy.device, job.swapchain, 0,
+                                job.copy.acquireSemaphore, VK_NULL_HANDLE, &image);
+                        }
+                        if (acquireResult < 0 || acquireResult == VK_SUCCESS ||
+                                acquireResult == VK_SUBOPTIMAL_KHR || Clock::now() >= giveUpAt)
+                            break;
+                        lock.lock();
+                        const bool expedited = stopping || batch.expediteAt != Clock::time_point::max();
+                        lock.unlock();
+                        if (expedited) break;
+                        std::this_thread::sleep_for(std::chrono::microseconds{250});
                     }
-                    if (!presentOutput) {
-                        const VkResult signalled = submitGeneratedWork(queue->queue, job.copy,
-                            acquired, VK_NULL_HANDLE, VK_NULL_HANDLE);
-                        if (skipResult == VK_SUCCESS) skipResult = signalled;
+                    acquired = acquireResult == VK_SUCCESS || acquireResult == VK_SUBOPTIMAL_KHR;
+                    if (acquireResult < 0) {
+                        skipResult = acquireResult;
+                    } else if (acquired && image < job.copy.imageCount) {
+                        job.image = image;
+                        job.wait = job.copy.presentWaits.at(image);
+                        copyPending = true;
+                    } else if (acquired) {
+                        // The image cannot be returned, so it is reported as an error.
+                        skipResult = VK_ERROR_UNKNOWN;
                     }
                 }
-                if (presentOutput) {
-                    result.started = Clock::now();
-                    result.result = ready.observer && ready.observe
-                        ? ready.observe(ready.observer.get(), present, queue->queue,
-                            info, ready.context, ready.source, job.generated)
-                        : present(queue->queue, &info);
-                    result.finished = Clock::now();
-                    if (ready.copyStatus && ready.copyFence) {
-                        result.copyChecked = true;
-                        result.copyStatus = ready.copyStatus(ready.device, ready.copyFence);
-                        result.copySampledAt = Clock::now();
+                result.imageIndex = job.image;
+                result.presentWait = job.wait;
+                const VkPresentInfoKHR info{
+                    .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+                    .pNext = chain,
+                    .waitSemaphoreCount = 1, .pWaitSemaphores = &job.wait,
+                    .swapchainCount = 1, .pSwapchains = &job.swapchain,
+                    .pImageIndices = &job.image,
+                };
+                {
+                    if (ready.trace) result.queueLockStarted = Clock::now();
+                    const std::lock_guard queueLock(queue->mutex);
+                    if (ready.trace) result.queueLockAcquired = Clock::now();
+                    bool presentOutput = !job.copyActive;
+                    if (job.copyActive) {
+                        if (copyPending) {
+                            const VkResult copied = submitGeneratedWork(queue->queue, job.copy, true,
+                                job.copy.copies.at(job.image), job.wait);
+                            presentOutput = copied == VK_SUCCESS;
+                            if (copied < 0) skipResult = copied;
+                        }
+                        if (!presentOutput) {
+                            const VkResult signalled = submitGeneratedWork(queue->queue, job.copy,
+                                acquired, VK_NULL_HANDLE, VK_NULL_HANDLE);
+                            if (skipResult == VK_SUCCESS) skipResult = signalled;
+                        }
                     }
-                } else {
-                    result.skipped = true;
-                    result.started = Clock::now();
-                    result.finished = result.started;
-                    result.result = skipResult;
+                    if (presentOutput) {
+                        result.started = Clock::now();
+                        result.result = ready.observer && ready.observe
+                            ? ready.observe(ready.observer.get(), present, queue->queue,
+                                info, ready.context, ready.source, job.generated)
+                            : present(queue->queue, &info);
+                        result.finished = Clock::now();
+                        if (ready.copyStatus && ready.copyFence) {
+                            result.copyChecked = true;
+                            result.copyStatus = ready.copyStatus(ready.device, ready.copyFence);
+                            result.copySampledAt = Clock::now();
+                        }
+                    } else {
+                        result.skipped = true;
+                        result.started = Clock::now();
+                        result.finished = result.started;
+                        result.result = skipResult;
+                    }
                 }
             }
             if (applicationIdentified(metadata)) {
@@ -952,6 +1073,8 @@ private:
                 batch.aggregate.result = result.result;
             batch.aggregate.calls[batch.aggregate.count++] = result;
             ++batch.consumed;
+            // The worker is done with an internal real job; drop its owner reference.
+            batch.jobs[index].internal = {};
             if (!result.skipped) {
                 previousStarted = result.started;
                 previousFinished = result.finished;

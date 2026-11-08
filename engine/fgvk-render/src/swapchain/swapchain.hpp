@@ -28,6 +28,7 @@
 #include "spatial_command_recording.hpp"
 #include "present_timing.hpp"
 #include "swapchain/deferred_present.hpp"
+#include "swapchain/internal_images.hpp"
 #include "swapchain/present_feedback_probe.hpp"
 #include "swapchain/release_gate.hpp"
 #include "swapchain/uncapped_auto_cap.hpp"
@@ -50,6 +51,7 @@ namespace fgvk::layer {
     class GamescopeScalingSurface;
     class WaylandPresentationFeedback;
     class FrameContentCapture;
+    struct InternalPresentImage;
 
     /// swapchain info struct
     struct SwapchainInfo {
@@ -189,11 +191,14 @@ namespace fgvk::layer {
         /// @param next_chain next chain pointer for the present info (WARN: shared!)
         /// @param imageIdx swapchain image index to present to
         /// @param semaphores semaphores to wait on before presenting
+        /// @param internal application image descriptor when imageIdx is an F5
+        ///        private image; nullptr keeps the lower-image contract.
         /// @throws ls::vulkan_error on vulkan errors
         VkResult present(const vk::Vulkan& vk,
             VkQueue queue, VkSwapchainKHR swapchain,
             void* next_chain, uint32_t imageIdx,
-            std::span<const VkSemaphore> semaphores);
+            std::span<const VkSemaphore> semaphores,
+            InternalPresentImage* internal = nullptr);
         // A spare image can be acquired before the deferred deadline. Join
         // before blocking acquisition or reusing presentation resources.
         // retainNewest waits only for an older overlapped batch, not the newest one.
@@ -655,6 +660,9 @@ namespace fgvk::layer {
         VkResult deferredPresentResult{VK_SUCCESS};
         bool deferredOutputQueuedThisFrame{false};
         std::optional<std::chrono::steady_clock::time_point> deferredPresentDeadline;
+        // Set only for the duration of a present() that was given an internal image.
+        InternalPresentImage* internalPresent{nullptr};
+        bool internalScalingWaitLogged{false};
         SmoothCadenceBaseCap smoothCadenceBaseCap;
         SmoothCadencePacerHandoff smoothCadencePacerHandoff;
         // A null-old replacement loses the driver's explicit WSI lineage.
@@ -774,6 +782,15 @@ namespace fgvk::layer {
             const vk::Vulkan& vk, VkQueue queue,
             const VkPresentInfoKHR& presentInfo,
             const present_diagnostics::PacingProfile::OutputObservation& observation = {});
+        // F5 internal images. The application image is read from the private
+        // image, and its presentation wait and retirement fence use realSlot.
+        [[nodiscard]] VkImage applicationImageFor(uint32_t applicationIndex) const;
+        [[nodiscard]] size_t presentationSlotFor(uint32_t applicationIndex) const;
+        void ensureInternalPresentSlots(const vk::Vulkan& vk);
+        [[nodiscard]] bool enqueueInternalRealPresent(const vk::Vulkan& vk,
+            const VkPresentInfoKHR& presentInfo, DeferredPresent::Clock::time_point deadline);
+        [[nodiscard]] VkResult materializeInternalPresent(const vk::Vulkan& vk,
+            const VkPresentInfoKHR& presentInfo, uint32_t* lowerIndex, VkSemaphore* copied);
         VkResult retireAcquiredImagesAndPresent(const vk::Vulkan& vk,
             VkQueue queue, VkSwapchainKHR swapchain, const void* nextChain,
             uint32_t originalImageIndex,

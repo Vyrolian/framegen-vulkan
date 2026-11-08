@@ -93,7 +93,7 @@ VkResult Swapchain::presentSpatiallyScaledFrame(
         const PresentInvocation& invocation) {
     auto& pass = this->spatialScalingPasses.at(invocation.imageIndex);
     this->prepareSpatialScalingPass(invocation.vk, pass);
-    const VkImage applicationImage = this->info.images.at(
+    const VkImage applicationImage = this->applicationImageFor(
         invocation.imageIndex
     );
     const auto scalingStarted = startPresentDiagnostic();
@@ -126,6 +126,7 @@ VkResult Swapchain::presentSpatiallyScaledFrame(
     const auto result = this->queuePresentWithRetirementFence(
         invocation.vk, invocation.queue, presentInfo, {
             .scheduled = invocation.originalPresentDeadline.value_or(DiagnosticsClock::time_point{}),
+            .applicationImage = true,
         }
     );
     const auto originalPresentDuration = finishPresentDiagnostic(
@@ -180,6 +181,7 @@ VkResult Swapchain::presentDirectApplicationFrame(
     const auto result = this->queuePresentWithRetirementFence(
         invocation.vk, invocation.queue, presentInfo, {
             .scheduled = invocation.originalPresentDeadline.value_or(DiagnosticsClock::time_point{}),
+            .applicationImage = true,
         }
     );
     const PresentPhaseDurations phases{
@@ -214,7 +216,7 @@ VkResult Swapchain::presentOriginalImage(
                 SpatialFramePipelinePlacement::PostFrameGeneration) {
         auto& pass = this->spatialScalingPasses.at(invocation.imageIndex);
         this->prepareSpatialScalingPass(invocation.vk, pass);
-        const VkImage applicationImage = this->info.images.at(
+        const VkImage applicationImage = this->applicationImageFor(
             invocation.imageIndex
         );
         const auto scalingStarted = startPresentDiagnostic();
@@ -260,6 +262,7 @@ VkResult Swapchain::presentOriginalImage(
         invocation.vk, invocation.queue, presentInfo, {
             .scheduled = invocation.originalPresentDeadline.value_or(DiagnosticsClock::time_point{}),
             .copyExpected = true,
+            .applicationImage = true,
         }
     );
     if (duration)
@@ -464,7 +467,8 @@ VkResult Swapchain::presentHistoryOnly(
     const uint64_t sourceTimelineValue =
         this->frameState.backendTimelineIndex - 1;
     auto& fallbackPass = this->currentRenderSlot().passes.front();
-    auto& fallbackSemaphore = this->postCopySemaphores.at(invocation.imageIndex).first;
+    auto& fallbackSemaphore = this->postCopySemaphores.at(
+        this->presentationSlotFor(invocation.imageIndex)).first;
 
     auto& fallbackCommandBuffer = fallbackPass.commandBuffer;
     const auto fallbackSubmitStarted = startPresentDiagnostic();

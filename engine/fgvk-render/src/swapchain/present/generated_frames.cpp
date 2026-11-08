@@ -186,7 +186,8 @@ VkResult Swapchain::presentGeneratedFrames(
                 .submit = invocation.vk.df().QueueSubmit,
                 .acquireSemaphore = pass.acquireSemaphore.handle(),
                 .staged = slot.staged->handle(),
-                .continuation = this->postCopySemaphores.at(invocation.imageIndex).first.handle(),
+                .continuation = this->postCopySemaphores.at(
+                    this->presentationSlotFor(invocation.imageIndex)).first.handle(),
                 .fence = slot.fence.handle(),
                 .imageCount = static_cast<uint32_t>(this->info.images.size()),
                 .giveUp = invocation.pacedOutputs->interval / 2,
@@ -395,7 +396,8 @@ VkResult Swapchain::presentGeneratedFrames(
                 this->diagnosticsState.fixedSkippedFrames += skippedFrames;
             const uint64_t finalGeneratedTimelineValue =
                 this->frameState.backendTimelineIndex + skippedFrames - 1;
-            auto& fallbackSemaphore = this->postCopySemaphores.at(invocation.imageIndex).first;
+            auto& fallbackSemaphore = this->postCopySemaphores.at(
+                this->presentationSlotFor(invocation.imageIndex)).first;
             std::array<VkSemaphore, 1> precedingCopy{};
             if (i) precedingCopy[0] = this->postCopySemaphores.at(
                 (this->frameState.sequenceIndex - 1) % this->postCopySemaphores.size()).second.handle();
@@ -555,7 +557,7 @@ VkResult Swapchain::presentGeneratedFrames(
         // advancing sequenceIndex alone provides no such proof.
         const auto& presentSemaphore = this->postCopySemaphores.at(acquiredImageIndex).first;
         const VkSemaphore continuationSemaphore = i + 1 == plan.scheduledGeneratedFrames.size()
-            ? this->postCopySemaphores.at(invocation.imageIndex).first.handle()
+            ? this->postCopySemaphores.at(this->presentationSlotFor(invocation.imageIndex)).first.handle()
             : postCopy.second.handle();
         const std::array signalSemaphores{presentSemaphore.handle(), continuationSemaphore};
 
@@ -677,7 +679,7 @@ VkResult Swapchain::presentGeneratedFrames(
     }
 
     const auto result = this->presentOriginalImage(
-        invocation, this->postCopySemaphores.at(invocation.imageIndex).first.handle(),
+        invocation, this->postCopySemaphores.at(this->presentationSlotFor(invocation.imageIndex)).first.handle(),
         invocation.nextChain,
         &originalPresentDuration
     );

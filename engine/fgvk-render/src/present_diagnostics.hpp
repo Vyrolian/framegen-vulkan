@@ -80,6 +80,8 @@ namespace fgvk::layer::present_diagnostics {
             VkResult readinessResult{VK_NOT_READY};
             VkQueue queue{};
             VkSemaphore presentWait{};
+            // The real output of the application's own image, as opposed to a generated frame.
+            bool applicationImage{};
         };
         struct OutputSample {
             size_t ordinal{}, source{};
