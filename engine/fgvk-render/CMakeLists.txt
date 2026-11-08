@@ -111,7 +111,7 @@ if(FGVK_BUILD_VK_LAYER)
                     "${header_version} or newer with VK_KHR_present_id2 and "
                     "VK_EXT_present_timing. Use the pinned headers through "
                     "scripts/build-steamos-dev.sh, "
-                    "scripts/package-local.sh (FGVK_PORTABLE_PACKAGE=1), or "
+                    "scripts/package-local.sh (fetches the pinned headers), or "
                     "scripts/package-flatpaks.sh; "
                     "do not bypass this check. See the CMake compile log.")
             endif()

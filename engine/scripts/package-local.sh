@@ -177,6 +177,50 @@ for command in cmake ninja clang++ nm python3 readelf strings strip tar sha256su
     fi
 done
 
+# Native builds compile against one explicit Vulkan-Headers include directory, so the
+# pinned revision (not the host SDK) is what the CMake header check and every compile
+# see. The container path installs the same pin into /usr/include and passes no override.
+native_header_args=()
+if [[ "$containerized_build" != "1" ]]; then
+    if [[ -n "${FGVK_VULKAN_HEADERS_INCLUDE_DIR:-}" ]]; then
+        native_vulkan_headers_include_dir="$FGVK_VULKAN_HEADERS_INCLUDE_DIR"
+        if [[ "$native_vulkan_headers_include_dir" != /* ]]; then
+            native_vulkan_headers_include_dir="$PWD/$native_vulkan_headers_include_dir"
+        fi
+        header_source="FGVK_VULKAN_HEADERS_INCLUDE_DIR"
+    else
+        headers_parent="$repo_root/build/vulkan-headers"
+        headers_root="$headers_parent/$vulkan_headers_revision"
+        if [[ ! -f "$headers_root/include/vulkan/vulkan_core.h" ]]; then
+            if ! command -v git >/dev/null 2>&1; then
+                echo "Native packaging needs git to fetch Vulkan-Headers $vulkan_headers_revision. Install git or set FGVK_VULKAN_HEADERS_INCLUDE_DIR." >&2
+                exit 1
+            fi
+            echo "Fetching Vulkan-Headers $vulkan_headers_revision into $headers_root..."
+            mkdir -p "$headers_parent"
+            # Clone beside the final directory and rename only after the clone succeeds, so an
+            # interrupted fetch never leaves a directory that looks complete.
+            clone_dir="$(mktemp -d "$headers_parent/.$vulkan_headers_revision.partial.XXXXXX")"
+            if ! git clone --depth=1 -b "$vulkan_headers_revision" \
+                    https://github.com/KhronosGroup/Vulkan-Headers "$clone_dir"; then
+                rm -rf "$clone_dir"
+                echo "Failed to fetch Vulkan-Headers $vulkan_headers_revision from GitHub." >&2
+                exit 1
+            fi
+            rm -rf "$headers_root"
+            mv "$clone_dir" "$headers_root"
+        fi
+        native_vulkan_headers_include_dir="$headers_root/include"
+        header_source="pinned $vulkan_headers_revision"
+    fi
+    if [[ ! -f "$native_vulkan_headers_include_dir/vulkan/vulkan_core.h" ]]; then
+        echo "Vulkan-Headers include directory does not contain vulkan/vulkan_core.h: $native_vulkan_headers_include_dir" >&2
+        exit 1
+    fi
+    echo "Vulkan-Headers include directory ($header_source): $native_vulkan_headers_include_dir"
+    native_header_args+=("-DFGVK_VULKAN_HEADERS_INCLUDE_DIR=$native_vulkan_headers_include_dir")
+fi
+
 
 mkdir -p "$build_work_root"
 build_root="$(mktemp -d "$build_work_root/fgvk-package.XXXXXX")"
@@ -202,6 +246,7 @@ cmake -S "$repo_root" -B "$build64_dir" -G Ninja \
     -DCMAKE_INSTALL_LIBDIR=lib \
     -DBUILD_TESTING="$build_testing" \
     -DFGVK_REQUIRE_NATIVE_PACKAGE_HEADERS=ON \
+    "${native_header_args[@]}" \
     -DFGVK_BUILD_VK_LAYER=ON \
     -DFGVK_BUILD_CLI=ON \
     -DFGVK_LAYER_LIBRARY_PATH="../../../lib/libfgvk-render.so" \
@@ -231,6 +276,7 @@ if [[ "$build_32_bit" == true ]]; then
         -DCMAKE_INSTALL_LIBDIR=lib32 \
         -DBUILD_TESTING=OFF \
         -DFGVK_REQUIRE_NATIVE_PACKAGE_HEADERS=ON \
+        "${native_header_args[@]}" \
         -DFGVK_BUILD_VK_LAYER=ON \
         -DFGVK_BUILD_CLI=OFF \
         -DFGVK_LAYER_MANIFEST_SUFFIX=.x86 \
@@ -335,7 +381,7 @@ fi
 cp "$standalone_readme" "$install_dir/README.txt"
 if ! grep -Fq '~/.local/bin/fgvk %command%' "$install_dir/README.txt" ||
         ! grep -Fq 'ENABLE_VKBASALT=1' "$install_dir/README.txt" ||
-        ! grep -Fq 'Uninstall framegen-vulkan' "$install_dir/README.txt" ||
+        ! grep -Fq '~/.local/bin/fgvk-installer --uninstall' "$install_dir/README.txt" ||
         ! grep -Fq 'profiles, settings, and diagnostics' "$install_dir/README.txt"; then
     echo "Packaging failed: standalone Renderer README is incomplete" >&2
     exit 1
