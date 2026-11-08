@@ -11,9 +11,11 @@
 #include "fgvk-common/vulkan/timeline_semaphore.hpp"
 #include "fgvk-common/vulkan/vulkan.hpp"
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <bitset>
+#include <cstdio>
 #include <cstdlib>
 #include <exception>
 #include <iostream>
@@ -32,6 +34,8 @@ namespace fgvk::layer {
 
     namespace {
         constexpr uint64_t destroyWaitTimeoutNs = 2'000'000'000ULL;
+        // D7d: the application indices with their own stored acquire for the stall probe.
+        constexpr size_t stallProbeIndexSlots = 8;
 
         VkImageMemoryBarrier barrier(const VkImage image,
                 const VkAccessFlags srcAccess, const VkAccessFlags dstAccess,
@@ -98,6 +102,11 @@ namespace fgvk::layer {
         std::atomic<uint64_t> probeAcquireWait{0};
         std::atomic<uint64_t> probeAcquireIndex{0};
         std::atomic<uint64_t> probeAcquireTail{0};
+        // D7d, pacing profile only: the release wait value and tail value of the latest emulated
+        // acquire of each application index below stallProbeIndexSlots, and the steady-clock time
+        // (ns, zero when never stored) of that store. Stored with the probeAcquire* values.
+        std::array<std::atomic<uint64_t>, stallProbeIndexSlots> probeWaitOf{}, probeTailOf{};
+        std::array<std::atomic<int64_t>, stallProbeIndexSlots> probeAtOf{};
 
         Impl(const vk::Vulkan& vk, const VkSwapchainKHR lower, const uint32_t imageCount,
                 std::shared_ptr<DeferredPresentQueue> presentQueue)
@@ -394,8 +403,34 @@ namespace fgvk::layer {
             static bool started = false;
             return started;
         }
-        int64_t steadyNanoseconds(const present_diagnostics::Clock::time_point time) {
-            return std::chrono::duration_cast<std::chrono::nanoseconds>(time.time_since_epoch()).count();
+        // D7d names for the lower operations in LowerRecord and the in-flight call. Any other value reads as unknown.
+        const char* lowerOpName(const uint8_t op) {
+            switch (op) {
+            case lowerOpAcquireReal: return "acq_real";
+            case lowerOpAcquireGenerated: return "acq_gen";
+            case lowerOpAcquireSync: return "acq_sync";
+            case lowerOpPresentReal: return "pres_real";
+            case lowerOpPresentGenerated: return "pres_gen";
+            case lowerOpPresentSync: return "pres_sync";
+            default: return "unknown";
+            }
+        }
+        // D7d: milliseconds with the given number of decimals, from nanoseconds.
+        std::string millisecondsText(const int64_t nanoseconds, const int decimals) {
+            char text[32];
+            std::snprintf(text, sizeof(text), "%.*f", decimals, static_cast<double>(nanoseconds) / 1'000'000.0);
+            return text;
+        }
+        // D7d: the milliseconds from `then` to `now`, one decimal. A time after the dump start reads as zero,
+        // because a store or record can land after the dump's clock read.
+        std::string agoText(const int64_t now, const int64_t then) {
+            return millisecondsText(std::max<int64_t>(0, now - then), 1);
+        }
+        // D7d: the low 16 bits of a swapchain handle, in hex.
+        std::string lowSwapchainHex(const uint64_t swapchain) {
+            char text[8];
+            std::snprintf(text, sizeof(text), "%x", static_cast<unsigned>(swapchain & 0xffffu));
+            return text;
         }
         // D7b names for the submit kinds in SubmitRecord. Any other value reads as unknown.
         const char* submitKindName(const uint8_t kind) {
@@ -467,6 +502,8 @@ namespace fgvk::layer {
     void InternalSwapchainImages::writeStallProbe(const int64_t stalledNanoseconds) const {
         const VkDevice device = impl->device;
         const auto& funcs = impl->funcs;
+        // D7d: the dump time, the reference for every age in this line.
+        const int64_t now = steadyNanoseconds(present_diagnostics::Clock::now());
         // A counter read; "unavailable" when the device does not expose the query.
         const auto counter = [&funcs, device](const VkSemaphore semaphore) -> std::string {
             if (!funcs.GetSemaphoreCounterValueKHR)
@@ -507,6 +544,30 @@ namespace fgvk::layer {
         line << " tail_gpu=" << (!impl->queue->tail ? std::string{"none"}
             : tailKnown ? std::to_string(tailGpu) : counter(impl->queue->tail));
         line << " tail_submitted=" << impl->queue->tailSubmitted.load(std::memory_order_acquire);
+        // D7d: the lower call in flight and the latest stored acquire of each application index.
+        // Read without the queue lock: the atomics are the only fields involved.
+        const uint8_t callOp = impl->queue->callOp.load(std::memory_order_acquire);
+        line << " call=";
+        if (callOp == lowerOpNone) {
+            line << "none";
+        } else {
+            const uint32_t callLower = impl->queue->callLower.load(std::memory_order_relaxed);
+            const int64_t callSince = impl->queue->callSinceNs.load(std::memory_order_relaxed);
+            line << lowerOpName(callOp) << ":l" << indexText(callLower) << ':' << agoText(now, callSince);
+        }
+        line << " acq_by_index=";
+        const size_t indexed = std::min(impl->images.size(), stallProbeIndexSlots);
+        for (size_t index = 0; index < indexed; ++index) {
+            line << (index ? " " : "") << index << ':';
+            const int64_t storedAt = impl->probeAtOf[index].load(std::memory_order_acquire);
+            if (storedAt == 0) {
+                line << '-';
+                continue;
+            }
+            line << impl->probeWaitOf[index].load(std::memory_order_relaxed) << '/'
+                 << impl->probeTailOf[index].load(std::memory_order_relaxed) << "/-"
+                 << agoText(now, storedAt);
+        }
 
         line << " ring=";
         if (const auto states = impl->ring.tryDescribe()) {
@@ -553,6 +614,20 @@ namespace fgvk::layer {
                 if (record.kind == submitKindGeneratedSkip)
                     line << ":r" << DeferredPresent::skipReasonName(record.reason);
                 first = false;
+            }
+            // D7d: the finished lower calls, oldest first. A zero start marks an entry never written.
+            line << " lower=";
+            bool firstLower = true;
+            for (size_t step = 0; step < queue.lower.size(); ++step) {
+                const LowerRecord& record = queue.lower[(queue.lowerNext + step) % queue.lower.size()];
+                if (record.startNs == 0)
+                    continue;
+                line << (firstLower ? "" : " ") << record.tail << ':' << lowerOpName(record.op)
+                     << ":l" << indexText(record.lowerIndex) << ":r" << record.result
+                     << ":s" << record.source << ":x" << lowSwapchainHex(record.swapchain)
+                     << ":-" << agoText(now, record.startNs)
+                     << ':' << millisecondsText(record.endNs - record.startNs, 2);
+                firstLower = false;
             }
             // The queue mutex is released before the write, so a slow stderr never holds it.
             queueLock.unlock();
@@ -665,6 +740,13 @@ namespace fgvk::layer {
                     impl->probeAcquireWait.store(waitValue, std::memory_order_relaxed);
                     impl->probeAcquireIndex.store(*index, std::memory_order_relaxed);
                     impl->probeAcquireTail.store(tailValue, std::memory_order_relaxed);
+                    // D7d: the same values for this application index. The time is stored last.
+                    if (*index < stallProbeIndexSlots) {
+                        impl->probeWaitOf[*index].store(waitValue, std::memory_order_relaxed);
+                        impl->probeTailOf[*index].store(tailValue, std::memory_order_relaxed);
+                        impl->probeAtOf[*index].store(steadyNanoseconds(present_diagnostics::Clock::now()),
+                            std::memory_order_release);
+                    }
                 }
                 const auto submitStarted = measured ? present_diagnostics::Clock::now() : present_diagnostics::Clock::time_point{};
                 submitted = impl->funcs.QueueSubmit(submitQueue, 1, &submit, fence);
@@ -835,10 +917,20 @@ namespace fgvk::layer {
         // joined, so no worker callback is using the lower-acquire slots.
         const uint32_t slot = impl->lowerHead;
         uint32_t index = 0;
+        // D7d: this acquire runs without queue->mutex, so its clock reads are the only addition,
+        // and only when history keeps the record.
+        const bool noted = impl->queue->history;
+        const int64_t acquireStartNs = noted ? steadyNanoseconds(present_diagnostics::Clock::now()) : 0;
         const VkResult acquired = image.lowerAcquire(UINT64_MAX,
             impl->lowerAcquire.at(slot).handle(), &index);
+        const int64_t acquireEndNs = noted ? steadyNanoseconds(present_diagnostics::Clock::now()) : 0;
         if (acquired != VK_SUCCESS && acquired != VK_SUBOPTIMAL_KHR) {
             noteLowerError(acquired);
+            if (noted) {
+                const std::lock_guard lock(impl->queue->mutex);
+                impl->queue->noteLower(lowerOpAcquireSync, impl->lowerSwapchain, UINT32_MAX, acquired,
+                    0, acquireStartNs, acquireEndNs);
+            }
             return acquired < 0 ? acquired : VK_ERROR_UNKNOWN;
         }
         if (acquired == VK_SUBOPTIMAL_KHR)
@@ -847,6 +939,8 @@ namespace fgvk::layer {
         VkResult result = VK_SUCCESS;
         {
             const std::lock_guard lock(impl->queue->mutex);
+            impl->queue->noteLower(lowerOpAcquireSync, impl->lowerSwapchain, index, acquired,
+                0, acquireStartNs, acquireEndNs);
             result = submitCopyLocked(impl->queue->queue, image.applicationIndex, index, slot, waits);
         }
         if (result == VK_SUCCESS) {
@@ -866,8 +960,18 @@ namespace fgvk::layer {
         if (ready != VK_SUCCESS)
             return ready < 0 ? ready : VK_NOT_READY;
         uint32_t index = 0;
+        // D7d: timed and noted only with history. A poll that is not ready or timed out is not noted.
+        const bool noted = impl->queue->history;
+        const int64_t started = noted ? steadyNanoseconds(present_diagnostics::Clock::now()) : 0;
+        impl->queue->beginCall(lowerOpAcquireReal, UINT32_MAX);
         const VkResult lower = impl->funcs.AcquireNextImageKHR(impl->device, impl->lowerSwapchain,
             0, impl->lowerAcquire.at(impl->lowerHead).handle(), VK_NULL_HANDLE, &index);
+        impl->queue->endCall();
+        if (noted && lower != VK_NOT_READY && lower != VK_TIMEOUT) {
+            const bool gotImage = lower == VK_SUCCESS || lower == VK_SUBOPTIMAL_KHR;
+            impl->queue->noteLower(lowerOpAcquireReal, impl->lowerSwapchain, gotImage ? index : UINT32_MAX,
+                lower, 0, started, steadyNanoseconds(present_diagnostics::Clock::now()));
+        }
         if (lower != VK_SUCCESS && lower != VK_SUBOPTIMAL_KHR) {
             noteLowerError(lower);
             return lower;

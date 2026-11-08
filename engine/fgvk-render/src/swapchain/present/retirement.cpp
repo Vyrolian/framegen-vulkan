@@ -451,7 +451,10 @@ VkResult Swapchain::queuePresentWithRetirementFence(
                 // not cross-queue presentation order at the driver.
                 if (this->info.waylandPresentation) {
                     const std::lock_guard lock(this->info.deferredPresentQueue->mutex);
-                    return observedPresent(this->info.deferredPresentQueue->queue, info);
+                    // D7d: noted as a synchronous lower present only when the pacing profile keeps history.
+                    return this->info.deferredPresentQueue->presentSyncLocked(info, [&] {
+                        return observedPresent(this->info.deferredPresentQueue->queue, info);
+                    });
                 }
                 return this->info.deferredPresentQueue->presentNow(vk.df().QueuePresentKHR, info);
             }

@@ -2651,6 +2651,128 @@ void generatedSkipAddsPrivateTail() {
     copyAcquireResult = VK_SUCCESS;
 }
 
+// D7d: true when no lower record was written.
+bool lowerUnwritten(const DeferredPresentQueue& queue) {
+    if (queue.lowerNext != 0) return false;
+    for (const auto& record : queue.lower)
+        if (record.startNs != 0) return false;
+    return true;
+}
+
+// D7d: noteLower writes nothing without history. With history it writes one record with the current
+// tail value, and the 25th record wraps into slot 0 of the 24 entries.
+void lowerRecordsFollowHistory() {
+    DeferredPresentQueue queue;
+    queue.queue = handle<VkQueue>(7);
+    const auto swapchain = handle<VkSwapchainKHR>(11);
+    queue.noteLower(lowerOpPresentReal, swapchain, 3, VK_SUCCESS, 42, 100, 150);
+    expect(lowerUnwritten(queue), "a lower record was written without history");
+    queue.history = true;
+    queue.tailNext = 5;
+    queue.noteLower(lowerOpPresentReal, swapchain, 3, VK_SUCCESS, 42, 100, 150);
+    const LowerRecord& first = queue.lower[0];
+    expect(queue.lowerNext == 1 && first.tail == 5 && first.op == lowerOpPresentReal &&
+        first.lowerIndex == 3 && first.source == 42 && first.swapchain == 11 &&
+        first.result == VK_SUCCESS && first.startNs == 100 && first.endNs == 150,
+        "a noted lower call did not record its op, lower index, source, swapchain, tail and times");
+    for (int64_t start = 101; start <= 124; ++start)
+        queue.noteLower(lowerOpAcquireReal, swapchain, UINT32_MAX, VK_SUCCESS, 0, start, start + 1);
+    expect(queue.lowerNext == 25 && queue.lower[0].startNs == 124 && queue.lower[1].startNs == 101 &&
+        queue.lower[0].op == lowerOpAcquireReal,
+        "the 25th lower record did not wrap into slot 0");
+}
+
+// D7d: beginCall and endCall set and clear the in-flight op, and do nothing without history.
+void inFlightCallFollowsHistory() {
+    DeferredPresentQueue queue;
+    queue.beginCall(lowerOpPresentReal, 3);
+    expect(queue.callOp.load() == lowerOpNone, "an in-flight call was noted without history");
+    queue.history = true;
+    queue.beginCall(lowerOpPresentReal, 3);
+    expect(queue.callOp.load() == lowerOpPresentReal && queue.callLower.load() == 3 &&
+        queue.callSinceNs.load() > 0, "beginCall did not set the op, lower index and start");
+    queue.endCall();
+    expect(queue.callOp.load() == lowerOpNone, "endCall did not clear the in-flight op");
+}
+
+// D7d: a synchronous present reaches the queue either way. With history it leaves one
+// lowerOpPresentSync record with its lower index and swapchain, and no call in flight.
+void synchronousPresentIsNoted() {
+    DeferredPresentQueue queue;
+    queue.queue = handle<VkQueue>(7);
+    const auto swapchain = handle<VkSwapchainKHR>(11);
+    const auto wait = handle<VkSemaphore>(12);
+    uint32_t image = 4;
+    const VkPresentInfoKHR info{.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+        .waitSemaphoreCount = 1, .pWaitSemaphores = &wait,
+        .swapchainCount = 1, .pSwapchains = &swapchain, .pImageIndices = &image};
+    copyPresents.clear();
+    expect(queue.presentNow(recordingPresent, info) == VK_SUCCESS && copyPresents.size() == 1 &&
+        copyPresents[0] == std::pair{4u, wait}, "a synchronous present did not reach the queue");
+    expect(lowerUnwritten(queue), "a synchronous present was noted without history");
+    queue.history = true;
+    expect(queue.presentNow(recordingPresent, info) == VK_SUCCESS && copyPresents.size() == 2 &&
+        copyPresents[1] == std::pair{4u, wait}, "a noted synchronous present did not reach the queue");
+    const LowerRecord& record = queue.lower[0];
+    expect(queue.lowerNext == 1 && record.op == lowerOpPresentSync && record.lowerIndex == 4 &&
+        record.swapchain == 11 && record.source == 0 && record.result == VK_SUCCESS &&
+        record.startNs > 0 && record.endNs >= record.startNs && queue.callOp.load() == lowerOpNone,
+        "a synchronous present did not record one lowerOpPresentSync entry");
+}
+
+// D7d: a generated output and an internal real output each leave one lower record, with their
+// lower index and source, when history is set. Without history nothing is recorded.
+void presentsAreNotedWithHistory() {
+    for (const bool history : {false, true}) {
+        auto queue = std::make_shared<DeferredPresentQueue>();
+        queue->queue = handle<VkQueue>(7);
+        queue->history = history;
+        DeferredPresent worker(queue, recordingPresent);
+        copyPresents.clear();
+        const auto swapchain = handle<VkSwapchainKHR>(11);
+        const auto generatedWait = handle<VkSemaphore>(12);
+        const auto realWait = handle<VkSemaphore>(13);
+        uint32_t generatedImage = 5;
+        uint32_t realImage = 4;
+        const VkPresentInfoKHR generatedInfo{.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+            .waitSemaphoreCount = 1, .pWaitSemaphores = &generatedWait,
+            .swapchainCount = 1, .pSwapchains = &swapchain, .pImageIndices = &generatedImage};
+        const VkPresentInfoKHR realInfo{.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+            .waitSemaphoreCount = 1, .pWaitSemaphores = &realWait,
+            .swapchainCount = 1, .pSwapchains = &swapchain, .pImageIndices = &realImage};
+        auto fake = std::make_shared<InternalFake>();
+        fake->lowerIndex = 6;
+        fake->presentWait = handle<VkSemaphore>(95);
+        DeferredPresent::Readiness ready;
+        ready.source = 77;
+        const auto deadline = DeferredPresent::Clock::now();
+        expect(worker.beginBatch(2, ready), "noted batch rejected");
+        expect(worker.enqueue(generatedInfo, deadline, true), "noted generated output rejected");
+        expect(worker.enqueueInternalReal(realInfo, deadline, internalCopy(fake, 1)),
+            "noted internal real output rejected");
+        worker.closeBatch();
+        const auto completion = worker.finish(UINT64_MAX);
+        expect(completion && completion->count == 2 && completion->result == VK_SUCCESS,
+            "noted batch was skipped or failed");
+        expect(copyPresents.size() == 2 && copyPresents[0] == std::pair{5u, generatedWait} &&
+            copyPresents[1] == std::pair{6u, handle<VkSemaphore>(95)},
+            "noted outputs were not presented once each with their lower image and wait");
+        if (!history) {
+            expect(lowerUnwritten(*queue), "outputs were noted without history");
+            continue;
+        }
+        expect(queue->lowerNext == 2, "noted outputs did not leave one record each");
+        const LowerRecord& generated = queue->lower[0];
+        const LowerRecord& real = queue->lower[1];
+        expect(generated.op == lowerOpPresentGenerated && generated.lowerIndex == 5 &&
+            generated.source == 77 && generated.swapchain == 11 && generated.result == VK_SUCCESS,
+            "the generated output record lacks its op, lower index, source or swapchain");
+        expect(real.op == lowerOpPresentReal && real.lowerIndex == 6 &&
+            real.source == 77 && real.swapchain == 11 && real.result == VK_SUCCESS,
+            "the internal real record lacks its op, lower index, source or swapchain");
+    }
+}
+
 int main() {
     queueRequest(); acquireQueueRequest(); acquireTargetAvoidsPresentLock();
     privateSubmitWithoutTailIsUnchanged(); privateSubmitAppendsTail();
@@ -2678,4 +2800,6 @@ int main() {
     internalRealPreparedBeforeDeadline(); internalRealNotPreparedPollsAtDeadline();
     internalRealPreparedPresentsWhenStopping(); internalRealPreparationErrorAbandonsOnce();
     internalRealPreparationSubmitErrorSkipsWithoutAbandon(); internalRealLockSplitIsProfileOnly();
+    lowerRecordsFollowHistory(); inFlightCallFollowsHistory(); synchronousPresentIsNoted();
+    presentsAreNotedWithHistory();
 }

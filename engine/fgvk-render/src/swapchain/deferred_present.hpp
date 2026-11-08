@@ -9,12 +9,14 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <thread>
+#include <type_traits>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -52,6 +54,39 @@ struct SubmitRecord {
     VkFence fence{};
 };
 
+// D7d: the lower-image call a LowerRecord or an in-flight call describes. None (0) is no call.
+// Acquires are the lower acquire of a real, of a generated output, and of a synchronous output
+// (which runs without queue->mutex). Presents are the lower present of each of the three.
+inline constexpr uint8_t lowerOpNone = 0;
+inline constexpr uint8_t lowerOpAcquireReal = 1;
+inline constexpr uint8_t lowerOpAcquireGenerated = 2;
+inline constexpr uint8_t lowerOpAcquireSync = 3;
+inline constexpr uint8_t lowerOpPresentReal = 4;
+inline constexpr uint8_t lowerOpPresentGenerated = 5;
+inline constexpr uint8_t lowerOpPresentSync = 6;
+// D7d: one finished lower acquire or present, with the private queue's tail value at its record.
+// A zero startNs marks an entry that was never written. Times are steady-clock nanoseconds.
+struct LowerRecord {
+    int64_t startNs{};
+    int64_t endNs{};
+    uint64_t tail{};
+    uint64_t swapchain{};
+    uint64_t source{};
+    int32_t result{};
+    uint32_t lowerIndex{UINT32_MAX};
+    uint8_t op{};
+};
+// D7d: nanoseconds since the steady clock's epoch, the clock present_diagnostics uses.
+inline int64_t steadyNanoseconds(const std::chrono::steady_clock::time_point time) {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(time.time_since_epoch()).count();
+}
+// D7d: a handle as an integer, whether the handle type is a pointer or an integer.
+template<typename Handle>
+uint64_t handleBits(const Handle handle) {
+    if constexpr (std::is_pointer_v<Handle>) return reinterpret_cast<uintptr_t>(handle);
+    else return static_cast<uint64_t>(handle);
+}
+
 // A device-private queue from the same family as the application's graphics
 // queue. The application never receives this queue's index. Multiple surfaces
 // share the lock, but never hold it while sleeping.
@@ -82,6 +117,17 @@ struct DeferredPresentQueue {
     static constexpr uint32_t recentCount = 16;
     std::array<SubmitRecord, recentCount> recent{};
     uint32_t recentNext{0};
+    // D7d, pacing profile only (history): the finished lower acquires and presents. Written by
+    // noteLower under mutex at lowerNext % lowerCount; a zero startNs marks an entry never written.
+    static constexpr uint32_t lowerCount = 24;
+    std::array<LowerRecord, lowerCount> lower{};
+    uint32_t lowerNext{0};
+    // D7d: the lower call in flight, readable without mutex by the stall probe. callOp is
+    // lowerOpNone when nothing is in flight. beginCall stores the start and the lower index before
+    // the op (release), so a reader that sees the op also sees its start.
+    std::atomic<uint8_t> callOp{lowerOpNone};
+    std::atomic<uint32_t> callLower{UINT32_MAX};
+    std::atomic<int64_t> callSinceNs{0};
 
     // The queue and lock the emulated acquire must use. Without acquireQueue,
     // this is the present queue and its mutex, as before the second queue existed.
@@ -90,11 +136,48 @@ struct DeferredPresentQueue {
         return {queue, mutex};
     }
 
+    // D7d: the in-flight call. Both are no-ops unless history is set.
+    void beginCall(const uint8_t op, const uint32_t lowerIndex) {
+        if (!history) return;
+        callSinceNs.store(steadyNanoseconds(std::chrono::steady_clock::now()), std::memory_order_relaxed);
+        callLower.store(lowerIndex, std::memory_order_relaxed);
+        callOp.store(op, std::memory_order_release);
+    }
+    void endCall() {
+        if (!history) return;
+        callOp.store(lowerOpNone, std::memory_order_release);
+    }
+    // D7d: caller holds mutex. Records one finished lower call, only when history is set.
+    void noteLower(const uint8_t op, const VkSwapchainKHR swapchain, const uint32_t lowerIndex,
+            const VkResult result, const uint64_t source, const int64_t startNs, const int64_t endNs) {
+        if (!history) return;
+        lower[lowerNext++ % lowerCount] = LowerRecord{
+            .startNs = startNs, .endNs = endNs, .tail = tailNext, .swapchain = handleBits(swapchain),
+            .source = source, .result = static_cast<int32_t>(result), .lowerIndex = lowerIndex, .op = op,
+        };
+    }
+    // D7d: caller holds mutex. Runs one synchronous present through `present`. With history set it
+    // is noted as lowerOpPresentSync, with the first image of info (none when info has no image).
+    template<typename Present>
+    VkResult presentSyncLocked(const VkPresentInfoKHR& info, Present&& present) {
+        if (!history) return present();
+        const bool hasImage = info.swapchainCount > 0;
+        const VkSwapchainKHR swapchain = hasImage ? info.pSwapchains[0] : VK_NULL_HANDLE;
+        const uint32_t lowerIndex = hasImage ? info.pImageIndices[0] : UINT32_MAX;
+        const auto started = std::chrono::steady_clock::now();
+        beginCall(lowerOpPresentSync, lowerIndex);
+        const VkResult result = present();
+        endCall();
+        noteLower(lowerOpPresentSync, swapchain, lowerIndex, result, 0,
+            steadyNanoseconds(started), steadyNanoseconds(std::chrono::steady_clock::now()));
+        return result;
+    }
+
     // Synchronous outputs use the exact same queue as the retained tail.
     // CPU call ordering across different queues is not present ordering.
     VkResult presentNow(PFN_vkQueuePresentKHR present, const VkPresentInfoKHR& info) {
         const std::lock_guard lock(mutex);
-        return present(queue, &info);
+        return presentSyncLocked(info, [&] { return present(queue, &info); });
     }
 };
 
@@ -1029,11 +1112,17 @@ private:
         result.imageIndex = lowerIndex;
         result.presentWait = presentWait;
         result.started = Clock::now();
+        queue->beginCall(lowerOpPresentReal, lowerIndex);
         result.result = ready.observer && ready.observe
             ? ready.observe(ready.observer.get(), present, queue->queue,
                 info, ready.context, ready.source, job.generated)
             : present(queue->queue, &info);
+        queue->endCall();
         result.finished = Clock::now();
+        // D7d: the lower present is noted with its source, only when history is set.
+        if (queue->history)
+            queue->noteLower(lowerOpPresentReal, job.swapchain, lowerIndex, result.result, ready.source,
+                steadyNanoseconds(result.started), steadyNanoseconds(result.finished));
         // The present call alone: started and finished bracket it.
         if (ready.profile) result.lockPresentNs = nanosecondsOf(result.finished - result.started);
         if (ready.copyStatus && ready.copyFence) {
@@ -1348,10 +1437,21 @@ private:
                     while (skipWhy == SkipReason::None) {
                         {
                             const std::lock_guard queueLock(queue->mutex);
+                            // D7d: timed and noted only with history; not-ready and timed-out polls are not noted.
+                            const bool noted = queue->history;
+                            const auto acquireStarted = noted ? Clock::now() : Clock::time_point{};
+                            queue->beginCall(lowerOpAcquireGenerated, UINT32_MAX);
                             acquireResult = profiledLockCall(ready.profile, result.lockAcquireNs, [&] {
                                 return job.copy.acquire(job.copy.device, job.swapchain, 0,
                                     job.copy.acquireSemaphore, VK_NULL_HANDLE, &image);
                             });
+                            queue->endCall();
+                            if (noted && acquireResult != VK_NOT_READY && acquireResult != VK_TIMEOUT) {
+                                const bool gotImage = acquireResult == VK_SUCCESS || acquireResult == VK_SUBOPTIMAL_KHR;
+                                queue->noteLower(lowerOpAcquireGenerated, job.swapchain,
+                                    gotImage ? image : UINT32_MAX, acquireResult, ready.source,
+                                    steadyNanoseconds(acquireStarted), steadyNanoseconds(Clock::now()));
+                            }
                         }
                         if (acquireResult < 0 || acquireResult == VK_SUCCESS ||
                                 acquireResult == VK_SUBOPTIMAL_KHR)
@@ -1419,11 +1519,17 @@ private:
                     }
                     if (presentOutput) {
                         result.started = Clock::now();
+                        queue->beginCall(lowerOpPresentGenerated, job.image);
                         result.result = ready.observer && ready.observe
                             ? ready.observe(ready.observer.get(), present, queue->queue,
                                 info, ready.context, ready.source, job.generated)
                             : present(queue->queue, &info);
+                        queue->endCall();
                         result.finished = Clock::now();
+                        // D7d: the generated lower present, noted only with history.
+                        if (queue->history)
+                            queue->noteLower(lowerOpPresentGenerated, job.swapchain, job.image, result.result,
+                                ready.source, steadyNanoseconds(result.started), steadyNanoseconds(result.finished));
                         if (ready.profile) result.lockPresentNs = nanosecondsOf(result.finished - result.started);
                         if (ready.copyStatus && ready.copyFence) {
                             result.copyChecked = true;
