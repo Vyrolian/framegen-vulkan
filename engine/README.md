@@ -40,20 +40,20 @@ See the [Arch guide](dist/arch/README.md#install-the-release-package) for launch
 
 Extract `framegen-vulkan-v<version>-linux.tar.xz` into a new folder and run **Install framegen-vulkan** from that folder. The installer places framegen-vulkan under `~/.local`, preserves existing profiles, and shows the required launch option. Run it again to update. To remove the native installation, run `~/.local/bin/fgvk-installer --uninstall`.
 
-Close games using framegen-vulkan before installing or updating. Flatpak applications require a matching runtime extension and per-application sandbox preparation. Follow the [Flatpak guide](docs/FLATPAK-GUIDE.md); a host `fgvk-launch` command cannot replace that setup.
+Close games using framegen-vulkan before installing or updating. Flatpak applications require a matching runtime extension and per-application sandbox preparation. Follow the [Flatpak guide](docs/FLATPAK-GUIDE.md); a host `fgvk` command cannot replace that setup.
 
 ## Usage
 
-**A profile does not activate framegen-vulkan. Every standalone native Steam or Proton game must start through `fgvk-launch`.** Set the launch option once for each game, then use Steam normally.
+**A profile does not activate framegen-vulkan. Every standalone native Steam or Proton game must start through `fgvk`.** Set the launch option once for each game, then use Steam normally.
 
 ### Native Steam or Proton game
 
-1. Create a profile in `~/.config/framegen-vulkan/conf.toml` and set `active_in` to the game's executable, such as `Game.exe`. Check the file with `~/.local/bin/fgvk-cli validate`. The [configuration guide](docs/CONFIGURATION.md) has a complete example.
+1. Create a profile in `~/.config/framegen-vulkan/conf.toml` and set `active_in` to the game's executable, such as `Game.exe`. Check the file with `~/.local/bin/fgvk-cli validate`. The [configuration guide](docs/CONFIGURATION.md) has a complete example. Or run `~/.local/bin/fgvk` with no arguments to edit the same file in the settings window.
 2. Enable Frame Generation, scaling, and/or shader effects in that profile. Settings marked as restart-only take effect the next time the game starts.
 3. Add this under **Steam Properties > General > Launch Options**, then start the game with Steam's **Play** button:
 
     ```text
-    ~/.local/bin/fgvk-launch %command%
+    ~/.local/bin/fgvk %command%
     ```
 
 When shaders are enabled, the same launch option also sets `ENABLE_VKBASALT=1` as described in [Shaders](docs/CONFIGURATION.md#shaders). If no profile matches, framegen-vulkan stays inactive.
@@ -64,8 +64,8 @@ For native Steam Remote Play, close streams and run `~/.local/bin/fgvk-remote-pl
 
 | Game or application | How to start it |
 | --- | --- |
-| Direct desktop command | `~/.local/bin/fgvk-launch "/path/to/program"` |
-| Native Heroic or Lutris game | Use the absolute `fgvk-launch` path as its wrapper or command prefix |
+| Direct desktop command | `~/.local/bin/fgvk "/path/to/program"` |
+| Native Heroic or Lutris game | Use the absolute `fgvk` path as its wrapper or command prefix |
 | Flatpak game, launcher, or emulator | Complete the [Flatpak setup](docs/FLATPAK-GUIDE.md), then launch it normally |
 
 `%command%` is a Steam placeholder and must not be typed into a terminal. framegen-vulkan operates on Vulkan; Proton games work through DXVK or VKD3D-Proton, while OpenGL applications require the optional Zink setting in `launcher.conf`.
@@ -98,6 +98,8 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build
 ctest --test-dir build --output-on-failure
 ```
+
+The settings window and `fgvk <command>` entry point are a separate Rust crate in `fgvk-ui/`. Build and test it with `cargo build --release --locked --manifest-path fgvk-ui/Cargo.toml` and `cargo test --locked --manifest-path fgvk-ui/Cargo.toml`, or use `just fgvk-ui` and `just test-fgvk-ui` from the repository root.
 
 See [Building from source](docs/BUILDING-FROM-SOURCE.md) for prerequisites, SteamOS builds, 32-bit layers, and installation prefixes.
 

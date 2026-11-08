@@ -4,7 +4,7 @@ Install `framegen-vulkan-bin` for a system-wide framegen-vulkan on writable x86_
 
 ## Contents
 
-The package includes the CLI, launcher, diagnostics helper, and 64-bit/32-bit Vulkan layers under `/usr`. Use pacman to manage these files; the user-local archive installer is not included. Maintainers can find the [payload layout and checks](../../docs/BUILDING-FROM-SOURCE.md#arch-package-maintenance) in the build guide.
+The package includes the `fgvk` settings window and `fgvk <command>` entry point, the CLI, the private launch helper, the diagnostics helper, and 64-bit/32-bit Vulkan layers under `/usr`. Use pacman to manage these files; the user-local archive installer is not included. Maintainers can find the [payload layout and checks](../../docs/BUILDING-FROM-SOURCE.md#arch-package-maintenance) in the build guide.
 
 ## Install the release package
 
@@ -34,10 +34,10 @@ fgvk-cli validate
  Frame Generation and LS1 scaling require a lawful user-supplied `Lossless.dll`; the open framegen-vulkan Scaler and bundled shaders do not. LS1 and DirectX-only LSFG models additionally need the optional `vkd3d` dependency, plus `lib32-vkd3d` for 32-bit games. Native SPIR-V LSFG models do not need the translator. For a native Steam or Proton game, add this under **Steam Properties > General > Launch Options**:
 
 ```text
-/usr/bin/fgvk-launch %command%
+/usr/bin/fgvk %command%
 ```
 
-Use the absolute `/usr/bin` path so a separate `~/.local/bin/fgvk-launch` cannot shadow the pacman-owned launcher. Flatpak games additionally require the matching framegen-vulkan Flatpak runtime extension and application preparation described in the [Flatpak guide](../../docs/FLATPAK-GUIDE.md).
+Use the absolute `/usr/bin` path so a separate `~/.local/bin/fgvk` cannot shadow the pacman-owned entry point. Flatpak games additionally require the matching framegen-vulkan Flatpak runtime extension and application preparation described in the [Flatpak guide](../../docs/FLATPAK-GUIDE.md).
 
 When shaders are selected, the launch option also sets `ENABLE_VKBASALT=1`; see [Shaders](../../docs/CONFIGURATION.md#shaders).
 
@@ -82,7 +82,7 @@ Do not run the upstream installer or extract the archive with `FGVK_INSTALL_PREF
 
 The pacman package manages `/usr`; the standalone archive installs a separate native copy under `~/.local`. Pacman reports user-local copies but does not change or remove them.
 
-Use `/usr/bin/fgvk-launch` explicitly to select this package. Do not export `ENABLE_FGVK=1` globally: use the launcher to select the matching layers. Flatpak runtime extensions are installed and updated separately.
+Use `/usr/bin/fgvk` explicitly to select this package. Do not export `ENABLE_FGVK=1` globally: use the launcher to select the matching layers. Flatpak runtime extensions are installed and updated separately.
 
 ## Profiles and configuration data
 

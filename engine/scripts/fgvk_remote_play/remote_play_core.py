@@ -19,6 +19,13 @@ from .managed_files import (
     copy_managed_file_atomically, managed_install_transaction,
     write_managed_text_atomically, sync_managed_directory,
 )
+def install_prefix_of(runner: Path) -> Path:
+    """Return the prefix of a launcher installed at <prefix>/libexec/framegen-vulkan/fgvk-launch."""
+    if len(runner.parents) < 3:
+        raise ValueError('Remote Play requires an installed framegen-vulkan launcher path')
+    return runner.parents[2]
+
+
 class RemotePlayResponse(TypedDict):
     success: bool
     error: str | None
@@ -231,7 +238,7 @@ class RemotePlayOverride:
             if not for_removal:
                 raise
             saved_runner = self.fgvk_script_path
-            for runner in dict.fromkeys((saved_runner, self.user_home / '.local/bin/fgvk-launch')):
+            for runner in dict.fromkeys((saved_runner, self.user_home / '.local/libexec/framegen-vulkan/fgvk-launch')):
                 self.fgvk_script_path = runner
                 expected = hashlib.sha256(self._payload().encode()).hexdigest()
                 if self._digest(self.client) == expected:
@@ -247,7 +254,7 @@ class RemotePlayOverride:
         ).replace("runner=Path('__FGVK_RUNNER_PATH__')", f"runner=Path({str(self.fgvk_script_path)!r})").replace(
             "config=Path('__FGVK_CONFIG_PATH__')", f"config=Path({str(self.config_file_path)!r})").replace(
             "sdr_helper=Path('__FGVK_SDR_HELPER_PATH__')",
-            f"sdr_helper=Path({str(self.fgvk_script_path.parent.parent / SDR_HELPER_RELATIVE_PATH)!r})")
+            f"sdr_helper=Path({str(install_prefix_of(self.fgvk_script_path) / SDR_HELPER_RELATIVE_PATH)!r})")
 
     @contextmanager
     def transaction(self, extra_paths: Sequence[Path] = ()) -> Iterator[None]:
@@ -333,7 +340,7 @@ class RemotePlayOverride:
         if not self.fgvk_script_path.is_file() or not os.access(self.fgvk_script_path, os.X_OK):
             raise ValueError("Install framegen-vulkan first")
         try:
-            check_sdr_helper(self.fgvk_script_path.parent.parent / SDR_HELPER_RELATIVE_PATH)
+            check_sdr_helper(install_prefix_of(self.fgvk_script_path) / SDR_HELPER_RELATIVE_PATH)
         except (OSError, ValueError) as error:
             raise ValueError("Install the current framegen-vulkan Remote Play SDR helper") from error
 

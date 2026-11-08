@@ -17,6 +17,13 @@ pub const SUBTEXT0: Color32 = Color32::from_rgb(0xa6, 0xad, 0xc8);
 pub const MAUVE: Color32 = Color32::from_rgb(0xcb, 0xa6, 0xf7);
 pub const RED: Color32 = Color32::from_rgb(0xf3, 0x8b, 0xa8);
 pub const GREEN: Color32 = Color32::from_rgb(0xa6, 0xe3, 0xa1);
+/// SURFACE0 at about half opacity, for alternating rows in lists.
+pub const STRIPE: Color32 = with_alpha(SURFACE0, 0x80);
+
+/// Returns `color` with the given alpha, usable in constants.
+pub const fn with_alpha(color: Color32, alpha: u8) -> Color32 {
+    Color32::from_rgba_unmultiplied_const(color.r(), color.g(), color.b(), alpha)
+}
 
 /// Forces dark mode and applies the palette, text sizes and spacing to egui.
 pub fn apply(ctx: &egui::Context) {

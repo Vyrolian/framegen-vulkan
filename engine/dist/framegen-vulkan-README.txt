@@ -38,32 +38,34 @@ Installing framegen-vulkan does not activate it for every game. A standalone nat
 2. Enable Frame Generation and/or scaling in the profile. Set dll to your Lossless.dll path if automatic discovery fails. To use the open framegen-vulkan Scaler without the DLL, set frame_generation_enabled = false, scaling_enabled = true, and scaling_method = "fgvk". Settings that need a restart take effect the next time the game starts.
 3. Check the file with ~/.local/bin/fgvk-cli validate.
 
+Run ~/.local/bin/fgvk with no arguments to open the settings window. It edits the same conf.toml file.
+
 The full configuration guide is at https://github.com/eugeniosegala/MAKO/blob/main/engine/docs/CONFIGURATION.md.
 
 For a native Steam or Proton game, add this under Steam Properties > General > Launch Options:
 
-    ~/.local/bin/fgvk-launch %command%
+    ~/.local/bin/fgvk %command%
 
-Keep %command% exactly as written. Set this once per game, then use Steam's Play button normally. If you selected a custom installation prefix, use the fgvk-launch path shown by the installer's completion message instead.
+Keep %command% exactly as written. Set this once per game, then use Steam's Play button normally. If you selected a custom installation prefix, use the fgvk path shown by the installer's completion message instead.
 
 For a direct desktop command, replace %command% with the actual game executable and arguments:
 
-    ~/.local/bin/fgvk-launch "/path/to/your-game"
+    ~/.local/bin/fgvk "/path/to/your-game"
 
 Optional private vkBasalt post-processing
 -----------------------------------------
 
 The archive includes framegen-vulkan's pinned 64-bit and 32-bit vkBasalt payload. To add it after framegen-vulkan for one native Steam or Proton game, use this launch option:
 
-    ENABLE_VKBASALT=1 ~/.local/bin/fgvk-launch %command%
+    ENABLE_VKBASALT=1 ~/.local/bin/fgvk %command%
 
 For the full vkBasalt option suite, create a standard config file and select it for that game:
 
-    ENABLE_VKBASALT=1 VKBASALT_CONFIG_FILE="$HOME/.config/vkBasalt/game-name.conf" ~/.local/bin/fgvk-launch %command%
+    ENABLE_VKBASALT=1 VKBASALT_CONFIG_FILE="$HOME/.config/vkBasalt/game-name.conf" ~/.local/bin/fgvk %command%
 
 The config path is optional. Renderer process matching does not select a vkBasalt file; assign a distinct VKBASALT_CONFIG_FILE in each game's launch option for per-game settings. Only framegen-vulkan's private bundled vkBasalt is used; a system installation is ignored. If the complete 64-bit/32-bit bundle or selected config is unavailable, the launcher reports it and safely continues with framegen-vulkan alone. Restart the game after changing activation or configuration. Flatpak applications require the separate setup guide below.
 
-Flatpak games, launchers, and emulators require the matching framegen-vulkan runtime extension and preparation for each application. Installing the extension does not prepare Flatpaks. "Install framegen-vulkan Flatpak Extensions" installs extensions only. Follow the Flatpak setup link below for runtime selection, configuration/DLL access, and sandbox environment, then restart and launch the app normally. The host fgvk-launch command does not replace that preparation.
+Flatpak games, launchers, and emulators require the matching framegen-vulkan runtime extension and preparation for each application. Installing the extension does not prepare Flatpaks. "Install framegen-vulkan Flatpak Extensions" installs extensions only. Follow the Flatpak setup link below for runtime selection, configuration/DLL access, and sandbox environment, then restart and launch the app normally. The host fgvk command does not replace that preparation.
 
 Update
 ------

@@ -28,10 +28,11 @@ other_short="0123456789ab"
 make_host() {
   local directory="$1" fingerprint="$2" mode="${3:-complete}"
   rm -rf -- "$directory"
-  mkdir -p "$directory/bin" "$directory/lib" "$directory/lib32" \
+  mkdir -p "$directory/bin" "$directory/libexec/framegen-vulkan" "$directory/lib" "$directory/lib32" \
     "$directory/share/vulkan/implicit_layer.d"
   printf '0.0.0\n' > "$directory/framegen-vulkan-version.txt"
-  printf '#!/bin/sh\n' > "$directory/bin/fgvk-launch"
+  printf '#!/bin/sh\n' > "$directory/bin/fgvk"
+  printf '#!/bin/sh\n' > "$directory/libexec/framegen-vulkan/fgvk-launch"
   printf '#!/bin/sh\n' > "$directory/bin/fgvk-cli"
   printf 'layer %s\n' "$fingerprint" > "$directory/lib/libfgvk-render.so"
   printf 'layer32 %s\n' "$fingerprint" > "$directory/lib32/libfgvk-render.so"
@@ -39,7 +40,7 @@ make_host() {
   if [[ "$mode" == complete ]]; then
     (
       cd "$directory"
-      find bin lib lib32 share -type f -print | LC_ALL=C sort | xargs sha256sum
+      find bin libexec lib lib32 share -type f -print | LC_ALL=C sort | xargs sha256sum
     ) > "$directory/framegen-vulkan-install-manifest.txt"
   else
     : > "$directory/framegen-vulkan-install-manifest.txt"

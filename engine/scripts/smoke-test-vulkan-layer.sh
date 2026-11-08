@@ -36,7 +36,7 @@ tar -xJf "$archive" -C "$prefix"
 
 manifest="$prefix/share/vulkan/implicit_layer.d/VkLayer_FGVK_render.json"
 library="$prefix/lib/libfgvk-render.so"
-launcher="$prefix/bin/fgvk-launch"
+launcher="$prefix/libexec/framegen-vulkan/fgvk-launch"
 for required_file in "$manifest" "$library" "$launcher"; do
     if [[ ! -f "$required_file" ]]; then
         echo "Packaged Renderer smoke test is missing: $required_file" >&2

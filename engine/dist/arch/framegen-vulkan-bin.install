@@ -39,7 +39,7 @@ fgvk_renderer_bin_user_local_owner() {
         || [ -f "${fgvk_renderer_bin_home}/.local/share/framegen-vulkan/lib32/libfgvk-render.so" ] \
         || [ -f "${fgvk_renderer_bin_home}/.local/lib/libfgvk-render.so" ] \
         || [ -f "${fgvk_renderer_bin_home}/.local/lib32/libfgvk-render.so" ] \
-        || [ -f "${fgvk_renderer_bin_home}/.local/bin/fgvk-launch" ] \
+        || [ -f "${fgvk_renderer_bin_home}/.local/libexec/framegen-vulkan/fgvk-launch" ] \
         || [ -f "${fgvk_renderer_bin_home}/.local/share/vulkan/implicit_layer.d/VkLayer_FGVK_render.json" ]; then
         fgvk_renderer_bin_owner="$(sed -n 's/.*"owner"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "${fgvk_renderer_bin_home}/.local/share/framegen-vulkan/active-renderer.json" 2>/dev/null | head -n 1)"
         # The value is read from a file the invoking user can write and is then
@@ -83,7 +83,7 @@ fgvk_renderer_bin_coexistence_notice() {
     cat <<'EOF'
 A user-local framegen-vulkan installation was found. This package installs framegen-vulkan
 system-wide under /usr; it does not adopt, upgrade, or delete the user-local
-copy. Both can coexist on disk, and fgvk-launch selects its own private manifest
+copy. Both can coexist on disk, and fgvk selects its own private manifest
 directory through VK_IMPLICIT_LAYER_PATH, so a managed launch does not load both
 layer copies.
 
@@ -101,9 +101,9 @@ installing the package does not activate framegen-vulkan for any game. Check it 
 fgvk-cli validate.
 
 For a native or Proton game, set this Steam launch option:
-  /usr/bin/fgvk-launch %command%
+  /usr/bin/fgvk %command%
 Use the absolute path: if you put ~/.local/bin ahead of /usr/bin in PATH, a
-user-local fgvk-launch would otherwise shadow the packaged one.
+user-local fgvk would otherwise shadow the packaged one.
 
 Frame generation and LS1 spatial scaling need a user-owned Lossless.dll from
 Lossless Scaling; the open framegen-vulkan Scaler does not. LS1 and DirectX LSFG models

@@ -19,18 +19,20 @@ mkdir -p "$HOME"
 package_root="$test_root/package"
 install_prefix="$test_root/installed prefix"
 config_home="$test_root/config"
-mkdir -p "$package_root/bin" "$package_root/share/framegen-vulkan"
+mkdir -p "$package_root/bin" "$package_root/libexec/framegen-vulkan" "$package_root/share/framegen-vulkan"
 cp "$installer" "$package_root/Install framegen-vulkan"
 cp "$installer" "$package_root/bin/fgvk-installer"
 chmod 0755 "$package_root/Install framegen-vulkan" "$package_root/bin/fgvk-installer"
 printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$package_root/bin/fgvk-cli"
-chmod 0755 "$package_root/bin/fgvk-cli"
+printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$package_root/bin/fgvk"
+printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$package_root/libexec/framegen-vulkan/fgvk-launch"
+chmod 0755 "$package_root/bin/fgvk-cli" "$package_root/bin/fgvk" "$package_root/libexec/framegen-vulkan/fgvk-launch"
 printf '%s\n' 'payload' > "$package_root/share/framegen-vulkan/payload.txt"
 printf '%s\n' 'test-version' > "$package_root/framegen-vulkan-version.txt"
 write_manifest() {
     (
         cd "$package_root"
-        find bin share -type f -print | LC_ALL=C sort | xargs sha256sum
+        find bin libexec share -type f -print | LC_ALL=C sort | xargs sha256sum
     ) > "$package_root/framegen-vulkan-install-manifest.txt"
 }
 write_manifest
@@ -41,11 +43,15 @@ FGVK_INSTALLER_ASSUME_YES=1 \
 "$package_root/Install framegen-vulkan" --install >"$test_root/install.log"
 
 [[ -x "$install_prefix/bin/fgvk-cli" ]] || fail "CLI was not installed"
+[[ -x "$install_prefix/bin/fgvk" ]] || fail "fgvk entry point was not installed"
+[[ -x "$install_prefix/libexec/framegen-vulkan/fgvk-launch" ]] ||
+    fail "private launch helper was not installed under libexec"
+[[ ! -e "$install_prefix/bin/fgvk-launch" ]] || fail "launch helper was installed on PATH"
 grep -Fq 'For a native Steam or Proton game, use this Steam launch option:' \
     "$test_root/install.log" && fail "completion still describes the removed configuration app"
-grep -Fq "\"$install_prefix/bin/fgvk-launch\" %command%" \
+grep -Fq "\"$install_prefix/bin/fgvk\" %command%" \
     "$test_root/install.log" ||
-    fail "installer completion did not show the selected prefix's launcher"
+    fail "installer completion did not show the selected prefix's fgvk entry point"
 grep -Fq "$config_home/framegen-vulkan/conf.toml" "$test_root/install.log" ||
     fail "installer completion did not name the configuration file"
 [[ ! -e "$install_prefix/share/applications" && ! -e "$install_prefix/share/icons" ]] ||
@@ -112,6 +118,9 @@ FGVK_INSTALLER_ASSUME_YES=1 \
 "$install_prefix/bin/fgvk-installer" --uninstall >/dev/null
 
 [[ ! -e "$install_prefix/bin/fgvk-cli" ]] || fail "uninstaller left the managed CLI"
+[[ ! -e "$install_prefix/bin/fgvk" ]] || fail "uninstaller left the managed fgvk entry point"
+[[ ! -e "$install_prefix/libexec/framegen-vulkan/fgvk-launch" ]] ||
+    fail "uninstaller left the private launch helper"
 [[ ! -e "$install_prefix/share/framegen-vulkan/active-renderer.json" ]] ||
     fail "uninstaller left the active Renderer identity"
 [[ -f "$install_prefix/share/framegen-vulkan/payload.txt" ]] ||

@@ -76,8 +76,8 @@ check-arch-package:
 # Build framegen-vulkan.
 build: build-engine
 
-# Run the protected-input, release-candidate, diagnostics, engine, and trace-producer tests.
-test: test-protected-inputs test-release-candidate test-diagnostics-helper test-engine test-trace-producer
+# Run the protected-input, release-candidate, diagnostics, settings-launcher, engine, and trace-producer tests.
+test: test-protected-inputs test-release-candidate test-diagnostics-helper test-fgvk-ui test-engine test-trace-producer
 
 # Reject licensed inputs and disguised binary/model/archive payloads from Git.
 test-protected-inputs:
@@ -99,6 +99,14 @@ test-trace-producer:
 build-engine:
     cmake -S engine -B engine/build -DCMAKE_BUILD_TYPE=Release
     cmake --build engine/build
+
+# Build the fgvk settings window and `fgvk <command>` entry point in release mode.
+fgvk-ui:
+    cargo build --release --locked --manifest-path engine/fgvk-ui/Cargo.toml
+
+# Run the fgvk crate tests: argument routing, config, launcher state and the process picker.
+test-fgvk-ui:
+    cargo test --locked --manifest-path engine/fgvk-ui/Cargo.toml
 
 # Build the standalone unattended input-latency probe used by compare-latency.py.
 latency-probe:

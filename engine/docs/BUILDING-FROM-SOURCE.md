@@ -31,6 +31,7 @@ Install:
 - X11 and XCB headers (`libx11`, `libxcb`, and `xorgproto` on Arch/SteamOS)
 - Python 3 when building the registered tests
 - A multilib C++ toolchain when building the 32-bit Vulkan layer
+- A current stable Rust toolchain with `cargo` for the `engine/fgvk-ui` settings window and `fgvk <command>` entry point (`just fgvk-ui` builds it, `just test-fgvk-ui` tests it); the packagers need it too
 
 Package names vary by distribution. These commands cover common Debian/Ubuntu and Arch installations:
 
@@ -66,6 +67,8 @@ The release packager builds the 64-bit CLI, launcher, and both Renderer roles, t
 `package-local-release.sh` writes under `engine/out/` and synchronizes a disposable Arch recipe. The complete local archives serve as release candidates; publication separately applies version and pin commits and rebuilds public assets. [How to release framegen-vulkan](../../HOW_TO_RELEASE.md) owns qualification, build alignment, and publication.
 
 Local native Linux packaging uses the host SDK when it passes the Vulkan header check. If that check fails, set `FGVK_PORTABLE_PACKAGE=1` to use the portable baseline with Docker or Podman. Non-Linux packaging and all public native releases require one of those runtimes.
+
+Every packaging mode builds `bin/fgvk` with the host `cargo` before any container starts, so a missing `cargo` stops packaging at once. The portable Ubuntu 22.04 container only receives the finished binary. A host-built `fgvk` needs the build host's glibc symbol versions: with the current toolchain it requires `GLIBC_2.43`, so it will not start on Ubuntu 22.04 (glibc 2.35). `package-local.sh` prints a warning when the requirement exceeds 2.35.
 
 For an explicitly requested maintainer exception, `FGVK_RELEASE_SKIP_TESTS=1` omits test compilation, CTest, and launcher tests while retaining build, ABI, archive, and checksum verification. See the [hotfix exception](../../HOW_TO_RELEASE.md#maintainer-directed-hotfix-without-automated-validation). Publication always uses the portable builders: Ubuntu 22.04, Clang 14, and the pinned Vulkan headers for the native archive, plus Ubuntu 24.04 driving each declared Flatpak runtime SDK. Use `FGVK_PORTABLE_PACKAGE=1` for complete tester packages too; the scripts select Docker or Podman automatically. Without that flag, Flatpak packaging uses host `flatpak-builder` when available and falls back to the container builder when it is absent. Follow the [build-alignment and evidence requirements](../../HOW_TO_RELEASE.md#keep-tester-and-release-builds-aligned) when comparing tester and release artifacts.
 
@@ -234,7 +237,7 @@ The default and Vulkan-layer builds check `fgvk-render/src/**/*.cpp` against the
 sudo cmake --install build
 ```
 
-Start a native game with `fgvk-launch <command>`. The helper selects the install prefix's private manifests, activates framegen-vulkan for that child, excludes competing frame generation and Gamescope WSI, and defaults to SDR. Enable HDR through the [HDR setup](CONFIGURATION.md#hdr) when needed. A directly installed CMake build does not fetch the optional vkBasalt payload; use `scripts/package-local.sh` for the complete archive that supports `ENABLE_VKBASALT=1 fgvk-launch <command>`. Read [WSI isolation](WSI-ISOLATION.md) and [Optional graphics integrations](LAYER-CHAINING.md#standalone-fgvk-renderer-with-vkbasalt) before changing manifests or launch variables.
+Start a native game with `fgvk <command>`. The helper selects the install prefix's private manifests, activates framegen-vulkan for that child, excludes competing frame generation and Gamescope WSI, and defaults to SDR. Enable HDR through the [HDR setup](CONFIGURATION.md#hdr) when needed. A directly installed CMake build does not fetch the optional vkBasalt payload; use `scripts/package-local.sh` for the complete archive that supports `ENABLE_VKBASALT=1 fgvk <command>`. Read [WSI isolation](WSI-ISOLATION.md) and [Optional graphics integrations](LAYER-CHAINING.md#standalone-fgvk-renderer-with-vkbasalt) before changing manifests or launch variables.
 
 ### Local vkBasalt candidates
 
@@ -248,10 +251,11 @@ User installation, updates and removal are in the [Arch guide](../dist/arch/READ
 
 The package installs:
 
-- `fgvk-cli`, `fgvk-launch`, and `fgvk-diagnostics` into `/usr/bin`.
+- `fgvk` (settings window and `fgvk <command>` entry point), `fgvk-cli`, and `fgvk-diagnostics` into `/usr/bin`.
+- the private launch helper `fgvk-launch` into `/usr/libexec/framegen-vulkan`, off `PATH`.
 - the 64-bit Vulkan layers into `/usr/lib` and the 32-bit layers into `/usr/lib32`.
 - the public implicit-layer manifests into `/usr/share/vulkan/implicit_layer.d`, gated by `ENABLE_FGVK` and `ENABLE_FGVK_SPATIAL_SCALING`.
-- the private manifests used by `fgvk-launch` into `/usr/share/framegen-vulkan/vulkan/implicit_layer.d` and `/usr/share/framegen-vulkan/vulkan/spatial_scaling.d`.
+- the private manifests used by `fgvk` into `/usr/share/framegen-vulkan/vulkan/implicit_layer.d` and `/usr/share/framegen-vulkan/vulkan/spatial_scaling.d`.
 - any checksum-manifested private integration shipped by the pinned archive, including framegen-vulkan's private 64-bit and 32-bit vkBasalt libraries, manifests, licences, and provenance when present in that Renderer release.
 - license texts into `/usr/share/licenses/framegen-vulkan-bin`.
 - `ASSET_PROVENANCE.md`, the version file, and the upstream checksum manifest into `/usr/share/doc/framegen-vulkan-bin`.

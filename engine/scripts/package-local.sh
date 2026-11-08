@@ -75,6 +75,37 @@ fi
 
 portable_container="${FGVK_PORTABLE_PACKAGE:-0}"
 containerized_build="${FGVK_PACKAGE_CONTAINERIZED:-0}"
+
+# fgvk (the settings window and `fgvk <command>` entry point) is built with the host
+# toolchain in both modes. The portable Ubuntu 22.04 container has no recent Rust, so it
+# only receives the finished binary.
+fgvk_ui_binary=""
+build_fgvk_ui() {
+    if ! command -v cargo >/dev/null 2>&1; then
+        echo "Packaging needs cargo to build fgvk. Install the Rust toolchain (rustup, or your distribution's cargo package) and try again." >&2
+        exit 1
+    fi
+    fgvk_ui_target_dir="$build_work_root/fgvk-ui-target"
+    mkdir -p "$fgvk_ui_target_dir"
+    echo "Building fgvk with host cargo..."
+    cargo build --release --locked \
+        --manifest-path "$repo_root/fgvk-ui/Cargo.toml" \
+        --target-dir "$fgvk_ui_target_dir"
+    fgvk_ui_binary="$fgvk_ui_target_dir/release/fgvk"
+    if [[ ! -x "$fgvk_ui_binary" ]]; then
+        echo "Packaging failed: cargo did not produce $fgvk_ui_binary" >&2
+        exit 1
+    fi
+}
+if [[ "$containerized_build" == "1" ]]; then
+    fgvk_ui_binary="${FGVK_PREBUILT_FGVK:-}"
+    if [[ -z "$fgvk_ui_binary" || ! -x "$fgvk_ui_binary" ]]; then
+        echo "Containerized packaging needs the prebuilt fgvk binary from the host build." >&2
+        exit 1
+    fi
+else
+    build_fgvk_ui
+fi
 if [[ "$containerized_build" != "1" && ( "$(uname -s)" != "Linux" || "$portable_container" == "1" ) ]]; then
     container_runtime=""
     if command -v docker >/dev/null 2>&1; then
@@ -107,6 +138,8 @@ if [[ "$containerized_build" != "1" && ( "$(uname -s)" != "Linux" || "$portable_
         -e FGVK_VULKAN_HEADERS_REVISION="$vulkan_headers_revision" \
         -e FGVK_RELEASE_SKIP_TESTS="${FGVK_RELEASE_SKIP_TESTS:-0}" \
         -e FGVK_VKBASALT_LOCAL_ARCHIVE="$local_vkbasalt_archive" \
+        -e FGVK_PREBUILT_FGVK=/prebuilt/fgvk \
+        -v "$fgvk_ui_binary:/prebuilt/fgvk:ro" \
         -v "$monorepo_root:/workspace" \
         -w /workspace/engine \
         ubuntu:22.04 \
@@ -137,7 +170,7 @@ if [[ "$containerized_build" != "1" && ( "$(uname -s)" != "Linux" || "$portable_
         '
 fi
 
-for command in cmake ninja clang++ nm python3 readelf strings tar sha256sum; do
+for command in cmake ninja clang++ nm python3 readelf strings strip tar sha256sum; do
     if ! command -v "$command" >/dev/null 2>&1; then
         echo "Required command not found: $command" >&2
         exit 1
@@ -221,11 +254,23 @@ fi
 python3 "$repo_root/scripts/manage-vkbasalt-release.py" \
     "${vkbasalt_stage_args[@]}"
 
+# The settings window and `fgvk <command>` entry point. Built above with host cargo; the
+# staged copy is stripped like the other native tools in this archive.
+install -Dm755 "$fgvk_ui_binary" "$install_dir/bin/fgvk"
+strip --strip-unneeded "$install_dir/bin/fgvk"
+# The host-built fgvk inherits the build host's glibc symbol versions. Warn when it
+# will not start on the Ubuntu 22.04 (glibc 2.35) baseline used by the portable layers.
+fgvk_max_glibc="$(readelf -V "$install_dir/bin/fgvk" | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -n 1 || true)"
+if [[ -n "$fgvk_max_glibc" && "$(printf '%s\n' "${fgvk_max_glibc#GLIBC_}" 2.35 | sort -V | tail -n 1)" != "2.35" ]]; then
+    echo "Warning: bin/fgvk requires $fgvk_max_glibc from the build host; it will not start on systems with an older glibc (Ubuntu 22.04 provides 2.35)." >&2
+fi
+
 required_paths=(
+    "bin/fgvk" \
     "bin/fgvk-cli" \
     "bin/fgvk-diagnostics" \
     "bin/fgvk-installer" \
-    "bin/fgvk-launch" \
+    "libexec/framegen-vulkan/fgvk-launch" \
     "bin/fgvk-remote-play" \
     "share/framegen-vulkan/fgvk_remote_play/libfgvk-remote-play-sdr.so" \
     "share/framegen-vulkan/fgvk_remote_play/__init__.py" \
@@ -288,7 +333,7 @@ if [[ ! -s "$standalone_readme" ]]; then
     exit 1
 fi
 cp "$standalone_readme" "$install_dir/README.txt"
-if ! grep -Fq '~/.local/bin/fgvk-launch %command%' "$install_dir/README.txt" ||
+if ! grep -Fq '~/.local/bin/fgvk %command%' "$install_dir/README.txt" ||
         ! grep -Fq 'ENABLE_VKBASALT=1' "$install_dir/README.txt" ||
         ! grep -Fq 'Uninstall framegen-vulkan' "$install_dir/README.txt" ||
         ! grep -Fq 'profiles, settings, and diagnostics' "$install_dir/README.txt"; then
@@ -296,7 +341,7 @@ if ! grep -Fq '~/.local/bin/fgvk-launch %command%' "$install_dir/README.txt" ||
     exit 1
 fi
 printf '%s\n' "$version" > "$install_dir/framegen-vulkan-version.txt"
-manifest_roots=(bin lib share)
+manifest_roots=(bin libexec lib share)
 if [[ -d "$install_dir/lib32" ]]; then
     manifest_roots+=(lib32)
 fi
@@ -313,17 +358,21 @@ if ! (cd "$install_dir" && sha256sum --check --status framegen-vulkan-install-ma
     exit 1
 fi
 
-if [[ ! -x "$install_dir/bin/fgvk-launch" ]]; then
-    echo "Packaging failed: bin/fgvk-launch is not executable" >&2
+if [[ ! -x "$install_dir/bin/fgvk" ]]; then
+    echo "Packaging failed: bin/fgvk is not executable" >&2
+    exit 1
+fi
+if [[ ! -x "$install_dir/libexec/framegen-vulkan/fgvk-launch" ]]; then
+    echo "Packaging failed: libexec/framegen-vulkan/fgvk-launch is not executable" >&2
     exit 1
 fi
 if [[ ! -x "$install_dir/bin/fgvk-installer" ]]; then
     echo "Packaging failed: bin/fgvk-installer is not executable" >&2
     exit 1
 fi
-bash -n "$install_dir/bin/fgvk-launch"
+bash -n "$install_dir/libexec/framegen-vulkan/fgvk-launch"
 if [[ "${FGVK_RELEASE_SKIP_TESTS:-0}" != "1" ]]; then
-    bash "$repo_root/scripts/test-fgvk-launch.sh" "$install_dir/bin/fgvk-launch"
+    bash "$repo_root/scripts/test-fgvk-launch.sh" "$install_dir/libexec/framegen-vulkan/fgvk-launch"
 fi
 
 verify_elf_class() {
@@ -337,6 +386,7 @@ verify_elf_class() {
     fi
 }
 
+verify_elf_class "$install_dir/bin/fgvk" 2
 verify_elf_class "$install_dir/lib/libfgvk-render.so" 2
 verify_elf_class "$install_dir/lib/libfgvk-render-scaling.so" 2
 verify_elf_class "$install_dir/lib/vkbasalt/libvkbasalt.so" 2

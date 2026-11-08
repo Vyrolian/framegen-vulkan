@@ -1,17 +1,30 @@
 //! The settings window. It renders typed snapshots from `config` and never touches TOML.
 
 use std::ops::RangeInclusive;
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use egui::{Button, Key, RichText, Stroke, StrokeKind, Ui};
+use egui::text::{LayoutJob, TextWrapping};
+use egui::{
+    pos2, vec2, Button, CornerRadius, Key, Margin, Rect, RichText, Sense, Stroke, StrokeKind,
+    TextStyle, Ui,
+};
 
 use crate::config::{self, Config, ConfigView, FpsMemory, Mode, Profile, ProfileKey, Settings};
 use crate::picker::Picker;
 use crate::processes;
+use crate::state;
 use crate::theme;
 
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
 const FPS_SLIDER_RANGE: RangeInclusive<i64> = 10..=360;
+const ROW_HEIGHT: f32 = 26.0;
+/// Entry text starts this far inside its row.
+const ROW_TEXT_INSET: f32 = 8.0;
+/// Width of the × button at the right end of each row.
+const REMOVE_WIDTH: f32 = 26.0;
+const REMOVE_GAP: f32 = 2.0;
+const NO_GAMES: &str = "No games yet. Add an executable name or pick a running program.";
 const MODES: [Mode; 6] = [
     Mode::Off,
     Mode::Fixed(2),
@@ -57,10 +70,17 @@ pub struct App {
     /// Exists only while the "Pick a running program" window is open for the selected profile.
     picker: Option<Picker>,
     last_poll: Instant,
+    /// Where the selected profile's name is remembered. `None` when no state directory is known.
+    state_path: Option<PathBuf>,
+    /// The profile name last selected, or loaded from the state file at start.
+    remembered: Option<String>,
+    /// Set once the first configuration view with profiles has applied the remembered selection.
+    restored: bool,
 }
 
 impl App {
-    pub fn new(path: Result<std::path::PathBuf, String>) -> Self {
+    pub fn new(path: Result<PathBuf, String>, state_path: Option<PathBuf>) -> Self {
+        let remembered = state_path.as_deref().and_then(state::load);
         Self {
             config: Config::open(path),
             selected: 0,
@@ -76,6 +96,9 @@ impl App {
             new_game: String::new(),
             picker: None,
             last_poll: Instant::now(),
+            state_path,
+            remembered,
+            restored: false,
         }
     }
 
@@ -147,6 +170,10 @@ impl App {
 
     fn editor(&mut self, ui: &mut Ui, settings: Settings) {
         let Settings { profiles, dll } = settings;
+        if !self.restored {
+            self.select(initial_index(&profiles, self.remembered.as_deref()));
+            self.restored = true;
+        }
         self.selected = self.selected.min(profiles.len().saturating_sub(1));
 
         section(ui, "Profile");
@@ -321,15 +348,8 @@ impl App {
     }
 
     fn games(&mut self, ui: &mut Ui, profile: &Profile) {
-        let mut remove = None;
-        for (index, entry) in profile.active_in.iter().enumerate() {
-            ui.horizontal(|ui| {
-                ui.label(entry.as_str());
-                if ui.small_button("×").on_hover_text("Remove").clicked() {
-                    remove = Some(index);
-                }
-            });
-        }
+        let remove = games_box(ui, &profile.active_in);
+        ui.add_space(4.0);
 
         let (add, pick) = ui
             .horizontal_wrapped(|ui| {
@@ -359,6 +379,31 @@ impl App {
             self.report(result);
         }
         self.picker_window(ui.ctx(), profile);
+    }
+
+    /// Saves the selected profile's name when it differs from the remembered one. This runs after
+    /// the frame's edits, so a New or Rename is saved in the same frame. A failed save is logged,
+    /// and the name counts as remembered anyway, so the write is not retried every frame.
+    fn remember_selection(&mut self) {
+        if !self.restored {
+            return;
+        }
+        let ConfigView::Ready(settings) = self.config.view() else {
+            return;
+        };
+        let Some(profile) = settings.profiles.get(self.selected) else {
+            return;
+        };
+        let name = &profile.key.name;
+        if self.remembered.as_ref() == Some(name) {
+            return;
+        }
+        if let Some(path) = &self.state_path {
+            if let Err(message) = state::save(path, name) {
+                eprintln!("framegen-vulkan: {message}");
+            }
+        }
+        self.remembered = Some(name.clone());
     }
 
     /// Shows the picker for the selected profile and adds the entries the user clicked.
@@ -556,6 +601,105 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         footer(ui, &self.status);
         egui::CentralPanel::default().show(ui, |ui| self.content(ui));
+        self.remember_selection();
+    }
+}
+
+/// The boxed list of executable names. Returns the index of the entry whose × was clicked.
+fn games_box(ui: &mut Ui, entries: &[String]) -> Option<usize> {
+    let mut remove = None;
+    egui::Frame::NONE
+        .fill(theme::MANTLE)
+        .stroke(Stroke::new(1.0, theme::SURFACE0))
+        .corner_radius(CornerRadius::same(6))
+        .inner_margin(Margin::same(4))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            if entries.is_empty() {
+                ui.horizontal_wrapped(|ui| {
+                    ui.add_space(ROW_TEXT_INSET);
+                    ui.label(RichText::new(NO_GAMES).small().color(theme::SUBTEXT0));
+                });
+                return;
+            }
+            // Rows touch each other, so the box's own item spacing does not apply between them.
+            ui.spacing_mut().item_spacing.y = 0.0;
+            for (index, entry) in entries.iter().enumerate() {
+                if game_row(ui, index, entry) {
+                    remove = Some(index);
+                }
+            }
+        });
+    remove
+}
+
+/// One entry row: the name on the left and, while the row is hovered, a × on the right. The name
+/// space is reserved even when the × is hidden, so the text does not move on hover. Returns true
+/// when the × is clicked.
+fn game_row(ui: &mut Ui, index: usize, entry: &str) -> bool {
+    let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_HEIGHT), Sense::hover());
+    let hovered = ui.rect_contains_pointer(row);
+
+    let fill = if hovered {
+        Some(theme::SURFACE1)
+    } else if index % 2 == 1 {
+        Some(theme::STRIPE)
+    } else {
+        None
+    };
+    if let Some(fill) = fill {
+        ui.painter().rect_filled(row, CornerRadius::same(4), fill);
+    }
+
+    let remove_rect = Rect::from_min_size(
+        pos2(row.right() - REMOVE_WIDTH, row.top()),
+        vec2(REMOVE_WIDTH, ROW_HEIGHT),
+    );
+    let text_rect = Rect::from_min_max(
+        pos2(row.left() + ROW_TEXT_INSET, row.top()),
+        pos2(remove_rect.left() - REMOVE_GAP, row.bottom()),
+    );
+    name_text(ui, text_rect, index, entry);
+
+    if !hovered {
+        return false;
+    }
+    let color = if ui.rect_contains_pointer(remove_rect) {
+        theme::RED
+    } else {
+        theme::SUBTEXT0
+    };
+    let button = Button::new(RichText::new("×").color(color))
+        .frame(false)
+        .min_size(remove_rect.size());
+    ui.put(remove_rect, button)
+        .on_hover_text("Remove")
+        .clicked()
+}
+
+/// Paints an entry name inside `rect`, cut with an ellipsis when it does not fit. A cut name shows
+/// its full text on hover.
+fn name_text(ui: &mut Ui, rect: Rect, index: usize, entry: &str) {
+    let font = TextStyle::Body.resolve(ui.style());
+    let mut job = LayoutJob::simple_singleline(entry.to_owned(), font, theme::TEXT);
+    job.wrap = TextWrapping {
+        max_width: rect.width(),
+        max_rows: 1,
+        break_anywhere: true,
+        overflow_character: Some('…'),
+    };
+    let galley = ui.painter().layout_job(job);
+    let elided = galley.elided;
+    let pos = pos2(rect.left(), rect.center().y - galley.size().y / 2.0);
+    ui.painter_at(rect).galley(pos, galley, theme::TEXT);
+
+    if elided {
+        ui.interact(
+            rect,
+            ui.scope_id().with(("game-name", index)),
+            Sense::hover(),
+        )
+        .on_hover_text(entry);
     }
 }
 
@@ -650,6 +794,13 @@ fn default_name(profiles: &[Profile]) -> String {
         .unwrap_or_default()
 }
 
+/// The profile to select first: the first one named like the remembered name, else the first one.
+fn initial_index(profiles: &[Profile], remembered: Option<&str>) -> usize {
+    remembered
+        .and_then(|name| profiles.iter().position(|profile| profile.key.name == name))
+        .unwrap_or(0)
+}
+
 fn parse_in_range(text: &str, label: &str, range: &RangeInclusive<i64>) -> Result<i64, String> {
     text.trim()
         .parse::<i64>()
@@ -697,5 +848,53 @@ fn slider_commit<T>(draft: &mut Option<T>, value: T, response: &egui::Response) 
         Some(value)
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::ProfileKey;
+
+    fn profile(name: &str) -> Profile {
+        Profile {
+            key: ProfileKey {
+                index: 0,
+                name: name.to_owned(),
+            },
+            active_in: Vec::new(),
+            mode: Mode::Fixed(2),
+            target_fps: 120,
+            adaptive_max_multiplier: 3,
+            flow_scale: 0.8,
+            base_fps_cap: 0,
+        }
+    }
+
+    #[test]
+    fn initial_index_selects_the_remembered_profile() {
+        let profiles = [profile("Alpha"), profile("Beta"), profile("Gamma")];
+        assert_eq!(initial_index(&profiles, Some("Beta")), 1);
+        assert_eq!(initial_index(&profiles, Some("Gamma")), 2);
+    }
+
+    #[test]
+    fn initial_index_falls_back_to_the_first_profile() {
+        let profiles = [profile("Alpha"), profile("Beta")];
+        assert_eq!(initial_index(&profiles, Some("Missing")), 0, "no match");
+        assert_eq!(initial_index(&profiles, Some("beta")), 0, "match is exact");
+        assert_eq!(initial_index(&profiles, None), 0, "nothing remembered");
+        assert_eq!(initial_index(&[], Some("Alpha")), 0, "empty list");
+        assert_eq!(
+            initial_index(&[], None),
+            0,
+            "empty list, nothing remembered"
+        );
+    }
+
+    #[test]
+    fn initial_index_takes_the_first_of_duplicate_names() {
+        let profiles = [profile("Same"), profile("Other"), profile("Same")];
+        assert_eq!(initial_index(&profiles, Some("Same")), 0);
     }
 }

@@ -174,6 +174,16 @@ class ProfilerTests(unittest.TestCase):
             self.assertIn("isolate layers", result.stderr)
             self.assertFalse(folder.exists())
 
+    def test_rejects_the_fgvk_entry_point_for_baseline_captures(self):
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory) / "capture"
+            result = subprocess.run([sys.executable, str(SCRIPT), "capture", "--mode", "baseline",
+                                     "--scenario", "fixture", "--output", str(folder), "--",
+                                     "mangohud", "/usr/bin/fgvk", "game"], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("isolate layers", result.stderr)
+            self.assertFalse(folder.exists())
+
     def test_manual_disconnect_does_not_claim_a_successful_stop(self):
         class ClosedConnection:
             def recv(self, _size):

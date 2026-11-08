@@ -10,15 +10,17 @@ Personal fork of a Vulkan frame-generation layer (lsfg-vk v2 descendant), now na
 | `engine/fgvk-backend/` | Lossless Scaling resource extraction and compute pipeline |
 | `engine/fgvk-common/` | Config, Vulkan wrappers, shared helpers |
 | `engine/fgvk-cli/` | Validation, benchmark and quality tools |
-| `engine/fgvk-ui/` | egui settings launcher `fgvk` (Rust) |
+| `engine/fgvk-ui/` | Settings window and `fgvk <command>` entry point (Rust, egui); one crate, one binary |
 | `engine/dist/`, `engine/scripts/` | Packaging, Flatpak, Arch, installer, launch wrapper, build scripts |
 | `scripts/` | Diagnostics helper, release and trace scripts (tests in `scripts/tests/`) |
+
+Placement rules for `engine/fgvk-ui/`: the crate owns only the settings window and the argument routing in `src/launch.rs`. It must not load the renderer or Vulkan, and launch behaviour stays in `engine/scripts/fgvk-launch` (installed privately under `libexec/framegen-vulkan/`, never on `PATH`). Keep it self-contained: `processes.rs` embeds `../fgvk-common/launcher_exclusions.json`, so the crate builds only inside this repository.
 
 Boundary docs (`engine/docs/`): `RENDERER-ARCHITECTURE`, `CONFIGURATION` / `CONFIGURATION-REFERENCE`, `RUNTIME-TRANSITIONS`, `MEMORY-MANAGEMENT`, `SCALING`, `ADAPTIVE-VALIDATION`, `HDR-PIPELINE`, `WSI-ISOLATION`, `LAYER-CHAINING`, `BUILDING-FROM-SOURCE`. Root: `TESTING.md`, `MAINTENANCE.md` (dependencies and version owners), `CLEANUPS.md` (compatibility paths), `HOW_TO_RELEASE.md`, `INSTALLATION-TRANSACTIONS.md`.
 
 ## Build and test
 
-- `just --list` shows entry points. C++ changes: `just test-engine-portable` (CTest); scheduling/presentation also `just test-engine-sanitized`. Launcher: `cargo test --locked` in `engine/fgvk-ui`. Tooling: `just test-diagnostics-helper`.
+- `just --list` shows entry points. C++ changes: `just test-engine-portable` (CTest); scheduling/presentation also `just test-engine-sanitized`. Settings window and entry point: `just test-fgvk-ui` (`cargo test --locked` in `engine/fgvk-ui`). Tooling: `just test-diagnostics-helper`.
 - The device is resource-constrained: watch CPU/GPU cost, memory, sync and hot paths. Keep at most two build jobs while the user may be gaming.
 - Report what passed and what was not tested (hardware, AMD/FP16, Flatpak, Gamescope). A skipped GPU test is not evidence.
 

@@ -82,15 +82,15 @@ Every game and display behaves differently, so compare one setting at a time. If
 
 1. Install the default public version of <a href="https://store.steampowered.com/app/993090/Lossless_Scaling/" target="_blank" rel="noopener noreferrer">Lossless Scaling</a> from Steam if you will use frame generation or LS1 scaling. framegen-vulkan can use beta branches, but they are not validated; the default public branch is recommended. framegen-vulkan reads its licensed `Lossless.dll`; framegen-vulkan Scaler and Shaders work without it.
 2. Download and extract `framegen-vulkan-v<version>-linux.tar.xz` from the <a href="https://github.com/eugeniosegala/MAKO/releases/tag/render-v4.6.0" target="_blank" rel="noopener noreferrer">latest framegen-vulkan release</a> into a new folder. Run **Install framegen-vulkan** from that folder. The installer shows the launch option when it finishes.
-3. Add a profile to `~/.config/framegen-vulkan/conf.toml`, naming the game's executable in `active_in`. The [configuration guide](engine/docs/CONFIGURATION.md) has a complete example, and `~/.local/bin/fgvk-cli validate` checks the file.
+3. Add a profile to `~/.config/framegen-vulkan/conf.toml`, naming the game's executable in `active_in`. The [configuration guide](engine/docs/CONFIGURATION.md) has a complete example, and `~/.local/bin/fgvk-cli validate` checks the file. You can also run `~/.local/bin/fgvk` with no arguments to edit profiles in a settings window.
 4. For a native Steam or Proton game, add this under **Steam Properties > General > Launch Options**, then use Steam's **Play** button normally:
 
     ```text
-    ~/.local/bin/fgvk-launch %command%
+    ~/.local/bin/fgvk %command%
     ```
 
 5. Experiment with the settings to find what works best for each game. Try Fixed or Adaptive Frame Generation, scaling, and shader effects independently.
-6. For Flatpak games, launchers, or emulators, follow the [standalone Flatpak guide](engine/docs/FLATPAK-GUIDE.md) to install the matching extension and prepare each app, then launch it normally. The host `fgvk-launch` command cannot replace sandbox setup.
+6. For Flatpak games, launchers, or emulators, follow the [standalone Flatpak guide](engine/docs/FLATPAK-GUIDE.md) to install the matching extension and prepare each app, then launch it normally. The host `fgvk` command cannot replace sandbox setup.
 
 Run the installer again to update. See the <a href="engine/README.md#direct-linux-installation" target="_blank" rel="noopener noreferrer">framegen-vulkan guide</a> for manual installation and removal, and the Arch package guide for pacman installations.
 

@@ -237,7 +237,7 @@ To remove it later, run \`~/.local/bin/fgvk-installer --uninstall\` from a termi
 
 The host archive includes 64-bit and 32-bit Vulkan layers; the CLI is 64-bit.
 
-Configure profiles in \`~/.config/framegen-vulkan/conf.toml\`, then validate them with \`~/.local/bin/fgvk-cli validate\`. Set the licensed DLL path in the profile when using Frame Generation or LS1 scaling, then use \`~/.local/bin/fgvk-launch %command%\` for a direct Steam launch.
+Configure profiles in \`~/.config/framegen-vulkan/conf.toml\`, then validate them with \`~/.local/bin/fgvk-cli validate\`. Set the licensed DLL path in the profile when using Frame Generation or LS1 scaling, then use \`~/.local/bin/fgvk %command%\` for a direct Steam launch. Run \`~/.local/bin/fgvk\` without arguments to open the settings window.
 
 ### Arch Linux package
 
@@ -251,7 +251,7 @@ The \`./\` prefix refers to the terminal's current folder; this command does not
 
 The package installs framegen-vulkan under \`/usr\`, preserves profiles under \`~/.config/framegen-vulkan\`, and does not touch a user-local Renderer under \`~/.local\`. Use either the system package or the user-local installation as the active owner for a user; see the [Arch package guide](https://github.com/$release_repository/blob/main/engine/dist/arch/README.md) for coexistence details.
 
-After installation, create a game profile in \`~/.config/framegen-vulkan/conf.toml\`, validate it with \`fgvk-cli validate\`, and use \`/usr/bin/fgvk-launch %command%\` as that native Steam or Proton game's launch option. Installing the package alone does not activate framegen-vulkan globally.
+After installation, create a game profile in \`~/.config/framegen-vulkan/conf.toml\`, validate it with \`fgvk-cli validate\`, and use \`/usr/bin/fgvk %command%\` as that native Steam or Proton game's launch option. Installing the package alone does not activate framegen-vulkan globally.
 
 ### Flatpak runtime extensions
 

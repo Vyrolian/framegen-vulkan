@@ -4,27 +4,27 @@ set -euo pipefail
 
 usage() {
     cat <<'EOF'
-Usage: fgvk-launch [--] COMMAND [ARG ...]
+Usage: fgvk [--] COMMAND [ARG ...]
 
 Activates framegen-vulkan for one command through its supported SDR presentation
 boundary, prevents the known LSFG-VK 1.x and 2.x frame-generation layers from
 joining the same Vulkan process, and uses a deterministic framegen-vulkan implicit-layer
 directory for reliable swapchain ownership.
 
-Set environment variables before fgvk-launch to pass them to the game:
-  FGVK_PROFILE=my-profile fgvk-launch COMMAND [ARG ...]
+Set environment variables before fgvk to pass them to the game:
+  FGVK_PROFILE=my-profile fgvk COMMAND [ARG ...]
 
 Enable framegen-vulkan's private bundled vkBasalt after the Renderer:
-  ENABLE_VKBASALT=1 fgvk-launch COMMAND [ARG ...]
+  ENABLE_VKBASALT=1 fgvk COMMAND [ARG ...]
 
 VKBASALT_CONFIG_FILE=/absolute/path/vkBasalt.conf selects an optional config.
 
 Enable installed host MangoHud (exclusive with Shaders; requires Python 3):
-  MANGOHUD=1 fgvk-launch COMMAND [ARG ...]
+  MANGOHUD=1 fgvk COMMAND [ARG ...]
 
 A readable ~/.config/framegen-vulkan/mangohud.conf supplies the shared HUD layout.
 XDG_CONFIG_HOME is respected. Check host availability without changing files:
-  fgvk-launch --check-mangohud
+  fgvk --check-mangohud
 
 Standalone launch compatibility settings are read from:
   ~/.config/framegen-vulkan/launcher.conf
@@ -32,7 +32,7 @@ Standalone launch compatibility settings are read from:
 FGVK_LAUNCH_CONFIG=/path/to/launcher.conf selects another settings file.
 
 Advanced troubleshooting only:
-  FGVK_ALLOW_COMPETING_LAYERS=1 fgvk-launch COMMAND [ARG ...]
+  FGVK_ALLOW_COMPETING_LAYERS=1 fgvk COMMAND [ARG ...]
 
 Allowing multiple frame-generation layers in one process is unsupported and
 may cause startup, synchronization, presentation, or image-quality failures.
@@ -375,8 +375,10 @@ unset FGVK_ALLOW_COMPETING_LAYERS
 # overlay, and system-wide presentation layers cannot bypass framegen-vulkan's device or
 # swapchain hooks. Gamescope and Steam's Game Mode UI remain outside this
 # application layer chain. Older packages fall back to their public manifest.
+# This helper lives at <prefix>/libexec/framegen-vulkan/fgvk-launch, so the
+# prefix is two directories above it.
 fgvk_launcher_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-fgvk_install_prefix="$(cd -- "$fgvk_launcher_dir/.." && pwd -P)"
+fgvk_install_prefix="$(cd -- "$fgvk_launcher_dir/../.." && pwd -P)"
 fgvk_data_home="${XDG_DATA_HOME:-$HOME/.local/share}"
 fgvk_implicit_layer_path="$fgvk_install_prefix/share/framegen-vulkan/vulkan/implicit_layer.d"
 if [[ ! -d "$fgvk_implicit_layer_path" && -d "$fgvk_data_home/framegen-vulkan/vulkan/implicit_layer.d" ]]; then
@@ -578,7 +580,7 @@ if [[ "${FGVK_PRESENT_DIAGNOSTICS:-0}" != 0 ]]; then
 fi
 unset fgvk_steam_overlay_preload_removed
 unset fgvk_steam_overlay_preload_filter_requested fgvk_disable_steam_overlay
-unset fgvk_launcher_dir fgvk_install_prefix fgvk_data_home fgvk_implicit_layer_path
+unset fgvk_launcher_dir fgvk_data_home fgvk_implicit_layer_path
 unset fgvk_existing_instance_layers fgvk_vkbasalt_layer_path
 unset fgvk_vkbasalt_library64 fgvk_vkbasalt_library32
 unset fgvk_vkbasalt_requested fgvk_vkbasalt_config
@@ -612,12 +614,13 @@ unset fgvk_vkbasalt_enabled
 if [[ -n "${GAMESCOPE_WAYLAND_DISPLAY:-}" &&
         ( -z "${WAYLAND_DISPLAY:-}" ||
           "$WAYLAND_DISPLAY" == "$GAMESCOPE_WAYLAND_DISPLAY" ) ]]; then
-    fgvk_vrr_helper="$(dirname -- "${BASH_SOURCE[0]}")/fgvk-vrr-lease"
+    fgvk_vrr_helper="$fgvk_install_prefix/bin/fgvk-vrr-lease"
     if [[ -x "$fgvk_vrr_helper" ]]; then
         export FGVK_VRR_LEASE_TOKEN="$$-$RANDOM-$RANDOM"
         "$fgvk_vrr_helper" --start "$$" "$FGVK_VRR_LEASE_TOKEN" || :
     fi
     unset fgvk_vrr_helper
 fi
+unset fgvk_install_prefix
 
 exec "$@"

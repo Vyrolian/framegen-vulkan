@@ -86,7 +86,7 @@ These settings persist for this app. Repeat with another `appid` for each additi
 
 ## Optional HDR
 
-The manual setup above defaults to SDR. To enable experimental HDR, close the app and replace its HDR overrides. These sandbox settings control exposure; `launcher.conf` applies to `fgvk-launch` and does not configure Flatpak apps.
+The manual setup above defaults to SDR. To enable experimental HDR, close the app and replace its HDR overrides. These sandbox settings control exposure; `launcher.conf` applies to `fgvk` and does not configure Flatpak apps.
 
 ```bash
 flatpak override --user --env=FGVK_DISABLE_HDR_EXPOSURE=0 "$appid"

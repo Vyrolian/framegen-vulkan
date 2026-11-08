@@ -1,6 +1,6 @@
 # Collect framegen-vulkan Diagnostics
 
-For installations using `fgvk-launch`.
+For installations using `fgvk`.
 
 ## 1. Enable logs
 
@@ -9,10 +9,10 @@ Fully close the game and save its current launch settings so you can restore the
 **Steam or Proton:** prepend the two diagnostics variables to your existing Launch Options, preserving any profile, shader, or other settings. For a basic launch, the result is:
 
 ```text
-FGVK_PRESENT_DIAGNOSTICS=1 FGVK_PRESENT_DIAGNOSTICS_THRESHOLD_MS=25 ~/.local/bin/fgvk-launch %command%
+FGVK_PRESENT_DIAGNOSTICS=1 FGVK_PRESENT_DIAGNOSTICS_THRESHOLD_MS=25 ~/.local/bin/fgvk %command%
 ```
 
-For a system installation, use your normal `fgvk-launch` path.
+For a system installation, use your normal `fgvk` path.
 
 **Heroic, Lutris or Flatpak:** keep your working setup and add these per-game environment variables:
 
@@ -25,7 +25,7 @@ FGVK_PRESENT_DIAGNOSTICS_THRESHOLD_MS=25
 
 ```bash
 FGVK_PRESENT_DIAGNOSTICS=1 FGVK_PRESENT_DIAGNOSTICS_THRESHOLD_MS=25 \
-    fgvk-launch your-game-command 2>&1 | tee "$HOME/Desktop/framegen-vulkan-renderer-session.log"
+    fgvk your-game-command 2>&1 | tee "$HOME/Desktop/framegen-vulkan-renderer-session.log"
 ```
 
 Replace `your-game-command` with your normal game command.
@@ -76,12 +76,12 @@ For the framegen-vulkan run, prefix the existing game launch command, keeping Ma
 python3 /absolute/path/to/framegen-vulkan/engine/scripts/profile-framegen.py capture \
   --mode fgvk --scenario cyberpunk-scene-A-60fps --reflex on \
   --manual --output ./mako-profile \
-  -- mangohud ~/.local/bin/fgvk-launch /path/to/game
+  -- mangohud ~/.local/bin/fgvk /path/to/game
 ```
 
 For Steam, replace `/path/to/game` with `%command%` in Launch Options. If your command already includes `mangohud`, keep that single wrapper. Do not add a second one. Preserve required game/Proton environment and working launcher arguments; a downstream script that resets the environment can override these requested settings. A wrapper that detaches the game and exits immediately produces an incomplete run; use a command that stays alive with the game. Flatpak sandbox admission and output-directory access are not prepared by this tool.
 
-For baseline and Smooth Motion, run the game with MangoHud directly, outside `fgvk-launch`. framegen-vulkan's launchers deliberately isolate implicit-layer discovery and can suppress MangoHud when framegen-vulkan is disabled, so wrapping those launchers would not provide a valid shared observer. The profiler refuses those known combinations and refuses an inherited `VK_IMPLICIT_LAYER_PATH` override for Smooth Motion. For example:
+For baseline and Smooth Motion, run the game with MangoHud directly, outside `fgvk`. framegen-vulkan's launchers deliberately isolate implicit-layer discovery and can suppress MangoHud when framegen-vulkan is disabled, so wrapping those launchers would not provide a valid shared observer. The profiler refuses those known combinations and refuses an inherited `VK_IMPLICIT_LAYER_PATH` override for Smooth Motion. For example:
 
 ```bash
 python3 /absolute/path/to/framegen-vulkan/engine/scripts/profile-framegen.py capture \
@@ -146,7 +146,7 @@ The Wayland companion's optional `--runtime-log /absolute/new-runtime.log` enabl
 
 ## Lightweight Minecraft pacing capture
 
-Set `FGVK_PACING_PROFILE=1` in the game's existing launch environment and restart it. Keep its working graphics/profile setup. For Prism Launcher, preserve the current Wrapper Command and prefix it with `env FGVK_PACING_PROFILE=1`, for example `env FGVK_PACING_PROFILE=1 mangohud /absolute/path/to/fgvk-launch`. The profiler records CPU boundary/phase timing without enabling the broader presentation diagnostics, health worker, new GPU queries, or per-frame writes. It works with other Vulkan games too.
+Set `FGVK_PACING_PROFILE=1` in the game's existing launch environment and restart it. Keep its working graphics/profile setup. For Prism Launcher, preserve the current Wrapper Command and prefix it with `env FGVK_PACING_PROFILE=1`, for example `env FGVK_PACING_PROFILE=1 mangohud /absolute/path/to/fgvk`. The profiler records CPU boundary/phase timing without enabling the broader presentation diagnostics, health worker, new GPU queries, or per-frame writes. It works with other Vulkan games too.
 
 The Renderer creates a private `fgvk-pacing-<uid>-<pid>-<timestamp>.log` under `${TMPDIR:-/tmp}` at swapchain creation and prints its path once. Only framegen-vulkan timing and process/profile identity records enter this file; arbitrary game/launcher output, Java arguments and account details are not captured. CPU/GPU-only capture retains up to 16 MiB and restarts with a `pacing-profile-log-wrap` marker when full. With `FGVK_PACING_PROFILE_WAYLAND=1`, the file instead preserves its beginning up to 64 MiB, emits `pacing-profile-capture-limit`, and stops writing; earlier FG/settings portions are never overwritten. The session header records `capture_limit_bytes` and `retention=stop|wrap`. Concurrent writers use a nonblocking lock; missing/partial records produce a `pacing-profile-capture-gap` marker. No collection worker is added. Find and filter the newest capture with:
 
@@ -175,7 +175,7 @@ Feedback attaches to the next surface commit after its request, which framegen-v
 When lower calls are regular but compositor feedback is uneven, the source-checkout companion below captures the driver's actual Wayland buffer-attachment and commit requests without rebuilding or installing framegen-vulkan. Prefix the entire existing game launch command with `python3 /absolute/path/to/framegen-vulkan/engine/scripts/wayland_pacing_protocol.py --`; preserve existing launcher arguments and profile flags. For Steam, place that prefix before the existing framegen-vulkan command and `%command%`. For a terminal launch:
 
 ```bash
-python3 /absolute/path/to/framegen-vulkan/engine/scripts/wayland_pacing_protocol.py -- ~/.local/bin/fgvk-launch /path/to/game
+python3 /absolute/path/to/framegen-vulkan/engine/scripts/wayland_pacing_protocol.py -- ~/.local/bin/fgvk /path/to/game
 ```
 
 The companion enables `WAYLAND_DEBUG=client` and `FGVK_PACING_PROFILE_WAYLAND=1` in its child only. It passes ordinary game stderr through, drops unselected Wayland traffic, and writes selected numeric/object-only presentation, attachment, commit and synchronization messages into a new mode-0600 `fgvk-wayland-protocol-<uid>-*.log` under the temporary directory. It preserves the beginning up to 64 MiB and stops with an explicit marker; `--output /absolute/new-file.log` selects a new file and existing paths are refused. It preserves child arguments, standard input/output, exit status and termination signals. It neither installs a library nor changes saved settings. Use it for a short focused run, then remove the launch prefix: Wayland's per-message stderr logging and the companion pipe can perturb timing. Launchers that discard or redirect the game's stderr can leave this companion empty; do not treat that as absence of commits.
@@ -202,7 +202,7 @@ The `worst_source_*` fields retain one correlated interval per window: the prece
 
 Readiness/fence waits are CPU blocking, not GPU execution measurements. Outside time cannot distinguish Java/game work, garbage collection, scheduler preemption, driver acquisition and game limiting by itself. CPU output submissions do not establish physical visibility, dropped frames or input latency. Use independent JVM/GPU/compositor evidence when those boundaries remain uncertain. A wait's duration alone does not prove a pacing regression: intentional output sleeps can improve cadence. Qualify complete profiler overhead with paired game captures; a fast-sink CPU benchmark does not establish Minecraft or launcher overhead.
 
-For opt-in in-game Frame Generation GPU cost, use `FGVK_PACING_PROFILE_GPU=1` instead of the CPU-only flag. It also enables the same CPU capture. In Prism, preserve the existing Wrapper Command and prefix it with `env FGVK_PACING_PROFILE_GPU=1`, for example `env FGVK_PACING_PROFILE_GPU=1 mangohud /absolute/path/to/fgvk-launch`. Restart the game after changing this process-start flag. Default operation and `FGVK_PACING_PROFILE=1` alone allocate no GPU queries.
+For opt-in in-game Frame Generation GPU cost, use `FGVK_PACING_PROFILE_GPU=1` instead of the CPU-only flag. It also enables the same CPU capture. In Prism, preserve the existing Wrapper Command and prefix it with `env FGVK_PACING_PROFILE_GPU=1`, for example `env FGVK_PACING_PROFILE_GPU=1 mangohud /absolute/path/to/fgvk`. Restart the game after changing this process-start flag. Default operation and `FGVK_PACING_PROFILE=1` alone allocate no GPU queries.
 
 The GPU mode reuses the backend's timestamp-query profiler. A fresh Frame Generation context gets one bounded query pool; after the normal previous-work fence wait has established completion, the next backend schedule reads the previous batch before reusing its queries. No additional GPU wait, worker, device idle or blocking query-result flag is introduced. Samples arrive later than the CPU frame that submitted the batch, and the final uncollected batch is omitted. History-only work supplies no generated-batch sample. Duplicate scheduling retries cannot duplicate a collected batch, and a query-read failure disables automatic reads for that context while preserving ordinary generation. Missing/unsupported timestamp evidence remains unavailable, not zero cost.
 

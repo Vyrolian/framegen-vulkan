@@ -56,7 +56,8 @@ pub fn resolve_path(lookup: impl Fn(&str) -> Option<OsString>) -> Result<PathBuf
     }
 }
 
-fn non_empty(value: Option<OsString>) -> Option<PathBuf> {
+/// Treats an unset or empty environment value as absent.
+pub(crate) fn non_empty(value: Option<OsString>) -> Option<PathBuf> {
     value.filter(|value| !value.is_empty()).map(PathBuf::from)
 }
 

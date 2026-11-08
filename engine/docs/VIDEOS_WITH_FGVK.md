@@ -11,7 +11,7 @@ Use mpv's Vulkan renderer for video Frame Generation. framegen-vulkan changes di
     ```
 
 2. For Flatpak, follow [Flatpak preparation](FLATPAK-GUIDE.md) with `appid=io.mpv.Mpv` and its matching runtime extension. Native mpv skips this step.
-3. In **framegen-vulkan Configuration**, create a `Video` profile, enable Frame Generation, and start with Fixed 2x. Leave scaling off initially.
+3. In the `fgvk` settings window (`~/.local/bin/fgvk`), create a `Video` profile, enable Frame Generation, and start with Fixed 2x. Leave scaling off initially.
 
 Frame Generation and LS1 need Lossless Scaling's default Steam version and a valid DLL path. framegen-vulkan Scaler works without it.
 
@@ -57,7 +57,7 @@ flatpak run \
 **Native mpv:**
 
 ```bash
-FGVK_PROFILE=Video ~/.local/bin/fgvk-launch mpv \
+FGVK_PROFILE=Video ~/.local/bin/fgvk mpv \
   --no-config \
   --vo=gpu-next \
   --gpu-api=vulkan \

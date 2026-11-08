@@ -21,7 +21,7 @@ parser.add_argument('--config', type=Path)
 arguments = parser.parse_args()
 logging.basicConfig(level=logging.WARNING)
 home = Path.home()
-runner = arguments.launcher or directory / 'fgvk-launch'
+runner = arguments.launcher or directory.parent / 'libexec/framegen-vulkan/fgvk-launch'
 service = RemotePlayOverride(home, runner, config_file=arguments.config)
 try:
     if arguments.action == 'install':

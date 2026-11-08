@@ -299,7 +299,7 @@ install_payload() {
 
     notice "framegen-vulkan $version is installed. Configure profiles in $config_dir/conf.toml, then use this Steam launch option for a native Steam or Proton game:
 
-\"$install_prefix/bin/fgvk-launch\" %command%"
+\"$install_prefix/bin/fgvk\" %command%"
 }
 
 uninstall_payload() {

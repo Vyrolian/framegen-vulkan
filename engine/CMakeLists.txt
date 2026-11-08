@@ -103,9 +103,12 @@ option(FGVK_TESTING_RENDERDOC  "Enable RenderDoc integration for testing purpose
 
 if(FGVK_BUILD_VK_LAYER)
     install(PROGRAMS
-        "${CMAKE_CURRENT_SOURCE_DIR}/scripts/fgvk-launch"
         "${CMAKE_CURRENT_SOURCE_DIR}/scripts/fgvk-vrr-lease"
         DESTINATION "${CMAKE_INSTALL_BINDIR}")
+    # The launch helper is private: `fgvk <command>` executes it, so it is not on PATH.
+    install(PROGRAMS
+        "${CMAKE_CURRENT_SOURCE_DIR}/scripts/fgvk-launch"
+        DESTINATION "${CMAKE_INSTALL_LIBEXECDIR}/framegen-vulkan")
 endif()
 
 if(BUILD_TESTING AND UNIX)

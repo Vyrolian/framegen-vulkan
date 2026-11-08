@@ -96,7 +96,7 @@ fi
   echo "The host archive does not match its install manifest." >&2
   exit 1
 }
-for renderer_file in ./bin/fgvk-launch ./bin/fgvk-cli ./lib/libfgvk-render.so \
+for renderer_file in ./bin/fgvk ./bin/fgvk-cli ./libexec/framegen-vulkan/fgvk-launch ./lib/libfgvk-render.so \
   ./lib32/libfgvk-render.so ./share/vulkan/implicit_layer.d/VkLayer_FGVK_render.json; do
   if ! grep -Fxq "$renderer_file" "$work_root/host-files.txt"; then
     echo "The host archive is missing $renderer_file." >&2

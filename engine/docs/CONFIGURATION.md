@@ -7,7 +7,7 @@ framegen-vulkan reads its profiles from `~/.config/framegen-vulkan/conf.toml`. E
 1. Create `~/.config/framegen-vulkan/conf.toml` from the example below.
 2. Set `active_in` to the game's executable name, such as `Game.exe`. Match the game's process, not its launcher, Steam title, or ROM filename.
 3. Enable Frame Generation and/or Scaling for that profile.
-4. Add `~/.local/bin/fgvk-launch %command%` to the game's Steam launch options, then start the game.
+4. Add `~/.local/bin/fgvk %command%` to the game's Steam launch options, then start the game.
 5. Run `~/.local/bin/fgvk-cli validate` after each change.
 
 ```toml
@@ -35,6 +35,23 @@ framegen-vulkan activates on the next launch of a matched process. If nothing ma
 ### Lossless Scaling availability
 
 **framegen-vulkan Scaler and Shaders work without Lossless Scaling.** Frame Generation and LS1 require it. If framegen-vulkan reports it missing, install Lossless Scaling or set `dll` to the correct `Lossless.dll` path, then restart the game.
+
+## Settings window
+
+Run `~/.local/bin/fgvk` with no arguments to open the settings window. It edits the same `~/.config/framegen-vulkan/conf.toml` you can edit by hand, keeps its comments, and writes the file atomically. If the file is invalid, the window shows the problem and leaves the file unchanged. Changes made in a text editor appear in the window while it is open.
+
+The window has these controls:
+
+| Control | What it sets |
+| --- | --- |
+| Profile | Chooses the profile to edit. New, Rename and Delete manage profiles; each profile needs a unique name. |
+| Games | Lists the `active_in` entries. Type an executable name and press Add, or choose Pick running… to add a program that is running now. The × button removes an entry. |
+| Frame generation | `Off`, a fixed `2x` to `5x` multiplier, or `Adaptive`. Adaptive shows the target FPS (10 to 1000) and the maximum multiplier (2x to 5x). |
+| Quality (flow scale) | `flow_scale` from 25% to 100%. Higher values track motion more precisely and cost more GPU time. |
+| FPS limit | Optional real-FPS cap, stored as `base_fps_cap`. Turn it off to remove the manual cap. |
+| Lossless.dll | The `dll` path for Frame Generation and LS1 scaling. Leave it empty to remove the setting. |
+
+Typed values apply when you press Enter or leave the field. Sliders apply when you release them, and buttons apply at once. Live settings change a running game; restart-only settings apply the next time the game starts. See [Applying changes](#applying-changes).
 
 ## Profiles
 
@@ -121,7 +138,7 @@ Supported AMD telemetry must be readable for the game's GPU; Gamescope is option
 Shaders use bundled vkBasalt. Add `ENABLE_VKBASALT=1` to the launch option, then select effects in a vkBasalt configuration file referenced by `VKBASALT_CONFIG_FILE`. Effects run in the order listed in `effects`, separated by colons; more effects cost more GPU time. The bundled effect sources are in `engine/vkbasalt-shaders/`, and their provenance is in [third-party notices](../../THIRD_PARTY_NOTICES.md).
 
 ```text
-ENABLE_VKBASALT=1 VKBASALT_CONFIG_FILE="$HOME/.config/vkBasalt/game-name.conf" ~/.local/bin/fgvk-launch %command%
+ENABLE_VKBASALT=1 VKBASALT_CONFIG_FILE="$HOME/.config/vkBasalt/game-name.conf" ~/.local/bin/fgvk %command%
 ```
 
 ```ini
@@ -158,13 +175,13 @@ Some live changes rebuild resources and may briefly hitch. See [Runtime transiti
 
 ## Launch settings
 
-For native Steam and Proton games, use the launch option below. Flatpak applications need [Flatpak preparation](FLATPAK-GUIDE.md). The Arch package uses `/usr/bin/fgvk-launch`. For a terminal launch, replace `%command%` with the executable and arguments.
+For native Steam and Proton games, use the launch option below. Flatpak applications need [Flatpak preparation](FLATPAK-GUIDE.md). The Arch package uses `/usr/bin/fgvk`. For a terminal launch, replace `%command%` with the executable and arguments.
 
 ```text
-~/.local/bin/fgvk-launch %command%
+~/.local/bin/fgvk %command%
 ```
 
-Standalone launch compatibility settings live in `~/.config/framegen-vulkan/launcher.conf`, and apply to every `fgvk-launch` game:
+Standalone launch compatibility settings live in `~/.config/framegen-vulkan/launcher.conf`, and apply to every `fgvk` game:
 
 ```ini
 version = 1
@@ -178,7 +195,7 @@ force_alsa_audio = 0
 - `enable_zink`: runs OpenGL through Vulkan.
 - `force_alsa_audio`: changes the audio path for compatibility problems.
 
-To use a shared MangoHud layout, create `~/.config/framegen-vulkan/mangohud.conf` and enable MangoHud for a game with `MANGOHUD=1` in its launch option. Shaders and MangoHud are mutually exclusive; a manual command requesting both is rejected. Install host MangoHud and Python 3 first, and check availability with `fgvk-launch --check-mangohud`. Flatpak games are unsupported. See the [shared MangoHud layout](LAYER-CHAINING.md#shared-mangohud-layout).
+To use a shared MangoHud layout, create `~/.config/framegen-vulkan/mangohud.conf` and enable MangoHud for a game with `MANGOHUD=1` in its launch option. Shaders and MangoHud are mutually exclusive; a manual command requesting both is rejected. Install host MangoHud and Python 3 first, and check availability with `fgvk --check-mangohud`. Flatpak games are unsupported. See the [shared MangoHud layout](LAYER-CHAINING.md#shared-mangohud-layout).
 
 ## HDR
 

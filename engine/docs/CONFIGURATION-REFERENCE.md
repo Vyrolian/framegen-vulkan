@@ -123,7 +123,7 @@ See [Adaptive validation](ADAPTIVE-VALIDATION.md#gpu-headroom) for controller sa
 ## Explicit launch selection
 
 ```text
-FGVK_CONFIG="$HOME/.config/framegen-vulkan/conf.toml" FGVK_PROFILE="My game" ~/.local/bin/fgvk-launch %command%
+FGVK_CONFIG="$HOME/.config/framegen-vulkan/conf.toml" FGVK_PROFILE="My game" ~/.local/bin/fgvk %command%
 ```
 
 `DISABLE_FGVK=1` bypasses framegen-vulkan. Native Remote Play uses `FGVK_FOLLOW_CURRENT_PROFILE=1` to follow a valid root `current_profile` selection on reload, falling back to `FGVK_PROFILE`. Ordinary game launchers use normal matching.

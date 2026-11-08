@@ -65,6 +65,28 @@ jobs:
       - name: Check Markdown formatting
         run: npm run format:markdown:check
 
+  fgvk-ui:
+    name: fgvk settings launcher
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Install settings launcher build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwayland-dev libxkbcommon-dev libx11-dev libgl-dev libegl-dev
+
+      - name: Run settings launcher tests
+        working-directory: engine/fgvk-ui
+        run: cargo test --locked
+
+      - name: Build settings launcher
+        working-directory: engine/fgvk-ui
+        run: cargo build --locked
+
   renderer:
     name: framegen-vulkan (${{ matrix.toolchain }})
     runs-on: ubuntu-latest

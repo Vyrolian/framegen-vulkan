@@ -480,7 +480,7 @@ def save_report(folder, metadata):
 
 
 def capture(args):
-    if args.mode != "fgvk" and any(Path(word).name == "fgvk-launch" for word in args.command):
+    if args.mode != "fgvk" and any(Path(word).name in ("fgvk", "fgvk-launch") for word in args.command):
         raise ValueError("baseline/Smooth Motion need the game command with MangoHud directly; "
                          "framegen-vulkan launchers isolate layers and can suppress MangoHud/NVIDIA Smooth Motion")
     if args.mode == "smooth-motion" and os.environ.get("VK_IMPLICIT_LAYER_PATH"):

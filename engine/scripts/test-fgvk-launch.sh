@@ -14,7 +14,8 @@ if [[ ! -f "$launcher" ]]; then
 fi
 
 launcher_dir="$(cd -- "$(dirname -- "$launcher")" && pwd -P)"
-install_prefix="$(cd -- "$launcher_dir/.." && pwd -P)"
+# The helper is installed as <prefix>/libexec/framegen-vulkan/fgvk-launch.
+install_prefix="$(cd -- "$launcher_dir/../.." && pwd -P)"
 test_root="$(mktemp -d /tmp/fgvk-launch-contract.XXXXXX)"
 trap 'rm -rf -- "$test_root"' EXIT
 test_data_home="$test_root/data"
@@ -224,12 +225,12 @@ if [[ "$disable_output" != $'1\n1' ]]; then
 fi
 
 private_prefix="$test_root/private-prefix"
-private_launcher="$private_prefix/bin/fgvk-launch"
+private_launcher="$private_prefix/libexec/framegen-vulkan/fgvk-launch"
 private_fgvk_layer_dir="$private_prefix/share/framegen-vulkan/vulkan/implicit_layer.d"
 private_vkbasalt_layer_dir="$private_prefix/share/framegen-vulkan/vulkan/vkbasalt.d"
 private_vkbasalt_library64="$private_prefix/lib/vkbasalt/libvkbasalt.so"
 private_vkbasalt_library32="$private_prefix/lib32/vkbasalt/libvkbasalt.so"
-mkdir -p "$private_prefix/bin" "$private_fgvk_layer_dir" "$private_vkbasalt_layer_dir" \
+mkdir -p "$(dirname -- "$private_launcher")" "$private_fgvk_layer_dir" "$private_vkbasalt_layer_dir" \
     "$(dirname -- "$private_vkbasalt_library64")" \
     "$(dirname -- "$private_vkbasalt_library32")"
 cp -- "$launcher" "$private_launcher"
@@ -381,7 +382,7 @@ if [[ $forwarded_status -ne 23 ]]; then
 fi
 
 help_output="$("$launcher" --help)" || fail "--help failed"
-if [[ "$help_output" != *"Usage: fgvk-launch"* ]]; then
+if [[ "$help_output" != *"Usage: fgvk [--] COMMAND"* ]]; then
     fail "--help output is incomplete"
 fi
 

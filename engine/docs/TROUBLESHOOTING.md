@@ -3,10 +3,10 @@
 ## framegen-vulkan does not load
 
 1. Use Vulkan, including DXVK/VKD3D-Proton for Windows games. Select Vulkan in emulators; OpenGL games may need [Zink](CONFIGURATION.md#launch-settings).
-2. Copy the complete launch option from **framegen-vulkan Configuration** into Steam and restart. The basic native/Proton option is:
+2. Copy the launch option into Steam and restart. The basic native/Proton option is:
 
     ```text
-    ~/.local/bin/fgvk-launch %command%
+    ~/.local/bin/fgvk %command%
     ```
 
 3. For terminal launches, replace `%command%` with the executable and arguments. Flatpak apps need [Flatpak preparation](FLATPAK-GUIDE.md).
@@ -15,10 +15,16 @@
 For native loader problems, run:
 
 ```bash
-~/.local/bin/fgvk-launch vulkaninfo | grep -i VK_LAYER_FGVK_render
+~/.local/bin/fgvk vulkaninfo | grep -i VK_LAYER_FGVK_render
 ```
 
 Install Vulkan-tools if `vulkaninfo` is missing. If no layer appears, check the installation and launch environment. For 32-bit games, ensure the matching 32-bit layer and manifest are installed.
+
+## `fgvk` cannot start the game
+
+`fgvk <command>` replaces itself with the private launch helper at `libexec/framegen-vulkan/fgvk-launch`, next to the `fgvk` executable. If it prints `launch helper not found` and exits with status 127, that install is missing the helper: reinstall framegen-vulkan. For a build outside an install, set `FGVK_LAUNCH_HELPER` to the helper path, for example `engine/scripts/fgvk-launch`. Exit status 126 means the helper exists but is not executable.
+
+If the loader reports `GLIBC_2.43 not found` for `fgvk`, the archive was built against a newer glibc than this system has. Use the Arch package or a build from source on that system. `package-local.sh` warns when its `fgvk` needs a newer glibc than Ubuntu 22.04 provides.
 
 ## The layer loads but a feature does not start
 

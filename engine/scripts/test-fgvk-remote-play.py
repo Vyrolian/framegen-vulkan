@@ -26,11 +26,12 @@ class RemotePlayCommandTests(unittest.TestCase):
         self.client.parent.mkdir(parents=True)
         self.client.write_bytes(ELF)
         self.client.chmod(0o750)
-        self.launcher = self.home / '.local/bin/fgvk-launch'
+        self.prefix = self.home / '.local'
+        self.launcher = self.prefix / 'libexec/framegen-vulkan/fgvk-launch'
         self.launcher.parent.mkdir(parents=True)
         self.launcher.write_text('#!/bin/sh\nexec "$@"\n')
         self.launcher.chmod(0o750)
-        helper = self.launcher.parent.parent / SDR_HELPER_RELATIVE_PATH
+        helper = self.prefix / SDR_HELPER_RELATIVE_PATH
         helper.parent.mkdir(parents=True)
         helper.write_bytes(Path(os.environ['FGVK_TEST_SDR_HELPER']).read_bytes() if os.environ.get('FGVK_TEST_SDR_HELPER')
                            else ELF[:16] + b'\x03\0\x3e\0' + SDR_HELPER_MARKER)
@@ -92,7 +93,7 @@ class RemotePlayCommandTests(unittest.TestCase):
         self.assertEqual(str(expected), values['VKBASALT_CONFIG_FILE'])
         self.assertEqual('1', values['FGVK_FOLLOW_CURRENT_PROFILE'])
         self.assertEqual('1', values['FGVK_REMOTE_PLAY_SDR'])
-        self.assertEqual(str(self.launcher.parent.parent / SDR_HELPER_RELATIVE_PATH), values['LD_PRELOAD'])
+        self.assertEqual(str(self.prefix / SDR_HELPER_RELATIVE_PATH), values['LD_PRELOAD'])
         self.assertEqual('effects = none\n', expected.read_text())
         self.assertNotIn('GALLIUM_DRIVER', values)
         # The stored path survives calls made by the default config.
@@ -114,14 +115,14 @@ class RemotePlayCommandTests(unittest.TestCase):
         shutil.copyfile(os.environ['FGVK_TEST_SDR_CLIENT'], self.client)
         shutil.copyfile(ROOT / 'fgvk-launch', self.launcher)
         self.environment['LD_LIBRARY_PATH'] = os.environ['FGVK_TEST_SDL_FIXTURE_DIR']
-        shutil.copyfile(os.environ['FGVK_TEST_SDR_NATIVE_HELPER'], self.launcher.parent.parent / SDR_HELPER_RELATIVE_PATH)
+        shutil.copyfile(os.environ['FGVK_TEST_SDR_NATIVE_HELPER'], self.prefix / SDR_HELPER_RELATIVE_PATH)
         if os.environ.get('ASAN_OPTIONS'):
             self.environment['ASAN_OPTIONS'] = os.environ['ASAN_OPTIONS']
         self.command('install')
         result = subprocess.run([str(self.client), 'forced'], env=self.environment, capture_output=True, timeout=5)
         self.assertEqual(0, result.returncode, result.stderr.decode())
         self.assertIn('result=sRGB', result.stderr.decode())
-        (self.launcher.parent.parent / SDR_HELPER_RELATIVE_PATH).unlink()
+        (self.prefix / SDR_HELPER_RELATIVE_PATH).unlink()
         result = subprocess.run([str(self.client), 'native'], env=self.environment, capture_output=True, timeout=5)
         self.assertEqual(0, result.returncode, result.stderr.decode())
         self.assertIn('Remote Play passthrough', result.stderr.decode())
@@ -138,7 +139,7 @@ class RemotePlayCommandTests(unittest.TestCase):
         configuration.parent.mkdir()
         configuration.write_text(self.config.read_text())
         self.config = configuration
-        prefix = self.launcher.parent.parent
+        prefix = self.prefix
         for relative in ('share/framegen-vulkan/vulkan/vkbasalt.d/vkBasalt.json',
                          'share/framegen-vulkan/vulkan/vkbasalt.d/vkBasalt.x86.json',
                          'lib/vkbasalt/libvkbasalt.so', 'lib32/vkbasalt/libvkbasalt.so'):

@@ -159,9 +159,10 @@ fi
 package_entries="$(bsdtar -tf "${package_files[0]}")"
 for required_entry in \
     .INSTALL \
+    usr/bin/fgvk \
     usr/bin/fgvk-cli \
     usr/bin/fgvk-diagnostics \
-    usr/bin/fgvk-launch \
+    usr/libexec/framegen-vulkan/fgvk-launch \
     usr/lib/libfgvk-render.so \
     usr/lib/libfgvk-render-scaling.so \
     usr/lib/vkbasalt/libvkbasalt.so \
