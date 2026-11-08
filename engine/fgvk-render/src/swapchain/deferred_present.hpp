@@ -33,6 +33,10 @@ struct SubmitTag {
     uint8_t kind{submitKindUnknown};
     uint32_t applicationIndex{UINT32_MAX};
     uint32_t lowerIndex{UINT32_MAX};
+    // D7c: a generated skip's SkipReason (0 = none for other kinds), and the source batch
+    // ordinal the submit belongs to. Zero when unknown. Diagnostics only.
+    uint8_t reason{0};
+    uint64_t source{0};
 };
 // One private submit that returned VK_SUCCESS. A reused fence shows its newest use: the
 // handle is kept as submitted, and its status is read later by the stall probe.
@@ -41,6 +45,9 @@ struct SubmitRecord {
     uint8_t kind{};
     uint32_t applicationIndex{};
     uint32_t lowerIndex{};
+    // D7c: copied from the tag.
+    uint8_t reason{0};
+    uint64_t source{0};
     uint32_t waits{};
     VkFence fence{};
 };
@@ -143,7 +150,8 @@ inline VkResult submitPrivate(DeferredPresentQueue& q, const PFN_vkQueueSubmit s
         q.tailSubmitted.store(next, std::memory_order_release);
         if (q.history) {
             q.recent[q.recentNext++ % q.recentCount] = {
-                next, tag.kind, tag.applicationIndex, tag.lowerIndex, info.waitSemaphoreCount, fence};
+                next, tag.kind, tag.applicationIndex, tag.lowerIndex, tag.reason, tag.source,
+                info.waitSemaphoreCount, fence};
         }
     }
     return result;
@@ -162,6 +170,15 @@ public:
     // by the F7 taxonomy: a generated output whose give-up window ends with no lower image
     // is Acquire, so no worker path produces GiveUp today.
     enum class SkipReason { None, Readiness, Stopping, Expedite, GiveUp, Acquire, Error };
+
+    // D7c: the name of a SkipReason value in the stall probe, in enum order.
+    static const char* skipReasonName(const uint8_t reason) {
+        static constexpr std::array<const char*, 7> names{
+            "none", "readiness", "stopping", "expedite", "giveup", "acquire", "error"};
+        static_assert(names.size() == static_cast<size_t>(SkipReason::Error) + 1);
+        return reason < names.size() ? names[reason] : "unknown";
+    }
+
     struct Call {
         VkResult result{VK_SUCCESS};
         Clock::time_point started{}, finished{};
@@ -882,10 +899,11 @@ private:
     // signals that image's present wait and the continuation. A skip signals
     // only the continuation. Every submit signals the fence. The private queue's
     // tail is signalled too (F9c, see submitPrivate). D7b: lowerIndex is the lower image of a
-    // copy and UINT32_MAX for a skip, which has no image.
+    // copy and UINT32_MAX for a skip, which has no image. D7c: reason is the skip's SkipReason
+    // (0 for a copy) and source the batch ordinal; both only label the submit's history record.
     static VkResult submitGeneratedWork(DeferredPresentQueue& queue, const GeneratedCopy& copy,
             const bool acquired, const VkCommandBuffer command, const VkSemaphore presentWait,
-            const uint32_t lowerIndex) {
+            const uint32_t lowerIndex, const uint8_t reason, const uint64_t source) {
         // The staged wait is always the last wait and the continuation the last signal.
         const std::array<VkSemaphore, 2> waits{copy.acquireSemaphore, copy.staged};
         const std::array<VkPipelineStageFlags, 2> stages{
@@ -909,6 +927,8 @@ private:
             .kind = copying ? submitKindGeneratedCopy : submitKindGeneratedSkip,
             .applicationIndex = UINT32_MAX,
             .lowerIndex = copying ? lowerIndex : UINT32_MAX,
+            .reason = reason,
+            .source = source,
         };
         return submitPrivate(queue, copy.submit, submit, copy.fence, tag);
     }
@@ -1379,15 +1399,20 @@ private:
                         if (copyPending) {
                             const VkResult copied = profiledLockCall(ready.profile, result.lockSubmitNs, [&] {
                                 return submitGeneratedWork(*queue, job.copy, true,
-                                    job.copy.copies.at(job.image), job.wait, job.image);
+                                    job.copy.copies.at(job.image), job.wait, job.image,
+                                    0, ready.source);
                             });
                             presentOutput = copied == VK_SUCCESS;
                             if (copied < 0) skipResult = copied;
                         }
                         if (!presentOutput) {
+                            // D7c: the same rule as result.skipReason below, computed before the signal.
+                            const auto signalReason = static_cast<uint8_t>(
+                                skipResult < 0 || skipWhy == SkipReason::None ? SkipReason::Error : skipWhy);
                             const VkResult signalled = profiledLockCall(ready.profile, result.lockSubmitNs, [&] {
                                 return submitGeneratedWork(*queue, job.copy,
-                                    acquired, VK_NULL_HANDLE, VK_NULL_HANDLE, UINT32_MAX);
+                                    acquired, VK_NULL_HANDLE, VK_NULL_HANDLE, UINT32_MAX,
+                                    signalReason, ready.source);
                             });
                             if (skipResult == VK_SUCCESS) skipResult = signalled;
                         }

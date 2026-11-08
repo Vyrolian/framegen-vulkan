@@ -4,13 +4,16 @@
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
+#include <fcntl.h>
 #include <fstream>
 #include <iostream>
 #include <limits>
 #include <string>
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <type_traits>
 #include <unistd.h>
+#include <utility>
 
 using namespace fgvk::layer::present_diagnostics;
 using namespace std::chrono_literals;
@@ -308,6 +311,108 @@ void emit() {
     recordApplicationFrameTiming(ApplicationFrameApi::Present, 1, {}, start, start + 7ms, {}, {}, 1ms, 5ms);
     recordApplicationFrameTiming(ApplicationFrameApi::Present, 1, {}, start + 1s, start + 1s + 7ms, {}, {}, 1ms, 5ms);
 }
+// D7c: the FG timeline registry. The fake counter reports the value the test sets.
+uint64_t fakeCounterValue{};
+VkResult fakeCounterResult{VK_SUCCESS};
+VkResult VKAPI_CALL fakeCounter(VkDevice, VkSemaphore, uint64_t* value) {
+    if (fakeCounterResult == VK_SUCCESS)
+        *value = fakeCounterValue;
+    return fakeCounterResult;
+}
+template<class T> T fgHandle(uintptr_t value) {
+    if constexpr (std::is_pointer_v<T>) return reinterpret_cast<T>(value);
+    else return static_cast<T>(value);
+}
+// One scenario, run with the profile on and off. The off run must print nothing.
+void fgTimelineScenario() {
+    const auto device = fgHandle<VkDevice>(0x1000);
+    const auto sync = fgHandle<VkSemaphore>(0x2000);
+    fakeCounterValue = 55; fakeCounterResult = VK_SUCCESS;
+    noteFgSourceCopy(7, device, sync, fakeCounter, 3, 13);
+    noteFgStagingWait(7, 12);
+    writeFgTimelineProbe(1'500'000'000);
+    {
+        FgTimelineLease owner;
+        owner.hold(9);
+        noteFgSourceCopy(9, device, sync, fakeCounter, 4, 14);
+        FgTimelineLease moved = std::move(owner);
+        // Moving the lease keeps the entry: only the lease that holds it forgets it.
+        writeFgTimelineProbe(2'000'000'000);
+    }
+    writeFgTimelineProbe(2'500'000'000);
+    fakeCounterResult = VK_ERROR_DEVICE_LOST;
+    writeFgTimelineProbe(2'750'000'000);
+    fakeCounterResult = VK_SUCCESS;
+    forgetFgTimeline(7);
+    writeFgTimelineProbe(3'000'000'000);
+}
+// Forced on in a child, because the profile gate is read once per process. The profile-off child
+// unsets every gate that could enable it. Both children run before this process reads a gate.
+void fgTimelineThroughProfile() {
+    char directory[] = "/tmp/fgvk-fg-timeline.XXXXXX";
+    expect(mkdtemp(directory) != nullptr, "cannot create FG timeline fixture");
+    const std::filesystem::path root{directory};
+    for (const bool enabled : {true, false}) {
+        const auto log = root / (enabled ? "on.log" : "off.log");
+        const auto child = fork();
+        expect(child >= 0, "cannot fork FG timeline regression");
+        if (child == 0) {
+            for (const char* name : {"FGVK_PACING_PROFILE", "FGVK_PACING_PROFILE_GPU",
+                    "FGVK_PACING_PROFILE_WAYLAND", "FGVK_PACING_PROFILE_TRACE",
+                    "FGVK_PACING_PROFILE_COPY", "FGVK_PACING_PROFILE_CONTENT"})
+                unsetenv(name);
+            if (enabled) setenv("FGVK_PACING_PROFILE", "1", 1);
+            const int fd = open(log.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
+            if (fd < 0 || dup2(fd, STDERR_FILENO) < 0)
+                std::_Exit(2);
+            fgTimelineScenario();
+            std::exit(0);
+        }
+        int status{};
+        expect(waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 0,
+            "FG timeline child failed");
+    }
+    const auto on = read(root / "on.log");
+    expect(on == "framegen-vulkan: d7 fg stall_ms=1500 context=7 sync_gpu=55 recent=3:S13:B12\n"
+        "framegen-vulkan: d7 fg stall_ms=2000 context=7 sync_gpu=55 recent=3:S13:B12\n"
+        "framegen-vulkan: d7 fg stall_ms=2000 context=9 sync_gpu=55 recent=4:S14:B-\n"
+        "framegen-vulkan: d7 fg stall_ms=2500 context=7 sync_gpu=55 recent=3:S13:B12\n"
+        "framegen-vulkan: d7 fg stall_ms=2750 context=7 sync_gpu=error-4 recent=3:S13:B12\n",
+        "FG timeline probe lost a context, kept a released lease's entry, or changed its format");
+    expect(read(root / "off.log").empty(), "the FG timeline wrote with the pacing profile off");
+    std::filesystem::remove_all(root);
+}
+// Driven on the plain registry, so the wrap and the staging tag need no environment.
+void fgTimelineLedgerWrapsAndTagsStaging() {
+    FgTimelineLedger ledger;
+    const auto device = fgHandle<VkDevice>(0x1000);
+    const auto sync = fgHandle<VkSemaphore>(0x2000);
+    fakeCounterValue = 55; fakeCounterResult = VK_SUCCESS;
+    // Nine copies fill the eight records; the ninth overwrites the oldest.
+    for (uint64_t source = 1; source <= 9; ++source)
+        ledger.noteSourceCopy(7, device, sync, fakeCounter, source, source + 100);
+    ledger.noteStagingWait(7, 500);
+    // A context without a counter query reports it as unavailable and keeps its one record.
+    ledger.noteSourceCopy(8, device, sync, nullptr, 5, 9);
+    ledger.noteStagingWait(99, 1);
+    expect(ledger.size() == 2, "a staging wait created an entry for an unknown context");
+    const std::string expected =
+        "framegen-vulkan: d7 fg stall_ms=2000 context=7 sync_gpu=55 recent=2:S102:B- 3:S103:B- "
+        "4:S104:B- 5:S105:B- 6:S106:B- 7:S107:B- 8:S108:B- 9:S109:B500\n"
+        "framegen-vulkan: d7 fg stall_ms=2000 context=8 sync_gpu=unavailable recent=5:S9:B-\n";
+    expect(ledger.describe(2'000'000'000) == expected,
+        "the registry did not wrap at eight records, tag the newest staging wait, or skip empty records");
+    fakeCounterResult = VK_ERROR_DEVICE_LOST;
+    expect(ledger.describe(1'000'000'000).find("context=7 sync_gpu=error-4 recent=") != std::string::npos,
+        "a failed counter query was not reported as its error");
+    fakeCounterResult = VK_SUCCESS;
+    ledger.forget(7);
+    expect(ledger.size() == 1 && ledger.describe(0).find("context=7") == std::string::npos,
+        "forget did not erase the context");
+    ledger.forget(8);
+    expect(ledger.size() == 0 && ledger.describe(0).empty(), "forgetting every context left a probe line");
+}
+
 // Copy profiling implies the frame trace, but the trace alone must not select native
 // copy profiling. Both switches cache per process, so each case runs in its own child.
 void copyProfileSwitches() {
@@ -336,6 +441,8 @@ void copyProfileSwitches() {
 }
 }
 int main() {
+    // Before any gate is read here: the forked profile-on child must read its own environment.
+    fgTimelineThroughProfile();
     // Inherited copy state must not change the isolated cases below.
     unsetenv("FGVK_PACING_PROFILE_COPY");
     timingObservations();
@@ -479,5 +586,6 @@ int main() {
         details.find("wait_16=") == std::string::npos,
         "detailed trace lost acquire partitions, actual return results or bounded submission dependencies");
     std::filesystem::remove_all(root);
+    fgTimelineLedgerWrapsAndTagsStaging();
     std::cout << "pacing profile tests passed\n";
 }

@@ -181,6 +181,11 @@ VkResult Swapchain::presentGeneratedFrames(
             slot.stagingCopy->submit(invocation.vk, {}, this->syncSemaphore->handle(),
                 this->frameState.backendTimelineIndex, std::array{slot.staged->handle()},
                 VK_NULL_HANDLE, 0);
+            if (present_diagnostics::pacingProfileEnabled()) {
+                // D7c: the generated value this staging copy waits, before its increment below.
+                present_diagnostics::noteFgStagingWait(this->diagnosticsState.contextId,
+                    this->frameState.backendTimelineIndex);
+            }
             DeferredPresent::GeneratedCopy copy{
                 .device = invocation.vk.dev(),
                 .acquire = invocation.vk.df().AcquireNextImageKHR,

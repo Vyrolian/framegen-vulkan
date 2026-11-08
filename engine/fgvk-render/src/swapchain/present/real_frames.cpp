@@ -308,6 +308,14 @@ void Swapchain::submitSourceCopy(const PresentInvocation& invocation,
             sourceTimelineValue,
             pass.completionFence.handle(), invocation.queue
         );
+        if (present_diagnostics::pacingProfileEnabled()) {
+            // D7c: the stall probe reads this copy's signal value on the FG timeline.
+            present_diagnostics::noteFgSourceCopy(this->diagnosticsState.contextId,
+                invocation.vk.dev(), this->syncSemaphore->handle(),
+                invocation.vk.df().GetSemaphoreCounterValueKHR,
+                this->pacingProfile ? this->pacingProfile->sourceOrdinal() : 0, sourceTimelineValue);
+            this->fgTimelineLease.hold(this->diagnosticsState.contextId);
+        }
         pass.completionInFlight = true;
         this->frameState.sourceReleaseTimelineValue =
             this->frameState.nextSourceReleaseTimelineValue;
@@ -392,6 +400,14 @@ void Swapchain::submitSourceCopy(const PresentInvocation& invocation,
             {}, this->syncSemaphore->handle(), sourceTimelineValue
         );
     });
+    if (present_diagnostics::pacingProfileEnabled()) {
+        // D7c: the stall probe reads this copy's signal value on the FG timeline.
+        present_diagnostics::noteFgSourceCopy(this->diagnosticsState.contextId,
+            invocation.vk.dev(), this->syncSemaphore->handle(),
+            invocation.vk.df().GetSemaphoreCounterValueKHR,
+            this->pacingProfile ? this->pacingProfile->sourceOrdinal() : 0, sourceTimelineValue);
+        this->fgTimelineLease.hold(this->diagnosticsState.contextId);
+    }
     if (splitRecorded) {
         // Set only after the submit returns. The slot's existing fence later proves completion.
         auto& slot = this->currentRenderSlot();

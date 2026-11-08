@@ -232,6 +232,124 @@ int64_t lastApplicationPresentNanoseconds() {
     return lastApplicationPresent().load(std::memory_order_relaxed);
 }
 
+namespace {
+// D7c: the registry is read by the detached stall watchdog, which can still run while the
+// process exits. It is therefore never destroyed.
+FgTimelineLedger& fgTimelineLedger() {
+    static auto* ledger = new FgTimelineLedger;
+    return *ledger;
+}
+
+// A counter value, "errorN" when the query fails, or "unavailable" when the device has no
+// counter query. The query does not wait for the GPU.
+std::string fgCounterText(const FgTimelineLedger::Entry& entry) {
+    if (!entry.counter)
+        return "unavailable";
+    uint64_t value{};
+    const VkResult result = entry.counter(entry.device, entry.sync, &value);
+    return result == VK_SUCCESS ? std::to_string(value)
+        : "error" + std::to_string(static_cast<int>(result));
+}
+}
+
+void FgTimelineLedger::noteSourceCopy(const uint64_t context, const VkDevice device,
+        const VkSemaphore sync, const PFN_vkGetSemaphoreCounterValueKHR counter,
+        const uint64_t source, const uint64_t sourceValue) {
+    try {
+        const std::lock_guard lock(mutex);
+        Entry& entry = entries[context];
+        entry.device = device;
+        entry.sync = sync;
+        entry.counter = counter;
+        entry.recent[entry.next++ % recentCount] = {source, sourceValue, 0};
+    } catch (...) {}
+}
+
+void FgTimelineLedger::noteStagingWait(const uint64_t context, const uint64_t value) {
+    try {
+        const std::lock_guard lock(mutex);
+        const auto found = entries.find(context);
+        if (found == entries.end() || found->second.next == 0)
+            return;
+        found->second.recent[(found->second.next - 1) % recentCount].stagingWait = value;
+    } catch (...) {}
+}
+
+void FgTimelineLedger::forget(const uint64_t context) {
+    try {
+        const std::lock_guard lock(mutex);
+        entries.erase(context);
+    } catch (...) {}
+}
+
+std::string FgTimelineLedger::describe(const int64_t stalledNanoseconds) const {
+    std::string text;
+    try {
+        const std::lock_guard lock(mutex);
+        for (const auto& [context, entry] : entries) {
+            std::ostringstream line;
+            line << "framegen-vulkan: d7 fg stall_ms=" << stalledNanoseconds / 1'000'000
+                 << " context=" << context << " sync_gpu=" << fgCounterText(entry) << " recent=";
+            // The oldest record is at next (the slot overwritten next); empty slots are skipped.
+            bool first = true;
+            for (uint32_t step = 0; step < recentCount; ++step) {
+                const FgRecord& record = entry.recent[(entry.next + step) % recentCount];
+                if (record.sourceValue == 0)
+                    continue;
+                line << (first ? "" : " ") << record.source << ":S" << record.sourceValue << ":B";
+                if (record.stagingWait != 0) line << record.stagingWait;
+                else line << '-';
+                first = false;
+            }
+            line << '\n';
+            text += line.str();
+        }
+    } catch (...) {}
+    return text;
+}
+
+size_t FgTimelineLedger::size() const {
+    const std::lock_guard lock(mutex);
+    return entries.size();
+}
+
+void noteFgSourceCopy(const uint64_t context, const VkDevice device, const VkSemaphore sync,
+        const PFN_vkGetSemaphoreCounterValueKHR counter, const uint64_t source,
+        const uint64_t sourceValue) {
+    if (!pacingProfileEnabled())
+        return;
+    try {
+        fgTimelineLedger().noteSourceCopy(context, device, sync, counter, source, sourceValue);
+    } catch (...) {}
+}
+
+void noteFgStagingWait(const uint64_t context, const uint64_t value) {
+    if (!pacingProfileEnabled())
+        return;
+    try {
+        fgTimelineLedger().noteStagingWait(context, value);
+    } catch (...) {}
+}
+
+void forgetFgTimeline(const uint64_t context) {
+    if (!pacingProfileEnabled())
+        return;
+    try {
+        fgTimelineLedger().forget(context);
+    } catch (...) {}
+}
+
+void writeFgTimelineProbe(const int64_t stalledNanoseconds) {
+    if (!pacingProfileEnabled())
+        return;
+    try {
+        // The text is built under the registry lock and written after it is released, so a
+        // slow stderr never holds the lock that the present thread needs.
+        const std::string text = fgTimelineLedger().describe(stalledNanoseconds);
+        std::cerr << text;
+    } catch (...) {}
+}
+
 bool pacingCopyProfileEnabled() {
     static const bool value = [] {
         const char* environment = std::getenv("FGVK_PACING_PROFILE_COPY");

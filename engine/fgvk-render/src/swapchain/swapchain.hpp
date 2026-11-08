@@ -509,6 +509,9 @@ namespace fgvk::layer {
         std::vector<vk::Image> sourceImages;
         std::vector<vk::Image> destinationImages;
         ls::lazy<vk::TimelineSemaphore> syncSemaphore;
+        // D7c: forgets this swapchain's FG timeline entry before syncSemaphore is destroyed.
+        // Members are destroyed in reverse order, so it must stay declared after syncSemaphore.
+        present_diagnostics::FgTimelineLease fgTimelineLease;
 
         struct RenderPass {
             vk::CommandBuffer commandBuffer;

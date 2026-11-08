@@ -377,6 +377,8 @@ void Swapchain::commitFrameGenerationResources(
     FrameGenerationResources retiring;
     retiring.sourceImages = std::move(this->sourceImages);
     retiring.destinationImages = std::move(this->destinationImages);
+    // D7c: the retiring timeline is destroyed with `retiring`; the stall probe must not read it.
+    present_diagnostics::forgetFgTimeline(this->diagnosticsState.contextId);
     retiring.syncSemaphore = std::move(this->syncSemaphore);
     retiring.context = std::move(this->ctx);
 

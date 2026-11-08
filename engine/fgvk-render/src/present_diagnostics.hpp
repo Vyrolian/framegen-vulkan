@@ -11,8 +11,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <cmath>
+#include <map>
+#include <mutex>
 #include <optional>
 #include <span>
+#include <string>
 #include <utility>
 #include <string_view>
 
@@ -41,6 +44,71 @@ namespace fgvk::layer::present_diagnostics {
     void noteApplicationPresent();
     /// D7: nanoseconds of the last noted present on the steady clock, or zero before the first.
     [[nodiscard]] int64_t lastApplicationPresentNanoseconds();
+
+    /// D7c: one source copy of a frame-generation timeline. The stagingWait is the generated value
+    /// the staging copy waited on the timeline (zero until that copy is noted). A zero sourceValue
+    /// marks a record that was never written.
+    struct FgRecord {
+        uint64_t source{};
+        uint64_t sourceValue{};
+        uint64_t stagingWait{};
+    };
+    /// D7c: the registry behind the FG stall probe, keyed by swapchain diagnostics context. It is
+    /// a plain object so tests can drive it directly; the free functions below wrap one instance
+    /// and return at once when the pacing profile is off.
+    class FgTimelineLedger {
+    public:
+        static constexpr uint32_t recentCount = 8;
+        struct Entry {
+            VkDevice device{};
+            VkSemaphore sync{};
+            PFN_vkGetSemaphoreCounterValueKHR counter{};
+            std::array<FgRecord, recentCount> recent{};
+            uint32_t next{};
+        };
+        void noteSourceCopy(uint64_t context, VkDevice device, VkSemaphore sync,
+            PFN_vkGetSemaphoreCounterValueKHR counter, uint64_t source, uint64_t sourceValue);
+        void noteStagingWait(uint64_t context, uint64_t value);
+        void forget(uint64_t context);
+        /// The probe lines, one per entry in context order, oldest record first. The counter is
+        /// read under the registry lock; nothing else is waited on or locked.
+        [[nodiscard]] std::string describe(int64_t stalledNanoseconds) const;
+        [[nodiscard]] size_t size() const;
+    private:
+        mutable std::mutex mutex;
+        std::map<uint64_t, Entry> entries;
+    };
+    /// D7c: records a swapchain's source copy on its FG timeline. Only with the pacing profile.
+    void noteFgSourceCopy(uint64_t context, VkDevice device, VkSemaphore sync,
+        PFN_vkGetSemaphoreCounterValueKHR counter, uint64_t source, uint64_t sourceValue);
+    /// D7c: records the generated value that the newest source record's staging copy waited.
+    void noteFgStagingWait(uint64_t context, uint64_t value);
+    /// D7c: drops a context's entry before its timeline semaphore is destroyed or moved away.
+    void forgetFgTimeline(uint64_t context);
+    /// D7c: prints one line per registered context. Called by the D7 watchdog after its dump.
+    void writeFgTimelineProbe(int64_t stalledNanoseconds);
+    /// D7c: holds one context's registry entry until the owning swapchain is destroyed. Declare it
+    /// after the timeline semaphore, so it forgets the entry before the semaphore is destroyed.
+    /// A moved-from lease holds nothing.
+    class FgTimelineLease {
+    public:
+        FgTimelineLease() = default;
+        FgTimelineLease(const FgTimelineLease&) = delete;
+        FgTimelineLease& operator=(const FgTimelineLease&) = delete;
+        FgTimelineLease(FgTimelineLease&& other) noexcept : context(std::exchange(other.context, 0)) {}
+        FgTimelineLease& operator=(FgTimelineLease&& other) noexcept {
+            if (this != &other) {
+                if (context) forgetFgTimeline(context);
+                context = std::exchange(other.context, 0);
+            }
+            return *this;
+        }
+        ~FgTimelineLease() { if (context) forgetFgTimeline(context); }
+        /// The lease owns the entry of `contextId` until it is destroyed or replaced.
+        void hold(uint64_t contextId) { context = contextId; }
+    private:
+        uint64_t context{};
+    };
     /// Full-trace setup at this layer boundary, before/after framegen-vulkan negotiation.
     /// These are enabled requests, never enumerated capabilities or proof of use.
     void traceVulkanSetup(std::string_view role, const VkInstanceCreateInfo& incoming,

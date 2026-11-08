@@ -455,6 +455,8 @@ namespace fgvk::layer {
             const std::lock_guard lock(stallRegistryMutex());
             for (const InternalSwapchainImages* owner : stallRegistry())
                 owner->writeStallProbe(stalled);
+            // D7c: the FG timelines of the swapchains, after their per-owner lines.
+            present_diagnostics::writeFgTimelineProbe(stalled);
         }
     }
 
@@ -545,6 +547,11 @@ namespace fgvk::layer {
                      << ":l" << indexText(record.lowerIndex)
                      << ":w" << record.waits << ':'
                      << (!tailKnown ? '?' : record.tail <= tailGpu ? 'd' : 'p');
+                // D7c: the batch ordinal, and for a generated skip the reason it presented no image.
+                if (record.source != 0)
+                    line << ":s" << record.source;
+                if (record.kind == submitKindGeneratedSkip)
+                    line << ":r" << DeferredPresent::skipReasonName(record.reason);
                 first = false;
             }
             // The queue mutex is released before the write, so a slow stderr never holds it.

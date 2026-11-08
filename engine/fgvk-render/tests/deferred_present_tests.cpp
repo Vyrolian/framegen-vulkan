@@ -5,6 +5,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <cstdlib>
+#include <cstring>
 #include <iostream>
 #include <mutex>
 #include <optional>
@@ -2470,6 +2471,7 @@ bool historyUnwritten(const DeferredPresentQueue& queue) {
 
 // D7b: with history set, a successful tailed submit writes one record with its tail value,
 // tag and wait count. Entries are written at recentNext % 16, so the 17th submit wraps to slot 0.
+// D7c: the record also carries the tag's skip reason and source ordinal.
 void privateSubmitRecordsHistory() {
     DeferredPresentQueue queue;
     queue.queue = handle<VkQueue>(7);
@@ -2483,7 +2485,7 @@ void privateSubmitRecordsHistory() {
         .waitSemaphoreCount = 2, .pWaitSemaphores = waits.data(),
         .signalSemaphoreCount = 1, .pSignalSemaphores = signals.data(),
     };
-    const SubmitTag copy{.kind = submitKindCopy, .applicationIndex = 3, .lowerIndex = 1};
+    const SubmitTag copy{.kind = submitKindCopy, .applicationIndex = 3, .lowerIndex = 1, .source = 42};
     expect(submitPrivate(queue, recordPrivateSubmit, info, handle<VkFence>(31), copy) == VK_SUCCESS,
         "a tagged submit with history failed");
     expect(queue.recentNext == 1 && queue.recent[0].tail == 1 &&
@@ -2491,18 +2493,45 @@ void privateSubmitRecordsHistory() {
         queue.recent[0].lowerIndex == 1 && queue.recent[0].waits == 2 &&
         queue.recent[0].fence == handle<VkFence>(31),
         "a successful submit did not write one record with its tail value, tag and wait count");
+    expect(queue.recent[0].reason == 0 && queue.recent[0].source == 42,
+        "a copy record did not carry its tag's source with no skip reason");
     for (size_t slot = 1; slot < queue.recent.size(); ++slot)
         expect(queue.recent[slot].tail == 0, "a successful submit wrote more than one record");
 
-    // An untagged submit records unknown with no indices. The 17th submit overwrites slot 0.
-    for (uint32_t submitted = 2; submitted <= 17; ++submitted)
+    // D7c: a generated skip records its reason and its batch ordinal.
+    const SubmitTag skip{.kind = submitKindGeneratedSkip, .applicationIndex = UINT32_MAX,
+        .lowerIndex = UINT32_MAX, .reason = static_cast<uint8_t>(DeferredPresent::SkipReason::Acquire),
+        .source = 43};
+    expect(submitPrivate(queue, recordPrivateSubmit, info, VK_NULL_HANDLE, skip) == VK_SUCCESS &&
+        queue.recentNext == 2 && queue.recent[1].tail == 2 &&
+        queue.recent[1].kind == submitKindGeneratedSkip &&
+        queue.recent[1].reason == static_cast<uint8_t>(DeferredPresent::SkipReason::Acquire) &&
+        queue.recent[1].source == 43,
+        "a generated skip did not record its skip reason and source");
+
+    // An untagged submit records unknown with no indices, reason or source. The 17th submit
+    // overwrites slot 0.
+    for (uint32_t submitted = 3; submitted <= 17; ++submitted)
         expect(submitPrivate(queue, recordPrivateSubmit, info, VK_NULL_HANDLE) == VK_SUCCESS,
             "an untagged submit with history failed");
     expect(queue.recentNext == 17 && queue.recent[0].tail == 17 &&
         queue.recent[0].kind == submitKindUnknown && queue.recent[0].applicationIndex == UINT32_MAX &&
         queue.recent[0].lowerIndex == UINT32_MAX && queue.recent[0].fence == VK_NULL_HANDLE &&
-        queue.recent[1].tail == 2 && queue.recent[1].kind == submitKindUnknown,
+        queue.recent[0].reason == 0 && queue.recent[0].source == 0 &&
+        queue.recent[1].tail == 2 && queue.recent[1].kind == submitKindGeneratedSkip &&
+        queue.recent[1].source == 43,
         "the history did not wrap at recentNext % 16 with the newest record in its slot");
+}
+
+// D7c: the probe names skip reasons in SkipReason order, and an unknown value has its own name.
+void skipReasonNamesFollowEnumOrder() {
+    const std::array<const char*, 7> expected{
+        "none", "readiness", "stopping", "expedite", "giveup", "acquire", "error"};
+    for (size_t reason = 0; reason < expected.size(); ++reason)
+        expect(std::strcmp(DeferredPresent::skipReasonName(static_cast<uint8_t>(reason)), expected[reason]) == 0,
+            "a skip reason name is not in SkipReason order");
+    expect(std::strcmp(DeferredPresent::skipReasonName(200), "unknown") == 0,
+        "an out-of-range skip reason has no unknown name");
 }
 
 // D7b: a failed submit writes no history record, and the next successful one takes its slot.
@@ -2627,7 +2656,7 @@ int main() {
     privateSubmitWithoutTailIsUnchanged(); privateSubmitAppendsTail();
     privateSubmitFailureLeavesTail(); privateSubmitForeignChainBypassesTail();
     privateSubmitRecordsHistory(); privateSubmitHistoryIgnoresFailure();
-    privateSubmitWithoutHistoryRecordsNothing();
+    privateSubmitWithoutHistoryRecordsNothing(); skipReasonNamesFollowEnumOrder();
     lifecycle(); boundedBatch(); completePresentationOrder(); readinessDoesNotBlockProducer();
     waitForRetainedId(); observeCopiesWithoutChangingDelivery(); observerLifetimeAndForwarding();
     releasedBatchBoundsAndExpedites(); overlappingBatchRetainsOlder(); nonOverlappableDoesNotRetain();
