@@ -57,7 +57,7 @@ VkResult VKAPI_CALL calibrate(VkDevice, uint32_t count, const VkCalibratedTimest
 }
 int main() {
     const auto path = std::filesystem::path("/tmp") / ("fgvk-native-copy-profile-test-" + std::to_string(getpid()) + ".log");
-    setenv("FGVK_PACING_PROFILE_TRACE", "1", 1);
+    setenv("FGVK_PACING_PROFILE_COPY", "1", 1);
     setenv("FGVK_PACING_PROFILE_LOG", path.c_str(), 1);
     initializePacingProfileLog();
     const NativeCopyProfile::Functions functions{create, destroy, reset, write, results, calibrate};

@@ -167,8 +167,8 @@ def environment(original, mode, folder, warmup, duration, interval, control=None
     """Only the launched child receives mode/logging overrides."""
     env = original.copy()
     for key in ("FGVK_PACING_PROFILE", "FGVK_PACING_PROFILE_GPU",
-                "FGVK_PACING_PROFILE_TRACE", "FGVK_PACING_PROFILE_CONTENT",
-                "FGVK_PACING_PROFILE_WAYLAND"):
+                "FGVK_PACING_PROFILE_TRACE", "FGVK_PACING_PROFILE_COPY",
+                "FGVK_PACING_PROFILE_CONTENT", "FGVK_PACING_PROFILE_WAYLAND"):
         env[key] = "0"
     env["NVPRESENT_ENABLE_SMOOTH_MOTION"] = "1" if mode == "smooth-motion" else "0"
     if mode == "smooth-motion":

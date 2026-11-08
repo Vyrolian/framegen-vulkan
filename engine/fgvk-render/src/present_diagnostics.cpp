@@ -214,10 +214,19 @@ void initializePacingProfileLog() noexcept {
     try { (void)pacingLog(); } catch (...) {}
 }
 
+bool pacingCopyProfileEnabled() {
+    static const bool value = [] {
+        const char* environment = std::getenv("FGVK_PACING_PROFILE_COPY");
+        return environment && std::string_view(environment) == "1";
+    }();
+    return value;
+}
+
 bool pacingFrameTraceEnabled() {
     static const bool value = [] {
         const char* environment = std::getenv("FGVK_PACING_PROFILE_TRACE");
-        return environment && std::string_view(environment) == "1";
+        // Copy profiling writes its records through the trace sink.
+        return (environment && std::string_view(environment) == "1") || pacingCopyProfileEnabled();
     }();
     return value;
 }

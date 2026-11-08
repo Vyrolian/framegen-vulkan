@@ -127,7 +127,7 @@ void Swapchain::selectPackedHdr10Transport(const vk::Vulkan& vk,
 
 void Swapchain::ensureFrameGenerationExecutionResources(
         const vk::Vulkan& vk) {
-    if (this->pacingProfile && present_diagnostics::pacingFrameTraceEnabled() && !this->gamescopeDetected &&
+    if (this->pacingProfile && present_diagnostics::pacingCopyProfileEnabled() && !this->gamescopeDetected &&
             !this->spatialScaler && !this->nativeCopyProfileInitialized) {
         this->nativeCopyProfileInitialized = true;
         try {

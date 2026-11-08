@@ -295,11 +295,39 @@ void emit() {
     recordApplicationFrameTiming(ApplicationFrameApi::Present, 1, {}, start, start + 7ms, {}, {}, 1ms, 5ms);
     recordApplicationFrameTiming(ApplicationFrameApi::Present, 1, {}, start + 1s, start + 1s + 7ms, {}, {}, 1ms, 5ms);
 }
+// Copy profiling implies the frame trace, but the trace alone must not select native
+// copy profiling. Both switches cache per process, so each case runs in its own child.
+void copyProfileSwitches() {
+    for (const bool copyOnly : {true, false}) {
+        const auto child = fork();
+        expect(child >= 0, "cannot fork copy profile switch regression");
+        if (child == 0) {
+            if (copyOnly) {
+                unsetenv("FGVK_PACING_PROFILE_TRACE");
+                setenv("FGVK_PACING_PROFILE_COPY", "1", 1);
+                expect(pacingCopyProfileEnabled() && pacingFrameTraceEnabled(),
+                    "copy profiling must imply the frame trace");
+            } else {
+                unsetenv("FGVK_PACING_PROFILE_COPY");
+                setenv("FGVK_PACING_PROFILE_TRACE", "1", 1);
+                expect(pacingFrameTraceEnabled() && !pacingCopyProfileEnabled(),
+                    "the frame trace must not select native copy profiling");
+            }
+            std::exit(0);
+        }
+        int status{};
+        expect(waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 0,
+            "copy profile switch regression failed");
+    }
+}
 }
 int main() {
+    // Inherited copy state must not change the isolated cases below.
+    unsetenv("FGVK_PACING_PROFILE_COPY");
     timingObservations();
     outputSequence();
     sourceIdentity();
+    copyProfileSwitches();
     char directory[] = "/tmp/fgvk-pacing-tests.XXXXXX";
     expect(mkdtemp(directory) != nullptr, "cannot create temporary fixture");
     const std::filesystem::path root{directory};

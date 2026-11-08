@@ -991,10 +991,10 @@ namespace {
                 newInfo.pNext = &meteringFeatures;
             }
 #endif
-            // Full-trace diagnostics only. Negotiate a supported calibration
-            // alias and known clock domains without adding any feature node.
+            // Copy-profile diagnostics only (FGVK_PACING_PROFILE_COPY=1). Negotiate a supported
+            // calibration alias and known clock domains without adding any feature node.
             std::vector<const char*> copyCalibrationExtensions;
-            if (frameGenerationLayer && frameGenerationInteropEnabled && present_diagnostics::pacingFrameTraceEnabled()) {
+            if (frameGenerationLayer && frameGenerationInteropEnabled && present_diagnostics::pacingCopyProfileEnabled()) {
                 const auto supported = lowerDeviceExtensions(physdev);
                 const char* calibrationExtension{};
                 for (const auto* name : {VK_KHR_CALIBRATED_TIMESTAMPS_EXTENSION_NAME, VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME})

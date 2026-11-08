@@ -28,6 +28,8 @@ namespace fgvk::layer::present_diagnostics {
     [[nodiscard]] bool pacingProfileEnabled();
     [[nodiscard]] bool pacingGpuProfileEnabled();
     [[nodiscard]] bool pacingFrameTraceEnabled();
+    /// Native copy timestamps; generated copies move to the present thread. Implies the frame trace.
+    [[nodiscard]] bool pacingCopyProfileEnabled();
     [[nodiscard]] bool pacingWaylandProfileEnabled();
     /// Publish already-buffered, structured observer records to the same bounded sink.
     void writePacingProfileRecords(std::string_view records) noexcept;
