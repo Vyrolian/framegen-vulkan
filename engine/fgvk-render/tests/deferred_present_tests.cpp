@@ -1234,6 +1234,116 @@ void generatedCopyTailSurvivesAJoin() {
         completion->calls[1].started >= completion->calls[1].scheduled,
         "a join compressed the real output after an already-presented generated image");
 }
+// Release-gated overlap: a generated output due between latest - interval and
+// latest - interval / 4 is still presented, and the real after it is pulled to
+// the batch limit instead of keeping its full output spacing.
+void lateGeneratedCopyPresentsBeforeLimit() {
+    auto queue = std::make_shared<DeferredPresentQueue>();
+    queue->queue = handle<VkQueue>(7);
+    DeferredPresent worker(queue, recordingPresent);
+    copySubmits.clear(); copyPresents.clear(); copyAcquireCalls = 0;
+    copyAcquireResult = VK_SUCCESS; copyAcquireImage = 2;
+    const auto swapchain = handle<VkSwapchainKHR>(11);
+    const auto realWait = handle<VkSemaphore>(12);
+    uint32_t realImage = 4;
+    const VkPresentInfoKHR realInfo{.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+        .waitSemaphoreCount = 1, .pWaitSemaphores = &realWait,
+        .swapchainCount = 1, .pSwapchains = &swapchain, .pImageIndices = &realImage};
+    // Wake-up jitter only: the planned spacing is checked exactly through scheduled.
+    const auto tolerance = 5ms;
+    const auto interval = 80ms;
+    const auto latest = DeferredPresent::Clock::now() + 100ms;
+    auto copy = generatedCopy();
+    copy.giveUp = 1s;
+    const auto generatedDue = latest - interval / 2;
+    expect(worker.beginBatch(2, {.latestOutput = latest, .overlap = true, .outputInterval = interval}),
+        "late generated batch rejected");
+    expect(worker.enqueueGeneratedCopy(swapchain, nullptr, generatedDue, copy) &&
+        worker.enqueue(realInfo, generatedDue + interval), "late generated outputs rejected");
+    worker.closeBatch();
+    const auto completion = worker.finish(UINT64_MAX);
+    expect(completion && completion->count == 2 && completion->result == VK_SUCCESS &&
+        !completion->calls[0].skipped && !completion->calls[1].skipped,
+        "generated output inside the release window was skipped");
+    expect(completion->calls[1].started <= latest + tolerance && completion->calls[1].scheduled <= latest,
+        "real output after a late generated copy passed the batch limit");
+    expect(copyAcquireCalls == 1 && copySubmits.size() == 1 && copySubmits.front().count == 1 &&
+        copySubmits.front().command == handle<VkCommandBuffer>(82) && copySubmits.front().fence == handle<VkFence>(64),
+        "late generated image was not copied exactly once");
+    expect(copyPresents.size() == 2 && copyPresents[0] == std::pair{2u, handle<VkSemaphore>(72)} &&
+        copyPresents[1] == std::pair{4u, realWait},
+        "worker did not present the late generated image before the real output");
+}
+// The same batch with a generated output due after latest - interval / 4 is still skipped.
+void lateGeneratedCopyPastQuarterSkips() {
+    auto queue = std::make_shared<DeferredPresentQueue>();
+    queue->queue = handle<VkQueue>(7);
+    DeferredPresent worker(queue, recordingPresent);
+    copySubmits.clear(); copyPresents.clear(); copyAcquireCalls = 0;
+    copyAcquireResult = VK_SUCCESS; copyAcquireImage = 2;
+    const auto swapchain = handle<VkSwapchainKHR>(11);
+    const auto realWait = handle<VkSemaphore>(12);
+    uint32_t realImage = 4;
+    const VkPresentInfoKHR realInfo{.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+        .waitSemaphoreCount = 1, .pWaitSemaphores = &realWait,
+        .swapchainCount = 1, .pSwapchains = &swapchain, .pImageIndices = &realImage};
+    const auto interval = 80ms;
+    const auto latest = DeferredPresent::Clock::now() + 100ms;
+    auto copy = generatedCopy();
+    copy.giveUp = 1s;
+    const auto generatedDue = latest - interval / 8;
+    expect(worker.beginBatch(2, {.latestOutput = latest, .overlap = true, .outputInterval = interval}),
+        "past-window generated batch rejected");
+    expect(worker.enqueueGeneratedCopy(swapchain, nullptr, generatedDue, copy) &&
+        worker.enqueue(realInfo, generatedDue + interval), "past-window outputs rejected");
+    worker.closeBatch();
+    const auto completion = worker.finish(UINT64_MAX);
+    expect(completion && completion->count == 2 && completion->result == VK_SUCCESS &&
+        completion->calls[0].skipped && !completion->calls[1].skipped,
+        "generated output past the release window was presented or the real output was lost");
+    expect(completion->calls[1].scheduled <= latest,
+        "real output after a skipped generated output passed the batch limit");
+    expect(copyAcquireCalls == 0, "skipped generated output acquired an image");
+    expect(copySubmits.size() == 1 && copySubmits.front().count == 0 && copySubmits.front().waits == 1 &&
+        copySubmits.front().waitSemaphores[0] == handle<VkSemaphore>(62) && copySubmits.front().signals == 1 &&
+        copySubmits.front().signalSemaphores[0] == handle<VkSemaphore>(63) &&
+        copySubmits.front().fence == handle<VkFence>(64),
+        "skip did not wait the staged copy and signal the continuation and fence");
+    expect(copyPresents.size() == 1 && copyPresents[0] == std::pair{4u, realWait},
+        "skipped generated output was presented or the real output was lost");
+}
+// Without a release limit, a copy tail keeps the full output spacing.
+void generatedCopyTailKeepsSpacingWithoutLimit() {
+    auto queue = std::make_shared<DeferredPresentQueue>();
+    queue->queue = handle<VkQueue>(7);
+    DeferredPresent worker(queue, recordingPresent);
+    copySubmits.clear(); copyPresents.clear(); copyAcquireCalls = 0;
+    copyAcquireResult = VK_SUCCESS; copyAcquireImage = 2;
+    const auto swapchain = handle<VkSwapchainKHR>(11);
+    const auto realWait = handle<VkSemaphore>(12);
+    uint32_t realImage = 4;
+    const VkPresentInfoKHR realInfo{.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+        .waitSemaphoreCount = 1, .pWaitSemaphores = &realWait,
+        .swapchainCount = 1, .pSwapchains = &swapchain, .pImageIndices = &realImage};
+    const auto interval = 80ms;
+    const auto now = DeferredPresent::Clock::now();
+    auto copy = generatedCopy();
+    copy.giveUp = 1s;
+    expect(worker.beginBatch(2, {.overlap = true, .outputInterval = interval}),
+        "unlimited copy batch rejected");
+    expect(worker.enqueueGeneratedCopy(swapchain, nullptr, now, copy) &&
+        worker.enqueue(realInfo, now + 1ms), "unlimited copy outputs rejected");
+    worker.closeBatch();
+    const auto completion = worker.finish(UINT64_MAX);
+    expect(completion && completion->count == 2 && completion->result == VK_SUCCESS &&
+        !completion->calls[0].skipped && !completion->calls[1].skipped,
+        "unlimited generated copy was skipped");
+    expect(completion->calls[1].started >= completion->calls[0].started + interval,
+        "copy tail lost its full output spacing without a release limit");
+    expect(copyPresents.size() == 2 && copyPresents[0] == std::pair{2u, handle<VkSemaphore>(72)} &&
+        copyPresents[1] == std::pair{4u, realWait},
+        "unlimited copy presented the wrong images");
+}
 }
 
 // Wraps the fake present above. The latch is the only difference from its
@@ -1321,5 +1431,7 @@ int main() {
     generatedCopyPresentsAcquiredImage(); generatedCopySkipsWithoutImage(); generatedCopySkipsOutOfRangeImage();
     generatedCopyNeedsOpenBatch();
     generatedCopySkipsUnsafeSpacing(); generatedCopyTailSurvivesAJoin();
+    lateGeneratedCopyPresentsBeforeLimit(); lateGeneratedCopyPastQuarterSkips();
+    generatedCopyTailKeepsSpacingWithoutLimit();
     unboundedDrainWaitsForLatchedPresent();
 }

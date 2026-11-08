@@ -82,7 +82,9 @@ public:
         // Release-gated batches only (see release_gate.hpp): the producing
         // thread is free during the batch, and its next present or blocking
         // acquire must not sleep through output spacing. No output is
-        // scheduled after `latestOutput`; a blocking join keeps spacing for
+        // scheduled after `latestOutput`, except that a real output keeps at
+        // least a quarter output interval after a late generated present
+        // that started near the limit; a blocking join keeps spacing for
         // at most `joinTolerance`, then drops the remaining sleeps.
         // Readiness and semaphore order still hold.
         Clock::time_point latestOutput{Clock::time_point::max()};
@@ -733,11 +735,20 @@ private:
             if (first && havePrevious && ready.overlap && ready.outputInterval > Clock::duration::zero() &&
                     Clock::now() - previousFinished < ready.outputInterval)
                 deadline = std::max(deadline, previousScheduled + ready.outputInterval - ready.outputInterval / 16);
-            if (copyTail)
+            if (copyTail) {
+                // The real after a generated output keeps full spacing, but a release limit
+                // may pull it in: no later than latestOutput, and at least a quarter output
+                // interval after the generated present started. Generated outputs may start
+                // up to a quarter output interval before the batch limit. FIFO still shows
+                // each image at least one refresh.
                 deadline = std::max(deadline,
                     batch.aggregate.calls[index - 1].started + ready.outputInterval);
-            else
+                if (ready.latestOutput != Clock::time_point::max())
+                    deadline = std::min(deadline, std::max(ready.latestOutput,
+                        batch.aggregate.calls[index - 1].started + ready.outputInterval / 4));
+            } else {
                 deadline = std::min(deadline, ready.latestOutput);
+            }
             lock.unlock();
             if (first) {
                 workerWait = {};
@@ -839,8 +850,10 @@ private:
                 uint32_t image{};
                 VkResult acquireResult = VK_NOT_READY;
                 auto giveUpAt = deadline + job.copy.giveUp;
+                // Generated outputs may start up to a quarter output interval before the
+                // batch limit. FIFO still shows each image at least one refresh.
                 if (ready.latestOutput != Clock::time_point::max())
-                    giveUpAt = std::min(giveUpAt, ready.latestOutput - ready.outputInterval);
+                    giveUpAt = std::min(giveUpAt, ready.latestOutput - ready.outputInterval / 4);
                 lock.lock();
                 const bool skipGenerated = readinessMiss || stopping ||
                     batch.expediteAt != Clock::time_point::max() ||
