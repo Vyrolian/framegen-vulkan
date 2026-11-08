@@ -281,7 +281,8 @@ namespace fgvk::layer {
         };
         // Every release now targets the private queue, so it also signals the F9c tail.
         const VkResult result = submitQueue == queue->queue
-            ? submitPrivate(*queue, funcs.QueueSubmit, submit, VK_NULL_HANDLE)
+            ? submitPrivate(*queue, funcs.QueueSubmit, submit, VK_NULL_HANDLE,
+                SubmitTag{.kind = submitKindRelease, .applicationIndex = applicationIndex})
             : funcs.QueueSubmit(submitQueue, 1, &submit, VK_NULL_HANDLE);
         if (result == VK_SUCCESS) {
             lastReleaseValue = value;
@@ -372,9 +373,14 @@ namespace fgvk::layer {
     // D7 stall probe. The registry, its mutex and the watchdog flag are leaked on purpose:
     // the detached watchdog may still run while the process exits.
     namespace {
-        // A stall is 2 s without an application present. The watchdog polls every 500 ms.
+        // A stall is 2 s without an application present. The watchdog polls every 500 ms
+        // and dumps at 2 s, 4 s and 6 s of the same stall.
         constexpr int64_t stallNanoseconds = 2'000'000'000;
+        constexpr int stallDumpsPerStall = 3;
         constexpr auto stallPollInterval = std::chrono::milliseconds{500};
+        // The queue mutex is try-locked up to 40 times, 5 ms apart: at most 200 ms.
+        constexpr int queueLockAttempts = 40;
+        constexpr auto queueLockRetryInterval = std::chrono::milliseconds{5};
 
         std::mutex& stallRegistryMutex() {
             static std::mutex& mutex = *new std::mutex;
@@ -390,6 +396,20 @@ namespace fgvk::layer {
         }
         int64_t steadyNanoseconds(const present_diagnostics::Clock::time_point time) {
             return std::chrono::duration_cast<std::chrono::nanoseconds>(time.time_since_epoch()).count();
+        }
+        // D7b names for the submit kinds in SubmitRecord. Any other value reads as unknown.
+        const char* submitKindName(const uint8_t kind) {
+            switch (kind) {
+            case submitKindCopy: return "copy";
+            case submitKindRelease: return "release";
+            case submitKindGeneratedCopy: return "gen_copy";
+            case submitKindGeneratedSkip: return "gen_skip";
+            default: return "unknown";
+            }
+        }
+        // An index, or "-" when the submit has none.
+        std::string indexText(const uint32_t index) {
+            return index == UINT32_MAX ? std::string{"-"} : std::to_string(index);
         }
     }
 
@@ -413,30 +433,36 @@ namespace fgvk::layer {
 
     void InternalSwapchainImages::stallWatchdogLoop() {
         const int64_t started = steadyNanoseconds(present_diagnostics::Clock::now());
-        bool reported = false;
+        // Dumps made in the current stall. A new present sets a new baseline and re-arms them.
+        int dumps = 0;
+        int64_t stallBaseline = started;
         for (;;) {
             std::this_thread::sleep_for(stallPollInterval);
             // Before the first application present, the stall is measured from the watchdog's start.
             const int64_t lastPresent = present_diagnostics::lastApplicationPresentNanoseconds();
             const int64_t baseline = lastPresent != 0 ? lastPresent : started;
-            if (steadyNanoseconds(present_diagnostics::Clock::now()) - baseline < stallNanoseconds) {
+            if (baseline != stallBaseline) {
                 // A present arrived: the next stall is reported as well.
-                reported = false;
-                continue;
+                stallBaseline = baseline;
+                dumps = 0;
             }
-            if (reported)
+            const int64_t stalled = steadyNanoseconds(present_diagnostics::Clock::now()) - baseline;
+            // Dump number dumps + 1 is due once the stall has lasted 2 s, then 4 s, then 6 s.
+            if (dumps == stallDumpsPerStall || stalled < stallNanoseconds * (dumps + 1))
                 continue;
-            reported = true;
+            ++dumps;
             // Holding the registry mutex keeps every listed owner alive until its dump ends.
             const std::lock_guard lock(stallRegistryMutex());
             for (const InternalSwapchainImages* owner : stallRegistry())
-                owner->writeStallProbe();
+                owner->writeStallProbe(stalled);
         }
     }
 
-    // Diagnostics only. It never blocks: the queue and ring mutexes are only try-locked,
-    // and the device queries (fence status, timeline counters) do not wait on the GPU.
-    void InternalSwapchainImages::writeStallProbe() const {
+    // Diagnostics only. It never blocks the normal path: the queue mutex is try-locked for at
+    // most 200 ms, with no lock held while it sleeps (the registry mutex that keeps this owner
+    // alive stays held, as before), and the ring is try-locked by its own describe call. The
+    // device queries read counters and fence status; none of them waits on the GPU.
+    void InternalSwapchainImages::writeStallProbe(const int64_t stalledNanoseconds) const {
         const VkDevice device = impl->device;
         const auto& funcs = impl->funcs;
         // A counter read; "unavailable" when the device does not expose the query.
@@ -449,19 +475,35 @@ namespace fgvk::layer {
                 : "error" + std::to_string(static_cast<int>(result));
         };
         std::ostringstream line;
-        line << "framegen-vulkan: d7 stall release_gpu="
-             << (impl->release ? counter(impl->release->handle()) : std::string{"none"});
+        line << "framegen-vulkan: d7 stall stall_ms=" << stalledNanoseconds / 1'000'000
+             << " release_gpu=" << (impl->release ? counter(impl->release->handle()) : std::string{"none"});
 
+        // D7b: up to 40 try-locks, 5 ms apart. Only when every attempt fails is the locked
+        // group reported as busy.
+        std::unique_lock queueLock(impl->queue->mutex, std::defer_lock);
+        int lockTries = 0;
+        bool locked = false;
+        while (!locked && lockTries < queueLockAttempts) {
+            if (lockTries > 0)
+                std::this_thread::sleep_for(queueLockRetryInterval);
+            ++lockTries;
+            locked = queueLock.try_lock();
+        }
+        line << " lock_tries=" << lockTries;
         // Held only while try-locked: the worker's submits and fence resets need it, so the
         // fields read under it cannot change during the dump.
-        std::unique_lock queueLock(impl->queue->mutex, std::try_to_lock);
-        const bool locked = queueLock.owns_lock();
         line << " last_release=" << (locked ? std::to_string(impl->lastReleaseValue) : std::string{"busy"});
         line << " acq_wait=" << impl->probeAcquireWait.load(std::memory_order_relaxed)
              << " acq_index=" << impl->probeAcquireIndex.load(std::memory_order_relaxed)
              << " acq_tail=" << impl->probeAcquireTail.load(std::memory_order_relaxed);
-        line << " tail_gpu=" << (!locked ? std::string{"busy"}
-            : impl->queue->tail ? counter(impl->queue->tail) : std::string{"none"});
+        // Read without the queue lock: the tail handle is fixed after device creation, and the
+        // counter query takes no externally synchronised handle.
+        uint64_t tailGpu = 0;
+        bool tailKnown = false;
+        if (impl->queue->tail && funcs.GetSemaphoreCounterValueKHR)
+            tailKnown = funcs.GetSemaphoreCounterValueKHR(device, impl->queue->tail, &tailGpu) == VK_SUCCESS;
+        line << " tail_gpu=" << (!impl->queue->tail ? std::string{"none"}
+            : tailKnown ? std::to_string(tailGpu) : counter(impl->queue->tail));
         line << " tail_submitted=" << impl->queue->tailSubmitted.load(std::memory_order_acquire);
 
         line << " ring=";
@@ -475,6 +517,8 @@ namespace fgvk::layer {
         }
 
         // VK_SUCCESS (0) is signalled, VK_NOT_READY (1) is pending, and a negative value is an error.
+        // Under the queue lock only: commitLowerAcquire resets these fences under it, and
+        // vkResetFences externally synchronises them.
         line << " fences=";
         if (locked) {
             for (size_t slot = 0; slot < impl->lowerFences.size(); ++slot)
@@ -484,6 +528,28 @@ namespace fgvk::layer {
         }
         line << " lower_head=" << (locked ? std::to_string(impl->lowerHead) : std::string{"busy"});
         line << " worker_slot=" << (locked ? std::to_string(impl->workerSlot) : std::string{"busy"});
+        if (locked) {
+            // D7b: oldest first. The entry at recentNext is the oldest, and the next to be
+            // overwritten, so the walk starts there. A zero tail is an entry never written.
+            // Completion comes from tail_gpu, not the record's fence: a record can outlive the
+            // swapchain that owned its fence. d = done (tail_gpu reached it), p = pending, ? = unknown.
+            const DeferredPresentQueue& queue = *impl->queue;
+            line << " recent=";
+            bool first = true;
+            for (size_t step = 0; step < queue.recent.size(); ++step) {
+                const SubmitRecord& record = queue.recent[(queue.recentNext + step) % queue.recent.size()];
+                if (record.tail == 0)
+                    continue;
+                line << (first ? "" : " ") << record.tail << ':' << submitKindName(record.kind)
+                     << ":a" << indexText(record.applicationIndex)
+                     << ":l" << indexText(record.lowerIndex)
+                     << ":w" << record.waits << ':'
+                     << (!tailKnown ? '?' : record.tail <= tailGpu ? 'd' : 'p');
+                first = false;
+            }
+            // The queue mutex is released before the write, so a slow stderr never holds it.
+            queueLock.unlock();
+        }
         std::cerr << line.str() << '\n';
     }
 
@@ -731,7 +797,8 @@ namespace fgvk::layer {
                     .pSignalSemaphores = signals.data(),
                 };
                 result = queue == impl->queue->queue
-                    ? submitPrivate(*impl->queue, impl->funcs.QueueSubmit, submit, impl->lowerFences.at(slot))
+                    ? submitPrivate(*impl->queue, impl->funcs.QueueSubmit, submit, impl->lowerFences.at(slot),
+                        SubmitTag{.kind = submitKindCopy, .applicationIndex = applicationIndex, .lowerIndex = lowerIndex})
                     : impl->funcs.QueueSubmit(queue, 1, &submit, impl->lowerFences.at(slot));
                 if (result == VK_SUCCESS) {
                     impl->lastReleaseValue = value;

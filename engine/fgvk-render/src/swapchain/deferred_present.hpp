@@ -22,6 +22,29 @@
 
 namespace fgvk::layer {
 
+// D7b: what a private submit does, kept with the submit for the stall probe. Kind 0 is the
+// unknown default. An index is UINT32_MAX when the submit has none.
+inline constexpr uint8_t submitKindUnknown = 0;
+inline constexpr uint8_t submitKindCopy = 1;
+inline constexpr uint8_t submitKindRelease = 2;
+inline constexpr uint8_t submitKindGeneratedCopy = 3;
+inline constexpr uint8_t submitKindGeneratedSkip = 4;
+struct SubmitTag {
+    uint8_t kind{submitKindUnknown};
+    uint32_t applicationIndex{UINT32_MAX};
+    uint32_t lowerIndex{UINT32_MAX};
+};
+// One private submit that returned VK_SUCCESS. A reused fence shows its newest use: the
+// handle is kept as submitted, and its status is read later by the stall probe.
+struct SubmitRecord {
+    uint64_t tail{};
+    uint8_t kind{};
+    uint32_t applicationIndex{};
+    uint32_t lowerIndex{};
+    uint32_t waits{};
+    VkFence fence{};
+};
+
 // A device-private queue from the same family as the application's graphics
 // queue. The application never receives this queue's index. Multiple surfaces
 // share the lock, but never hold it while sleeping.
@@ -45,6 +68,13 @@ struct DeferredPresentQueue {
     uint64_t tailNext{0};
     // The same value, published after VK_SUCCESS so the acquire can wait it without mutex.
     std::atomic<uint64_t> tailSubmitted{0};
+    // D7b, pacing profile only: when set, submitPrivate records each successful tailed submit
+    // in recent, at recentNext % recentCount. Both are only touched under mutex. A zero tail
+    // marks an entry that was never written.
+    bool history{false};
+    static constexpr uint32_t recentCount = 16;
+    std::array<SubmitRecord, recentCount> recent{};
+    uint32_t recentNext{0};
 
     // The queue and lock the emulated acquire must use. Without acquireQueue,
     // this is the present queue and its mutex, as before the second queue existed.
@@ -67,8 +97,10 @@ struct DeferredPresentQueue {
 // waits it waits a value whose signal was already submitted. The pNext chain must be
 // empty or one VkTimelineSemaphoreSubmitInfo with no pNext. Any other chain is
 // submitted unchanged, without the tail.
+// D7b: with q.history set, a tailed submit that returns VK_SUCCESS also records its tail value,
+// tag and wait count. An untailed submit records nothing, because it has no tail value.
 inline VkResult submitPrivate(DeferredPresentQueue& q, const PFN_vkQueueSubmit submit,
-        const VkSubmitInfo& info, const VkFence fence) {
+        const VkSubmitInfo& info, const VkFence fence, const SubmitTag& tag = {}) {
     if (q.tail == VK_NULL_HANDLE) return submit(q.queue, 1, &info, fence);
     const VkTimelineSemaphoreSubmitInfo* original = nullptr;
     if (info.pNext) {
@@ -109,6 +141,10 @@ inline VkResult submitPrivate(DeferredPresentQueue& q, const PFN_vkQueueSubmit s
     if (result == VK_SUCCESS) {
         q.tailNext = next;
         q.tailSubmitted.store(next, std::memory_order_release);
+        if (q.history) {
+            q.recent[q.recentNext++ % q.recentCount] = {
+                next, tag.kind, tag.applicationIndex, tag.lowerIndex, info.waitSemaphoreCount, fence};
+        }
     }
     return result;
 }
@@ -845,9 +881,11 @@ private:
     // binary staged semaphore, and the acquire too when it succeeded. A copy
     // signals that image's present wait and the continuation. A skip signals
     // only the continuation. Every submit signals the fence. The private queue's
-    // tail is signalled too (F9c, see submitPrivate).
+    // tail is signalled too (F9c, see submitPrivate). D7b: lowerIndex is the lower image of a
+    // copy and UINT32_MAX for a skip, which has no image.
     static VkResult submitGeneratedWork(DeferredPresentQueue& queue, const GeneratedCopy& copy,
-            const bool acquired, const VkCommandBuffer command, const VkSemaphore presentWait) {
+            const bool acquired, const VkCommandBuffer command, const VkSemaphore presentWait,
+            const uint32_t lowerIndex) {
         // The staged wait is always the last wait and the continuation the last signal.
         const std::array<VkSemaphore, 2> waits{copy.acquireSemaphore, copy.staged};
         const std::array<VkPipelineStageFlags, 2> stages{
@@ -866,7 +904,13 @@ private:
             .signalSemaphoreCount = signalCount,
             .pSignalSemaphores = signals.data() + (2 - signalCount),
         };
-        return submitPrivate(queue, copy.submit, submit, copy.fence);
+        const bool copying = command != VK_NULL_HANDLE;
+        const SubmitTag tag{
+            .kind = copying ? submitKindGeneratedCopy : submitKindGeneratedSkip,
+            .applicationIndex = UINT32_MAX,
+            .lowerIndex = copying ? lowerIndex : UINT32_MAX,
+        };
+        return submitPrivate(queue, copy.submit, submit, copy.fence, tag);
     }
 
     // D6: runs one worker call made under queue->mutex and keeps the longest such
@@ -1335,7 +1379,7 @@ private:
                         if (copyPending) {
                             const VkResult copied = profiledLockCall(ready.profile, result.lockSubmitNs, [&] {
                                 return submitGeneratedWork(*queue, job.copy, true,
-                                    job.copy.copies.at(job.image), job.wait);
+                                    job.copy.copies.at(job.image), job.wait, job.image);
                             });
                             presentOutput = copied == VK_SUCCESS;
                             if (copied < 0) skipResult = copied;
@@ -1343,7 +1387,7 @@ private:
                         if (!presentOutput) {
                             const VkResult signalled = profiledLockCall(ready.profile, result.lockSubmitNs, [&] {
                                 return submitGeneratedWork(*queue, job.copy,
-                                    acquired, VK_NULL_HANDLE, VK_NULL_HANDLE);
+                                    acquired, VK_NULL_HANDLE, VK_NULL_HANDLE, UINT32_MAX);
                             });
                             if (skipResult == VK_SUCCESS) skipResult = signalled;
                         }

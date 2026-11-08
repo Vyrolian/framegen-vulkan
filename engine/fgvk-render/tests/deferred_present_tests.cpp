@@ -2460,6 +2460,92 @@ void privateSubmitForeignChainBypassesTail() {
         "an unsupported chain advanced the tail");
 }
 
+// D7b: true when no history record was written.
+bool historyUnwritten(const DeferredPresentQueue& queue) {
+    if (queue.recentNext != 0) return false;
+    for (const auto& record : queue.recent)
+        if (record.tail != 0) return false;
+    return true;
+}
+
+// D7b: with history set, a successful tailed submit writes one record with its tail value,
+// tag and wait count. Entries are written at recentNext % 16, so the 17th submit wraps to slot 0.
+void privateSubmitRecordsHistory() {
+    DeferredPresentQueue queue;
+    queue.queue = handle<VkQueue>(7);
+    queue.tail = handle<VkSemaphore>(90);
+    queue.history = true;
+    privateSubmits.clear(); privateSubmitResult = VK_SUCCESS;
+    const std::array waits{handle<VkSemaphore>(21), handle<VkSemaphore>(23)};
+    const std::array signals{handle<VkSemaphore>(40)};
+    const VkSubmitInfo info{
+        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .waitSemaphoreCount = 2, .pWaitSemaphores = waits.data(),
+        .signalSemaphoreCount = 1, .pSignalSemaphores = signals.data(),
+    };
+    const SubmitTag copy{.kind = submitKindCopy, .applicationIndex = 3, .lowerIndex = 1};
+    expect(submitPrivate(queue, recordPrivateSubmit, info, handle<VkFence>(31), copy) == VK_SUCCESS,
+        "a tagged submit with history failed");
+    expect(queue.recentNext == 1 && queue.recent[0].tail == 1 &&
+        queue.recent[0].kind == submitKindCopy && queue.recent[0].applicationIndex == 3 &&
+        queue.recent[0].lowerIndex == 1 && queue.recent[0].waits == 2 &&
+        queue.recent[0].fence == handle<VkFence>(31),
+        "a successful submit did not write one record with its tail value, tag and wait count");
+    for (size_t slot = 1; slot < queue.recent.size(); ++slot)
+        expect(queue.recent[slot].tail == 0, "a successful submit wrote more than one record");
+
+    // An untagged submit records unknown with no indices. The 17th submit overwrites slot 0.
+    for (uint32_t submitted = 2; submitted <= 17; ++submitted)
+        expect(submitPrivate(queue, recordPrivateSubmit, info, VK_NULL_HANDLE) == VK_SUCCESS,
+            "an untagged submit with history failed");
+    expect(queue.recentNext == 17 && queue.recent[0].tail == 17 &&
+        queue.recent[0].kind == submitKindUnknown && queue.recent[0].applicationIndex == UINT32_MAX &&
+        queue.recent[0].lowerIndex == UINT32_MAX && queue.recent[0].fence == VK_NULL_HANDLE &&
+        queue.recent[1].tail == 2 && queue.recent[1].kind == submitKindUnknown,
+        "the history did not wrap at recentNext % 16 with the newest record in its slot");
+}
+
+// D7b: a failed submit writes no history record, and the next successful one takes its slot.
+void privateSubmitHistoryIgnoresFailure() {
+    DeferredPresentQueue queue;
+    queue.queue = handle<VkQueue>(7);
+    queue.tail = handle<VkSemaphore>(90);
+    queue.history = true;
+    privateSubmits.clear();
+    const std::array signals{handle<VkSemaphore>(40)};
+    const VkSubmitInfo info{
+        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .signalSemaphoreCount = 1, .pSignalSemaphores = signals.data(),
+    };
+    const SubmitTag release{.kind = submitKindRelease, .applicationIndex = 2};
+    privateSubmitResult = VK_ERROR_DEVICE_LOST;
+    expect(submitPrivate(queue, recordPrivateSubmit, info, VK_NULL_HANDLE, release) == VK_ERROR_DEVICE_LOST,
+        "a failed tagged submit reported success");
+    expect(historyUnwritten(queue), "a failed submit wrote a history record");
+    privateSubmitResult = VK_SUCCESS;
+    expect(submitPrivate(queue, recordPrivateSubmit, info, VK_NULL_HANDLE, release) == VK_SUCCESS &&
+        queue.recentNext == 1 && queue.recent[0].tail == 1 && queue.recent[0].kind == submitKindRelease &&
+        queue.recent[0].applicationIndex == 2,
+        "the retry after a failed submit did not record the release in slot 0");
+}
+
+// D7b: without history, a successful submit writes nothing and the tail still advances.
+void privateSubmitWithoutHistoryRecordsNothing() {
+    DeferredPresentQueue queue;
+    queue.queue = handle<VkQueue>(7);
+    queue.tail = handle<VkSemaphore>(90);
+    privateSubmits.clear(); privateSubmitResult = VK_SUCCESS;
+    const std::array signals{handle<VkSemaphore>(40)};
+    const VkSubmitInfo info{
+        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .signalSemaphoreCount = 1, .pSignalSemaphores = signals.data(),
+    };
+    const SubmitTag copy{.kind = submitKindCopy, .applicationIndex = 3, .lowerIndex = 1};
+    expect(submitPrivate(queue, recordPrivateSubmit, info, VK_NULL_HANDLE, copy) == VK_SUCCESS &&
+        queue.tailNext == 1, "a submit without history did not succeed and advance the tail");
+    expect(historyUnwritten(queue), "a submit without history wrote a history record");
+}
+
 void generatedCopyAddsPrivateTail() {
     auto queue = std::make_shared<DeferredPresentQueue>();
     queue->queue = handle<VkQueue>(7);
@@ -2540,6 +2626,8 @@ int main() {
     queueRequest(); acquireQueueRequest(); acquireTargetAvoidsPresentLock();
     privateSubmitWithoutTailIsUnchanged(); privateSubmitAppendsTail();
     privateSubmitFailureLeavesTail(); privateSubmitForeignChainBypassesTail();
+    privateSubmitRecordsHistory(); privateSubmitHistoryIgnoresFailure();
+    privateSubmitWithoutHistoryRecordsNothing();
     lifecycle(); boundedBatch(); completePresentationOrder(); readinessDoesNotBlockProducer();
     waitForRetainedId(); observeCopiesWithoutChangingDelivery(); observerLifetimeAndForwarding();
     releasedBatchBoundsAndExpedites(); overlappingBatchRetainsOlder(); nonOverlappableDoesNotRetain();

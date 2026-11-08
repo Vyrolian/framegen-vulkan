@@ -1157,6 +1157,8 @@ namespace {
                     VkSemaphore tail{VK_NULL_HANDLE};
                     if (wrapper->second.df().CreateSemaphore(*device, &tailInfo, nullptr, &tail) == VK_SUCCESS)
                         privateQueue->tail = tail;
+                    // D7b: the submit history exists only with the pacing profile.
+                    privateQueue->history = present_diagnostics::pacingProfileEnabled();
                 }
                 // The emulated acquire's queue exists only when the family had room
                 // for both. Like the present queue, it is never registered in

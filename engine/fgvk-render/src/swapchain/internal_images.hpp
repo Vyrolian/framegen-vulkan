@@ -426,7 +426,8 @@ namespace fgvk::layer {
         static void registerStallProbe(const InternalSwapchainImages* owner);
         static void unregisterStallProbe(const InternalSwapchainImages* owner);
         static void stallWatchdogLoop();
-        void writeStallProbe() const;
+        // D7b: stalledNanoseconds is the time since the last application present.
+        void writeStallProbe(int64_t stalledNanoseconds) const;
         std::unique_ptr<Impl> impl;
     };
 
