@@ -940,6 +940,39 @@ void overlappedChainShiftsLaterOutputs() {
     const auto error = tail.scheduled > requestedTail ? tail.scheduled - requestedTail : requestedTail - tail.scheduled;
     expect(error <= tolerance, "chained first output changed the second output's requested spacing");
 }
+void expeditedOutputAnchorsNextBatch() {
+    auto queue = std::make_shared<DeferredPresentQueue>();
+    queue->queue = handle<VkQueue>(7);
+    VkSwapchainKHR swapchain = handle<VkSwapchainKHR>(11);
+    VkSemaphore wait = handle<VkSemaphore>(12);
+    uint32_t image = 0;
+    VkPresentInfoKHR info{.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+        .waitSemaphoreCount = 1, .pWaitSemaphores = &wait,
+        .swapchainCount = 1, .pSwapchains = &swapchain, .pImageIndices = &image};
+    DeferredPresent worker(queue, timedPresent);
+    timedImages.clear();
+    const auto interval = 40ms;
+    // The head output is scheduled 100 ms ahead and leaves only because the
+    // join expedites it. Its actual start, not the unreached schedule, anchors
+    // the next overlapped batch.
+    const auto due = DeferredPresent::Clock::now() + 100ms;
+    expect(worker.beginBatch(1, {.expediteOnJoin = true, .overlap = true, .outputInterval = interval}),
+        "expedited head batch rejected");
+    expect(worker.enqueue(info, due), "expedited head output rejected");
+    worker.closeBatch();
+    const auto head = worker.finish(UINT64_MAX);
+    expect(head && head->count == 1 && head->calls[0].started < due - 50ms,
+        "join did not expedite the overlapped head output");
+    const auto anchor = head->calls[0].started;
+    // The successor is requested now. Its first output may follow the expedited
+    // output by one planned slot, but not by the 100 ms schedule it never reached.
+    expect(worker.beginBatch(1, {.overlap = true, .outputInterval = interval}), "successor batch rejected");
+    expect(worker.enqueue(info, DeferredPresent::Clock::now()), "successor output rejected");
+    worker.closeBatch();
+    const auto successor = worker.finish(UINT64_MAX);
+    expect(successor && successor->count == 1 && successor->calls[0].scheduled <= anchor + interval,
+        "successor chained from the expedited output's unreached schedule");
+}
 namespace {
 struct CopySubmit {
     uint32_t count{};
@@ -1284,7 +1317,7 @@ int main() {
     releasedBatchBoundsAndExpedites(); overlappingBatchRetainsOlder(); nonOverlappableDoesNotRetain();
     overlapAcquireDoesNotDrainFutureOutputs();
     overlapRingOfThree(); overlapRejectsPresentId(); overlapAcceptsOwnedPresentId(); crossBatchChaining();
-    overlappedChainShiftsLaterOutputs();
+    overlappedChainShiftsLaterOutputs(); expeditedOutputAnchorsNextBatch();
     generatedCopyPresentsAcquiredImage(); generatedCopySkipsWithoutImage(); generatedCopySkipsOutOfRangeImage();
     generatedCopyNeedsOpenBatch();
     generatedCopySkipsUnsafeSpacing(); generatedCopyTailSurvivesAJoin();

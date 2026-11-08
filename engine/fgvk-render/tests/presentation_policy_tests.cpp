@@ -31,7 +31,12 @@ namespace {
         auto arrival = Clock::time_point{100s};
         constexpr auto capPeriod = 8333333ns;
         pacer.observeSource(arrival, true, 2, true);
+        Clock::duration previousPeriod{};
         for (const auto period : {12500us, 25000us, 16666us, 8333us}) {
+            // A slower block mean is adopted only after a second slower block,
+            // so the first window of such a step still uses the previous period.
+            const bool slowerStep = previousPeriod > Clock::duration::zero() &&
+                period > previousPeriod + previousPeriod / 16;
             // Two GPU-queued groups plus the next queue refill. Most calls
             // arrive early, but all eight together represent eight sources.
             const std::array burst{period / 50, period / 50, 3 * period - period / 25,
@@ -45,10 +50,12 @@ namespace {
                     pacer.recordOutputWait(0ns, true);
                 }
                 const auto batch = pacer.scheduleReleasedOutputs(arrival, capPeriod, 2);
-                const auto expected = std::max(Clock::duration{period}, Clock::duration{capPeriod}) / 2;
+                const auto measured = window == 0 && slowerStep ? previousPeriod : Clock::duration{period};
+                const auto expected = std::max(measured, Clock::duration{capPeriod}) / 2;
                 expect(batch && batch->interval == expected,
                     "released source bursts changed spacing away from measured throughput");
             }
+            previousPeriod = period;
         }
         arrival += 2s;
         pacer.observeSource(arrival, true, 2, true);
@@ -179,6 +186,48 @@ namespace {
         pacer.observeSource(arrival, true, 2, true);
         expect(std::abs(batchMs(pacer.scheduleReleasedOutputs(arrival, Clock::duration{}, 2)) - 6.5) < 0.05,
             "uncapped released pacing did not requalify after an arrival gap");
+    }
+
+    // One late released block is a transient, not a new cadence. A slower
+    // period needs a second consecutive slower block and then adopts the
+    // smaller of the two means. A block that is not slower clears that pending
+    // evidence, so a later isolated late block starts over.
+    void testSlowerReleasedBlocksNeedConsecutiveConfirmation() {
+        using Clock = RealFramePacer::Clock;
+        using Block = std::array<std::chrono::microseconds, 8>;
+        const auto intervalMs = [](const std::optional<RealFramePacer::OutputBatch>& batch) {
+            return batch ? std::chrono::duration<double, std::milli>(batch->interval).count() : -1.0;
+        };
+        const Block qualifying{16667us, 16667us, 16667us, 16667us, 16667us, 16667us, 16667us, 16667us};
+        const Block singleLate{16667us, 16667us, 16667us, 16667us, 16667us, 16667us, 16667us, 40000us};
+        const Block sustained{25000us, 25000us, 25000us, 25000us, 25000us, 25000us, 25000us, 25000us};
+        for (const Clock::duration sourceInterval : {Clock::duration{16667us}, Clock::duration{}}) {
+            RealFramePacer pacer;
+            auto arrival = Clock::time_point{100s};
+            const auto observe = [&](const Block& block) {
+                for (const auto elapsed : block) {
+                    arrival += elapsed;
+                    pacer.observeSource(arrival, true, 2, true);
+                }
+            };
+            pacer.observeSource(arrival, true, 2, true);
+            observe(qualifying);
+            expect(std::abs(intervalMs(pacer.scheduleReleasedOutputs(arrival, sourceInterval, 2)) - 8.33) < 0.05,
+                "released pacing did not use the qualified 16.67 ms cadence");
+            observe(singleLate);
+            expect(std::abs(intervalMs(pacer.scheduleReleasedOutputs(arrival, sourceInterval, 2)) - 8.33) < 0.05,
+                "a single late released block changed the qualified cadence");
+            // The normal block clears the pending late block, so the next late
+            // block is again only the first slower block.
+            observe(qualifying);
+            observe(singleLate);
+            expect(std::abs(intervalMs(pacer.scheduleReleasedOutputs(arrival, sourceInterval, 2)) - 8.33) < 0.05,
+                "a late block after a normal block counted as a confirmed slower cadence");
+            observe(sustained);
+            observe(sustained);
+            expect(std::abs(intervalMs(pacer.scheduleReleasedOutputs(arrival, sourceInterval, 2)) - 12.5) < 0.05,
+                "two consecutive slower released blocks did not move the cadence");
+        }
     }
 
     void testSmoothCadenceCapFollowsActivePlan() {
@@ -2917,6 +2966,7 @@ int main() {
     testReleasedOutputsStayInsideTheSourceInterval();
     testReleasedOutputsUseMeasuredSourcePeriod();
     testReleasedUncappedOutputsUseQualifiedPeriod();
+    testSlowerReleasedBlocksNeedConsecutiveConfirmation();
     testOrderedAcquirePolicyRecord();
     std::cout << "presentation policy tests passed\n";
     return 0;

@@ -1306,19 +1306,35 @@ namespace fgvk::layer {
                 this->sourceDetachedSamples = 0;
                 if (releasedSource) {
                     this->sourcePeriod = {};
+                    this->previousSlowerMean = {};
                     this->sourceHasQualifiedCadence = false;
                 }
                 return;
             }
             if (releasedSource) {
                 // A queued producer can submit several sources together, then
-                // pause for their GPU work. Individual arrivals and their median
-                // measure that burst, not throughput. Keep the entire window.
+                // pause for their GPU work. Individual arrivals and their block
+                // mean measure that burst, not throughput. Keep the entire window.
                 this->sourceSamples[this->sourceSampleCount++] = elapsed;
                 if (this->sourceSampleCount == this->sourceSamples.size()) {
                     Clock::duration total{};
                     for (const auto sample : this->sourceSamples) total += sample;
-                    this->sourcePeriod = total / static_cast<int64_t>(this->sourceSamples.size());
+                    const auto mean = total / static_cast<int64_t>(this->sourceSamples.size());
+                    // One slower block can be a transient. A slower period is
+                    // adopted only when the previous block was also slower, at
+                    // the smaller of the two means. Every slower block is kept
+                    // as the reference for the next block's check.
+                    const bool slowerBlock = this->sourceHasQualifiedCadence &&
+                        this->sourcePeriod > Clock::duration::zero() &&
+                        mean > this->sourcePeriod + this->sourcePeriod / 16;
+                    if (!slowerBlock) {
+                        this->sourcePeriod = mean;
+                        this->previousSlowerMean = Clock::duration::zero();
+                    } else {
+                        if (this->previousSlowerMean > Clock::duration::zero())
+                            this->sourcePeriod = std::min(mean, this->previousSlowerMean);
+                        this->previousSlowerMean = mean;
+                    }
                     this->sourceHasQualifiedCadence = true;
                     this->sourceSampleCount = 0;
                 }
@@ -1547,9 +1563,10 @@ namespace fgvk::layer {
         /// from GPU readiness, as the worker does for an uncapped source; the
         /// release wait enforces the cap itself. The cap interval is the
         /// shortest batch period. A GPU-bound source slower than a non-binding
-        /// cap is spaced on its measured period (the median observeSource
-        /// learns), so each generated frame sits midway between reals instead
-        /// of on the cap's half slot.
+        /// cap is spaced on its measured period (the block mean observeSource
+        /// learns; a slower period needs two consecutive slower blocks), so each
+        /// generated frame sits midway between reals instead of on the cap's
+        /// half slot.
         ///
         /// Without a cap (sourceInterval <= 0) no interval bounds the batch.
         /// Space it only on a qualified, uninterrupted measured period. Until
@@ -1772,6 +1789,7 @@ namespace fgvk::layer {
         void resetSource() {
             this->sourceAt.reset();
             this->sourcePeriod = this->sourceOutputWait = this->sourceAcquireWait = Clock::duration::zero();
+            this->previousSlowerMean = Clock::duration::zero();
             this->sourcePacedPeriod = this->sourceWorkPeriod = Clock::duration{};
             this->sourceCapOwnsOutputs = false;
             this->sourceHasQualifiedCadence = this->sourceCapBatchUsed = false;
@@ -1789,6 +1807,8 @@ namespace fgvk::layer {
         std::array<Clock::duration, 8> sourceWorkSamples{};
         Clock::duration sourceWorkPeriod{}, sourcePacedPeriod{};
         Clock::duration sourcePeriod{}, sourceOutputWait{};
+        // Mean of the latest slower released block; zero when none is pending.
+        Clock::duration previousSlowerMean{};
         Clock::duration sourceAcquireWait{}, readyOutputHold{};
         size_t sourceSampleCount{}, slowerSourceSamples{}, fasterSourceSamples{};
         size_t sourceDetachedSamples{};

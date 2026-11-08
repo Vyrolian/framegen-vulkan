@@ -942,7 +942,8 @@ private:
             if (!result.skipped) {
                 previousStarted = result.started;
                 previousFinished = result.finished;
-                previousScheduled = result.scheduled;
+                // An early (expedited) output anchors the next batch at its actual start; late wakes keep the schedule.
+                previousScheduled = std::min(result.scheduled, result.started);
                 havePrevious = true;
             }
             retireFinishedHeadsLocked();
