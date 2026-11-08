@@ -216,7 +216,8 @@ namespace fgvk::layer {
             uint64_t readyValue, std::chrono::steady_clock::time_point readyDeadline, bool capOwned,
             std::optional<std::chrono::steady_clock::time_point> releasedOutputLimit = std::nullopt,
             std::chrono::steady_clock::duration releasedJoinTolerance = {},
-            bool overlap = false, std::chrono::steady_clock::duration outputInterval = {});
+            bool overlap = false, std::chrono::steady_clock::duration outputInterval = {},
+            std::chrono::steady_clock::time_point arrival = {});
         [[nodiscard]] bool hasDeferredPresent() const { return static_cast<bool>(this->deferredPresent); }
         // True while an admitted batch is still outputting or waiting to be joined.
         [[nodiscard]] bool deferredPresentPending() const {
@@ -351,6 +352,9 @@ namespace fgvk::layer {
             std::span<const VkSemaphore> waitSemaphores;
             std::chrono::steady_clock::time_point cadenceStarted;
             mutable std::chrono::steady_clock::time_point started;
+            // The limiter's arrival for this source. Diagnostics only: a worker batch
+            // records it on its first output when the pacing profile is enabled.
+            std::chrono::steady_clock::time_point limiterArrival{};
             // Fractional may spend the existing cap wait preparing generated
             // outputs. Every real-frame/fallback path retains this deadline.
             std::optional<std::chrono::steady_clock::time_point>

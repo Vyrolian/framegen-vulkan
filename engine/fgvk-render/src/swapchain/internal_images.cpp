@@ -3,6 +3,7 @@
 #include "swapchain/internal_images.hpp"
 
 #include "swapchain/deferred_present.hpp"
+#include "present_diagnostics.hpp"
 #include "fgvk-common/helpers/errors.hpp"
 #include "fgvk-common/vulkan/command_buffer.hpp"
 #include "fgvk-common/vulkan/device_memory_accounting.hpp"
@@ -357,16 +358,25 @@ namespace fgvk::layer {
             const bool deferredSuboptimal, uint32_t* const imageIndex) {
         if (const auto sticky = impl->sticky.load(); sticky != VK_SUCCESS)
             return sticky;
+        // The split is observed only with the pacing profile. Clock reads never
+        // change the waits, locks or submissions below.
+        const bool measured = present_diagnostics::pacingProfileEnabled();
+        const auto ringStarted = measured ? present_diagnostics::Clock::now() : present_diagnostics::Clock::time_point{};
         // Waits without any lock held when the timeout is finite or unlimited.
         // complete() wakes the wait when a presented image finishes its copy.
         const auto index = impl->ring.acquireWait(timeout);
         if (!index)
             return timeout == 0 ? VK_NOT_READY : VK_TIMEOUT;
+        const auto lockStarted = measured ? present_diagnostics::Clock::now() : present_diagnostics::Clock::time_point{};
+        const auto ringWait = measured ? lockStarted - ringStarted : present_diagnostics::Clock::duration{};
 
         // The release timeline orders the acquired image after its last copy.
         // The value is read under the queue lock, where every writer updates it.
         {
             const std::lock_guard lock(impl->queue->mutex);
+            if (measured)
+                present_diagnostics::recordInternalAcquire(ringWait,
+                    present_diagnostics::Clock::now() - lockStarted);
             const uint64_t waitValue = impl->ring.releaseValue(*index);
             const bool waitRelease = waitValue != 0;
             const bool signalSemaphore = semaphore != VK_NULL_HANDLE;

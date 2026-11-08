@@ -45,6 +45,10 @@ public:
     using Clock = std::chrono::steady_clock;
     static constexpr size_t capacity = GeneratedFramePlan::capacity + 1;
     static constexpr uint32_t maxCopyImages = 8;
+    // Why a call presented no image. None for every presented output. GiveUp is reserved
+    // by the F7 taxonomy: a generated output whose give-up window ends with no lower image
+    // is Acquire, so no worker path produces GiveUp today.
+    enum class SkipReason { None, Readiness, Stopping, Expedite, GiveUp, Acquire, Error };
     struct Call {
         VkResult result{VK_SUCCESS};
         Clock::time_point started{}, finished{};
@@ -62,8 +66,16 @@ public:
         VkSemaphore presentWait{};
         // A skipped generated output presented no image and has no output record.
         bool skipped{};
+        // Set wherever skipped is set. Diagnostics only.
+        SkipReason skipReason{SkipReason::None};
         // Count asynchronous copies only after their presented/skipped outcome.
         bool workerCopy{};
+        // Diagnostics only: the first call of a batch whose readiness succeeded
+        // only through the late-readiness extension.
+        bool lateReadiness{};
+        // Diagnostics only: the batch's limiter arrival, on its first call and only
+        // when the pacing profile is enabled. Other calls keep the epoch.
+        Clock::time_point arrival{};
     };
     struct Completion : Call {
         uint64_t source{};
@@ -71,6 +83,24 @@ public:
         size_t count{};
         Clock::duration readinessShift{};
         bool readinessMiss{};
+        // Diagnostics only: output spacing of the batch.
+        Clock::duration outputInterval{};
+        // Presented generated outputs whose following real output in the same batch
+        // started less than outputInterval/2 after the generated start.
+        [[nodiscard]] size_t compressedGeneratedPairs() const {
+            size_t pairs{};
+            for (size_t i = 0; i < count; ++i) {
+                const Call& generatedCall = calls[i];
+                if (!generatedCall.generated || generatedCall.skipped) continue;
+                for (size_t j = i + 1; j < count; ++j) {
+                    if (calls[j].generated) continue;
+                    pairs += !calls[j].skipped &&
+                        calls[j].started - generatedCall.started < outputInterval / 2;
+                    break;
+                }
+            }
+            return pairs;
+        }
     };
     struct Readiness {
         VkDevice device{};
@@ -93,8 +123,13 @@ public:
         // Overlap is set only by the release gate. An overlapping batch may keep
         // outputting while one newer batch is admitted. Its planned spacing also
         // chains its first output after the previous batch's last output.
+        // Its generated outputs are never skipped for give-up or expedite: they
+        // are skipped only for readiness, stopping, or no lower image at the end of
+        // their give-up window. Late readiness gets one bounded extension.
         bool overlap{};
         Clock::duration outputInterval{};
+        // Diagnostics only: limiter arrival of the batch. Set only with the pacing profile.
+        Clock::time_point arrival{};
         // Optional profiling only: observe existing final-copy completion
         // without waiting or changing presentation/readiness policy.
         VkFence copyFence{};
@@ -764,11 +799,13 @@ private:
             if (ready.trace && !lockStarted) result.queueLockStarted = Clock::now();
             lockStarted = true;
             VkResult error = VK_SUCCESS;
+            SkipReason reason = SkipReason::Error;
             {
                 const std::lock_guard queueLock(queue->mutex);
                 if (ready.trace) result.queueLockAcquired = Clock::now();
                 if (stopped) {
                     error = VK_ERROR_UNKNOWN;
+                    reason = SkipReason::Stopping;
                 } else {
                     const VkResult acquired = copy.tryAcquire(owner, &lowerIndex);
                     if (acquired == VK_SUCCESS) {
@@ -777,6 +814,7 @@ private:
                         if (submitted < 0) {
                             result.imageIndex = lowerIndex;
                             result.skipped = true;
+                            result.skipReason = SkipReason::Error;
                             result.started = result.finished = Clock::now();
                             result.result = submitted;
                             return;
@@ -811,6 +849,7 @@ private:
                     // Frees the application image without a present. Nothing is left acquired.
                     static_cast<void>(copy.abandon(owner, queue->queue, copy.applicationIndex, job.wait));
                     result.skipped = true;
+                    result.skipReason = reason;
                     result.started = result.finished = Clock::now();
                     result.result = error;
                     return;
@@ -827,6 +866,8 @@ private:
         // outputs of the same batch keep their requested spacing from it.
         Clock::duration batchShift{};
         bool readinessMiss{};
+        // F7 rule 3: the first output's readiness succeeded only in the extension.
+        bool lateReadiness{};
         VkResult readinessResult{VK_SUCCESS};
         Clock::duration workerWait{};
         Clock::time_point readinessStarted{}, readinessFinished{};
@@ -843,6 +884,7 @@ private:
             const auto current = batch.jobs[index];
             const bool first = index == 0;
             const auto ready = batch.readiness;
+            const size_t limit = batch.limit;
             const bool copyTail = index > 0 && batch.jobs[index - 1].copyActive &&
                 !batch.aggregate.calls[index - 1].skipped;
             auto deadline = first ? current.deadline :
@@ -872,6 +914,7 @@ private:
                 readinessShift = {};
                 batchShift = {};
                 readinessMiss = false;
+                lateReadiness = false;
                 readinessResult = VK_SUCCESS;
                 readinessStarted = readinessFinished = {};
                 if (ready.wait) {
@@ -891,6 +934,23 @@ private:
                         static_cast<uint64_t>(std::min(int64_t{50'000'000}, remaining)));
                     readinessFinished = Clock::now();
                     workerWait += readinessFinished - waitStarted;
+                    // F7 rule 3: a released batch waits once more on the same value,
+                    // bounded by its output budget and the 50 ms cap already spent.
+                    // Only a timeout qualifies; errors and the second timeout stay misses.
+                    if (readinessResult == VK_TIMEOUT && ready.overlap &&
+                            ready.outputInterval > Clock::duration::zero()) {
+                        const auto waited = readinessFinished - waitStarted;
+                        const auto extension = std::min(ready.outputInterval * static_cast<int64_t>(limit),
+                            std::chrono::milliseconds{50} - waited);
+                        if (extension > Clock::duration::zero()) {
+                            const auto extensionStarted = Clock::now();
+                            readinessResult = ready.wait(ready.device, &waitInfo, static_cast<uint64_t>(
+                                std::chrono::duration_cast<std::chrono::nanoseconds>(extension).count()));
+                            readinessFinished = Clock::now();
+                            workerWait += readinessFinished - extensionStarted;
+                            lateReadiness = readinessResult == VK_SUCCESS;
+                        }
+                    }
                     readinessMiss = readinessResult != VK_SUCCESS;
                     if (!readinessMiss) {
                         readinessShift = std::max(Clock::duration{}, Clock::now() - deadline);
@@ -906,6 +966,19 @@ private:
                     for (auto until = std::min(deadline, batch.expediteAt);
                             !stopping && Clock::now() < until; until = std::min(deadline, batch.expediteAt))
                         changed.wait_until(lock, until);
+                    lock.unlock();
+                } else if (copyTail && ready.overlap && ready.expediteOnJoin) {
+                    // F7 rule 4: a join during this tail pulls it in to at least a quarter
+                    // output interval after its generated start. The bound is recomputed on
+                    // every wake and never exceeds the normal deadline.
+                    const auto generatedStarted = batch.aggregate.calls[index - 1].started;
+                    lock.lock();
+                    for (;;) {
+                        const auto until = std::min(deadline, std::max(batch.expediteAt,
+                            generatedStarted + ready.outputInterval / 4));
+                        if (stopping || Clock::now() >= until) break;
+                        changed.wait_until(lock, until);
+                    }
                     lock.unlock();
                 } else {
                     std::this_thread::sleep_until(deadline);
@@ -957,6 +1030,8 @@ private:
             result.generated = job.generated;
             result.workerCopy = job.copyActive;
             result.outputQueue = queue->queue;
+            result.lateReadiness = first && lateReadiness;
+            result.arrival = first ? ready.arrival : Clock::time_point{};
             // A generated output takes its image only at its deadline. Polling
             // never sleeps under queue->mutex, and every path below signals the
             // continuation and the render-slot fence.
@@ -966,6 +1041,11 @@ private:
                 VkResult skipResult = VK_SUCCESS;
                 bool acquired{};
                 bool copyPending{};
+                // Why this generated output presents no image, when it does not. Readiness
+                // and stopping always skip. Expedite skips only a non-overlapped batch: an
+                // overlapped batch keeps polling for its lower image (F7 rule 4). A window
+                // that ends with no lower image is an acquire skip (F7 rule 2).
+                SkipReason skipWhy = SkipReason::None;
                 if (job.copyActive) {
                     uint32_t image{};
                     VkResult acquireResult = VK_NOT_READY;
@@ -975,23 +1055,32 @@ private:
                     if (ready.latestOutput != Clock::time_point::max())
                         giveUpAt = std::min(giveUpAt, ready.latestOutput - ready.outputInterval / 4);
                     lock.lock();
-                    const bool skipGenerated = readinessMiss || stopping ||
-                        batch.expediteAt != Clock::time_point::max() ||
-                        (ready.overlap && Clock::now() >= giveUpAt);
+                    if (readinessMiss) skipWhy = SkipReason::Readiness;
+                    else if (stopping) skipWhy = SkipReason::Stopping;
+                    else if (!ready.overlap && batch.expediteAt != Clock::time_point::max())
+                        skipWhy = SkipReason::Expedite;
                     lock.unlock();
-                    while (!skipGenerated) {
+                    // At least one attempt is made unless readiness or stopping already skipped.
+                    while (skipWhy == SkipReason::None) {
                         {
                             const std::lock_guard queueLock(queue->mutex);
                             acquireResult = job.copy.acquire(job.copy.device, job.swapchain, 0,
                                 job.copy.acquireSemaphore, VK_NULL_HANDLE, &image);
                         }
                         if (acquireResult < 0 || acquireResult == VK_SUCCESS ||
-                                acquireResult == VK_SUBOPTIMAL_KHR || Clock::now() >= giveUpAt)
+                                acquireResult == VK_SUBOPTIMAL_KHR)
                             break;
+                        if (Clock::now() >= giveUpAt) {
+                            // No lower image by the end of the window: the output is skipped.
+                            skipWhy = SkipReason::Acquire;
+                            break;
+                        }
                         lock.lock();
-                        const bool expedited = stopping || batch.expediteAt != Clock::time_point::max();
+                        const bool stopped = stopping;
+                        const bool expedited = !ready.overlap && batch.expediteAt != Clock::time_point::max();
                         lock.unlock();
-                        if (expedited) break;
+                        if (stopped) { skipWhy = SkipReason::Stopping; break; }
+                        if (expedited) { skipWhy = SkipReason::Expedite; break; }
                         std::this_thread::sleep_for(std::chrono::microseconds{250});
                     }
                     acquired = acquireResult == VK_SUCCESS || acquireResult == VK_SUBOPTIMAL_KHR;
@@ -1047,6 +1136,9 @@ private:
                         }
                     } else {
                         result.skipped = true;
+                        // An acquire, copy or signal error outranks the skip decision.
+                        result.skipReason = skipResult < 0 || skipWhy == SkipReason::None
+                            ? SkipReason::Error : skipWhy;
                         result.started = Clock::now();
                         result.finished = result.started;
                         result.result = skipResult;
@@ -1064,6 +1156,7 @@ private:
             }
             lock.lock();
             batch.aggregate.source = ready.source;
+            batch.aggregate.outputInterval = ready.outputInterval;
             batch.aggregate.readinessShift = readinessShift;
             batch.aggregate.readinessMiss = readinessMiss;
             if (readinessResult < 0) batch.aggregate.result = readinessResult;

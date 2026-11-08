@@ -64,6 +64,38 @@ VkResult Swapchain::completeDeferredPresent(const uint64_t timeoutNs, const bool
             this->realFramePacer.resetOutputs();
         if (this->pacingProfile && completion.count)
             this->pacingProfile->completedWorkerBatch(completion.readinessMiss);
+        if (this->pacingProfile) {
+            // Each generated output that presented no image, by its recorded cause. The
+            // skip record time is the moment the worker decided, not the report time.
+            using Profile = present_diagnostics::PacingProfile;
+            for (size_t i = 0; i < completion.count; ++i) {
+                const auto& call = completion.calls[i];
+                if (!call.skipped || !call.generated) continue;
+                Profile::GeneratedSkip kind = Profile::SkipOther;
+                std::string_view reason = "error";
+                switch (call.skipReason) {
+                case DeferredPresent::SkipReason::Readiness:
+                    kind = Profile::SkipReadiness; reason = "readiness"; break;
+                case DeferredPresent::SkipReason::Expedite:
+                    kind = Profile::SkipExpedite; reason = "expedite"; break;
+                case DeferredPresent::SkipReason::GiveUp:
+                    kind = Profile::SkipGiveUp; reason = "give-up"; break;
+                case DeferredPresent::SkipReason::Acquire:
+                    kind = Profile::SkipAcquire; reason = "acquire"; break;
+                case DeferredPresent::SkipReason::Stopping:
+                    reason = "stopping"; break;
+                case DeferredPresent::SkipReason::Error:
+                case DeferredPresent::SkipReason::None:
+                    break;
+                }
+                this->pacingProfile->generatedSkipped(kind);
+                present_diagnostics::logPacingSkip(this->diagnosticsState.contextId,
+                    completion.source, reason, call.scheduled, call.started);
+            }
+            if (completion.count && completion.calls[0].lateReadiness)
+                this->pacingProfile->lateReadinessBatch();
+            this->pacingProfile->generatedCompressedPairs(completion.compressedGeneratedPairs());
+        }
         if (this->pacingProfile)
             for (size_t i = 0; i < completion.count; ++i) {
                 const auto& call = completion.calls[i];
@@ -78,6 +110,7 @@ VkResult Swapchain::completeDeferredPresent(const uint64_t timeoutNs, const bool
                     .readinessStarted = call.readinessStarted, .readinessFinished = call.readinessFinished,
                     .readinessDeadline = call.readinessDeadline, .readinessResult = call.readinessResult,
                     .queue = call.outputQueue, .presentWait = call.presentWait,
+                    .arrival = call.arrival,
                 });
                 present_diagnostics::logPacingOutput(this->diagnosticsState.contextId, call.swapchain, sample);
             }
@@ -98,7 +131,8 @@ bool Swapchain::beginDeferredPresentBatch(const vk::Vulkan& vk, const size_t lim
         const uint64_t readyValue, const DiagnosticsClock::time_point readyDeadline, const bool capOwned,
         const std::optional<DiagnosticsClock::time_point> releasedOutputLimit,
         const DiagnosticsClock::duration releasedJoinTolerance,
-        const bool overlap, const DiagnosticsClock::duration outputInterval) {
+        const bool overlap, const DiagnosticsClock::duration outputInterval,
+        const DiagnosticsClock::time_point arrival) {
     if (!this->info.deferredPresentQueue) return false;
     if (!this->deferredPresent) {
         try {
@@ -114,6 +148,8 @@ bool Swapchain::beginDeferredPresentBatch(const vk::Vulkan& vk, const size_t lim
         .joinTolerance = releasedJoinTolerance,
         .expediteOnJoin = releasedOutputLimit.has_value(),
         .overlap = overlap, .outputInterval = outputInterval,
+        // Diagnostics only: the arrival is observed when the pacing profile is enabled.
+        .arrival = this->pacingProfile ? arrival : DiagnosticsClock::time_point{},
         .copyFence = this->pacingProfile && present_diagnostics::pacingGpuProfileEnabled() && !this->renderSlots.empty()
             ? this->currentRenderSlot().fence.handle() : VK_NULL_HANDLE,
         .copyStatus = this->pacingProfile && present_diagnostics::pacingGpuProfileEnabled()

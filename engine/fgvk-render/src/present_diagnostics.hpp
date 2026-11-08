@@ -67,6 +67,9 @@ namespace fgvk::layer::present_diagnostics {
         };
         enum OutputTiming : size_t { DriverTiming, ApplicationTiming, ExtTiming,
             GoogleTiming, BridgeTiming, OutputTimingCount };
+        // Worker-deferred generated outputs that presented no image, by cause.
+        enum GeneratedSkip : size_t { SkipReadiness, SkipExpedite, SkipGiveUp, SkipAcquire,
+            SkipOther, GeneratedSkipCount };
         struct OutputObservation {
             Clock::time_point scheduled{};
             uint32_t imageIndex{UINT32_MAX};
@@ -82,6 +85,8 @@ namespace fgvk::layer::present_diagnostics {
             VkSemaphore presentWait{};
             // The real output of the application's own image, as opposed to a generated frame.
             bool applicationImage{};
+            // Limiter arrival of a worker batch, on its first output only; zero otherwise.
+            Clock::time_point arrival{};
         };
         struct OutputSample {
             size_t ordinal{}, source{};
@@ -145,6 +150,9 @@ namespace fgvk::layer::present_diagnostics {
             size_t targetDiscontinuities{};
             size_t sources{}, outputs{}, errors{}, readyBatches{}, capBatches{};
             size_t workerBatches{}, workerReadinessMisses{};
+            std::array<size_t, GeneratedSkipCount> generatedSkips{};
+            size_t lateReadinessBatches{}, generatedCompressed{};
+            bool internalImages{};
             size_t fifoCallerTimingSources{};
             std::array<OutputSample, outputTraceCapacity> outputTrace{};
             size_t outputTraceCount{}, outputTraceDropped{};
@@ -249,12 +257,18 @@ namespace fgvk::layer::present_diagnostics {
             ++window.workerBatches;
             window.workerReadinessMisses += readinessMiss;
         }
+        void generatedSkipped(GeneratedSkip kind) { ++window.generatedSkips[kind]; }
+        void lateReadinessBatch() { ++window.lateReadinessBatches; }
+        void generatedCompressedPairs(size_t pairs) { window.generatedCompressed += pairs; }
+        // Persistent for this swapchain: set once a present uses F5 internal images.
+        void internalImagesActive() { internalImages = true; }
         std::optional<Window> finishSource(Clock::time_point now) {
             if (!sourceStarted || !windowStarted) return {};
             window.metrics[LayerPresent].add(now - *sourceStarted);
             sourceFinished = now;
             if (now - *windowStarted < std::chrono::seconds(1)) return {};
             window.elapsed = now - *windowStarted;
+            window.internalImages = internalImages;
             const auto completed = window;
             window = {};
             windowStarted = now;
@@ -269,6 +283,7 @@ namespace fgvk::layer::present_diagnostics {
         std::array<Clock::duration, 9> lastPhases{};
         Clock::duration lastPublish{};
         size_t batch{}, previousBatch{}, outputOrdinal{};
+        bool internalImages{};
         std::optional<Clock::time_point> windowStarted, sourceStarted, sourceFinished, previousOutput;
         std::optional<Clock::time_point> previousTarget;
         OutputTiming previousTimingOwner{DriverTiming};
@@ -282,6 +297,9 @@ namespace fgvk::layer::present_diagnostics {
         const PacingProfile::SourceSample& sample) noexcept;
     void bindApplicationPresentSource(uint64_t context, uint64_t source) noexcept;
     void logPacingOutput(uint64_t context, VkSwapchainKHR swapchain, const PacingProfile::OutputSample& sample) noexcept;
+    /// One record per worker-deferred generated output that presented no image. Reason is a stable name.
+    void logPacingSkip(uint64_t context, uint64_t source, std::string_view reason,
+        Clock::time_point scheduled, Clock::time_point now) noexcept;
     void logPacingGpuFrame(uint64_t context, uint64_t source, uint64_t epoch,
         uint64_t frame, double previousWaitUs, double prepassSubmitUs, double generationSubmitUs,
         double prepassUs, double spanUs, double readbackUs, std::span<const double> generatedUs) noexcept;
@@ -350,6 +368,13 @@ namespace fgvk::layer::present_diagnostics {
 
     enum class ApplicationFrameApi { AcquireKhr, AcquireKhr2, Present };
 
+    /// One F5 emulated acquire: the wait for a free private image and the wait
+    /// to take the worker's queue lock. Measured only with the pacing profile.
+    struct InternalAcquireTiming {
+        Clock::duration ringWait{};
+        Clock::duration queueLock{};
+    };
+
     /// Bounded CPU observations at the application's layer entrypoints. These
     /// include intentional pacing, unlike the private-work present timer.
     /// A stream owns one caller/swapchain pair; switching drops its old window.
@@ -366,6 +391,8 @@ namespace fgvk::layer::present_diagnostics {
             BridgePresentTiming::Samples duration;
             BridgePresentTiming::Samples configurationUpdate;
             BridgePresentTiming::Samples deferredJoin;
+            BridgePresentTiming::Samples internalRingWait;
+            BridgePresentTiming::Samples internalQueueLock;
         };
 
         [[nodiscard]] std::optional<Window> observe(uintptr_t caller,
@@ -373,7 +400,8 @@ namespace fgvk::layer::present_diagnostics {
                 Clock::time_point finished, std::optional<VkResult> result,
                 std::optional<uint64_t> timeout,
                 std::optional<Clock::duration> configurationUpdate = {},
-                std::optional<Clock::duration> deferredJoin = {}) {
+                std::optional<Clock::duration> deferredJoin = {},
+                std::optional<InternalAcquireTiming> internal = {}) {
             if (!windowStarted || caller != lastCaller || swapchain != lastSwapchain) {
                 windowStarted = started;
                 previousEntry.reset();
@@ -397,6 +425,10 @@ namespace fgvk::layer::present_diagnostics {
                 window.configurationUpdate.add(milliseconds(*configurationUpdate));
             if (deferredJoin)
                 window.deferredJoin.add(milliseconds(*deferredJoin));
+            if (internal) {
+                window.internalRingWait.add(milliseconds(internal->ringWait));
+                window.internalQueueLock.add(milliseconds(internal->queueLock));
+            }
             if (finished - *windowStarted < std::chrono::seconds(1))
                 return std::nullopt;
             windowStarted = finished;
@@ -420,6 +452,7 @@ namespace fgvk::layer::present_diagnostics {
         uint64_t context{};
         size_t lowerCalls{};
         Clock::duration lowerDuration{};
+        std::optional<InternalAcquireTiming> internal;
     };
 
     // Only the application acquire wrapper installs this scope. framegen-vulkan's own
@@ -435,11 +468,17 @@ namespace fgvk::layer::present_diagnostics {
         friend void bindApplicationAcquireContext(uint64_t) noexcept;
         friend void recordApplicationAcquireDriver(uint64_t, VkResult, Clock::time_point,
             Clock::time_point, std::optional<uint32_t>) noexcept;
+        friend void recordInternalAcquire(Clock::duration, Clock::duration) noexcept;
         ApplicationAcquireScope* previous{};
+        bool installed{};
         ApplicationAcquireDetails observation;
     };
 
     void bindApplicationAcquireContext(uint64_t context) noexcept;
+
+    /// Attach an F5 emulated acquire's split to the application acquire in progress
+    /// on this thread. Does nothing outside an application acquire scope.
+    void recordInternalAcquire(Clock::duration ringWait, Clock::duration queueLock) noexcept;
 
     void recordApplicationAcquireDriver(uint64_t timeout, VkResult result,
         Clock::time_point started, Clock::time_point finished,

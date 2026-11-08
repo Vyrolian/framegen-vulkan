@@ -60,7 +60,8 @@ VkResult Swapchain::presentGeneratedFrames(
             invocation.readinessDeadline, invocation.capReadyOutputPacing,
             invocation.releasedOutputLimit, invocation.releasedJoinTolerance,
             invocation.releasedOverlap,
-            invocation.pacedOutputs ? invocation.pacedOutputs->interval : DiagnosticsClock::duration{});
+            invocation.pacedOutputs ? invocation.pacedOutputs->interval : DiagnosticsClock::duration{},
+            invocation.limiterArrival);
     struct CloseDeferredBatch {
         DeferredPresent* worker;
         ~CloseDeferredBatch() { if (worker) worker->closeBatch(); }

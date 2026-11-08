@@ -427,7 +427,8 @@ void appendPacingOutput(std::ostream& line, const uint64_t context, const VkSwap
          << " started_ns=" << ns(sample.started) << " finished_ns=" << ns(sample.finished)
          << " result=" << sample.result << " copy_checked=" << observed.copyChecked
          << " copy_status=" << observed.copyStatus
-         << " copy_sampled_ns=" << ns(observed.copySampledAt);
+         << " copy_sampled_ns=" << ns(observed.copySampledAt)
+         << " arrival_ns=" << ns(observed.arrival);
     if (pacingFrameTraceEnabled())
         line << " enqueued_ns=" << ns(observed.enqueued)
              << " queue_lock_started_ns=" << ns(observed.queueLockStarted)
@@ -449,6 +450,21 @@ void logPacingOutput(const uint64_t context, const VkSwapchainKHR swapchain,
         std::ostringstream line;
         line.imbue(std::locale::classic());
         appendPacingOutput(line, context, swapchain, sample);
+        writePacingProfileRecords(line.str());
+    } catch (...) {}
+}
+
+void logPacingSkip(const uint64_t context, const uint64_t source, const std::string_view reason,
+        const Clock::time_point scheduled, const Clock::time_point now) noexcept {
+    try {
+        const auto ns = [](Clock::time_point time) {
+            return std::chrono::duration_cast<std::chrono::nanoseconds>(time.time_since_epoch()).count();
+        };
+        std::ostringstream line;
+        line.imbue(std::locale::classic());
+        line << "framegen-vulkan: present diagnostics: operation=pacing-profile-skip version=1"
+             << " pid=" << getpid() << " context=" << context << " source=" << source
+             << " reason=" << reason << " scheduled_ns=" << ns(scheduled) << " now_ns=" << ns(now) << '\n';
         writePacingProfileRecords(line.str());
     } catch (...) {}
 }
@@ -478,6 +494,14 @@ void logPacingProfile(const uint64_t context, const VkPresentModeKHR mode,
              << " ready_batches=" << window.readyBatches << " cap_batches=" << window.capBatches
              << " worker_batches=" << window.workerBatches
              << " worker_readiness_misses=" << window.workerReadinessMisses
+             << " generated_skip_readiness=" << window.generatedSkips[PacingProfile::SkipReadiness]
+             << " generated_skip_expedite=" << window.generatedSkips[PacingProfile::SkipExpedite]
+             << " generated_skip_give_up=" << window.generatedSkips[PacingProfile::SkipGiveUp]
+             << " generated_skip_acquire=" << window.generatedSkips[PacingProfile::SkipAcquire]
+             << " generated_skip_other=" << window.generatedSkips[PacingProfile::SkipOther]
+             << " late_readiness_batches=" << window.lateReadinessBatches
+             << " generated_compressed=" << window.generatedCompressed
+             << " internal_images=" << (window.internalImages ? 1 : 0)
              << " output_trace_version=" << (pacingFrameTraceEnabled() ? 2 : 1) << " output_trace_samples=" << (pacingFrameTraceEnabled() ? window.outputs : window.outputTraceCount)
              << " output_trace_dropped=" << (pacingFrameTraceEnabled() ? 0 : window.outputTraceDropped)
              << " wait_capture=1"
@@ -648,14 +672,22 @@ void recordPresentPhaseTiming(const uint64_t context, const size_t frame,
 namespace { thread_local ApplicationAcquireScope* applicationAcquireScope{}; }
 
 ApplicationAcquireScope::ApplicationAcquireScope() {
-    if (!pacingFrameTraceEnabled()) return;
+    // The F5 acquire split is a pacing-profile observation, so the scope exists for
+    // either switch. Only the frame trace needs a call identity.
+    if (!pacingFrameTraceEnabled() && !pacingProfileEnabled()) return;
+    installed = true;
     previous = applicationAcquireScope;
-    observation.callId = allocateContextId();
+    if (pacingFrameTraceEnabled()) observation.callId = allocateContextId();
     applicationAcquireScope = this;
 }
 
 ApplicationAcquireScope::~ApplicationAcquireScope() {
-    if (observation.callId) applicationAcquireScope = previous;
+    if (installed) applicationAcquireScope = previous;
+}
+
+void recordInternalAcquire(const Clock::duration ringWait, const Clock::duration queueLock) noexcept {
+    if (applicationAcquireScope)
+        applicationAcquireScope->observation.internal = InternalAcquireTiming{ringWait, queueLock};
 }
 
 void bindApplicationAcquireContext(const uint64_t context) noexcept {
@@ -743,7 +775,8 @@ void recordApplicationFrameTiming(const ApplicationFrameApi api, const uintptr_t
         writePacingProfileRecords(trace.str());
     }
     const auto window = observations.at(static_cast<size_t>(api)).observe(
-        caller, swapchain, started, finished, result, timeout, configurationUpdate, deferredJoin);
+        caller, swapchain, started, finished, result, timeout, configurationUpdate, deferredJoin,
+        acquisition ? acquisition->internal : std::nullopt);
     if (!window)
         return;
     const bool present = api == ApplicationFrameApi::Present;
@@ -775,6 +808,13 @@ void recordApplicationFrameTiming(const ApplicationFrameApi api, const uintptr_t
         line << " successful=" << window->successful << " timeouts=" << window->timeouts
              << " not_ready=" << window->notReady << " errors=" << window->errors
              << " polls=" << window->polls;
+        // Direct acquires have no F5 split, so their records keep the existing fields only.
+        if (window->internalRingWait.count)
+            line << " internal_samples=" << window->internalRingWait.count
+                 << " internal_ring_wait_mean_ms=" << window->internalRingWait.mean()
+                 << " internal_ring_wait_max_ms=" << window->internalRingWait.maximum
+                 << " internal_queue_lock_mean_ms=" << window->internalQueueLock.mean()
+                 << " internal_queue_lock_max_ms=" << window->internalQueueLock.maximum;
     }
     line << '\n';
     if (pacingProfileEnabled()) pacingLog().write(line.str());

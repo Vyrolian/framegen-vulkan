@@ -1164,7 +1164,10 @@ void generatedCopyNeedsOpenBatch() {
 VkResult VKAPI_CALL copyReadinessTimeout(VkDevice, const VkSemaphoreWaitInfo*, uint64_t) {
     return VK_TIMEOUT;
 }
-void generatedCopySkipsUnsafeSpacing() {
+// Readiness still skips a generated output. For an overlapped batch an expedite or a
+// passed batch limit no longer skips it (F7 rules 2 and 4): it presents from a free
+// lower image, and the real output after it follows (see generatedCopyTailSurvivesAJoin).
+void generatedCopyUnsafeSpacingModes() {
     for (unsigned mode = 0; mode < 3; ++mode) {
         auto queue = std::make_shared<DeferredPresentQueue>();
         queue->queue = handle<VkQueue>(7);
@@ -1190,17 +1193,24 @@ void generatedCopySkipsUnsafeSpacing() {
             worker.enqueue(info, due + 10ms), "pressure copy outputs rejected");
         worker.closeBatch();
         const auto completion = worker.finish(UINT64_MAX);
-        expect(completion && completion->count == 2 && completion->calls[0].skipped &&
-            !completion->calls[1].skipped && copyAcquireCalls == 0,
-            "unsafe generated output was acquired or presented instead of skipped");
+        expect(completion && completion->count == 2 && !completion->calls[1].skipped &&
+            completion->calls[0].skipped == (mode == 0),
+            "generated output skipped outside the readiness rule, or the real output was lost");
         expect(completion->readinessMiss == (mode == 0), "skip changed the readiness result");
-        expect(copySubmits.size() == 1 && copySubmits[0].count == 0 && copySubmits[0].waits == 1 &&
-            copySubmits[0].waitSemaphores[0] == handle<VkSemaphore>(62) &&
-            copySubmits[0].signals == 1 && copySubmits[0].signalSemaphores[0] == handle<VkSemaphore>(63) &&
-            copySubmits[0].fence == handle<VkFence>(64),
-            "pressure skip failed to consume staged work and signal continuation/fence exactly once");
-        expect(copyPresents.size() == 1 && copyPresents[0].first == 4,
-            "pressure skip lost the real image or emitted a generated image");
+        if (mode == 0) {
+            expect(completion->calls[0].skipReason == DeferredPresent::SkipReason::Readiness &&
+                copyAcquireCalls == 0 && copySubmits.size() == 1 && copySubmits[0].count == 0 &&
+                copySubmits[0].waits == 1 && copySubmits[0].waitSemaphores[0] == handle<VkSemaphore>(62) &&
+                copySubmits[0].signals == 1 && copySubmits[0].signalSemaphores[0] == handle<VkSemaphore>(63) &&
+                copySubmits[0].fence == handle<VkFence>(64),
+                "readiness skip failed to consume staged work and signal continuation/fence exactly once");
+            expect(copyPresents.size() == 1 && copyPresents[0].first == 4,
+                "readiness skip lost the real image or emitted a generated image");
+        } else {
+            expect(copyAcquireCalls == 1 && copySubmits.size() == 1 && copySubmits[0].count == 1 &&
+                copyPresents.size() == 2 && copyPresents[0].first == 2 && copyPresents[1].first == 4,
+                "unskipped generated output was not copied and presented ahead of the real output");
+        }
     }
 }
 void generatedCopyTailSurvivesAJoin() {
@@ -1229,10 +1239,12 @@ void generatedCopyTailSurvivesAJoin() {
             "generated output never reached the lower present");
     }
     const auto completion = worker.finish(UINT64_MAX);
-    expect(completion && completion->count == 2 && !completion->calls[0].skipped &&
-        completion->calls[1].started >= completion->calls[0].started + 30ms &&
-        completion->calls[1].started >= completion->calls[1].scheduled,
-        "a join compressed the real output after an already-presented generated image");
+    // F7 rule 4: the join may pull the tail to a quarter interval after its generated
+    // output, never earlier, and never past its normal deadline.
+    expect(completion && completion->count == 2 && !completion->calls[0].skipped && !completion->calls[1].skipped &&
+        completion->calls[1].started >= completion->calls[0].started + 7500us &&
+        completion->calls[1].started <= completion->calls[1].scheduled + 5ms,
+        "join did not pull the tail to a quarter interval, or the tail passed its normal deadline");
 }
 // Release-gated overlap: a generated output due between latest - interval and
 // latest - interval / 4 is still presented, and the real after it is pulled to
@@ -1280,7 +1292,7 @@ void lateGeneratedCopyPastQuarterSkips() {
     queue->queue = handle<VkQueue>(7);
     DeferredPresent worker(queue, recordingPresent);
     copySubmits.clear(); copyPresents.clear(); copyAcquireCalls = 0;
-    copyAcquireResult = VK_SUCCESS; copyAcquireImage = 2;
+    copyAcquireResult = VK_NOT_READY; copyAcquireImage = 2;
     const auto swapchain = handle<VkSwapchainKHR>(11);
     const auto realWait = handle<VkSemaphore>(12);
     uint32_t realImage = 4;
@@ -1303,7 +1315,10 @@ void lateGeneratedCopyPastQuarterSkips() {
         "generated output past the release window was presented or the real output was lost");
     expect(completion->calls[1].scheduled <= latest,
         "real output after a skipped generated output passed the batch limit");
-    expect(copyAcquireCalls == 0, "skipped generated output acquired an image");
+    expect(completion->calls[0].skipReason == DeferredPresent::SkipReason::Acquire,
+        "generated output with no lower image was not skipped as an acquire miss");
+    expect(copyAcquireCalls == 1, "past-quarter generated output did not make its single attempt");
+    copyAcquireResult = VK_SUCCESS;
     expect(copySubmits.size() == 1 && copySubmits.front().count == 0 && copySubmits.front().waits == 1 &&
         copySubmits.front().waitSemaphores[0] == handle<VkSemaphore>(62) && copySubmits.front().signals == 1 &&
         copySubmits.front().signalSemaphores[0] == handle<VkSemaphore>(63) &&
@@ -1343,6 +1358,330 @@ void generatedCopyTailKeepsSpacingWithoutLimit() {
     expect(copyPresents.size() == 2 && copyPresents[0] == std::pair{2u, handle<VkSemaphore>(72)} &&
         copyPresents[1] == std::pair{4u, realWait},
         "unlimited copy presented the wrong images");
+}
+
+// F7 readiness script: the first wait and the bounded extension each return a scripted result.
+unsigned scriptedCalls{};
+uint64_t scriptedTimeouts[2]{};
+VkResult scriptedResults[2]{};
+VkResult VKAPI_CALL scriptedReadiness(VkDevice device, const VkSemaphoreWaitInfo* info, uint64_t timeout) {
+    expect(device == handle<VkDevice>(21) && info->semaphoreCount == 1 &&
+        info->pSemaphores[0] == handle<VkSemaphore>(31) && info->pValues[0] == 17,
+        "readiness waited on the wrong device, semaphore or timeline value");
+    const unsigned call = scriptedCalls++;
+    expect(call < 2, "readiness waited more than twice for one batch");
+    scriptedTimeouts[call] = timeout;
+    return scriptedResults[call];
+}
+
+// (a) An overlapped batch expedited before its generated deadline presents the
+// generated output at once, then the real output no earlier than a quarter interval
+// after it and no later than its normal deadline. Neither output is skipped.
+void expeditedOverlapKeepsGeneratedAndTail() {
+    auto queue = std::make_shared<DeferredPresentQueue>();
+    queue->queue = handle<VkQueue>(7);
+    DeferredPresent worker(queue, recordingPresent);
+    copySubmits.clear(); copyPresents.clear(); copyAcquireCalls = 0;
+    copyAcquireResult = VK_SUCCESS; copyAcquireImage = 2;
+    const auto swapchain = handle<VkSwapchainKHR>(11);
+    const auto realWait = handle<VkSemaphore>(12);
+    uint32_t realImage = 4;
+    const VkPresentInfoKHR realInfo{.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+        .waitSemaphoreCount = 1, .pWaitSemaphores = &realWait,
+        .swapchainCount = 1, .pSwapchains = &swapchain, .pImageIndices = &realImage};
+    const auto interval = 40ms;
+    const auto now = DeferredPresent::Clock::now();
+    expect(worker.beginBatch(2, {.joinTolerance = 0ns, .expediteOnJoin = true, .overlap = true,
+        .outputInterval = interval}), "expedited overlapped batch rejected");
+    expect(worker.enqueueGeneratedCopy(swapchain, nullptr, now + 2s, generatedCopy()) &&
+        worker.enqueue(realInfo, now + 2s + 1ms), "expedited overlapped outputs rejected");
+    worker.closeBatch();
+    expect(!worker.finish(0), "poll expedited a released batch before its join");
+    const auto completion = worker.finish(UINT64_MAX);
+    expect(completion && completion->count == 2 && completion->result == VK_SUCCESS &&
+        !completion->calls[0].skipped && !completion->calls[1].skipped,
+        "expedite skipped the generated or the real output");
+    const auto& generated = completion->calls[0];
+    const auto& real = completion->calls[1];
+    expect(generated.started < now + 1s, "expedite did not present the generated output before its deadline");
+    expect(real.started >= generated.started + interval / 4 && real.started < now + 1s,
+        "real output was not pulled to a quarter interval after its generated output, or waited for its normal deadline");
+    expect(copyAcquireCalls == 1 && copyPresents.size() == 2 &&
+        copyPresents[0] == std::pair{2u, handle<VkSemaphore>(72)} && copyPresents[1] == std::pair{4u, realWait},
+        "expedited generated and real outputs were presented out of order");
+}
+
+// (b) An expedite that arrives while the real output's tail is sleeping pulls it in.
+void expeditePullsSleepingTail() {
+    auto queue = std::make_shared<DeferredPresentQueue>();
+    queue->queue = handle<VkQueue>(7);
+    DeferredPresent worker(queue, recordingPresent);
+    copySubmits.clear(); copyPresents.clear(); copyAcquireCalls = 0;
+    copyAcquireResult = VK_SUCCESS; copyAcquireImage = 2;
+    { const std::lock_guard lock(copyObservationMutex); copyPresented = false; }
+    const auto swapchain = handle<VkSwapchainKHR>(11);
+    const auto realWait = handle<VkSemaphore>(12);
+    uint32_t realImage = 4;
+    const VkPresentInfoKHR realInfo{.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+        .waitSemaphoreCount = 1, .pWaitSemaphores = &realWait,
+        .swapchainCount = 1, .pSwapchains = &swapchain, .pImageIndices = &realImage};
+    const auto interval = 40ms;
+    const auto now = DeferredPresent::Clock::now();
+    expect(worker.beginBatch(2, {.joinTolerance = 0ns, .expediteOnJoin = true, .overlap = true,
+        .outputInterval = interval}), "tail batch rejected");
+    expect(worker.enqueueGeneratedCopy(swapchain, nullptr, now, generatedCopy()) &&
+        worker.enqueue(realInfo, now + 2s), "tail outputs rejected");
+    worker.closeBatch();
+    {
+        std::unique_lock lock(copyObservationMutex);
+        expect(copyObservationChanged.wait_for(lock, 5s, [] { return copyPresented; }),
+            "generated output was not presented before the join");
+    }
+    // The real output now sleeps toward its normal deadline, two seconds away.
+    std::this_thread::sleep_for(20ms);
+    const auto joinStarted = DeferredPresent::Clock::now();
+    const auto completion = worker.finish(UINT64_MAX);
+    expect(completion && completion->count == 2 && !completion->calls[0].skipped && !completion->calls[1].skipped,
+        "join during the sleeping tail skipped an output");
+    expect(completion->calls[1].started >= joinStarted && completion->calls[1].started < now + 1s,
+        "join did not pull the sleeping tail in, or it waited for its normal deadline");
+    expect(completion->calls[1].started >= completion->calls[0].started + interval / 4,
+        "the pulled-in tail came before a quarter interval after its generated output");
+    expect(copyPresents.size() == 2 && copyPresents[1] == std::pair{4u, realWait},
+        "pulled-in tail was presented with the wrong image");
+}
+
+// (c) A generated output reaching the worker after its give-up point is presented
+// when a lower image is free, and skipped for acquire when none is.
+void lateGeneratedUsesOneAttempt() {
+    for (const bool imageFree : {true, false}) {
+        auto queue = std::make_shared<DeferredPresentQueue>();
+        queue->queue = handle<VkQueue>(7);
+        DeferredPresent worker(queue, recordingPresent);
+        copySubmits.clear(); copyPresents.clear(); copyAcquireCalls = 0;
+        copyAcquireResult = imageFree ? VK_SUCCESS : VK_NOT_READY; copyAcquireImage = 2;
+        const auto swapchain = handle<VkSwapchainKHR>(11);
+        const auto realWait = handle<VkSemaphore>(12);
+        uint32_t realImage = 4;
+        const VkPresentInfoKHR realInfo{.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+            .waitSemaphoreCount = 1, .pWaitSemaphores = &realWait,
+            .swapchainCount = 1, .pSwapchains = &swapchain, .pImageIndices = &realImage};
+        const auto now = DeferredPresent::Clock::now();
+        auto copy = generatedCopy();
+        copy.giveUp = 2ms;
+        // Due 50 ms ago: the give-up point (deadline + giveUp) has already passed on arrival.
+        expect(worker.beginBatch(2, {.overlap = true, .outputInterval = 40ms}), "late copy batch rejected");
+        expect(worker.enqueueGeneratedCopy(swapchain, nullptr, now - 50ms, copy) &&
+            worker.enqueue(realInfo, now + 1ms), "late copy outputs rejected");
+        worker.closeBatch();
+        const auto completion = worker.finish(UINT64_MAX);
+        expect(completion && completion->count == 2 && !completion->calls[1].skipped,
+            "late copy batch lost its real output");
+        expect(copyAcquireCalls == 1, "a generated output past its give-up point did not make exactly one attempt");
+        if (imageFree) {
+            expect(!completion->calls[0].skipped && copyPresents.size() == 2 &&
+                copyPresents[0] == std::pair{2u, handle<VkSemaphore>(72)} && copyPresents[1] == std::pair{4u, realWait},
+                "late generated output with a free lower image was not presented first");
+        } else {
+            expect(completion->calls[0].skipped && completion->calls[0].skipReason == DeferredPresent::SkipReason::Acquire &&
+                copySubmits.size() == 1 && copySubmits[0].count == 0 && copyPresents.size() == 1 &&
+                copyPresents[0] == std::pair{4u, realWait},
+                "late generated output without a lower image was not skipped for acquire");
+        }
+    }
+    copyAcquireResult = VK_SUCCESS;
+}
+
+// (d) Readiness that misses the first wait but lands inside the bounded extension
+// presents the generated output. Readiness that misses the extension skips it.
+void readinessExtensionIsBounded() {
+    for (const bool signalledInExtension : {true, false}) {
+        auto queue = std::make_shared<DeferredPresentQueue>();
+        queue->queue = handle<VkQueue>(7);
+        DeferredPresent worker(queue, recordingPresent);
+        copySubmits.clear(); copyPresents.clear(); copyAcquireCalls = 0;
+        copyAcquireResult = VK_SUCCESS; copyAcquireImage = 2;
+        const auto swapchain = handle<VkSwapchainKHR>(11);
+        const auto realWait = handle<VkSemaphore>(12);
+        uint32_t realImage = 4;
+        const VkPresentInfoKHR realInfo{.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+            .waitSemaphoreCount = 1, .pWaitSemaphores = &realWait,
+            .swapchainCount = 1, .pSwapchains = &swapchain, .pImageIndices = &realImage};
+        scriptedCalls = 0;
+        scriptedTimeouts[0] = scriptedTimeouts[1] = 0;
+        scriptedResults[0] = VK_TIMEOUT;
+        scriptedResults[1] = signalledInExtension ? VK_SUCCESS : VK_TIMEOUT;
+        const auto now = DeferredPresent::Clock::now();
+        // Batch limit 2 and a 10 ms interval give a 20 ms extension, inside the 50 ms cap.
+        expect(worker.beginBatch(2, {.device = handle<VkDevice>(21), .semaphore = handle<VkSemaphore>(31),
+            .value = 17, .wait = scriptedReadiness, .deadline = now + 1ms, .overlap = true,
+            .outputInterval = 10ms}), "readiness batch rejected");
+        expect(worker.enqueueGeneratedCopy(swapchain, nullptr, now + 1ms, generatedCopy()) &&
+            worker.enqueue(realInfo, now + 2ms), "readiness outputs rejected");
+        worker.closeBatch();
+        const auto completion = worker.finish(UINT64_MAX);
+        expect(completion && completion->count == 2 && !completion->calls[1].skipped,
+            "readiness extension lost the real output");
+        expect(scriptedCalls == 2 && scriptedTimeouts[1] == 20'000'000,
+            "readiness extension was not bounded by the output interval times the batch limit");
+        if (signalledInExtension) {
+            expect(!completion->readinessMiss && completion->calls[0].lateReadiness &&
+                completion->calls[0].readinessResult == VK_SUCCESS && !completion->calls[0].skipped &&
+                copyAcquireCalls == 1 && copyPresents.size() == 2 &&
+                copyPresents[0] == std::pair{2u, handle<VkSemaphore>(72)} && copyPresents[1] == std::pair{4u, realWait},
+                "readiness inside the extension was a miss, or the generated output was not presented");
+        } else {
+            expect(completion->readinessMiss && !completion->calls[0].lateReadiness &&
+                completion->calls[0].skipped && completion->calls[0].skipReason == DeferredPresent::SkipReason::Readiness &&
+                copyAcquireCalls == 0 && copyPresents.size() == 1 && copyPresents[0] == std::pair{4u, realWait},
+                "readiness missed after the extension was not a readiness skip");
+        }
+    }
+}
+
+// (e) Outside an overlapped batch, expedite still skips a generated output, a
+// generated output that polls out its give-up window is skipped, and an arrival past
+// its give-up point with a free image is still presented.
+void nonOverlapKeepsSkipBehaviour() {
+    const auto swapchain = handle<VkSwapchainKHR>(11);
+    const auto realWait = handle<VkSemaphore>(12);
+    uint32_t realImage = 4;
+    const VkPresentInfoKHR realInfo{.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+        .waitSemaphoreCount = 1, .pWaitSemaphores = &realWait,
+        .swapchainCount = 1, .pSwapchains = &swapchain, .pImageIndices = &realImage};
+    {
+        auto queue = std::make_shared<DeferredPresentQueue>();
+        queue->queue = handle<VkQueue>(7);
+        DeferredPresent worker(queue, recordingPresent);
+        copySubmits.clear(); copyPresents.clear(); copyAcquireCalls = 0;
+        copyAcquireResult = VK_SUCCESS; copyAcquireImage = 2;
+        const auto now = DeferredPresent::Clock::now();
+        expect(worker.beginBatch(2, {.expediteOnJoin = true, .outputInterval = 10ms}), "expedited batch rejected");
+        expect(worker.enqueueGeneratedCopy(swapchain, nullptr, now + 2s, generatedCopy()) &&
+            worker.enqueue(realInfo, now + 2s + 1ms), "expedited non-overlap outputs rejected");
+        worker.closeBatch();
+        const auto completion = worker.finish(UINT64_MAX);
+        expect(completion && completion->count == 2 && completion->calls[0].skipped &&
+            completion->calls[0].skipReason == DeferredPresent::SkipReason::Expedite &&
+            !completion->calls[1].skipped && copyAcquireCalls == 0 && copyPresents.size() == 1 &&
+            copyPresents[0] == std::pair{4u, realWait},
+            "non-overlapped expedite no longer skipped its generated output");
+    }
+    {
+        auto queue = std::make_shared<DeferredPresentQueue>();
+        queue->queue = handle<VkQueue>(7);
+        DeferredPresent worker(queue, recordingPresent);
+        copySubmits.clear(); copyPresents.clear(); copyAcquireCalls = 0;
+        copyAcquireResult = VK_NOT_READY;
+        auto copy = generatedCopy();
+        copy.giveUp = 2ms;
+        const auto now = DeferredPresent::Clock::now();
+        expect(worker.beginBatch(2), "give-up batch rejected");
+        expect(worker.enqueueGeneratedCopy(swapchain, nullptr, now, copy) &&
+            worker.enqueue(realInfo, now + 1ms), "give-up outputs rejected");
+        worker.closeBatch();
+        const auto completion = worker.finish(UINT64_MAX);
+        expect(completion && completion->count == 2 && completion->calls[0].skipped &&
+            completion->calls[0].skipReason == DeferredPresent::SkipReason::Acquire && !completion->calls[1].skipped &&
+            copyAcquireCalls >= 2 && copyAcquireTimeout == 0 && copyPresents.size() == 1 &&
+            copyPresents[0] == std::pair{4u, realWait},
+            "non-overlapped generated output did not skip after its give-up window");
+        expect(completion->calls[0].started >= completion->calls[0].scheduled + 2ms,
+            "generated output gave up before polling its whole give-up window");
+    }
+    {
+        // Readiness on a non-overlapped batch keeps the single wait: no extension, even
+        // with an output interval, so a timeout is a readiness miss at once.
+        auto queue = std::make_shared<DeferredPresentQueue>();
+        queue->queue = handle<VkQueue>(7);
+        DeferredPresent worker(queue, recordingPresent);
+        copySubmits.clear(); copyPresents.clear(); copyAcquireCalls = 0;
+        copyAcquireResult = VK_SUCCESS; copyAcquireImage = 2;
+        scriptedCalls = 0;
+        scriptedTimeouts[0] = scriptedTimeouts[1] = 0;
+        scriptedResults[0] = VK_TIMEOUT;
+        scriptedResults[1] = VK_SUCCESS;
+        const auto now = DeferredPresent::Clock::now();
+        expect(worker.beginBatch(2, {.device = handle<VkDevice>(21), .semaphore = handle<VkSemaphore>(31),
+            .value = 17, .wait = scriptedReadiness, .deadline = now + 1ms, .outputInterval = 10ms}),
+            "non-overlapped readiness batch rejected");
+        expect(worker.enqueueGeneratedCopy(swapchain, nullptr, now + 1ms, generatedCopy()) &&
+            worker.enqueue(realInfo, now + 2ms), "non-overlapped readiness outputs rejected");
+        worker.closeBatch();
+        const auto completion = worker.finish(UINT64_MAX);
+        expect(completion && completion->count == 2 && completion->readinessMiss &&
+            completion->calls[0].skipped && completion->calls[0].skipReason == DeferredPresent::SkipReason::Readiness &&
+            !completion->calls[0].lateReadiness && !completion->calls[1].skipped && scriptedCalls == 1 &&
+            copyAcquireCalls == 0,
+            "non-overlapped readiness timeout was extended or did not skip as a readiness miss");
+    }
+    {
+        auto queue = std::make_shared<DeferredPresentQueue>();
+        queue->queue = handle<VkQueue>(7);
+        DeferredPresent worker(queue, recordingPresent);
+        copySubmits.clear(); copyPresents.clear(); copyAcquireCalls = 0;
+        copyAcquireResult = VK_SUCCESS; copyAcquireImage = 2;
+        auto copy = generatedCopy();
+        copy.giveUp = 2ms;
+        const auto now = DeferredPresent::Clock::now();
+        expect(worker.beginBatch(2), "past-window batch rejected");
+        expect(worker.enqueueGeneratedCopy(swapchain, nullptr, now - 50ms, copy) &&
+            worker.enqueue(realInfo, now + 1ms), "past-window outputs rejected");
+        worker.closeBatch();
+        const auto completion = worker.finish(UINT64_MAX);
+        expect(completion && completion->count == 2 && !completion->calls[0].skipped && !completion->calls[1].skipped &&
+            copyAcquireCalls == 1 && copyPresents.size() == 2,
+            "non-overlapped generated output past its give-up point with a free image was not presented");
+    }
+}
+
+// (f) generated_compressed counts a presented generated output whose following real
+// output started under half an interval after it. A normally spaced pair is not counted.
+void compressedPairsAreCounted() {
+    const auto swapchain = handle<VkSwapchainKHR>(11);
+    const auto realWait = handle<VkSemaphore>(12);
+    uint32_t realImage = 4;
+    const VkPresentInfoKHR realInfo{.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+        .waitSemaphoreCount = 1, .pWaitSemaphores = &realWait,
+        .swapchainCount = 1, .pSwapchains = &swapchain, .pImageIndices = &realImage};
+    const auto interval = 400ms;
+    {
+        // The batch limit pulls the real output to a quarter interval after its generated output.
+        auto queue = std::make_shared<DeferredPresentQueue>();
+        queue->queue = handle<VkQueue>(7);
+        DeferredPresent worker(queue, recordingPresent);
+        copySubmits.clear(); copyPresents.clear(); copyAcquireCalls = 0;
+        copyAcquireResult = VK_SUCCESS; copyAcquireImage = 2;
+        const auto now = DeferredPresent::Clock::now();
+        expect(worker.beginBatch(2, {.latestOutput = now + 2ms, .overlap = true, .outputInterval = interval}),
+            "compressed batch rejected");
+        expect(worker.enqueueGeneratedCopy(swapchain, nullptr, now, generatedCopy()) &&
+            worker.enqueue(realInfo, now + 2s), "compressed outputs rejected");
+        worker.closeBatch();
+        const auto completion = worker.finish(UINT64_MAX);
+        expect(completion && completion->count == 2 && !completion->calls[0].skipped && !completion->calls[1].skipped &&
+            completion->calls[1].started - completion->calls[0].started < interval / 2,
+            "compressed pair was not produced by the release limit");
+        expect(completion->compressedGeneratedPairs() == 1, "compressed generated pair was not counted");
+    }
+    {
+        // Ordinary spacing: the real output keeps the full interval after its generated output.
+        auto queue = std::make_shared<DeferredPresentQueue>();
+        queue->queue = handle<VkQueue>(7);
+        DeferredPresent worker(queue, recordingPresent);
+        copySubmits.clear(); copyPresents.clear(); copyAcquireCalls = 0;
+        copyAcquireResult = VK_SUCCESS; copyAcquireImage = 2;
+        const auto now = DeferredPresent::Clock::now();
+        expect(worker.beginBatch(2, {.overlap = true, .outputInterval = interval}), "spaced batch rejected");
+        expect(worker.enqueueGeneratedCopy(swapchain, nullptr, now, generatedCopy()) &&
+            worker.enqueue(realInfo, now + 1ms), "spaced outputs rejected");
+        worker.closeBatch();
+        const auto completion = worker.finish(UINT64_MAX);
+        expect(completion && completion->count == 2 && !completion->calls[0].skipped && !completion->calls[1].skipped &&
+            completion->calls[1].started >= completion->calls[0].started + interval,
+            "spaced pair lost its full interval");
+        expect(completion->compressedGeneratedPairs() == 0, "normally spaced pair was counted as compressed");
+    }
 }
 }
 
@@ -1654,9 +1993,12 @@ int main() {
     overlappedChainShiftsLaterOutputs(); expeditedOutputAnchorsNextBatch();
     generatedCopyPresentsAcquiredImage(); generatedCopySkipsWithoutImage(); generatedCopySkipsOutOfRangeImage();
     generatedCopyNeedsOpenBatch();
-    generatedCopySkipsUnsafeSpacing(); generatedCopyTailSurvivesAJoin();
+    generatedCopyUnsafeSpacingModes(); generatedCopyTailSurvivesAJoin();
     lateGeneratedCopyPresentsBeforeLimit(); lateGeneratedCopyPastQuarterSkips();
     generatedCopyTailKeepsSpacingWithoutLimit();
+    expeditedOverlapKeepsGeneratedAndTail(); expeditePullsSleepingTail();
+    lateGeneratedUsesOneAttempt(); readinessExtensionIsBounded();
+    nonOverlapKeepsSkipBehaviour(); compressedPairsAreCounted();
     unboundedDrainWaitsForLatchedPresent();
     internalRealRetriesThenPresents(); internalRealNeverSkippedUnderExpedite();
     internalRealErrorAbandonsOnce(); internalRealAfterGeneratedKeepsCopyTail();
