@@ -6,8 +6,8 @@ use std::time::{Duration, Instant};
 
 use egui::text::{LayoutJob, TextWrapping};
 use egui::{
-    pos2, vec2, Button, CornerRadius, Key, Margin, Rect, RichText, Sense, Stroke, StrokeKind,
-    TextStyle, Ui,
+    pos2, vec2, Align, Button, CornerRadius, Key, Layout, Margin, Rect, RichText, Sense, Stroke,
+    StrokeKind, TextStyle, Ui, UiBuilder,
 };
 
 use crate::config::{self, Config, ConfigView, FpsMemory, Mode, Profile, ProfileKey, Settings};
@@ -21,8 +21,9 @@ const FPS_SLIDER_RANGE: RangeInclusive<i64> = 10..=360;
 const ROW_HEIGHT: f32 = 26.0;
 /// Entry text starts this far inside its row.
 const ROW_TEXT_INSET: f32 = 8.0;
-/// Width of the × button at the right end of each row.
-const REMOVE_WIDTH: f32 = 26.0;
+/// Outer width of the games box. A narrower space shrinks the box to fit.
+const GAMES_BOX_WIDTH: f32 = 380.0;
+/// Space between an entry's name and its Remove button.
 const REMOVE_GAP: f32 = 2.0;
 const NO_GAMES: &str = "No games yet. Add an executable name or pick a running program.";
 const MODES: [Mode; 6] = [
@@ -605,37 +606,42 @@ impl eframe::App for App {
     }
 }
 
-/// The boxed list of executable names. Returns the index of the entry whose × was clicked.
+/// The boxed list of executable names. Returns the index of the entry whose Remove button was
+/// clicked.
 fn games_box(ui: &mut Ui, entries: &[String]) -> Option<usize> {
     let mut remove = None;
-    egui::Frame::NONE
+    let frame = egui::Frame::NONE
         .fill(theme::MANTLE)
         .stroke(Stroke::new(1.0, theme::SURFACE0))
         .corner_radius(CornerRadius::same(6))
-        .inner_margin(Margin::same(4))
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            if entries.is_empty() {
-                ui.horizontal_wrapped(|ui| {
-                    ui.add_space(ROW_TEXT_INSET);
-                    ui.label(RichText::new(NO_GAMES).small().color(theme::SUBTEXT0));
-                });
-                return;
+        .inner_margin(Margin::same(4));
+    // The box is GAMES_BOX_WIDTH wide, or as wide as the space when that is smaller. Its rows get
+    // the width left inside the padding and the stroke.
+    let outer_width = ui.available_width().min(GAMES_BOX_WIDTH);
+    let inner_width = (outer_width - frame.total_margin().sum().x).max(0.0);
+    frame.show(ui, |ui| {
+        ui.set_width(inner_width);
+        if entries.is_empty() {
+            ui.horizontal_wrapped(|ui| {
+                ui.add_space(ROW_TEXT_INSET);
+                ui.label(RichText::new(NO_GAMES).small().color(theme::SUBTEXT0));
+            });
+            return;
+        }
+        // Rows touch each other, so the box's own item spacing does not apply between them.
+        ui.spacing_mut().item_spacing.y = 0.0;
+        for (index, entry) in entries.iter().enumerate() {
+            if game_row(ui, index, entry) {
+                remove = Some(index);
             }
-            // Rows touch each other, so the box's own item spacing does not apply between them.
-            ui.spacing_mut().item_spacing.y = 0.0;
-            for (index, entry) in entries.iter().enumerate() {
-                if game_row(ui, index, entry) {
-                    remove = Some(index);
-                }
-            }
-        });
+        }
+    });
     remove
 }
 
-/// One entry row: the name on the left and, while the row is hovered, a × on the right. The name
-/// space is reserved even when the × is hidden, so the text does not move on hover. Returns true
-/// when the × is clicked.
+/// One entry row: the name on the left and a Remove button on the right, shown on every row. The
+/// name gets only the space the button leaves, so it never runs under the button. Returns true when
+/// the button is clicked.
 fn game_row(ui: &mut Ui, index: usize, entry: &str) -> bool {
     let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_HEIGHT), Sense::hover());
     let hovered = ui.rect_contains_pointer(row);
@@ -651,30 +657,28 @@ fn game_row(ui: &mut Ui, index: usize, entry: &str) -> bool {
         ui.painter().rect_filled(row, CornerRadius::same(4), fill);
     }
 
-    let remove_rect = Rect::from_min_size(
-        pos2(row.right() - REMOVE_WIDTH, row.top()),
-        vec2(REMOVE_WIDTH, ROW_HEIGHT),
+    // The button lays out right to left inside the row, so it keeps its own measured size, sits at
+    // the right edge and is centred vertically. The row is already allocated, so this child adds no
+    // space of its own.
+    let mut right = ui.new_child(
+        UiBuilder::new()
+            .max_rect(row)
+            .layout(Layout::right_to_left(Align::Center)),
     );
+    let remove = right
+        .small_button("Remove")
+        .on_hover_text("Remove from this profile");
+
+    let text_left = row.left() + ROW_TEXT_INSET;
     let text_rect = Rect::from_min_max(
-        pos2(row.left() + ROW_TEXT_INSET, row.top()),
-        pos2(remove_rect.left() - REMOVE_GAP, row.bottom()),
+        pos2(text_left, row.top()),
+        pos2(
+            (remove.rect.left() - REMOVE_GAP).max(text_left),
+            row.bottom(),
+        ),
     );
     name_text(ui, text_rect, index, entry);
-
-    if !hovered {
-        return false;
-    }
-    let color = if ui.rect_contains_pointer(remove_rect) {
-        theme::RED
-    } else {
-        theme::SUBTEXT0
-    };
-    let button = Button::new(RichText::new("×").color(color))
-        .frame(false)
-        .min_size(remove_rect.size());
-    ui.put(remove_rect, button)
-        .on_hover_text("Remove")
-        .clicked()
+    remove.clicked()
 }
 
 /// Paints an entry name inside `rect`, cut with an ellipsis when it does not fit. A cut name shows
