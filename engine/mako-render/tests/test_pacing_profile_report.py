@@ -274,9 +274,23 @@ class FrameContentTests(unittest.TestCase):
         self.assertEqual(records[0]["caller_queue"],40)
         self.assertEqual(records[0]["private_queue"],50)
 
-    def test_unknown_schema_and_unbounded_payload_are_refused(self):
+    def test_version_two_accepts_large_batches(self):
         data=bytearray(self.record())
         struct.pack_into("<Q",data,8,2)
+        struct.pack_into("<Q",data,16*8,4096)
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/"content.bin"
+            path.write_bytes(data)
+            records,partial=content.read_capture(path)
+            self.assertFalse(partial)
+            self.assertEqual([r["batch"] for r in records],[4096])
+            struct.pack_into("<Q",data,8,1)
+            path.write_bytes(data)
+            with self.assertRaises(ValueError):content.read_capture(path)
+
+    def test_unknown_schema_and_unbounded_payload_are_refused(self):
+        data=bytearray(self.record())
+        struct.pack_into("<Q",data,8,3)
         with tempfile.TemporaryDirectory() as directory:
             path=Path(directory)/"content.bin"
             path.write_bytes(data)

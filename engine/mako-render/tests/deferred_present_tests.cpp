@@ -816,11 +816,13 @@ void overlapRejectsPresentId() {
         .waitSemaphoreCount = 1, .pWaitSemaphores = &wait,
         .swapchainCount = 1, .pSwapchains = &swapchain, .pImageIndices = &image};
     DeferredPresent worker(queue, timedPresent);
-    const auto start = DeferredPresent::Clock::now();
-    expect(worker.beginBatch(1, {.overlap = true}), "overlapping head batch rejected");
+    // Far deadlines keep the head pending until the join, so overlap is
+    // deterministic; expediteOnJoin lets finish() release it at once.
+    const auto start = DeferredPresent::Clock::now() + 1h;
+    expect(worker.beginBatch(1, {.expediteOnJoin = true, .overlap = true}), "overlapping head batch rejected");
     expect(worker.enqueue(info, start), "overlapping head image rejected");
     worker.closeBatch();
-    expect(worker.beginBatch(2, {.overlap = true}), "overlapping second batch rejected");
+    expect(worker.beginBatch(2, {.expediteOnJoin = true, .overlap = true}), "overlapping second batch rejected");
     uint64_t id = 101;
     VkPresentIdKHR ids{.sType = VK_STRUCTURE_TYPE_PRESENT_ID_KHR,
         .swapchainCount = 1, .pPresentIds = &id};
