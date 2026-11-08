@@ -2597,7 +2597,9 @@ namespace {
                   << (images ? 1 : 0)
                   << " reason=" << (reason ? reason : "eligible")
                   << " images=" << (images ? imageCount : 0)
-                  << " lower_images=" << swapchainInfo.images.size() << '\n';
+                  << " lower_images=" << swapchainInfo.images.size()
+                  << " surface=" << (swapchainInfo.variableSurface ? "variable" : "fixed")
+                  << '\n';
     }
 
     VkResult myvkCreateSwapchainKHR(
