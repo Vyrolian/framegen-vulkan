@@ -7,9 +7,11 @@
 #include "fgvk-common/helpers/pointers.hpp"
 #include "fgvk-common/vulkan/command_buffer.hpp"
 #include "fgvk-common/vulkan/fence.hpp"
+#include "fgvk-common/vulkan/gpu_clock.hpp"
 #include "fgvk-common/vulkan/image.hpp"
 #include "fgvk-common/vulkan/semaphore.hpp"
 #include "fgvk-common/vulkan/timeline_semaphore.hpp"
+#include "fgvk-common/vulkan/timestamp_query_pool.hpp"
 #include "fgvk-common/vulkan/vulkan.hpp"
 #include "adaptive_scheduler.hpp"
 #include "color_pipeline.hpp"
@@ -245,6 +247,14 @@ namespace fgvk::layer {
         [[nodiscard]] SpatialFramePipelinePlacement
         framePipelinePlacement() const {
             return this->spatialFramePipelinePlacement;
+        }
+        /// Profile currently applied to this context, read by the F5 internal-image gate.
+        [[nodiscard]] const ls::GameConf& appliedProfile() const {
+            return this->profile;
+        }
+        /// Gamescope detection captured when this context was created.
+        [[nodiscard]] bool gamescopeDetectedAtCreation() const {
+            return this->gamescopeDetected;
         }
 
         /// Apply configuration that is safe for an already-created context.
@@ -514,6 +524,11 @@ namespace fgvk::layer {
             // image, recorded lazily and cleared whenever the destination images
             // are replaced.
             std::vector<vk::CommandBuffer> generatedCopies;
+            // Diagnostic split timestamps of this slot's last source copy. Read only
+            // after this slot's fence is observed signalled; the copy itself is unchanged.
+            std::unique_ptr<vk::TimestampQueryPool> splitQueries;
+            uint64_t splitSource{};
+            bool splitPending{};
         };
         std::vector<RenderSlot> renderSlots;
         size_t renderSlotIndex{0};
@@ -557,6 +572,13 @@ namespace fgvk::layer {
         std::unique_ptr<present_diagnostics::NativeCopyProfile> nativeCopyProfile;
         bool nativeCopyProfileInitialized{};
         std::shared_ptr<FrameContentCapture> frameContentCapture;
+        // Diagnostic GPU split timestamps; created only while the current backend
+        // context reports them enabled. Recent halves wait here for their backend sample.
+        std::optional<vk::CalibratedClock> splitRenderClock;
+        present_diagnostics::Clock::time_point splitRenderCalibratedAt{};
+        bool splitRenderUnavailable{};
+        std::array<present_diagnostics::SplitRenderHalf, 8> splitRenderHalves{};
+        size_t splitRenderHalfNext{};
         ColorTransitionState colorTransitionState;
         PrivateResourceTransition<SpatialResourceRequest> spatialTransition;
         std::optional<SpatialScaler> preparedSpatialScaler;
@@ -715,6 +737,11 @@ namespace fgvk::layer {
             const PresentationFramePlan& plan,
             std::chrono::steady_clock::time_point presentNow);
         [[nodiscard]] bool prepareRenderFence(const vk::Vulkan& vk);
+        // Diagnostic split timestamps. Recording only adds two queries to the existing copy.
+        [[nodiscard]] bool recordRenderSplitBegin(const vk::Vulkan& vk, VkCommandBuffer command, RenderSlot& slot);
+        void recordRenderSplitEnd(VkCommandBuffer command, RenderSlot& slot);
+        void collectRenderSplitTimestamps();
+        [[nodiscard]] present_diagnostics::SplitRenderHalf findRenderSplitHalf(uint64_t source) const;
         [[nodiscard]] bool recordGeneratedCopies(const vk::Vulkan& vk, RenderSlot& slot);
         [[nodiscard]] bool renderSlotsInFlight() const;
         [[nodiscard]] bool pollRenderSlotsIdle(const vk::Vulkan& vk);

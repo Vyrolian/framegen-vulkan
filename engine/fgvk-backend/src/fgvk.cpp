@@ -18,6 +18,7 @@
 #include "fgvk-common/vulkan/command_buffer.hpp"
 #include "fgvk-common/vulkan/fence.hpp"
 #include "fgvk-common/vulkan/external_image.hpp"
+#include "fgvk-common/vulkan/gpu_clock.hpp"
 #include "fgvk-common/vulkan/image.hpp"
 #include "fgvk-common/vulkan/timeline_semaphore.hpp"
 #include "fgvk-common/vulkan/timestamp_query_pool.hpp"
@@ -39,7 +40,9 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <atomic>
 #include <cstdlib>
+#include <deque>
 #include <exception>
 #include <filesystem>
 #include <functional>
@@ -49,6 +52,7 @@
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -81,6 +85,18 @@ namespace fgvk::backend {
     double profileMicroseconds(const ProfileClock::time_point start) {
         return std::chrono::duration<double, std::micro>(ProfileClock::now() - start).count();
     }
+
+    /// Non-draining split boundaries: four per command phase, read only after the batch fence signals.
+    struct SplitProfilingState {
+        // Each phase's prepass resets its pool, so reads must precede that phase's next batch.
+        std::array<std::optional<vk::TimestampQueryPool>, commandPhaseCount> pools;
+        vk::CalibratedClock clock;
+        ProfileClock::time_point calibratedAt{};
+        // Set after a read failure; recorded commands remain valid but are no longer sampled.
+        bool failed{};
+        std::deque<SplitFrameProfile> completed;
+    };
+
     error::error(const std::string& msg, const std::exception& inner)
         : std::runtime_error(msg + "\n- " + inner.what()) {}
     error::error(const std::string& msg)
@@ -145,6 +161,10 @@ namespace fgvk::backend {
         [[nodiscard]] std::optional<FrameProfile> takeCompletedFrameProfile();
         [[nodiscard]] FrameProfile readFrameProfile() const;
 
+        void enableSplitProfile();
+        [[nodiscard]] std::vector<SplitFrameProfile> takeCompletedSplitProfiles();
+        [[nodiscard]] bool splitProfileEnabled() const { return this->split && !this->split->failed; }
+
         /// schedule a variable number of frames at explicit timestamps
         void scheduleFrames(std::span<const float> timestamps);
 
@@ -175,6 +195,18 @@ namespace fgvk::backend {
         // Record lazily, once per phase and output; prepareWork serializes reuse.
         // Declared before recordings so query pools outlive referring commands.
         std::unique_ptr<FrameProfilingState> profiling;
+        // Split boundaries share the recording lifetime rule above; each in-flight
+        // slot remembers which frame and phase it ran, so its pool is read correctly.
+        struct SplitBatch {
+            uint64_t frame{};
+            size_t phase{};
+            bool generated{};
+            bool valid{};
+        };
+        std::unique_ptr<SplitProfilingState> split;
+        std::array<SplitBatch, inFlightDepth> splitBatches{};
+        void recordSplitBatch(bool generated);
+        void collectSplitProfiles(const std::array<bool, inFlightDepth>& signalled);
         using RecordedCommands = std::array<std::optional<vk::CommandBuffer>, commandPhaseCount>;
         std::vector<RecordedCommands> cmdbufs;
         RecordedCommands prepassDependency;
@@ -293,6 +325,8 @@ namespace {
         ).count()
     );
     constexpr size_t maximumRetiredContextCount = 2;
+    // Diagnostic split samples retained for the render layer; the oldest is dropped first.
+    constexpr size_t splitQueueCapacity = 8;
 
     /// wait on a batch fence with the time left in a budget shared by several waits
     /// @returns true if the fence signalled
@@ -318,6 +352,40 @@ namespace {
         };
     }
 
+    /// The calibrated-timestamp entry point, but only when the backend device can
+    /// pair its timestamp counter with CLOCK_MONOTONIC. Null means unavailable.
+    PFN_vkGetCalibratedTimestampsKHR splitCalibrationFunction(const vk::Vulkan& vulkan) {
+        const char* extension = vulkan.calibratedTimestampsExtension();
+        const auto queryDomains = vulkan.fi().GetPhysicalDeviceCalibrateableTimeDomainsKHR;
+        if (!extension || !queryDomains)
+            return nullptr;
+        uint32_t count{};
+        if (queryDomains(vulkan.physdev(), &count, nullptr) != VK_SUCCESS || count == 0)
+            return nullptr;
+        std::vector<VkTimeDomainKHR> domains(count);
+        if (queryDomains(vulkan.physdev(), &count, domains.data()) != VK_SUCCESS)
+            return nullptr;
+        const auto offered = [&domains](const VkTimeDomainKHR domain) {
+            return std::ranges::find(domains, domain) != domains.end();
+        };
+        if (!offered(VK_TIME_DOMAIN_DEVICE_KHR) || !offered(VK_TIME_DOMAIN_CLOCK_MONOTONIC_KHR))
+            return nullptr;
+        const bool khr = std::string_view(extension) == VK_KHR_CALIBRATED_TIMESTAMPS_EXTENSION_NAME;
+        return reinterpret_cast<PFN_vkGetCalibratedTimestampsKHR>(vulkan.fi().GetDeviceProcAddr(
+            vulkan.dev(), khr ? "vkGetCalibratedTimestampsKHR" : "vkGetCalibratedTimestampsEXT"));
+    }
+
+    /// Diagnostic only: one line per process, for the first split step that could not start.
+    void reportSplitUnavailable(const std::string_view reason, const std::string_view detail = {}) {
+        static std::atomic<bool> reported{false};
+        if (reported.exchange(true))
+            return;
+        std::cerr << "framegen-vulkan: GPU split profile unavailable; reason=" << reason;
+        if (!detail.empty())
+            std::cerr << "; " << detail;
+        std::cerr << '\n';
+    }
+
     /// find the cache file path
     std::filesystem::path findCacheFilePath() {
         const char* xdgCacheHome = std::getenv("XDG_CACHE_HOME");
@@ -333,12 +401,15 @@ namespace {
     /// create a Vulkan instance
     vk::Vulkan createVulkanInstance(vk::PhysicalDeviceSelector selectPhysicalDevice) {
         try {
+            // The only read of the A/B queue-priority experiment. Unset or unknown values change nothing.
+            const char* queuePriority = std::getenv("FGVK_BACKEND_QUEUE_PRIORITY");
             return{
                 "fgvk", vk::version{2, 0, 0},
                 "fgvk-engine", vk::version{2, 0, 0},
                 selectPhysicalDevice,
                 false, std::nullopt,
-                findCacheFilePath()
+                findCacheFilePath(),
+                queuePriority ? std::string_view(queuePriority) : std::string_view{}
             };
         } catch (const std::exception& e) {
             throw backend::error("Unable to initialize Vulkan", e);
@@ -929,6 +1000,104 @@ FrameProfile Instance::readFrameProfile(const Context& context) const { // NOLIN
     return context.readFrameProfile();
 }
 
+void Instance::enableSplitProfile(Context& context) { // NOLINT (static)
+    context.enableSplitProfile();
+}
+
+std::vector<SplitFrameProfile> Instance::takeCompletedSplitProfiles(Context& context) { // NOLINT (static)
+    return context.takeCompletedSplitProfiles();
+}
+
+bool Instance::splitProfileEnabled(const Context& context) const { // NOLINT (static)
+    return context.splitProfileEnabled();
+}
+
+void Context::enableSplitProfile() {
+    if (this->fidx != 0 || this->hasScheduledWork() || this->split)
+        throw backend::error("Split profiling requires a fresh unscheduled context");
+    const auto& vulkan = this->ctx.vk.get();
+    const auto calibrate = splitCalibrationFunction(vulkan);
+    if (!calibrate) {
+        reportSplitUnavailable("calibration");
+        return;
+    }
+    try {
+        auto state = std::make_unique<SplitProfilingState>();
+        for (auto& pool : state->pools)
+            pool.emplace(vulkan, 4);
+        const auto& first = *state->pools.front();
+        state->clock = vk::CalibratedClock(vulkan.dev(), calibrate,
+            first.timestampValidBits(), first.timestampPeriodNanoseconds());
+        if (!state->clock.recalibrate()) {
+            reportSplitUnavailable("calibration");
+            return;
+        }
+        state->calibratedAt = ProfileClock::now();
+        this->split = std::move(state);
+    } catch (const std::exception& error) {
+        reportSplitUnavailable("queries", error.what());
+    }
+}
+
+std::vector<SplitFrameProfile> Context::takeCompletedSplitProfiles() {
+    if (!this->split)
+        return {};
+    std::vector<SplitFrameProfile> profiles(this->split->completed.begin(), this->split->completed.end());
+    this->split->completed.clear();
+    return profiles;
+}
+
+void Context::recordSplitBatch(const bool generated) {
+    if (!this->split)
+        return;
+    this->splitBatches.at(this->fidx % inFlightDepth) = SplitBatch{
+        .frame = static_cast<uint64_t>(this->fidx),
+        .phase = this->fidx % commandPhaseCount,
+        .generated = generated,
+        .valid = true,
+    };
+}
+
+void Context::collectSplitProfiles(const std::array<bool, inFlightDepth>& signalled) {
+    auto& state = *this->split;
+    if (state.failed)
+        return;
+
+    // Refresh the device/host pair at most once per second. A failed call keeps the previous pair.
+    const auto now = ProfileClock::now();
+    if (now - state.calibratedAt >= std::chrono::seconds(1)) {
+        state.calibratedAt = now;
+        static_cast<void>(state.clock.recalibrate());
+    }
+    for (size_t slot = 0; slot < inFlightDepth; ++slot) {
+        auto& batch = this->splitBatches.at(slot);
+        // Only a slot whose fence this prepareWork observed signalled is read.
+        if (!signalled.at(slot) || !batch.valid)
+            continue;
+        batch.valid = false;
+        if (!batch.generated)
+            continue;
+        try {
+            const auto ticks = state.pools.at(batch.phase)->tryTimestamps(4);
+            if (!ticks)
+                continue;
+            state.completed.push_back(SplitFrameProfile{
+                .backendFrameIndex = batch.frame,
+                .fgStartNs = state.clock.monotonicNanoseconds(ticks->at(0)),
+                .prepassEndNs = state.clock.monotonicNanoseconds(ticks->at(1)),
+                .generatedEndNs = state.clock.monotonicNanoseconds(ticks->at(2)),
+                .batchEndNs = state.clock.monotonicNanoseconds(ticks->at(3)),
+            });
+            if (state.completed.size() > splitQueueCapacity)
+                state.completed.pop_front();
+        } catch (const std::exception& error) {
+            state.failed = true;
+            reportSplitUnavailable("queries", error.what());
+            return;
+        }
+    }
+}
+
 void Context::enableFrameProfiling(const bool collectCompleted) {
     if (this->fidx != 0 || this->hasScheduledWork() || this->profiling)
         throw backend::error("Frame profiling requires a fresh unscheduled context");
@@ -1019,6 +1188,8 @@ void Context::prepareWork(const bool drainAll) {
                      "aborting frame scheduling\n";
         throw backend::error("Timeout waiting for previous frame to complete");
     }
+    if (this->split)
+        this->collectSplitProfiles(signalled);
     if (this->profiling) {
         const double previousWaitUs = profileMicroseconds(start);
         // The fence waits above prove completion before queries are reused.
@@ -1064,6 +1235,12 @@ const vk::CommandBuffer& Context::recordPrepass() {
             VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
             0, 1, &batchOrder, 0, nullptr, 0, nullptr);
 
+        if (this->split) {
+            // Reset this phase's pool before its first split boundary of the batch.
+            const auto& pool = this->split->pools.at(this->fidx % commandPhaseCount).value();
+            pool.reset(cmdbuf.handle());
+            pool.write(cmdbuf.handle(), VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 0);
+        }
         if (this->profiling) {
             this->profiling->queries.reset(cmdbuf.handle());
             this->profiling->queries.write(cmdbuf.handle(), VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 0);
@@ -1101,6 +1278,9 @@ const vk::CommandBuffer& Context::recordPrepass() {
 
         if (this->profiling)
             this->profiling->queries.write(cmdbuf.handle(), VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 2);
+        if (this->split)
+            this->split->pools.at(this->fidx % commandPhaseCount).value().write(
+                cmdbuf.handle(), VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 1);
 
         cmdbuf.end(ctx.vk);
         recorded.emplace(std::move(cmdbuf));
@@ -1113,6 +1293,11 @@ const vk::CommandBuffer& Context::recordSourceRelease() {
     if (!recorded) {
         vk::CommandBuffer command(ctx.vk);
         command.begin(ctx.vk, 0);
+        // This command follows the last generated output in the same submission, so a
+        // bottom-of-pipe boundary here marks that output's completion for any output count.
+        if (this->split)
+            this->split->pools.at(this->fidx % commandPhaseCount).value().write(
+                command.handle(), VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 2);
         const std::array releases{
             vk::externalImageRelease(this->sourceImages.first.handle(), ctx.vk.get().queueFamilyIndex(), VK_ACCESS_SHADER_READ_BIT),
             vk::externalImageRelease(this->sourceImages.second.handle(), ctx.vk.get().queueFamilyIndex(), VK_ACCESS_SHADER_READ_BIT),
@@ -1123,6 +1308,9 @@ const vk::CommandBuffer& Context::recordSourceRelease() {
         // Include the final ownership handoff in the profiled batch span.
         if (this->profiling)
             this->profiling->queries.write(command.handle(), VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 3);
+        if (this->split)
+            this->split->pools.at(this->fidx % commandPhaseCount).value().write(
+                command.handle(), VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 3);
         command.end(ctx.vk);
         recorded.emplace(std::move(command));
     }
@@ -1185,6 +1373,7 @@ void Context::scheduleFrames(std::span<const float> timestamps) {
             drainAll = drainAll || timestamps[i] != this->constantBufferTimestamps.at(i);
     }
     this->prepareWork(drainAll);
+    this->recordSplitBatch(true);
     if (this->profiling)
         this->profiling->generatedCount = generatedFrameCount;
 
@@ -1319,6 +1508,7 @@ void Context::scheduleFrames(std::span<const float> timestamps) {
 
 void Context::scheduleFrameHistory() {
     this->prepareWork(false);
+    this->recordSplitBatch(false);
     if (this->profiling)
         this->profiling->generatedCount = 0;
     this->schedulePrepass(this->currentFence());

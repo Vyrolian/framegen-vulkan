@@ -279,7 +279,17 @@ bool Swapchain::recordGeneratedCopies(const vk::Vulkan& vk, RenderSlot& slot) {
 
 void Swapchain::initializeGpuPacingProfile(backend::Instance& backend,
         backend::Context& context) noexcept {
-    if (!this->pacingProfile || !present_diagnostics::pacingGpuProfileEnabled()) return;
+    if (!this->pacingProfile) return;
+    // Split boundaries are independent of the drained GPU profile: the backend
+    // enables only its non-draining state and the context's own fence reads.
+    if (present_diagnostics::pacingGpuSplitProfileEnabled()) {
+        try {
+            backend.enableSplitProfile(context);
+        } catch (const std::exception& error) {
+            present_diagnostics::reportPacingGpuSplitUnavailable("queries", error.what());
+        }
+    }
+    if (!present_diagnostics::pacingGpuProfileEnabled()) return;
     try {
         backend.enableFrameProfiling(context, true);
     } catch (const std::exception& error) {
@@ -390,6 +400,8 @@ void Swapchain::commitFrameGenerationResources(
     if (this->pacingProfile) this->pacingProfile->resetBackend();
     for (auto& slot : this->renderSlots) {
         slot.inFlight = false;
+        // A pending split read belongs to the retired backend context; drop it rather than read unproven work.
+        slot.splitPending = false;
         // Recorded copies name the replaced destination and swapchain images.
         // Release them before the staging image they read.
         slot.generatedCopies.clear();

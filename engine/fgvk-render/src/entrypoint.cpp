@@ -15,12 +15,14 @@
 #include "swapchain/retirement.hpp"
 #include "swapchain/private_present_queue.hpp"
 #include "swapchain/release_gate.hpp"
+#include "swapchain/internal_images.hpp"
 
 #include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstring>
 #include <dlfcn.h>
+#include <span>
 #include <link.h>
 #include <optional>
 #include <cstddef>
@@ -113,12 +115,16 @@ namespace {
         std::unordered_map<VkSwapchainKHR, ls::R<vk::Vulkan>> swapchains;
         std::unordered_map<VkSwapchainKHR, SwapchainInfo> swapchainInfos;
         std::unordered_set<VkSwapchainKHR> nativeSwapchains;
+        // F5 layer-owned application images, keyed like swapchainInfos.
+        std::unordered_map<VkSwapchainKHR, std::shared_ptr<InternalSwapchainImages>> internalSwapchains;
         struct RetiredSwapchain {
             VkDevice device{VK_NULL_HANDLE};
             VkSurfaceKHR surface{VK_NULL_HANDLE};
             ls::R<vk::Vulkan> vk;
             std::optional<Swapchain> context;
             std::chrono::steady_clock::time_point notBefore{};
+            // Lower presents of a retired context may still wait the copied semaphores.
+            std::shared_ptr<InternalSwapchainImages> internalImages;
         };
         std::atomic_size_t retiredSwapchainCount{0};
         std::mutex retiredSwapchainsMutex;
@@ -991,10 +997,12 @@ namespace {
                 newInfo.pNext = &meteringFeatures;
             }
 #endif
-            // Copy-profile diagnostics only (FGVK_PACING_PROFILE_COPY=1). Negotiate a supported
+            // Copy-profile and GPU split diagnostics only (FGVK_PACING_PROFILE_COPY=1 or
+            // FGVK_PACING_PROFILE_GPU_SPLIT=1). Negotiate a supported
             // calibration alias and known clock domains without adding any feature node.
             std::vector<const char*> copyCalibrationExtensions;
-            if (frameGenerationLayer && frameGenerationInteropEnabled && present_diagnostics::pacingCopyProfileEnabled()) {
+            if (frameGenerationLayer && frameGenerationInteropEnabled &&
+                    (present_diagnostics::pacingCopyProfileEnabled() || present_diagnostics::pacingGpuSplitProfileEnabled())) {
                 const auto supported = lowerDeviceExtensions(physdev);
                 const char* calibrationExtension{};
                 for (const auto* name : {VK_KHR_CALIBRATED_TIMESTAMPS_EXTENSION_NAME, VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME})
@@ -1331,6 +1339,13 @@ namespace {
             name == waitSemaphoresName || name == waitSemaphoresKhrName;
     }
 
+    // Layer-owned swapchain images intercept these only when the lower
+    // device exposes the matching release command.
+    bool isOptionalSwapchainReleaseCommand(const std::string_view name) {
+        return name == "vkReleaseSwapchainImagesKHR" ||
+            name == "vkReleaseSwapchainImagesEXT";
+    }
+
     // destroy device
     void myvkDestroyDevice(VkDevice device, const VkAllocationCallbacks* alloc) {
         if (!instance_info)
@@ -1526,7 +1541,8 @@ namespace {
                 "vkGetPhysicalDeviceSurfaceFormats2KHR" ||
                 std::string_view(name) == "vkGetPhysicalDeviceFeatures2" ||
                 std::string_view(name) == "vkGetPhysicalDeviceFeatures2KHR" ||
-                isOptionalPresentationCommand(name) || isOptionalReleaseCommand(name)) {
+                isOptionalPresentationCommand(name) || isOptionalReleaseCommand(name) ||
+                isOptionalSwapchainReleaseCommand(name)) {
             if (!instance || !layer_info->GetInstanceProcAddr ||
                     !layer_info->GetInstanceProcAddr(instance, name)) {
                 return nullptr;
@@ -1547,7 +1563,8 @@ namespace {
 
         if (!instance_info->funcs.GetDeviceProcAddr) return nullptr;
 
-        if ((isOptionalPresentationCommand(name) || isOptionalReleaseCommand(name)) &&
+        if ((isOptionalPresentationCommand(name) || isOptionalReleaseCommand(name) ||
+                isOptionalSwapchainReleaseCommand(name)) &&
                 !instance_info->funcs.GetDeviceProcAddr(device, name))
             return nullptr;
 
@@ -2506,6 +2523,72 @@ namespace {
             SpatialSurfaceOrigin::Xlib);
     }
 
+    InternalSwapchainImages* internalImagesFor(const VkSwapchainKHR swapchain) {
+        const auto found = instance_info->internalSwapchains.find(swapchain);
+        return found == instance_info->internalSwapchains.end()
+            ? nullptr : found->second.get();
+    }
+
+    // F5 gate and creation for one context-backed swapchain. Refusal or any
+    // allocation failure keeps the direct lower-image path. The decision is
+    // logged once for each swapchain created with a Frame Generation context.
+    void installInternalSwapchainImages(vk::Vulkan& vk,
+            const VkSwapchainCreateInfoKHR& application,
+            const VkSwapchainKHR swapchain, const SwapchainInfo& swapchainInfo) {
+        const char* reason = nullptr;
+        uint32_t imageCount = 0;
+        std::shared_ptr<InternalSwapchainImages> images;
+        try {
+            const auto& context = layer_info->root.getSwapchainContext(swapchain, vk);
+            const auto& profile = context.appliedProfile();
+            const auto support = queryInternalImageSupport(
+                vk, application.imageFormat, application.imageUsage);
+            const InternalImageGateInput gate{
+                .environmentEnabled = internalSwapchainEnvironmentEnabled(),
+                .nativeSwapchain = false,
+                .contextCreated = true,
+                .frameGenerationEnabled = profile.frame_generation_enabled,
+                .adaptive = profile.adaptive,
+                .deferredPresentQueue = static_cast<bool>(swapchainInfo.deferredPresentQueue),
+                .gamescopeScalingSurface = swapchainInfo.gamescopeScalingSurface != nullptr,
+                .gamescopeDetected = context.gamescopeDetectedAtCreation(),
+                .spatialScalingActive = swapchainInfo.spatialScalingActive,
+                .hdrDisplayResize = swapchainInfo.hdrDisplayResize,
+                .variableSurface = swapchainInfo.variableSurface,
+                .applicationExtent = swapchainInfo.applicationExtent,
+                .lowerExtent = swapchainInfo.extent,
+                .applicationFormat = application.imageFormat,
+                .lowerFormat = swapchainInfo.format,
+                .imageArrayLayers = application.imageArrayLayers,
+                .applicationFlags = application.flags,
+                .lowerImageCount = static_cast<uint32_t>(swapchainInfo.images.size()),
+                .formatBlitCapable = support.formatBlitCapable,
+                .imageFormatSupported = support.imageFormatSupported,
+            };
+            reason = internalImagesIneligibleReason(gate);
+            if (!reason) {
+                imageCount = internalImageCount(application.minImageCount,
+                    static_cast<uint32_t>(swapchainInfo.images.size()));
+                images = InternalSwapchainImages::create(vk, application,
+                    swapchainInfo.applicationExtent, swapchainInfo.images,
+                    imageCount, swapchainInfo.deferredPresentQueue);
+                if (!images) {
+                    reason = "allocation-failed";
+                }
+            }
+        } catch (const std::exception&) {
+            images.reset();
+            reason = "context-not-created";
+        }
+        if (images)
+            instance_info->internalSwapchains.insert_or_assign(swapchain, images);
+        std::cerr << "framegen-vulkan: internal swapchain images: active="
+                  << (images ? 1 : 0)
+                  << " reason=" << (reason ? reason : "eligible")
+                  << " images=" << (images ? imageCount : 0)
+                  << " lower_images=" << swapchainInfo.images.size() << '\n';
+    }
+
     VkResult myvkCreateSwapchainKHR(
             VkDevice device,
             const VkSwapchainCreateInfoKHR* info,
@@ -2524,6 +2607,7 @@ namespace {
             instance_info->swapchains.erase(createdSwapchain);
             instance_info->swapchainInfos.erase(createdSwapchain);
             instance_info->nativeSwapchains.erase(createdSwapchain);
+            instance_info->internalSwapchains.erase(createdSwapchain);
             if (instance_info->scalingSurfaces) {
                 instance_info->scalingSurfaces->destroySwapchain(
                     info->surface, createdSwapchain
@@ -3218,6 +3302,9 @@ namespace {
                 return res;
             }
 
+            installInternalSwapchainImages(it->second, *info, *swapchain,
+                swapchainInfo);
+
             instance_info->swapchains.emplace(*swapchain,
                 ls::R<vk::Vulkan>(it->second));
 
@@ -3236,6 +3323,11 @@ namespace {
             return VK_ERROR_INITIALIZATION_FAILED;
         }
     }
+
+    // Defined after the acquire helpers, which it shares with the lower path.
+    VkResult presentInternalSwapchainImage(Swapchain& context, vk::Vulkan& vk,
+        VkQueue queue, VkSwapchainKHR swapchain, InternalSwapchainImages& internal,
+        const VkPresentInfoKHR& presentInfo, uint32_t presentIndex);
 
     VkResult myvkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR* info) {
 #pragma clang diagnostic push
@@ -3404,12 +3496,17 @@ namespace {
 
                 auto& context = layer_info->root.getSwapchainContext(swapchain, it->second);
                 presentingContextId = context.diagnosticsId();
-                result = context.present(it->second,
-                    queue, swapchain,
-                    const_cast<void*>(info->pNext),
-                    info->pImageIndices[i],
-                    waitSemaphores
-                );
+                if (auto* internal = internalImagesFor(swapchain)) {
+                    result = presentInternalSwapchainImage(context, it->second,
+                        queue, swapchain, *internal, *info, static_cast<uint32_t>(i));
+                } else {
+                    result = context.present(it->second,
+                        queue, swapchain,
+                        const_cast<void*>(info->pNext),
+                        info->pImageIndices[i],
+                        waitSemaphores
+                    );
+                }
                 const bool liveProfileRecreationRequested =
                     context.requestLiveProfileResourceRecreationAfterPresent(
                         result
@@ -3562,16 +3659,19 @@ namespace {
                 info->second.surface, swapchain);
     }
 
+    // observeApplication is false when the layer itself performs the lower
+    // acquire on the present path, so the deferred join is not counted as an
+    // application acquire.
     template<typename Acquire>
     VkResult acquireAfterDeferredPresent(VkSwapchainKHR swapchain,
-            uint64_t timeout, Acquire&& acquire) {
+            uint64_t timeout, Acquire&& acquire, bool observeApplication = true) {
         const auto mapping = instance_info->swapchains.find(swapchain);
         if (mapping == instance_info->swapchains.end() ||
                 instance_info->nativeSwapchains.contains(swapchain)) return acquire(timeout);
         auto& context = layer_info->root.getSwapchainContext(swapchain, mapping->second.get());
         present_diagnostics::bindApplicationAcquireContext(context.diagnosticsId());
         if (!context.hasDeferredPresent()) return acquire(timeout);
-        context.observeDeferredApplicationAcquire();
+        if (observeApplication) context.observeDeferredApplicationAcquire();
         const auto started = std::chrono::steady_clock::now();
         const auto completed = context.completeDeferredPresent(0);
         if (completed != VK_SUCCESS && completed != VK_SUBOPTIMAL_KHR && completed != VK_NOT_READY) return completed;
@@ -3603,6 +3703,87 @@ namespace {
         return result == VK_SUCCESS && deferred == VK_SUBOPTIMAL_KHR ? deferred : result;
     }
 
+    // Emulated acquire for an F5 swapchain. The Frame Generation deferred
+    // join runs as it does for the lower path. The lower driver is not called,
+    // so the application's image comes only from the private ring.
+    VkResult acquireInternalSwapchainImage(VkSwapchainKHR swapchain,
+            InternalSwapchainImages& internal, uint64_t timeout,
+            VkSemaphore semaphore, VkFence fence, uint32_t* imageIndex) {
+        const auto mapping = instance_info->swapchains.find(swapchain);
+        if (mapping == instance_info->swapchains.end())
+            return VK_ERROR_INITIALIZATION_FAILED;
+        auto& context = layer_info->root.getSwapchainContext(swapchain, mapping->second.get());
+        present_diagnostics::bindApplicationAcquireContext(context.diagnosticsId());
+        context.observeDeferredApplicationAcquire();
+        const auto completed = context.completeDeferredPresent(0);
+        if (completed != VK_SUCCESS && completed != VK_SUBOPTIMAL_KHR &&
+                completed != VK_NOT_READY) {
+            return completed;
+        }
+        return internal.acquireApplicationImage(timeout, semaphore, fence,
+            completed == VK_SUBOPTIMAL_KHR, imageIndex);
+    }
+
+    // The application presents a private image. The layer acquires the lower
+    // image on this thread, copies the private image into it, and then
+    // presents the lower index through the existing Swapchain path. The
+    // copied semaphore takes the place of the application's wait semaphores.
+    VkResult presentInternalSwapchainImage(Swapchain& context, vk::Vulkan& vk,
+            const VkQueue queue, const VkSwapchainKHR swapchain,
+            InternalSwapchainImages& internal, const VkPresentInfoKHR& presentInfo,
+            const uint32_t presentIndex) {
+        const uint32_t applicationIndex = presentInfo.pImageIndices[presentIndex];
+        const auto applicationWaits = presentInfo.waitSemaphoreCount > 0
+            ? std::span<const VkSemaphore>(
+                presentInfo.pWaitSemaphores, presentInfo.waitSemaphoreCount)
+            : std::span<const VkSemaphore>{};
+        if (!internal.isAcquired(applicationIndex))
+            return VK_ERROR_VALIDATION_FAILED_EXT;
+        if (const VkResult sticky = internal.stickyError(); sticky != VK_SUCCESS) {
+            static_cast<void>(internal.presentWithoutCopy(applicationIndex, applicationWaits));
+            return sticky;
+        }
+
+        uint32_t lowerIndex = 0;
+        uint32_t slot = 0;
+        const VkResult acquired = acquireAfterDeferredPresent(swapchain, UINT64_MAX,
+            [&](uint64_t timeout) {
+                // A poll (timeout 0) reports NOT_READY while the slot is busy.
+                const VkResult waited = internal.waitLowerAcquireSlot(timeout);
+                if (waited != VK_SUCCESS) return waited;
+                uint32_t index = 0;
+                const VkResult lower = vk.df().AcquireNextImageKHR(vk.dev(), swapchain,
+                    timeout, internal.lowerAcquireSemaphore(), VK_NULL_HANDLE, &index);
+                if (lower == VK_SUCCESS || lower == VK_SUBOPTIMAL_KHR) {
+                    lowerIndex = index;
+                    slot = internal.commitLowerAcquire();
+                }
+                return lower;
+            }, false);
+        if (acquired != VK_SUCCESS && acquired != VK_SUBOPTIMAL_KHR) {
+            internal.noteLowerError(acquired);
+            const VkResult error = acquired < 0 ? acquired : VK_ERROR_UNKNOWN;
+            static_cast<void>(internal.presentWithoutCopy(applicationIndex, applicationWaits));
+            return error;
+        }
+
+        const bool lowerSuboptimal = acquired == VK_SUBOPTIMAL_KHR;
+        if (lowerSuboptimal)
+            internal.markLowerSuboptimal();
+        VkResult result = internal.presentCopy(vk, applicationIndex, lowerIndex, slot,
+            applicationWaits);
+        if (result != VK_SUCCESS)
+            return result;
+
+        const VkSemaphore copied = internal.copiedSemaphore(lowerIndex);
+        result = context.present(vk, queue, swapchain,
+            const_cast<void*>(presentInfo.pNext), lowerIndex,
+            std::span<const VkSemaphore>(&copied, 1));
+        if (result == VK_SUCCESS && lowerSuboptimal)
+            return VK_SUBOPTIMAL_KHR;
+        return result;
+    }
+
     VkResult myvkAcquireNextImageKHR(
             VkDevice device, VkSwapchainKHR swapchain, uint64_t timeout,
             VkSemaphore semaphore, VkFence fence, uint32_t* imageIndex) {
@@ -3614,6 +3795,10 @@ namespace {
         return present_diagnostics::observeApplicationAcquire(
             device, swapchain, present_diagnostics::ApplicationFrameApi::AcquireKhr,
             timeout, [&] {
+                if (auto* internal = internalImagesFor(swapchain)) {
+                    return acquireInternalSwapchainImage(swapchain, *internal, timeout,
+                        semaphore, fence, imageIndex);
+                }
                 return acquireAfterDeferredPresent(swapchain, timeout, [&](uint64_t remaining) {
                     return present_diagnostics::observeApplicationAcquireDriver(remaining, [&] {
                         return mapping->second.get().df().AcquireNextImageKHR(
@@ -3635,6 +3820,10 @@ namespace {
         return present_diagnostics::observeApplicationAcquire(
             device, info->swapchain, present_diagnostics::ApplicationFrameApi::AcquireKhr2,
             info->timeout, [&] {
+                if (auto* internal = internalImagesFor(info->swapchain)) {
+                    return acquireInternalSwapchainImage(info->swapchain, *internal,
+                        info->timeout, info->semaphore, info->fence, imageIndex);
+                }
                 return acquireAfterDeferredPresent(info->swapchain, info->timeout, [&](uint64_t remaining) {
                     auto adjusted = *info;
                     adjusted.timeout = remaining;
@@ -3643,6 +3832,62 @@ namespace {
                 });
             }, imageIndex);
     }
+
+    // Lower result-count semantics for the private image set: a null array
+    // reports the count; a short array receives a prefix and VK_INCOMPLETE.
+    VkResult reportInternalSwapchainImages(std::span<const VkImage> source,
+            uint32_t* count, VkImage* images) {
+        if (!count) return VK_ERROR_INITIALIZATION_FAILED;
+        if (!images) {
+            *count = static_cast<uint32_t>(source.size());
+            return VK_SUCCESS;
+        }
+        const size_t copied = std::min<size_t>(*count, source.size());
+        std::copy_n(source.begin(), copied, images);
+        *count = static_cast<uint32_t>(copied);
+        return copied < source.size() ? VK_INCOMPLETE : VK_SUCCESS;
+    }
+
+    VkResult myvkGetSwapchainImagesKHR(VkDevice device, VkSwapchainKHR swapchain,
+            uint32_t* count, VkImage* images) {
+        if (!instance_info) return VK_ERROR_INITIALIZATION_FAILED;
+        if (const auto* internal = internalImagesFor(swapchain))
+            return reportInternalSwapchainImages(internal->images(), count, images);
+        const auto lower = reinterpret_cast<PFN_vkGetSwapchainImagesKHR>(
+            instance_info->funcs.GetDeviceProcAddr(device, "vkGetSwapchainImagesKHR"));
+        if (!lower) return VK_ERROR_EXTENSION_NOT_PRESENT;
+        return lower(device, swapchain, count, images);
+    }
+
+#if defined(VK_KHR_swapchain_maintenance1) || defined(VK_EXT_swapchain_maintenance1)
+    // Shared by both spellings, which use the same info struct layout.
+    VkResult releaseSwapchainImagesCommon(VkDevice device,
+            const VkReleaseSwapchainImagesInfoKHR* info, const char* name) {
+        if (!instance_info || !info) return VK_ERROR_INITIALIZATION_FAILED;
+        if (auto* internal = internalImagesFor(info->swapchain)) {
+            return internal->releaseApplicationImages(std::span<const uint32_t>(
+                info->pImageIndices, info->imageIndexCount));
+        }
+        const auto lower = reinterpret_cast<PFN_vkReleaseSwapchainImagesKHR>(
+            instance_info->funcs.GetDeviceProcAddr(device, name));
+        if (!lower) return VK_ERROR_EXTENSION_NOT_PRESENT;
+        return lower(device, info);
+    }
+#endif
+
+#if defined(VK_KHR_swapchain_maintenance1)
+    VkResult myvkReleaseSwapchainImagesKHR(VkDevice device,
+            const VkReleaseSwapchainImagesInfoKHR* info) {
+        return releaseSwapchainImagesCommon(device, info, "vkReleaseSwapchainImagesKHR");
+    }
+#endif
+
+#if defined(VK_EXT_swapchain_maintenance1)
+    VkResult myvkReleaseSwapchainImagesEXT(VkDevice device,
+            const VkReleaseSwapchainImagesInfoEXT* info) {
+        return releaseSwapchainImagesCommon(device, info, "vkReleaseSwapchainImagesEXT");
+    }
+#endif
 
     void myvkDestroySwapchainKHR(
             VkDevice device,
@@ -3688,6 +3933,14 @@ namespace {
         instance_info->swapchainInfos.erase(swapchain);
         instance_info->swapchains.erase(swapchain);
         instance_info->nativeSwapchains.erase(swapchain);
+        // Removed before the lower destroy. A retired context keeps the object
+        // so a pending lower present can still wait its copied semaphore.
+        std::shared_ptr<InternalSwapchainImages> internalImages;
+        if (const auto found = instance_info->internalSwapchains.find(swapchain);
+                found != instance_info->internalSwapchains.end()) {
+            internalImages = std::move(found->second);
+            instance_info->internalSwapchains.erase(found);
+        }
 
         if (!native && context && context->presentRetirementEnabled()) {
             if (!alloc) {
@@ -3706,6 +3959,7 @@ namespace {
                                 .vk = ls::R<vk::Vulkan>(it->second),
                                 .context = std::move(context),
                                 .notBefore = now + swapchainRetirementGracePeriod,
+                                .internalImages = std::move(internalImages),
                             }
                         ).second;
                     if (inserted) {
@@ -3792,6 +4046,13 @@ namespace {
                     { "vkCreateSwapchainKHR", VKPTR(myvkCreateSwapchainKHR) },
                     { "vkAcquireNextImageKHR", VKPTR(myvkAcquireNextImageKHR) },
                     { "vkAcquireNextImage2KHR", VKPTR(myvkAcquireNextImage2KHR) },
+                    { "vkGetSwapchainImagesKHR", VKPTR(myvkGetSwapchainImagesKHR) },
+#if defined(VK_KHR_swapchain_maintenance1)
+                    { "vkReleaseSwapchainImagesKHR", VKPTR(myvkReleaseSwapchainImagesKHR) },
+#endif
+#if defined(VK_EXT_swapchain_maintenance1)
+                    { "vkReleaseSwapchainImagesEXT", VKPTR(myvkReleaseSwapchainImagesEXT) },
+#endif
                     { "vkQueuePresentKHR", VKPTR(myvkQueuePresentKHR) },
                     { "vkWaitForPresentKHR", VKPTR(myvkWaitForPresentKHR) },
 #if defined(VK_KHR_present_wait2)

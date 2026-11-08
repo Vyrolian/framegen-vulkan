@@ -343,6 +343,9 @@ void Swapchain::submitSourceCopy(const PresentInvocation& invocation,
         ),
     };
     commandBuffer.begin(invocation.vk);
+    // Diagnostic split boundaries: two queries in the existing copy, no added barrier or wait.
+    const bool splitRecorded = this->recordRenderSplitBegin(
+        invocation.vk, commandBuffer.handle(), this->currentRenderSlot());
     if (this->nativeCopyProfile)
         this->nativeCopyProfile->beginCopy(commandBuffer.handle(), invocation.vk.queue(), invocation.imageIndex, false);
     commandBuffer.blitImage(invocation.vk,
@@ -356,6 +359,8 @@ void Swapchain::submitSourceCopy(const PresentInvocation& invocation,
             swapchainImage, this->info.extent, invocation.imageIndex, false);
     if (this->nativeCopyProfile)
         this->nativeCopyProfile->endCopy(commandBuffer.handle(), false);
+    if (splitRecorded)
+        this->recordRenderSplitEnd(commandBuffer.handle(), this->currentRenderSlot());
     commandBuffer.end(invocation.vk);
 
     const auto sourceSubmitStarted = startPresentDiagnostic();
@@ -384,6 +389,12 @@ void Swapchain::submitSourceCopy(const PresentInvocation& invocation,
             {}, this->syncSemaphore->handle(), sourceTimelineValue
         );
     });
+    if (splitRecorded) {
+        // Set only after the submit returns. The slot's existing fence later proves completion.
+        auto& slot = this->currentRenderSlot();
+        slot.splitSource = this->pacingProfile ? this->pacingProfile->sourceOrdinal() : 0;
+        slot.splitPending = true;
+    }
     this->frameState.sourceReleaseTimelineValue =
         this->frameState.nextSourceReleaseTimelineValue;
     this->frameState.nextSourceReleaseTimelineValue = 0;
@@ -391,6 +402,56 @@ void Swapchain::submitSourceCopy(const PresentInvocation& invocation,
         "submit-source-copy", this->frameState.realFrameIndex,
         this->frameState.sequenceIndex, sourceSubmitStarted
     );
+}
+
+bool Swapchain::recordRenderSplitBegin(const vk::Vulkan& vk,
+        const VkCommandBuffer command, RenderSlot& slot) {
+    if (!present_diagnostics::pacingGpuSplitProfileEnabled() || this->splitRenderUnavailable ||
+            !this->instance || this->destinationImages.empty() ||
+            !this->instance->splitProfileEnabled(this->ctx.get()))
+        return false;
+    try {
+        if (!slot.splitQueries)
+            slot.splitQueries = std::make_unique<vk::TimestampQueryPool>(vk, 2);
+        if (!this->splitRenderClock) {
+            // The application device may not have enabled calibration. Then this
+            // clock stays uncalibrated and the render half reports zeros.
+            const auto get = [&](const char* name) {
+                return vk.fi().GetDeviceProcAddr(vk.dev(), name);
+            };
+            auto calibrate = this->info.copyTimestampCalibration
+                ? reinterpret_cast<PFN_vkGetCalibratedTimestampsKHR>(get("vkGetCalibratedTimestampsKHR")) : nullptr;
+            if (this->info.copyTimestampCalibration && !calibrate)
+                calibrate = reinterpret_cast<PFN_vkGetCalibratedTimestampsKHR>(get("vkGetCalibratedTimestampsEXT"));
+            this->splitRenderClock.emplace(vk.dev(), calibrate,
+                slot.splitQueries->timestampValidBits(),
+                slot.splitQueries->timestampPeriodNanoseconds());
+        }
+    } catch (const std::exception& error) {
+        // Disable only the render half for this swapchain; the backend half is unaffected.
+        this->splitRenderUnavailable = true;
+        present_diagnostics::reportPacingGpuSplitUnavailable("queries", error.what());
+        return false;
+    }
+    // Reset is recorded first so the pool holds only this copy's two boundaries.
+    slot.splitQueries->reset(command);
+    slot.splitQueries->write(command, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 0);
+    return true;
+}
+
+void Swapchain::recordRenderSplitEnd(const VkCommandBuffer command, RenderSlot& slot) {
+    if (slot.splitQueries)
+        slot.splitQueries->write(command, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 1);
+}
+
+present_diagnostics::SplitRenderHalf Swapchain::findRenderSplitHalf(const uint64_t source) const {
+    if (source == 0)
+        return {};
+    for (const auto& half : this->splitRenderHalves) {
+        if (half.source == source)
+            return half;
+    }
+    return {};
 }
 
 VkResult Swapchain::presentHistoryOnly(

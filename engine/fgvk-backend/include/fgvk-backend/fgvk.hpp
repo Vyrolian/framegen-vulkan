@@ -54,6 +54,16 @@ namespace fgvk::backend {
         float timestampPeriodNs{};
     };
 
+    /// Non-draining GPU boundaries for one generated batch, converted to
+    /// CLOCK_MONOTONIC nanoseconds. Zero means unknown.
+    struct SplitFrameProfile {
+        uint64_t backendFrameIndex{}; // Same zero-based batch index as FrameProfile.
+        int64_t fgStartNs{};          // Prepass start, after the batch-order barrier.
+        int64_t prepassEndNs{};       // Prepass end.
+        int64_t generatedEndNs{};     // Source-release start: every generated output of this batch has completed.
+        int64_t batchEndNs{};         // Source-release end.
+    };
+
     ///
     /// Primitive exception class that deliveres a detailed error message
     ///
@@ -193,6 +203,19 @@ namespace fgvk::backend {
         /// its normal output wait. No extra fence wait or blocking query-result
         /// flag is added; unavailable queries fail. Readback is measurement overhead.
         [[nodiscard]] FrameProfile readFrameProfile(const Context& context) const;
+
+        /// Enable non-draining split GPU boundaries on a fresh context. Must precede
+        /// its first schedule. It adds no wait, drain, or schedule change: each
+        /// batch is read only after its existing fence has signalled. Calibration
+        /// or query failure logs one reason and leaves the context unchanged.
+        void enableSplitProfile(Context& context);
+
+        /// Consume completed split samples oldest first. The queue is bounded to
+        /// eight entries and drops its oldest sample. Performs no Vulkan operation.
+        [[nodiscard]] std::vector<SplitFrameProfile> takeCompletedSplitProfiles(Context& context);
+
+        /// Whether split boundaries are active on this context.
+        [[nodiscard]] bool splitProfileEnabled(const Context& context) const;
 
         ///
         /// Schedule generated frames at explicit interpolation timestamps.

@@ -27,6 +27,8 @@ namespace fgvk::layer::present_diagnostics {
     [[nodiscard]] bool enabled();
     [[nodiscard]] bool pacingProfileEnabled();
     [[nodiscard]] bool pacingGpuProfileEnabled();
+    /// Non-draining split GPU boundaries; active only with FGVK_PACING_PROFILE=1 and FGVK_PACING_PROFILE_GPU_SPLIT=1.
+    [[nodiscard]] bool pacingGpuSplitProfileEnabled();
     [[nodiscard]] bool pacingFrameTraceEnabled();
     /// Native copy timestamps; generated copies move to the present thread. Implies the frame trace.
     [[nodiscard]] bool pacingCopyProfileEnabled();
@@ -281,6 +283,19 @@ namespace fgvk::layer::present_diagnostics {
     void logPacingGpuFrame(uint64_t context, uint64_t source, uint64_t epoch,
         uint64_t frame, double previousWaitUs, double prepassSubmitUs, double generationSubmitUs,
         double prepassUs, double spanUs, double readbackUs, std::span<const double> generatedUs) noexcept;
+
+    /// Render-side split boundaries of one source's copy, in CLOCK_MONOTONIC
+    /// nanoseconds. Zero means unknown, including an uncalibrated application device.
+    struct SplitRenderHalf {
+        uint64_t source{};
+        int64_t gameDoneNs{};
+        int64_t sourceCopyEndNs{};
+    };
+    void logPacingGpuSplitFrame(uint64_t context, uint64_t source, uint64_t backendFrame,
+        int64_t gameDoneNs, int64_t sourceCopyEndNs, int64_t fgStartNs, int64_t prepassEndNs,
+        int64_t generatedEndNs, int64_t batchEndNs) noexcept;
+    /// Diagnostic: one line per process for the first split step that cannot start.
+    void reportPacingGpuSplitUnavailable(std::string_view reason, std::string_view detail) noexcept;
 
     struct SteamOverlayLibraries {
         bool hookLoaded{};

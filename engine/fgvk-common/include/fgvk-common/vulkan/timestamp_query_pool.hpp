@@ -4,6 +4,7 @@
 #include "../helpers/errors.hpp"
 #include <cmath>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -127,6 +128,24 @@ namespace vk {
                     result, "vkGetQueryPoolResults() failed"
                 );
 
+            return timestamps;
+        }
+
+        /// Read the first usedCount queries without VK_QUERY_RESULT_WAIT_BIT.
+        /// VK_NOT_READY returns no values, so the caller skips that sample.
+        [[nodiscard]] std::optional<std::vector<uint64_t>> tryTimestamps(uint32_t usedCount) const {
+            if (usedCount == 0 || usedCount > this->count)
+                throw ls::error("timestamp read exceeds query capacity");
+            std::vector<uint64_t> timestamps(usedCount);
+            const auto result = this->resultsFunction(
+                this->device, this->pool, 0, usedCount,
+                timestamps.size() * sizeof(uint64_t), timestamps.data(),
+                sizeof(uint64_t), VK_QUERY_RESULT_64_BIT
+            );
+            if (result == VK_NOT_READY)
+                return std::nullopt;
+            if (result != VK_SUCCESS)
+                throw ls::vulkan_error(result, "vkGetQueryPoolResults() failed");
             return timestamps;
         }
 

@@ -112,6 +112,9 @@ namespace vk {
     /// Optional Vulkan features framegen-vulkan may enable without changing correctness.
     struct OptionalDeviceFeatures {
         bool robustImageAccess2{};
+        // VK_KHR_calibrated_timestamps or, when only the EXT form exists, VK_EXT_calibrated_timestamps.
+        // Null when neither extension is supported.
+        const char* calibratedTimestamps{};
     };
 
     /// Select optional features only when both the extension and feature bit exist.

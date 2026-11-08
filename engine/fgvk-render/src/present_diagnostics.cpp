@@ -241,6 +241,18 @@ bool pacingGpuProfileEnabled() {
     return value;
 }
 
+bool pacingGpuSplitProfileEnabled() {
+    static const bool value = [] {
+        // Read once per process with the CPU capture it correlates with. It implies neither
+        // the trace nor the drained GPU profile, so it adds no wait to the presentation path.
+        const char* profile = std::getenv("FGVK_PACING_PROFILE");
+        const char* split = std::getenv("FGVK_PACING_PROFILE_GPU_SPLIT");
+        return profile && std::string_view(profile) == "1" &&
+            split && std::string_view(split) == "1";
+    }();
+    return value;
+}
+
 bool pacingWaylandProfileEnabled() {
     static const bool value = [] {
         const char* environment = std::getenv("FGVK_PACING_PROFILE_WAYLAND");
@@ -565,6 +577,32 @@ void logPacingGpuFrame(const uint64_t context, const uint64_t source, const uint
              << " span_us=" << spanUs << " readback_us=" << readbackUs << " outputs=" << generatedUs.size();
         for (size_t i = 0; i < generatedUs.size(); ++i) line << " output_" << i << "_us=" << generatedUs[i];
         line << '\n';
+        writePacingProfileRecords(line.str());
+    } catch (...) {}
+}
+
+void reportPacingGpuSplitUnavailable(const std::string_view reason, const std::string_view detail) noexcept {
+    static std::atomic<bool> reported{false};
+    if (reported.exchange(true))
+        return;
+    try {
+        std::cerr << "framegen-vulkan: GPU split profile unavailable; reason=" << reason
+                  << "; " << detail << '\n';
+    } catch (...) {}
+}
+
+void logPacingGpuSplitFrame(const uint64_t context, const uint64_t source, const uint64_t backendFrame,
+        const int64_t gameDoneNs, const int64_t sourceCopyEndNs, const int64_t fgStartNs,
+        const int64_t prepassEndNs, const int64_t generatedEndNs, const int64_t batchEndNs) noexcept {
+    try {
+        std::ostringstream line;
+        line.imbue(std::locale::classic());
+        line << "framegen-vulkan: present diagnostics: operation=pacing-profile-gpu-split version=1"
+             << " pid=" << getpid() << " context=" << context << " source=" << source
+             << " backend_frame=" << backendFrame << " game_done_ns=" << gameDoneNs
+             << " source_copy_end_ns=" << sourceCopyEndNs << " fg_start_ns=" << fgStartNs
+             << " prepass_end_ns=" << prepassEndNs << " generated_end_ns=" << generatedEndNs
+             << " batch_end_ns=" << batchEndNs << '\n';
         writePacingProfileRecords(line.str());
     } catch (...) {}
 }

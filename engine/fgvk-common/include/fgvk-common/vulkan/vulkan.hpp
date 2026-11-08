@@ -3,6 +3,7 @@
 #pragma once
 
 #include "../helpers/pointers.hpp"
+#include "device_features.hpp"
 #include "device_memory_accounting.hpp"
 
 #include <bitset>
@@ -12,6 +13,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <vulkan/vulkan_core.h>
@@ -40,6 +42,9 @@ namespace vk {
         PFN_vkGetPhysicalDeviceSurfaceFormatsKHR GetPhysicalDeviceSurfaceFormatsKHR;
         PFN_vkGetPhysicalDeviceSurfacePresentModesKHR GetPhysicalDeviceSurfacePresentModesKHR;
         PFN_vkGetPhysicalDeviceSurfaceSupportKHR GetPhysicalDeviceSurfaceSupportKHR;
+        // Optional diagnostics and queue-priority queries; null when the loader lacks them.
+        PFN_vkGetPhysicalDeviceQueueFamilyProperties2 GetPhysicalDeviceQueueFamilyProperties2;
+        PFN_vkGetPhysicalDeviceCalibrateableTimeDomainsKHR GetPhysicalDeviceCalibrateableTimeDomainsKHR;
     };
 
     /// initialize vulkan instance function pointers
@@ -172,13 +177,16 @@ namespace vk {
         /// @param isGraphical whether the device is graphical (rather than compute)
         /// @param setLoaderData optional function to set loader data
         /// @param cachefile optional path to pipeline cache file
+        /// @param queuePriorityRequest diagnostic FGVK_BACKEND_QUEUE_PRIORITY value read by the caller;
+        ///        only the exact values "high" and "realtime" request a global queue priority
         /// @throws ls::vulkan_error on failure
         Vulkan(const std::string& appName, version appVersion,
             const std::string& engineName, version engineVersion,
             PhysicalDeviceSelector selectPhysicalDevice,
             bool isGraphical = false,
             std::optional<PFN_vkSetDeviceLoaderData> setLoaderData = std::nullopt,
-            const std::optional<std::filesystem::path>& cachefile = std::nullopt);
+            const std::optional<std::filesystem::path>& cachefile = std::nullopt,
+            std::string_view queuePriorityRequest = {});
 
         /// create based on an existing externally managed vulkan instance.
         /// @param instance vulkan instance handle
@@ -272,6 +280,17 @@ namespace vk {
             return this->robustImageAccess2;
         }
 
+        /// whether a device created by this object enabled VK_KHR_calibrated_timestamps or
+        /// VK_EXT_calibrated_timestamps; always false for an externally created device
+        [[nodiscard]] bool supportsCalibratedTimestamps() const {
+            return this->optionalDeviceFeatures.calibratedTimestamps != nullptr;
+        }
+
+        /// the enabled calibrated-timestamps extension name, or null when none is enabled
+        [[nodiscard]] const char* calibratedTimestampsExtension() const {
+            return this->optionalDeviceFeatures.calibratedTimestamps;
+        }
+
         /// get instance-level function pointers
         /// @return the instance function pointers
         [[nodiscard]] const auto& fi() const { return this->instance_funcs; }
@@ -301,6 +320,7 @@ namespace vk {
         VkQueueFlags queueFamilyFlags{0};
         bool frameGenerationInterop{true};
         bool fp16;
+        OptionalDeviceFeatures optionalDeviceFeatures{};
         bool robustImageAccess2;
 
         ls::owned_ptr<VkDevice> device;

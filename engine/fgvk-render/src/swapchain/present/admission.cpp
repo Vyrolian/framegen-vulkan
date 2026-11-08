@@ -288,6 +288,38 @@ bool Swapchain::pollRenderSlotsIdle(const vk::Vulkan& vk) {
     return idle;
 }
 
+void Swapchain::collectRenderSplitTimestamps() {
+    if (!present_diagnostics::pacingGpuSplitProfileEnabled())
+        return;
+    for (auto& slot : this->renderSlots) {
+        // inFlight is cleared only after an observed signal, so a pending slot
+        // that is not in flight has a copy whose completion the fence proves.
+        if (!slot.splitPending || slot.inFlight || !slot.splitQueries)
+            continue;
+        slot.splitPending = false;
+        present_diagnostics::SplitRenderHalf half{.source = slot.splitSource};
+        try {
+            if (this->splitRenderClock) {
+                // Refresh the calibration at most once per second; a failed call keeps the previous pair.
+                const auto now = present_diagnostics::Clock::now();
+                if (now - this->splitRenderCalibratedAt >= std::chrono::seconds(1)) {
+                    this->splitRenderCalibratedAt = now;
+                    static_cast<void>(this->splitRenderClock->recalibrate());
+                }
+                // No WAIT flag: an incomplete query returns no values and this source keeps zeros.
+                if (const auto ticks = slot.splitQueries->tryTimestamps(2)) {
+                    half.gameDoneNs = this->splitRenderClock->monotonicNanoseconds(ticks->at(0));
+                    half.sourceCopyEndNs = this->splitRenderClock->monotonicNanoseconds(ticks->at(1));
+                }
+            }
+        } catch (const std::exception&) {
+            // A failed diagnostic read affects only this source's render half.
+        }
+        this->splitRenderHalves.at(this->splitRenderHalfNext) = half;
+        this->splitRenderHalfNext = (this->splitRenderHalfNext + 1) % this->splitRenderHalves.size();
+    }
+}
+
 bool Swapchain::prepareRenderFence(const vk::Vulkan& vk) {
     const size_t next = nextRenderSlot(this->renderSlotIndex, renderSlotDepth);
     if (!this->spatialScaler && !this->frameContentCapture &&
@@ -311,6 +343,7 @@ bool Swapchain::prepareRenderFence(const vk::Vulkan& vk) {
                     return slot.fence.wait(vk, budgetNs);
                 }))
             return false;
+        this->collectRenderSplitTimestamps();
         this->renderSlotIndex = next;
         slot.fence.reset(vk);
         return true;
@@ -337,6 +370,7 @@ bool Swapchain::prepareRenderFence(const vk::Vulkan& vk) {
         if (this->nativeCopyProfile)
             this->nativeCopyProfile->completed();
     }
+    this->collectRenderSplitTimestamps();
     this->renderSlotIndex = next;
     this->renderSlots.at(next).fence.reset(vk);
     return true;

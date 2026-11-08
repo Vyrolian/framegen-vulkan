@@ -125,6 +125,18 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
             this->pacingProfile->gpuMicroseconds(Profile::GpuReadback, gpu->cpuReadbackUs);
         }
     }
+    if (this->pacingProfile && present_diagnostics::pacingGpuSplitProfileEnabled() &&
+            this->instance && !this->destinationImages.empty()) {
+        // Samples were collected after the backend's existing fence wait; reading them adds no GPU wait.
+        for (const auto& split : this->instance->takeCompletedSplitProfiles(this->ctx.get())) {
+            const auto source = this->pacingProfile->sourceForBackend(split.backendFrameIndex);
+            const auto render = this->findRenderSplitHalf(source);
+            present_diagnostics::logPacingGpuSplitFrame(this->diagnosticsState.contextId,
+                source, split.backendFrameIndex,
+                render.gameDoneNs, render.sourceCopyEndNs,
+                split.fgStartNs, split.prepassEndNs, split.generatedEndNs, split.batchEndNs);
+        }
+    }
     const DiagnosticsContextScope diagnosticsContext(
         this->diagnosticsState.contextId, this->pacingProfile.get()
     );

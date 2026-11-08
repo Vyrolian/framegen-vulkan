@@ -9,6 +9,7 @@ set(LAYER_SOURCES
     "src/runtime_health.cpp"
     "src/runtime_status.cpp"
     "src/swapchain/create.cpp"
+    "src/swapchain/internal_images.cpp"
     "src/swapchain/present.cpp"
     "src/swapchain/present/admission.cpp"
     "src/swapchain/present/generated_frames.cpp"
@@ -381,6 +382,14 @@ if(BUILD_TESTING)
     target_include_directories(fgvk-render-slot-ring-tests PRIVATE "src")
     add_test(NAME render-slot-ring COMMAND fgvk-render-slot-ring-tests)
     fgvk_register_portable_policy_test(fgvk-render-slot-ring-tests render-slot-ring)
+
+    # Internal application images: pure gate and free-image ring tests. The
+    # ring test also runs a short two-thread acquire/present exchange.
+    add_executable(fgvk-internal-images-tests "tests/internal_images_tests.cpp")
+    target_include_directories(fgvk-internal-images-tests PRIVATE "src")
+    target_link_libraries(fgvk-internal-images-tests PRIVATE Threads::Threads)
+    add_test(NAME internal-images COMMAND fgvk-internal-images-tests)
+    fgvk_register_portable_policy_test(fgvk-internal-images-tests internal-images)
 
     # fgvk-backend is configured only for layer, CLI or develop builds. Its
     # fence ring is header-only, so the portable policy set builds this backend

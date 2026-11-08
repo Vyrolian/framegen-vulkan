@@ -120,6 +120,11 @@ if(BUILD_TESTING)
         PRIVATE fgvk-common)
     add_test(NAME procedural-image-quality-scene
         COMMAND fgvk-image-quality-tests)
+
+    add_executable(fgvk-gpu-clock-tests
+        "tests/gpu_clock_tests.cpp")
+    target_link_libraries(fgvk-gpu-clock-tests PRIVATE fgvk-common)
+    add_test(NAME gpu-clock-mapping COMMAND fgvk-gpu-clock-tests)
 endif()
 
 if(FGVK_INSTALL_DEVELOP)
