@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 
+#include "fence_ring.hpp"
 #include "helpers/temporal_phases.hpp"
 #include "helpers/black_image.hpp"
 #include "helpers/frame_color_policy.hpp"
@@ -1007,17 +1008,16 @@ void Context::prepareWork(const bool drainAll) {
     const bool waitAll = drainAll || this->profiling != nullptr;
     const size_t current = this->fidx % inFlightDepth;
     std::array<bool, inFlightDepth> signalled{};
-    uint64_t remainingNs = previousWorkFenceTimeoutNs;
-    for (size_t slot = 0; slot < inFlightDepth; ++slot) {
-        if (!this->fenceScheduled.at(slot) || (!waitAll && slot != current))
-            continue;
-        if (!waitWithBudget(this->cmdbufFences.at(slot), this->ctx.vk, remainingNs)) {
-            std::cerr << "framegen-vulkan: backend work fence timed out after "
-                      << previousWorkFenceTimeout.count() << " ms; "
-                         "aborting frame scheduling\n";
-            throw backend::error("Timeout waiting for previous frame to complete");
-        }
-        signalled.at(slot) = true;
+    if (!waitScheduledFences(this->fenceScheduled, inFlightDepth, current, waitAll,
+            previousWorkFenceTimeoutNs,
+            [this](const size_t slot, uint64_t& remainingNs) {
+                return waitWithBudget(this->cmdbufFences.at(slot), this->ctx.vk, remainingNs);
+            },
+            signalled)) {
+        std::cerr << "framegen-vulkan: backend work fence timed out after "
+                  << previousWorkFenceTimeout.count() << " ms; "
+                     "aborting frame scheduling\n";
+        throw backend::error("Timeout waiting for previous frame to complete");
     }
     if (this->profiling) {
         const double previousWaitUs = profileMicroseconds(start);
@@ -1327,13 +1327,10 @@ void Context::scheduleFrameHistory() {
 
 bool Context::waitForIdle(const uint64_t timeoutNs) const {
     // One budget covers every scheduled batch, so timeoutNs == 0 only polls.
-    uint64_t remainingNs = timeoutNs;
-    bool idle = true;
-    for (size_t slot = 0; slot < inFlightDepth; ++slot) {
-        if (this->fenceScheduled.at(slot))
-            idle = waitWithBudget(this->cmdbufFences.at(slot), this->ctx.vk, remainingNs) && idle;
-    }
-    return idle;
+    return pollScheduledFences(this->fenceScheduled, inFlightDepth, timeoutNs,
+        [this](const size_t slot, uint64_t& remainingNs) {
+            return waitWithBudget(this->cmdbufFences.at(slot), this->ctx.vk, remainingNs);
+        });
 }
 
 void Instance::collectRetiredContexts() {

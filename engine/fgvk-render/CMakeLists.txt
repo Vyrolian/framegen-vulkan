@@ -377,6 +377,19 @@ if(BUILD_TESTING)
     add_test(NAME release-gate COMMAND fgvk-release-gate-tests)
     fgvk_register_portable_policy_test(fgvk-release-gate-tests release-gate)
 
+    add_executable(fgvk-render-slot-ring-tests "tests/render_slot_ring_tests.cpp")
+    target_include_directories(fgvk-render-slot-ring-tests PRIVATE "src")
+    add_test(NAME render-slot-ring COMMAND fgvk-render-slot-ring-tests)
+    fgvk_register_portable_policy_test(fgvk-render-slot-ring-tests render-slot-ring)
+
+    # fgvk-backend is configured only for layer, CLI or develop builds. Its
+    # fence ring is header-only, so the portable policy set builds this backend
+    # test from the backend tree and keeps it in the same label.
+    add_executable(fgvk-backend-fence-ring-tests "../fgvk-backend/tests/fence_ring_tests.cpp")
+    target_include_directories(fgvk-backend-fence-ring-tests PRIVATE "../fgvk-backend/src")
+    add_test(NAME backend-fence-ring COMMAND fgvk-backend-fence-ring-tests)
+    fgvk_register_portable_policy_test(fgvk-backend-fence-ring-tests backend-fence-ring)
+
     add_executable(fgvk-uncapped-auto-cap-tests "tests/uncapped_auto_cap_tests.cpp")
     target_include_directories(fgvk-uncapped-auto-cap-tests PRIVATE "src")
     add_test(NAME uncapped-auto-cap COMMAND fgvk-uncapped-auto-cap-tests)

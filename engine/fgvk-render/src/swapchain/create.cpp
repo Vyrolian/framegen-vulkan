@@ -4,6 +4,7 @@
 #include "swapchain/create_policy.hpp"
 #include "swapchain/retirement.hpp"
 #include "layer_role.hpp"
+#include "ordered_acquire_diagnostics.hpp"
 #include "present_diagnostics.hpp"
 #include "frame_content_capture.hpp"
 #include "fgvk-common/helpers/errors.hpp"
@@ -507,40 +508,14 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance* backend,
                         this->gamescopeRefreshHz,
                         configuredAcquireTimeout
                     );
-                std::cerr << "framegen-vulkan: present diagnostics: "
-                             "operation=ordered-acquire-policy"
-                          << " context=" << this->diagnosticsState.contextId
-                          << " configured_timeout_ms=";
-                if (configuredAcquireTimeout) {
-                    std::cerr << static_cast<double>(
-                        *configuredAcquireTimeout
-                    ) / 1'000'000.0;
-                } else {
-                    std::cerr << "unbounded";
-                }
-                std::cerr << " per_image_timeout_ms="
-                          << (perImageAcquireTimeout ==
-                                std::numeric_limits<uint64_t>::max()
-                                ? 0.0
-                                : static_cast<double>(
-                                      perImageAcquireTimeout
-                                  ) / 1'000'000.0)
-                          << " per_image_timeout_unbounded="
-                          << (perImageAcquireTimeout ==
-                                std::numeric_limits<uint64_t>::max()
-                                ? 1 : 0)
-                          << " budget_scope=application-present"
-                          << " failure_source=explicit-acquire-timeout"
-                          << " recovery_probe_timeout_ms="
-                          << static_cast<double>(
-                                 recoveryAcquireTimeout
-                             ) / 1'000'000.0
-                          << " recovery_probe_failure=backoff"
-                          << " recovery_retry_ceiling_ms="
-                          << std::chrono::duration<double, std::milli>(
-                                 OrderedAcquireRecovery::maximumRetryDelay()
-                             ).count()
-                          << '\n';
+                std::cerr << formatOrderedAcquirePolicy(
+                    this->diagnosticsState.contextId,
+                    configuredAcquireTimeout,
+                    perImageAcquireTimeout,
+                    recoveryAcquireTimeout,
+                    std::chrono::duration<double, std::milli>(
+                        OrderedAcquireRecovery::maximumRetryDelay()
+                    ).count());
             }
         }
         if (this->gamescopeDetected && !this->privateOrderedTransport) {

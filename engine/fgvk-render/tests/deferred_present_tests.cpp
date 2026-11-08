@@ -3,8 +3,12 @@
 #include "swapchain/private_present_queue.hpp"
 #include <array>
 #include <atomic>
+#include <condition_variable>
 #include <cstdlib>
 #include <iostream>
+#include <mutex>
+#include <optional>
+#include <thread>
 #include <type_traits>
 #include <vector>
 
@@ -1199,6 +1203,81 @@ void generatedCopyTailSurvivesAJoin() {
 }
 }
 
+// Wraps the fake present above. The latch is the only difference from its
+// contract, so the worker's real present call stays observable.
+std::mutex latchMutex;
+std::condition_variable latchChanged;
+bool latchOpen{true};
+bool latchEntered{};
+VkResult VKAPI_CALL latchedPresent(VkQueue queue, const VkPresentInfoKHR* info) {
+    {
+        std::unique_lock lock(latchMutex);
+        latchEntered = true;
+        latchChanged.notify_all();
+        expect(latchChanged.wait_for(lock, 5s, [] { return latchOpen; }),
+            "latched present was never released");
+    }
+    return present(queue, info);
+}
+void unboundedDrainWaitsForLatchedPresent() {
+    // current behaviour, see handoff: unbounded drain. A finite finish returns
+    // nullopt while the present is latched; an unbounded finish waits for it.
+    {
+        const std::lock_guard lock(latchMutex);
+        latchOpen = false;
+        latchEntered = false;
+    }
+    auto queue = std::make_shared<DeferredPresentQueue>();
+    queue->queue = handle<VkQueue>(7);
+    VkSwapchainKHR swapchain = handle<VkSwapchainKHR>(11);
+    VkSemaphore wait = handle<VkSemaphore>(12);
+    uint32_t image = 0;
+    VkPresentInfoKHR info{.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+        .waitSemaphoreCount = 1, .pWaitSemaphores = &wait,
+        .swapchainCount = 1, .pSwapchains = &swapchain, .pImageIndices = &image};
+    DeferredPresent worker(queue, latchedPresent);
+    const auto before = calls.load();
+    expect(worker.beginBatch(1), "latched batch rejected");
+    expect(worker.enqueue(info, DeferredPresent::Clock::now()), "latched image rejected");
+    worker.closeBatch();
+    {
+        std::unique_lock lock(latchMutex);
+        expect(latchChanged.wait_for(lock, 5s, [] { return latchEntered; }),
+            "worker never entered the latched present");
+    }
+    expect(!worker.finish(1'000'000), "finite drain completed while its present was latched");
+
+    std::mutex drainMutex;
+    std::condition_variable drainChanged;
+    bool drainReturned{};
+    std::optional<DeferredPresent::Completion> drained;
+    std::thread drain([&] {
+        auto completion = worker.finish(UINT64_MAX);
+        const std::lock_guard lock(drainMutex);
+        drained = std::move(completion);
+        drainReturned = true;
+        drainChanged.notify_all();
+    });
+    {
+        std::unique_lock lock(drainMutex);
+        expect(!drainChanged.wait_for(lock, 50ms, [&] { return drainReturned; }),
+            "unbounded drain returned while its present was still latched");
+    }
+    {
+        const std::lock_guard lock(latchMutex);
+        latchOpen = true;
+    }
+    latchChanged.notify_all();
+    {
+        std::unique_lock lock(drainMutex);
+        expect(drainChanged.wait_for(lock, 5s, [&] { return drainReturned; }),
+            "unbounded drain did not return after the latch was released");
+    }
+    drain.join();
+    expect(drained && drained->count == 1 && calls == before + 1,
+        "released unbounded drain dropped or duplicated the latched image");
+}
+
 int main() {
     queueRequest(); lifecycle(); boundedBatch(); completePresentationOrder(); readinessDoesNotBlockProducer();
     waitForRetainedId(); observeCopiesWithoutChangingDelivery(); observerLifetimeAndForwarding();
@@ -1209,4 +1288,5 @@ int main() {
     generatedCopyPresentsAcquiredImage(); generatedCopySkipsWithoutImage(); generatedCopySkipsOutOfRangeImage();
     generatedCopyNeedsOpenBatch();
     generatedCopySkipsUnsafeSpacing(); generatedCopyTailSurvivesAJoin();
+    unboundedDrainWaitsForLatchedPresent();
 }

@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 
+#include "ordered_acquire_diagnostics.hpp"
 #include "presentation_policy.hpp"
 
 #include <array>
@@ -1918,6 +1919,37 @@ void testBridgeStagedReadiness() {
         "V2 ring expiry retained phantom occupancy or accepted stale feedback");
 }
 
+namespace {
+    // The ordered acquire record is operator-facing diagnostics. Keep its
+    // field text and default numeric formatting exact.
+    void testOrderedAcquirePolicyRecord() {
+        const auto unconfiguredPerImage = orderedGeneratedImageAcquireTimeout(120, std::nullopt);
+        const auto unconfigured = formatOrderedAcquirePolicy(7, std::nullopt,
+            unconfiguredPerImage, orderedRecoveryAcquireTimeout(120, std::nullopt), 30000.0);
+        expect(unconfigured.find("configured_timeout_ms=unbounded ") != std::string::npos &&
+                unconfigured.find("per_image_timeout_ms=100 per_image_timeout_unbounded=0 ") != std::string::npos,
+            "unconfigured ordered acquire record lost its unbounded budget or safety ceiling");
+
+        const auto explicitUnbounded = formatOrderedAcquirePolicy(7, 100'000'000,
+            std::numeric_limits<uint64_t>::max(), 8'333'334, 30000.0);
+        expect(explicitUnbounded.find("per_image_timeout_ms=0 per_image_timeout_unbounded=1 ") != std::string::npos,
+            "explicit UINT64_MAX per-image acquire was not reported as unbounded");
+
+        const auto finite = formatOrderedAcquirePolicy(7, 16'666'667, 16'666'667, 8'333'334, 30000.0);
+        expect(finite.find("configured_timeout_ms=16.6667 ") != std::string::npos &&
+                finite.find("per_image_timeout_ms=16.6667 per_image_timeout_unbounded=0 ") != std::string::npos,
+            "finite ordered acquire budget was not reported in milliseconds");
+
+        expect(formatOrderedAcquirePolicy(42, 100'000'000, 100'000'000, 8'333'334, 30000.0) ==
+            "framegen-vulkan: present diagnostics: operation=ordered-acquire-policy "
+            "context=42 configured_timeout_ms=100 per_image_timeout_ms=100 "
+            "per_image_timeout_unbounded=0 budget_scope=application-present "
+            "failure_source=explicit-acquire-timeout recovery_probe_timeout_ms=8.33333 "
+            "recovery_probe_failure=backoff recovery_retry_ceiling_ms=30000\n",
+            "ordered acquire record text or numeric formatting changed");
+    }
+}
+
 int main() {
     {
         fgvk::layer::RealFramePacer pacer;
@@ -2839,6 +2871,7 @@ int main() {
     testReleasedCadenceUsesBurstThroughput();
     testReleasedOutputsStayInsideTheSourceInterval();
     testReleasedOutputsUseMeasuredSourcePeriod();
+    testOrderedAcquirePolicyRecord();
     std::cout << "presentation policy tests passed\n";
     return 0;
 }

@@ -3,6 +3,7 @@
 #include "swapchain/swapchain.hpp"
 #include "frame_content_capture.hpp"
 #include "swapchain/present/internal.hpp"
+#include "swapchain/render_slot_ring.hpp"
 #include "swapchain/retirement.hpp"
 #include "adaptive_scheduler.hpp"
 #include "fgvk-common/helpers/errors.hpp"
@@ -42,6 +43,20 @@ namespace {
             renderFenceWaitBudget
         ).count()
     );
+
+    /// Presents each render slot's in-flight flag as an indexed flag range for
+    /// the shared drain.
+    template <class Slot>
+    class InFlightFlags {
+    public:
+        explicit InFlightFlags(std::vector<Slot>& renderSlots) : slots(renderSlots) {}
+        [[nodiscard]] size_t size() const noexcept { return this->slots.size(); }
+        [[nodiscard]] bool& operator[](const size_t index) {
+            return this->slots.at(index).inFlight;
+        }
+    private:
+        std::vector<Slot>& slots;
+    };
 }
 
 bool Swapchain::recoverBackendIfReady(const vk::Vulkan& vk) {
@@ -274,7 +289,7 @@ bool Swapchain::pollRenderSlotsIdle(const vk::Vulkan& vk) {
 }
 
 bool Swapchain::prepareRenderFence(const vk::Vulkan& vk) {
-    const size_t next = (this->renderSlotIndex + 1) % renderSlotDepth;
+    const size_t next = nextRenderSlot(this->renderSlotIndex, renderSlotDepth);
     if (!this->spatialScaler && !this->frameContentCapture &&
             !this->nativeCopyProfile &&
             this->frameState.sourceReleaseTimelineValue != 0) {
@@ -291,11 +306,11 @@ bool Swapchain::prepareRenderFence(const vk::Vulkan& vk) {
             static_cast<void>(this->completeDeferredPresent(UINT64_MAX, false, true));
         }
         auto& slot = this->renderSlots.at(next);
-        if (slot.inFlight) {
-            if (!slot.fence.wait(vk, renderFenceWaitBudgetNs))
-                return false;
-            slot.inFlight = false;
-        }
+        if (!admitRenderSlot(slot.inFlight, renderFenceWaitBudgetNs,
+                [&slot, &vk](const uint64_t budgetNs) {
+                    return slot.fence.wait(vk, budgetNs);
+                }))
+            return false;
         this->renderSlotIndex = next;
         slot.fence.reset(vk);
         return true;
@@ -307,21 +322,15 @@ bool Swapchain::prepareRenderFence(const vk::Vulkan& vk) {
     // admitted batch must be joined before any in-flight fence is waited.
     if (this->deferredPresent && this->deferredPresent->pending())
         static_cast<void>(this->completeDeferredPresent(UINT64_MAX));
-    const auto deadline = DiagnosticsClock::now() + renderFenceWaitBudget;
+    InFlightFlags flags{this->renderSlots};
     bool waitedForInFlight = false;
-    for (auto& slot : this->renderSlots) {
-        if (!slot.inFlight)
-            continue;
-        waitedForInFlight = true;
-        const auto now = DiagnosticsClock::now();
-        const uint64_t remainingNs = deadline > now
-            ? static_cast<uint64_t>(std::chrono::duration_cast<
-                std::chrono::nanoseconds>(deadline - now).count())
-            : 0;
-        if (!slot.fence.wait(vk, remainingNs))
-            return false;
-        slot.inFlight = false;
-    }
+    if (!drainRenderSlots(flags, renderFenceWaitBudget,
+            [this, &vk](const size_t index, const uint64_t remainingNs) {
+                return this->renderSlots.at(index).fence.wait(vk, remainingNs);
+            },
+            [] { return DiagnosticsClock::now(); },
+            waitedForInFlight))
+        return false;
     if (waitedForInFlight) {
         if (this->frameContentCapture)
             this->frameContentCapture->completed(vk);
