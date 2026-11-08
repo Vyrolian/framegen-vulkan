@@ -4,7 +4,7 @@ This document supplements [LICENSE.md](LICENSE.md). It identifies third-party ma
 
 ## Lossless Scaling is not distributed by framegen-vulkan
 
-framegen-vulkan is an independent open-source project. framegen-vulkan source archives, framegen-vulkan packages, Flatpak extensions, and the framegen-vulkan website do not contain or distribute Lossless Scaling, `Lossless.dll`, or extracted LS1 or LSFG model and shader payloads.
+framegen-vulkan is an independent open-source project. framegen-vulkan source archives, framegen-vulkan packages, and Flatpak extensions do not contain or distribute Lossless Scaling, `Lossless.dll`, or extracted LS1 or LSFG model and shader payloads.
 
 The open framegen-vulkan Scaler works without Lossless Scaling. A user who chooses LSFG frame generation or LS1 scaling must independently obtain a lawful copy of Lossless Scaling and select or permit discovery of its locally installed `Lossless.dll`. The user is responsible for complying with the terms and law applicable to that copy. framegen-vulkan grants no license or other rights in Lossless Scaling or its proprietary resources.
 
@@ -65,12 +65,6 @@ MAKO Renderer includes `Vibrance.fx`, `Curves.fx`, `Technicolor.fx`, `Sepia.fx`,
 `Colourfulness.fx` is copied from [crosire/reshade-shaders commit `4fee10cdac28f0a6d4fa5ddd778faf0016ab7b91`](https://github.com/crosire/reshade-shaders/commit/4fee10cdac28f0a6d4fa5ddd778faf0016ab7b91). It is copyright © 2016–2018 bacondither and is redistributed under the permissive BSD-style terms preserved in its header and in `LICENSE-Colourfulness`. MAKO changes only the optional `ReShadeUI.fxh` UI annotation macro. `BleachBypass.fx` and `Noir.fx` are original MAKO GPL-3.0-or-later shaders.
 
 MAKO also includes `ReShade.fxh` from [crosire/reshade-shaders `slim` commit `6db142b4b1a05c764222e5b0bd9a644b7ccfe1dc`](https://github.com/crosire/reshade-shaders/commit/6db142b4b1a05c764222e5b0bd9a644b7ccfe1dc), which declares [CC0-1.0](https://creativecommons.org/publicdomain/zero/1.0/legalcode). MAKO's Clarity and Levels Plus are original GPL-3.0-or-later effects with comparable purposes to third-party effects, not redistributed copies. Exact provenance and complete SweetFX and Colourfulness license texts are kept with the canonical sources under `engine/vkbasalt-shaders/` and installed with MAKO Renderer under `share/mako-render/vkbasalt-shaders/`.
-
-## framegen-vulkan website
-
-The deployed website includes notices for its shipped frontend dependencies in `third-party-notices.txt`. These include React, React DOM, Scheduler, React Server DOM Webpack, Next.js, Vinext, and Tailwind CSS under their respective MIT licenses. Build-only tools are not part of the deployed website unless their code is emitted into the production artifact.
-
-GitHub and Discord names and glyphs on the website identify links to the corresponding services. They are trademarks of their respective owners and do not imply sponsorship or endorsement.
 
 ## Project artwork
 

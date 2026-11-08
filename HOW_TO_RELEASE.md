@@ -84,7 +84,7 @@ The publisher:
 2. versions, tests, builds, and publishes the 64-bit/32-bit Renderer host archive and supported Flatpak bundles;
 3. records the exact Renderer tag, source commit, URLs, and checksums in `engine/renderer-release.json`, synchronizes the Arch `framegen-vulkan-bin` recipe to that immutable host archive, verifies both pins, and publishes the exact verified `.pkg.tar.zst` alongside the Renderer archives without installing it;
 4. marks the Renderer release as GitHub's **Latest** release;
-5. updates release links, pushes `main`, triggers the website deployment from canonical metadata, and verifies remote tags, Renderer asset checksums, and pins; and
+5. updates release links, pushes `main`, and verifies remote tags, Renderer asset checksums, and pins; and
 6. removes rebuildable release output and disposable staging after verification while preserving reusable caches.
 
 Do not manually edit generated version links or pins.
@@ -93,7 +93,7 @@ Do not manually edit generated version links or pins.
 
 Only when the maintainer explicitly requests skipping automated validation, run the publisher with `FGVK_RELEASE_SKIP_TESTS=1`. This omits Renderer CTest and launcher tests, and adds `[skip ci]` to release-owned commits. Build, ABI, archive-layout, package-contract, and checksum verification still run. Record the skipped validation in the release evidence; this path does not establish game or hardware validation.
 
-The publisher still uses the mandatory portable native builder and header checks on this path. Match the tester evidence as described above; a new release has new version metadata and binaries, so matching runtime source and toolchain is not a claim of byte-identical artifacts. `[skip ci]` also suppresses automatic Pages deployment, which can be dispatched separately when a website refresh is required.
+The publisher still uses the mandatory portable native builder and header checks on this path. Match the tester evidence as described above; a new release has new version metadata and binaries, so matching runtime source and toolchain is not a claim of byte-identical artifacts.
 
 ## Resume an interrupted release
 
@@ -113,4 +113,4 @@ After the command reports success, confirm the Renderer release is **Latest**, d
 
 Verify the downloaded host and Flatpak archives against the checksums pinned in `engine/renderer-release.json`, and confirm the installed Renderer reports the expected build fingerprint. Close games before updating the Renderer. For a launch-compatibility hotfix, repeat the affected game launches and retain the diagnostics; include 64-bit/32-bit and native/Flatpak paths when affected. Record unavailable rows explicitly. Keep the prior working artifacts for comparison; never replace a published asset to correct a mismatch.
 
-Verify the final pushed `main` commit and its GitHub Pages deployment before calling the website updated. The website derives its Renderer host and Flatpak download links from `engine/renderer-release.json`; the Arch package is available on the Renderer release page. Check those live links and assets, plus the Renderer release links in the root and Renderer READMEs. If `[skip ci]` prevented Pages from running, dispatch `.github/workflows/pages.yml` on `main` and verify that deployment before declaring the public release complete.
+Verify the final pushed `main` commit. Check the Renderer host, Flatpak and Arch package links and assets on the Renderer release page, plus the Renderer release links in the root and Renderer READMEs.

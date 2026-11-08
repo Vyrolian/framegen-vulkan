@@ -164,7 +164,7 @@ Retained evidence may be reused when the exact Renderer/package identity and sou
 
 | Change boundary | Start with |
 | --- | --- |
-| Documentation, website, or portable schema | Owning portable tests; no Gym unless a Renderer-facing contract changed |
+| Documentation or portable schema | Owning portable tests; no Gym unless a Renderer-facing contract changed |
 | Fixed/Adaptive configuration, construction, option combinations, scaler selection, or fallback | `vulkan` feature matrix with matching labels |
 | LSFG/spatial pixels, shaders, colour, precision, Flow Scale, model selection, or combined handoff | `quality`; add `vulkan` for lifecycle changes |
 | LSFG dispatch cost, model/precision/Flow throughput, or generated capacity | `performance` |

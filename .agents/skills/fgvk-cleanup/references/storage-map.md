@@ -23,7 +23,6 @@ Owners: `engine/docs/BUILDING-FROM-SOURCE.md`, `engine/scripts/package-local.sh`
 | Area | Potentially disposable material | Required distinction |
 | --- | --- | --- |
 | Renderer | Incremental CMake trees, `engine/build/work`, binaries, packages and staging in `engine/out`, reviewed `engine/build-*` trees | Enumerate around caches; inspect nested dependencies and active candidate references |
-| Website | `website/dist`, `dist-pages`, `.vinext`, `.next`, preview screenshots | Read `website/README.md`; preserve source, `public`, assets, and dependencies |
 | vkBasalt | Meson/CMake output and completed package archives | Read its packaging scripts and ignore rules; keep downloaded source/toolchains |
 | Other/experimental sibling repositories | Verified builds, packages, coverage, logs, temporary captures, abandoned task-private environments | Discover every checkout; retain source, Git history, regular build/test environments, and build caches |
 | fgvk Gym | Completed run logs, QA images, obsolete extracted candidates, dated reports in `out`, and one-off test environments | Keep tools such as `out/renderer-comparison/tools`, SDK/runtime caches, workloads, and emulator environments when reused by the regular QA workflow. Include recent completed results and disposable experiment environments too, but disclose the loss of historical evidence and preserve active investigations |
