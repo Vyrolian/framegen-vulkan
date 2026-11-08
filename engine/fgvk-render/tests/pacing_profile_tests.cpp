@@ -167,8 +167,10 @@ void sourceIdentity() {
 }
 
 void detailedTrace() {
-    expect(pacingFrameTraceEnabled() && pacingProfileEnabled() && pacingGpuProfileEnabled() && pacingWaylandProfileEnabled() && !enabled(),
+    expect(pacingFrameTraceEnabled() && pacingProfileEnabled() && pacingWaylandProfileEnabled() && !enabled(),
         "the full trace must activate its observers independently of broad diagnostics");
+    // Backend GPU timing drains every in-flight batch, so the trace must not imply it.
+    expect(!pacingGpuProfileEnabled(), "the full trace must not enable backend GPU timing");
     initializePacingProfileLog();
     PacingProfile profile;
     {
@@ -305,13 +307,14 @@ void copyProfileSwitches() {
             if (copyOnly) {
                 unsetenv("FGVK_PACING_PROFILE_TRACE");
                 setenv("FGVK_PACING_PROFILE_COPY", "1", 1);
-                expect(pacingCopyProfileEnabled() && pacingFrameTraceEnabled(),
-                    "copy profiling must imply the frame trace");
+                expect(pacingCopyProfileEnabled() && pacingFrameTraceEnabled() && pacingGpuProfileEnabled(),
+                    "copy profiling must imply the frame trace and GPU timing");
             } else {
                 unsetenv("FGVK_PACING_PROFILE_COPY");
                 setenv("FGVK_PACING_PROFILE_TRACE", "1", 1);
-                expect(pacingFrameTraceEnabled() && !pacingCopyProfileEnabled(),
-                    "the frame trace must not select native copy profiling");
+                unsetenv("FGVK_PACING_PROFILE_GPU");
+                expect(pacingFrameTraceEnabled() && !pacingCopyProfileEnabled() && !pacingGpuProfileEnabled(),
+                    "the frame trace must not select native copy profiling or GPU timing");
             }
             std::exit(0);
         }

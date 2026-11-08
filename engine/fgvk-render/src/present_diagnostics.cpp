@@ -234,7 +234,9 @@ bool pacingFrameTraceEnabled() {
 bool pacingGpuProfileEnabled() {
     static const bool value = [] {
         const char* environment = std::getenv("FGVK_PACING_PROFILE_GPU");
-        return (environment && std::string_view(environment) == "1") || pacingFrameTraceEnabled();
+        // Not implied by the trace: backend GPU timing drains every in-flight
+        // batch per source, which changes pacing. Copy profiling keeps it.
+        return (environment && std::string_view(environment) == "1") || pacingCopyProfileEnabled();
     }();
     return value;
 }
