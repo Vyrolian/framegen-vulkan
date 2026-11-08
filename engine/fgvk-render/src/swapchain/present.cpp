@@ -613,9 +613,11 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
     // The application releases its producer through its own wait for a
     // token recorded after this present (VKD3D-Proton without a present
     // ID). Apply the cap there instead of holding its queue-submission
-    // thread. A deadline far ahead means the producer is not throttled by
-    // that wait; keep the ordinary hold so the cap clock cannot run away.
-    const bool releaseGated = baseFpsCap > 0 && this->releaseGate.active() &&
+    // thread. With a cap the release wait enforces it. Without one the
+    // present still returns without joining the worker, and the release wait
+    // is not delayed. A deadline far ahead means the producer is not throttled
+    // by that wait; keep the ordinary hold so the cap clock cannot run away.
+    const bool releaseGated = this->releaseGate.active() &&
         detachedOutputTransport && !this->profile.adaptive &&
         !this->profile.dynamic_cadence_recovery && this->gpuHeadroomResult.capFps <= 0 &&
         !this->steamMenuSuspended && !this->recoveryState.orderedAcquireRecovery.active() &&
@@ -668,14 +670,18 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
     if (!sourceDeadlinePacing && !readyOutputPacing && !releaseGated)
         this->realFramePacer.resetOutputs();
     // Destroyed after the return-deadline sleep below. Arm on every capped
-    // return, including holds, so the release wait can be observed first.
+    // return, including holds, so the release wait can be observed first. An
+    // uncapped detached return arms at its arrival: that deadline never delays
+    // the release wait, and arming lets the gate see the producer's token wait.
     struct ReleaseArm {
         const ReleaseGateOwner& gate;
         VkQueue queue;
         std::optional<DiagnosticsClock::time_point> deadline;
         ~ReleaseArm() { if (deadline) try { gate.arm(queue, *deadline); } catch (...) {} }
     } releaseArm{this->releaseGate, queue,
-        baseFpsCap > 0 ? std::optional{limiterDeadline} : std::nullopt};
+        baseFpsCap > 0 ? std::optional{limiterDeadline}
+            : detachedOutputTransport ? std::optional{limiterArrival}
+            : std::nullopt};
     if (!releaseGated && !sourceDeadlinePreparation && limiterDeadline > limiterArrival) {
         const auto waitStarted = this->pacingProfile ? DiagnosticsClock::now() : DiagnosticsClock::time_point{};
         std::this_thread::sleep_until(limiterDeadline);

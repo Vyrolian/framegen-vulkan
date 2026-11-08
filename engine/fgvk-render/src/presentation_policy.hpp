@@ -1550,15 +1550,26 @@ namespace fgvk::layer {
         /// cap is spaced on its measured period (the median observeSource
         /// learns), so each generated frame sits midway between reals instead
         /// of on the cap's half slot.
+        ///
+        /// Without a cap (sourceInterval <= 0) no interval bounds the batch.
+        /// Space it only on a qualified, uninterrupted measured period. Until
+        /// that cadence is proven, return nullopt so the caller's ready-output
+        /// path carries the warm-up.
         [[nodiscard]] std::optional<OutputBatch> scheduleReleasedOutputs(
                 const TimePoint now, const Clock::duration sourceInterval, const size_t count) {
-            if (count < 2 || count > GeneratedFramePlan::capacity + 1 ||
-                    sourceInterval <= Clock::duration::zero()) {
+            if (count < 2 || count > GeneratedFramePlan::capacity + 1) {
                 this->resetOutputs();
                 return std::nullopt;
             }
             auto batchPeriod = sourceInterval;
-            if (this->sourceHasQualifiedCadence && !this->sourceInterrupted &&
+            if (sourceInterval <= Clock::duration::zero()) {
+                if (!this->sourceHasQualifiedCadence || this->sourceInterrupted ||
+                        this->sourcePeriod <= Clock::duration::zero()) {
+                    this->resetOutputs();
+                    return std::nullopt;
+                }
+                batchPeriod = this->sourcePeriod;
+            } else if (this->sourceHasQualifiedCadence && !this->sourceInterrupted &&
                     this->sourcePeriod > sourceInterval && this->sourcePeriod <= 4 * sourceInterval)
                 batchPeriod = this->sourcePeriod;
             const auto interval = batchPeriod / static_cast<int64_t>(count);

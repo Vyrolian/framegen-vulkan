@@ -136,6 +136,51 @@ namespace {
             "released batches without an observed source ignored the cap interval");
     }
 
+    // Without a cap there is no interval to bound a released batch. Its
+    // spacing comes only from a qualified, uninterrupted measured source
+    // period; until that qualifies, the caller keeps its ready-output path.
+    void testReleasedUncappedOutputsUseQualifiedPeriod() {
+        using Clock = RealFramePacer::Clock;
+        const auto start = Clock::time_point{100s};
+        const auto batchMs = [](const std::optional<RealFramePacer::OutputBatch>& batch) {
+            return batch ? std::chrono::duration<double, std::milli>(batch->interval).count() : -1.0;
+        };
+        RealFramePacer pacer;
+        expect(!pacer.scheduleReleasedOutputs(start, Clock::duration{}, 2),
+            "uncapped released pacing returned a batch before any source was observed");
+        auto arrival = start;
+        // The first arrival only starts the clock. Seven measured intervals
+        // leave the eight-sample released window incomplete.
+        pacer.observeSource(arrival, true, 2, true);
+        for (size_t i = 0; i < 7; ++i) {
+            arrival += 13ms;
+            pacer.observeSource(arrival, true, 2, true);
+        }
+        expect(!pacer.scheduleReleasedOutputs(arrival, Clock::duration{}, 2),
+            "uncapped released pacing qualified before eight released samples");
+        arrival += 13ms;
+        pacer.observeSource(arrival, true, 2, true);
+        expect(std::abs(batchMs(pacer.scheduleReleasedOutputs(arrival, Clock::duration{}, 2)) - 6.5) < 0.05,
+            "uncapped released pacing ignored the qualified 13 ms source period");
+
+        // An arrival gap longer than 250 ms discards the proven cadence until
+        // a complete released window has been measured again.
+        arrival += 251ms;
+        pacer.observeSource(arrival, true, 2, true);
+        expect(!pacer.scheduleReleasedOutputs(arrival, Clock::duration{}, 2),
+            "uncapped released pacing kept a stale cadence across an arrival gap");
+        for (size_t i = 0; i < 7; ++i) {
+            arrival += 13ms;
+            pacer.observeSource(arrival, true, 2, true);
+        }
+        expect(!pacer.scheduleReleasedOutputs(arrival, Clock::duration{}, 2),
+            "uncapped released pacing requalified before a complete window after a gap");
+        arrival += 13ms;
+        pacer.observeSource(arrival, true, 2, true);
+        expect(std::abs(batchMs(pacer.scheduleReleasedOutputs(arrival, Clock::duration{}, 2)) - 6.5) < 0.05,
+            "uncapped released pacing did not requalify after an arrival gap");
+    }
+
     void testSmoothCadenceCapFollowsActivePlan() {
         const SmoothCadenceBaseCap::TimePoint start{};
         for (const uint32_t target : {60U, 90U, 120U, 144U}) {
@@ -2871,6 +2916,7 @@ int main() {
     testReleasedCadenceUsesBurstThroughput();
     testReleasedOutputsStayInsideTheSourceInterval();
     testReleasedOutputsUseMeasuredSourcePeriod();
+    testReleasedUncappedOutputsUseQualifiedPeriod();
     testOrderedAcquirePolicyRecord();
     std::cout << "presentation policy tests passed\n";
     return 0;
