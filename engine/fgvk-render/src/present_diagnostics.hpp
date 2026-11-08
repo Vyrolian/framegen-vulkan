@@ -152,6 +152,10 @@ namespace fgvk::layer::present_diagnostics {
             size_t workerBatches{}, workerReadinessMisses{};
             std::array<size_t, GeneratedSkipCount> generatedSkips{};
             size_t lateReadinessBatches{}, generatedCompressed{};
+            // D6: the worker's longest call under the queue lock, per output, by kind.
+            Samples workerLockAcquire, workerLockSubmit, workerLockPresent;
+            // F9b: presented internal reals, by whether a lower image was prepared before the deadline.
+            size_t internalRealPrepared{}, internalRealAtDeadline{};
             bool internalImages{};
             size_t fifoCallerTimingSources{};
             std::array<OutputSample, outputTraceCapacity> outputTrace{};
@@ -260,6 +264,17 @@ namespace fgvk::layer::present_diagnostics {
         void generatedSkipped(GeneratedSkip kind) { ++window.generatedSkips[kind]; }
         void lateReadinessBatch() { ++window.lateReadinessBatches; }
         void generatedCompressedPairs(size_t pairs) { window.generatedCompressed += pairs; }
+        // D6: one output's longest worker calls under the queue lock, in nanoseconds. A bucket
+        // the output did not use (zero) is not added, so each mean is over the calls that used it.
+        void workerLockSplit(uint64_t acquireNs, uint64_t submitNs, uint64_t presentNs) {
+            if (acquireNs) window.workerLockAcquire.addMilliseconds(static_cast<double>(acquireNs) / 1e6);
+            if (submitNs) window.workerLockSubmit.addMilliseconds(static_cast<double>(submitNs) / 1e6);
+            if (presentNs) window.workerLockPresent.addMilliseconds(static_cast<double>(presentNs) / 1e6);
+        }
+        void internalRealPresented(bool prepared) {
+            if (prepared) ++window.internalRealPrepared;
+            else ++window.internalRealAtDeadline;
+        }
         // Persistent for this swapchain: set once a present uses F5 internal images.
         void internalImagesActive() { internalImages = true; }
         std::optional<Window> finishSource(Clock::time_point now) {

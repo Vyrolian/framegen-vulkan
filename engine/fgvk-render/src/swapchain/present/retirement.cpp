@@ -95,6 +95,15 @@ VkResult Swapchain::completeDeferredPresent(const uint64_t timeoutNs, const bool
             if (completion.count && completion.calls[0].lateReadiness)
                 this->pacingProfile->lateReadinessBatch();
             this->pacingProfile->generatedCompressedPairs(completion.compressedGeneratedPairs());
+            for (size_t i = 0; i < completion.count; ++i) {
+                const auto& call = completion.calls[i];
+                // Only an internal real sets workerCopy without generated, so this counts
+                // the presented internal reals: prepared before the deadline, or polled at it.
+                if (call.workerCopy && !call.generated && !call.skipped)
+                    this->pacingProfile->internalRealPresented(call.internalPrepared);
+                if (call.lockAcquireNs || call.lockSubmitNs || call.lockPresentNs)
+                    this->pacingProfile->workerLockSplit(call.lockAcquireNs, call.lockSubmitNs, call.lockPresentNs);
+            }
         }
         if (this->pacingProfile)
             for (size_t i = 0; i < completion.count; ++i) {
@@ -159,6 +168,7 @@ bool Swapchain::beginDeferredPresentBatch(const vk::Vulkan& vk, const size_t lim
         .context = this->diagnosticsState.contextId,
         .source = this->pacingProfile ? this->pacingProfile->sourceOrdinal() : 0,
         .trace = present_diagnostics::pacingFrameTraceEnabled(),
+        .profile = static_cast<bool>(this->pacingProfile),
     });
 }
 

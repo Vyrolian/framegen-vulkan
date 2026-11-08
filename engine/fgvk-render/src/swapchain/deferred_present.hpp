@@ -90,6 +90,11 @@ public:
         // Diagnostics only: the batch's limiter arrival, on its first call and only
         // when the pacing profile is enabled. Other calls keep the epoch.
         Clock::time_point arrival{};
+        // Diagnostics only (F9b): the real was lower-prepared before its deadline.
+        bool internalPrepared{};
+        // Diagnostics only (D6, pacing profile): the longest worker call made under
+        // queue->mutex for this output, by kind. Zero without the profile.
+        uint64_t lockAcquireNs{}, lockSubmitNs{}, lockPresentNs{};
     };
     struct Completion : Call {
         uint64_t source{};
@@ -155,6 +160,9 @@ public:
             const VkPresentInfoKHR&, uint64_t, uint64_t, bool){};
         uint64_t context{}, source{};
         bool trace{};
+        // Diagnostics only: the pacing profile is enabled, so the worker measures its
+        // queue-lock holds (D6). Without it the worker reads no extra clocks.
+        bool profile{};
     };
     struct CompletionWait {
         Clock::duration waited{};
@@ -358,9 +366,11 @@ public:
         return admit(info, deadline, generated, nullptr);
     }
     // The real output of an internal application image. Admission matches
-    // enqueue. At its deadline the worker acquires a lower image, copies the
-    // application image into it and presents it (see presentInternalReal).
-    // info.pWaitSemaphores[0] is the continuation that copy waits.
+    // enqueue. The worker acquires a lower image, copies the application image
+    // into it and presents it: the copy is prepared as soon as the worker takes
+    // the job when a lower image is free (see prepareInternalReal), otherwise at
+    // the deadline (see presentInternalReal). info.pWaitSemaphores[0] is the
+    // continuation that copy waits.
     bool enqueueInternalReal(const VkPresentInfoKHR& info, Clock::time_point deadline,
             const InternalRealCopy& copy) {
         return copy.tryAcquire && copy.submit && copy.abandon && copy.owner &&
@@ -493,6 +503,9 @@ public:
     }
 
 private:
+    // Test seam only. Production sets stopping in ~DeferredPresent, after every batch
+    // has retired, so a test cannot reach a prepared real's wait through the public API.
+    friend struct DeferredPresentTestAccess;
     struct Delivery {
         std::mutex mutex;
         std::condition_variable changed;
@@ -792,11 +805,111 @@ private:
         return copy.submit(queue, 1, &submit, copy.fence);
     }
 
+    // D6: runs one worker call made under queue->mutex and keeps the longest such
+    // call in longestNs, so a poll loop reports its worst attempt. Clock reads happen
+    // only when profile is set.
+    template<typename Fn>
+    static auto profiledLockCall(const bool profile, uint64_t& longestNs, Fn&& fn) {
+        if (!profile) return fn();
+        const auto started = Clock::now();
+        const auto value = fn();
+        longestNs = std::max(longestNs, nanosecondsOf(Clock::now() - started));
+        return value;
+    }
+    static uint64_t nanosecondsOf(const Clock::duration duration) {
+        return static_cast<uint64_t>(std::max<int64_t>(0,
+            std::chrono::duration_cast<std::chrono::nanoseconds>(duration).count()));
+    }
+
+    // F9b: the outcome of one preparation attempt, kept by the worker until the deadline.
+    struct InternalPreparation {
+        // A lower image is acquired and its copy submitted: the deadline presents it.
+        bool prepared{};
+        // An error ended the job before its wait: nothing waits and nothing presents.
+        bool settled{};
+        VkResult error{VK_SUCCESS};
+        // Set when tryAcquire succeeded. A submit error reports it as the image index.
+        uint32_t lowerIndex{};
+        VkSemaphore presentWait{};
+        uint64_t acquireNs{}, submitNs{};
+    };
+    // F9b: one non-blocking attempt, made when the worker takes an internal real, so
+    // its lower acquire and copy finish before the deadline. Not-ready results leave
+    // the real to the at-deadline poll. A tryAcquire error abandons the application
+    // image once. A submit error does not abandon: submitCopyLocked already freed the
+    // image at the last submitted release value. Callers hold no lock and this never
+    // sleeps. Cost: a prepared real holds one lower image from here until its deadline,
+    // about one output interval. Right after a generated present the driver may often
+    // have no free lower image, so some reals fall back to the at-deadline poll; the
+    // internal_real_prepared= and internal_real_at_deadline= counters show the share.
+    // A real that is late because the lower present itself blocks is not helped. No
+    // latency is added: the present still happens at its deadline.
+    InternalPreparation prepareInternalReal(const Job& job, const bool profile) {
+        const InternalRealCopy& copy = job.internal;
+        void* const owner = copy.owner.get();
+        InternalPreparation prep;
+        const std::lock_guard queueLock(queue->mutex);
+        uint32_t lowerIndex{};
+        const VkResult acquired = profiledLockCall(profile, prep.acquireNs, [&] {
+            return copy.tryAcquire(owner, &lowerIndex);
+        });
+        if (acquired < 0) {
+            prep.settled = true;
+            prep.error = acquired;
+            static_cast<void>(profiledLockCall(profile, prep.submitNs, [&] {
+                return copy.abandon(owner, queue->queue, copy.applicationIndex, job.wait);
+            }));
+            return prep;
+        }
+        if (acquired != VK_SUCCESS) return prep;
+        prep.lowerIndex = lowerIndex;
+        const VkResult submitted = profiledLockCall(profile, prep.submitNs, [&] {
+            return copy.submit(owner, queue->queue, copy.applicationIndex, lowerIndex,
+                job.wait, &prep.presentWait);
+        });
+        if (submitted < 0) {
+            prep.settled = true;
+            prep.error = submitted;
+            return prep;
+        }
+        prep.prepared = true;
+        return prep;
+    }
+
+    // The present half of an internal real, shared by the prepared and the at-deadline
+    // paths, so the chain, observer and copy status are the same on both. Callers hold
+    // queue->mutex. presentWait is the signal of the copy into lowerIndex.
+    void presentLower(const Job& job, const Readiness& ready, const void* chain,
+            const uint32_t lowerIndex, const VkSemaphore presentWait, Completion& result) {
+        const VkPresentInfoKHR info{
+            .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+            .pNext = chain,
+            .waitSemaphoreCount = 1, .pWaitSemaphores = &presentWait,
+            .swapchainCount = 1, .pSwapchains = &job.swapchain,
+            .pImageIndices = &lowerIndex,
+        };
+        result.imageIndex = lowerIndex;
+        result.presentWait = presentWait;
+        result.started = Clock::now();
+        result.result = ready.observer && ready.observe
+            ? ready.observe(ready.observer.get(), present, queue->queue,
+                info, ready.context, ready.source, job.generated)
+            : present(queue->queue, &info);
+        result.finished = Clock::now();
+        // The present call alone: started and finished bracket it.
+        if (ready.profile) result.lockPresentNs = nanosecondsOf(result.finished - result.started);
+        if (ready.copyStatus && ready.copyFence) {
+            result.copyChecked = true;
+            result.copyStatus = ready.copyStatus(ready.device, ready.copyFence);
+            result.copySampledAt = Clock::now();
+        }
+    }
+
     // The real output of an internal application image, produced by this worker
-    // at its deadline. It never gives up or skips: the loop ends when a lower image
-    // is copied and presented, or when the application image is abandoned on a lower
-    // error or while stopping. Each attempt holds queue->mutex for tryAcquire and
-    // the copy/present only, and sleeps outside it.
+    // at its deadline unless prepareInternalReal already copied it. It never gives up
+    // or skips: the loop ends when a lower image is copied and presented, or when the
+    // application image is abandoned on a lower error or while stopping. Each attempt
+    // holds queue->mutex for tryAcquire and the copy/present only, and sleeps outside it.
     void presentInternalReal(Job& job, const Readiness& ready, const void* chain, Completion& result) {
         const InternalRealCopy& copy = job.internal;
         void* const owner = copy.owner.get();
@@ -821,10 +934,14 @@ private:
                     error = VK_ERROR_UNKNOWN;
                     reason = SkipReason::Stopping;
                 } else {
-                    const VkResult acquired = copy.tryAcquire(owner, &lowerIndex);
+                    const VkResult acquired = profiledLockCall(ready.profile, result.lockAcquireNs, [&] {
+                        return copy.tryAcquire(owner, &lowerIndex);
+                    });
                     if (acquired == VK_SUCCESS) {
-                        const VkResult submitted = copy.submit(owner, queue->queue,
-                            copy.applicationIndex, lowerIndex, job.wait, &presentWait);
+                        const VkResult submitted = profiledLockCall(ready.profile, result.lockSubmitNs, [&] {
+                            return copy.submit(owner, queue->queue, copy.applicationIndex, lowerIndex,
+                                job.wait, &presentWait);
+                        });
                         if (submitted < 0) {
                             result.imageIndex = lowerIndex;
                             result.skipped = true;
@@ -833,26 +950,7 @@ private:
                             result.result = submitted;
                             return;
                         }
-                        const VkPresentInfoKHR info{
-                            .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
-                            .pNext = chain,
-                            .waitSemaphoreCount = 1, .pWaitSemaphores = &presentWait,
-                            .swapchainCount = 1, .pSwapchains = &job.swapchain,
-                            .pImageIndices = &lowerIndex,
-                        };
-                        result.imageIndex = lowerIndex;
-                        result.presentWait = presentWait;
-                        result.started = Clock::now();
-                        result.result = ready.observer && ready.observe
-                            ? ready.observe(ready.observer.get(), present, queue->queue,
-                                info, ready.context, ready.source, job.generated)
-                            : present(queue->queue, &info);
-                        result.finished = Clock::now();
-                        if (ready.copyStatus && ready.copyFence) {
-                            result.copyChecked = true;
-                            result.copyStatus = ready.copyStatus(ready.device, ready.copyFence);
-                            result.copySampledAt = Clock::now();
-                        }
+                        presentLower(job, ready, chain, lowerIndex, presentWait, result);
                         return;
                     }
                     if (acquired < 0) {
@@ -861,7 +959,9 @@ private:
                 }
                 if (error != VK_SUCCESS) {
                     // Frees the application image without a present. Nothing is left acquired.
-                    static_cast<void>(copy.abandon(owner, queue->queue, copy.applicationIndex, job.wait));
+                    static_cast<void>(profiledLockCall(ready.profile, result.lockSubmitNs, [&] {
+                        return copy.abandon(owner, queue->queue, copy.applicationIndex, job.wait);
+                    }));
                     result.skipped = true;
                     result.skipReason = reason;
                     result.started = result.finished = Clock::now();
@@ -973,7 +1073,19 @@ private:
                 }
                 batchShift = deadline - current.deadline;
             }
-            if (!readinessMiss) {
+            // F9b: an internal real gets one lower-image attempt before its wait. The
+            // present still waits for the deadline. Stopping is read under mutex, as
+            // presentInternalReal reads it, and the lock is not held here.
+            InternalPreparation prep{};
+            if (current.internalActive && !readinessMiss) {
+                bool stopped{};
+                {
+                    const std::lock_guard stopLock(mutex);
+                    stopped = stopping;
+                }
+                if (!stopped) prep = prepareInternalReal(current, ready.profile);
+            }
+            if (!readinessMiss && !prep.settled) {
                 const auto waitStarted = Clock::now();
                 if (ready.expediteOnJoin && !copyTail) {
                     lock.lock();
@@ -1049,7 +1161,27 @@ private:
             // A generated output takes its image only at its deadline. Polling
             // never sleeps under queue->mutex, and every path below signals the
             // continuation and the render-slot fence.
-            if (job.internalActive) {
+            if (job.internalActive && prep.settled) {
+                // F9b: the preparation ended the job. Nothing was waited or presented.
+                result.workerCopy = true;
+                result.imageIndex = prep.lowerIndex;
+                result.skipped = true;
+                result.skipReason = SkipReason::Error;
+                result.started = result.finished = Clock::now();
+                result.result = prep.error;
+                result.lockAcquireNs = prep.acquireNs;
+                result.lockSubmitNs = prep.submitNs;
+            } else if (job.internalActive && prep.prepared) {
+                // The lower image was acquired and copied before the deadline: only the present remains.
+                result.workerCopy = true;
+                result.internalPrepared = true;
+                result.lockAcquireNs = prep.acquireNs;
+                result.lockSubmitNs = prep.submitNs;
+                if (ready.trace) result.queueLockStarted = Clock::now();
+                const std::lock_guard queueLock(queue->mutex);
+                if (ready.trace) result.queueLockAcquired = Clock::now();
+                presentLower(job, ready, chain, prep.lowerIndex, prep.presentWait, result);
+            } else if (job.internalActive) {
                 presentInternalReal(job, ready, chain, result);
             } else {
                 VkResult skipResult = VK_SUCCESS;
@@ -1078,8 +1210,10 @@ private:
                     while (skipWhy == SkipReason::None) {
                         {
                             const std::lock_guard queueLock(queue->mutex);
-                            acquireResult = job.copy.acquire(job.copy.device, job.swapchain, 0,
-                                job.copy.acquireSemaphore, VK_NULL_HANDLE, &image);
+                            acquireResult = profiledLockCall(ready.profile, result.lockAcquireNs, [&] {
+                                return job.copy.acquire(job.copy.device, job.swapchain, 0,
+                                    job.copy.acquireSemaphore, VK_NULL_HANDLE, &image);
+                            });
                         }
                         if (acquireResult < 0 || acquireResult == VK_SUCCESS ||
                                 acquireResult == VK_SUBOPTIMAL_KHR)
@@ -1125,14 +1259,18 @@ private:
                     bool presentOutput = !job.copyActive;
                     if (job.copyActive) {
                         if (copyPending) {
-                            const VkResult copied = submitGeneratedWork(queue->queue, job.copy, true,
-                                job.copy.copies.at(job.image), job.wait);
+                            const VkResult copied = profiledLockCall(ready.profile, result.lockSubmitNs, [&] {
+                                return submitGeneratedWork(queue->queue, job.copy, true,
+                                    job.copy.copies.at(job.image), job.wait);
+                            });
                             presentOutput = copied == VK_SUCCESS;
                             if (copied < 0) skipResult = copied;
                         }
                         if (!presentOutput) {
-                            const VkResult signalled = submitGeneratedWork(queue->queue, job.copy,
-                                acquired, VK_NULL_HANDLE, VK_NULL_HANDLE);
+                            const VkResult signalled = profiledLockCall(ready.profile, result.lockSubmitNs, [&] {
+                                return submitGeneratedWork(queue->queue, job.copy,
+                                    acquired, VK_NULL_HANDLE, VK_NULL_HANDLE);
+                            });
                             if (skipResult == VK_SUCCESS) skipResult = signalled;
                         }
                     }
@@ -1143,6 +1281,7 @@ private:
                                 info, ready.context, ready.source, job.generated)
                             : present(queue->queue, &info);
                         result.finished = Clock::now();
+                        if (ready.profile) result.lockPresentNs = nanosecondsOf(result.finished - result.started);
                         if (ready.copyStatus && ready.copyFence) {
                             result.copyChecked = true;
                             result.copyStatus = ready.copyStatus(ready.device, ready.copyFence);

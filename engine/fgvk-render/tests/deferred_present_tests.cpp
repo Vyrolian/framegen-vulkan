@@ -1851,6 +1851,20 @@ void unboundedDrainWaitsForLatchedPresent() {
         "released unbounded drain dropped or duplicated the latched image");
 }
 
+// Test seam for F9b. Production sets stopping only in ~DeferredPresent, after every
+// batch has retired, so the stop-during-wait case is reached through this struct.
+namespace fgvk::layer {
+struct DeferredPresentTestAccess {
+    static void requestStop(DeferredPresent& worker) {
+        {
+            const std::lock_guard lock(worker.mutex);
+            worker.stopping = true;
+        }
+        worker.changed.notify_all();
+    }
+};
+}
+
 // Internal real outputs. The fake callbacks script the lower acquire and record
 // what the worker submitted, so the worker's contract is observable without Vulkan.
 namespace {
@@ -1863,10 +1877,17 @@ struct InternalFake {
     int tryCalls{}, submits{}, abandons{};
     uint32_t submittedApplication{}, submittedLower{}, abandonedApplication{};
     VkSemaphore submittedContinuation{}, abandonedContinuation{};
+    // When the worker submitted the copy. The test reads it after taking the completion.
+    DeferredPresent::Clock::time_point submittedAt{};
+    // Set by the worker's submit; the test thread polls it.
+    std::atomic_bool submitted{};
+    // Sleeps inside the lower callbacks, so the D6 lock-hold timings are nonzero.
+    bool slow{};
 };
 VkResult fakeTryAcquire(void* owner, uint32_t* lowerIndex) {
     auto& state = *static_cast<InternalFake*>(owner);
     ++state.tryCalls;
+    if (state.slow) std::this_thread::sleep_for(100us);
     if (state.notReadyPolls > 0) {
         --state.notReadyPolls;
         return VK_NOT_READY;
@@ -1880,11 +1901,18 @@ VkResult fakeSubmit(void* owner, VkQueue queue, uint32_t applicationIndex, uint3
     auto& state = *static_cast<InternalFake*>(owner);
     expect(queue == handle<VkQueue>(7), "internal copy submitted on the wrong queue");
     ++state.submits;
+    state.submittedAt = DeferredPresent::Clock::now();
     state.submittedApplication = applicationIndex;
     state.submittedLower = lowerIndex;
     state.submittedContinuation = continuation;
     *presentWait = state.presentWait;
+    if (state.slow) std::this_thread::sleep_for(100us);
+    state.submitted.store(true);
     return state.submitResult;
+}
+VkResult slowRecordingPresent(VkQueue queue, const VkPresentInfoKHR* info) {
+    std::this_thread::sleep_for(100us);
+    return recordingPresent(queue, info);
 }
 VkResult fakeAbandon(void* owner, VkQueue queue, uint32_t applicationIndex, VkSemaphore continuation) {
     auto& state = *static_cast<InternalFake*>(owner);
@@ -2075,6 +2103,204 @@ void internalRealTeardownPresentsOrAbandons() {
     }
 }
 
+// (d) F9b: a real with a free lower image is acquired and copied when the worker takes
+// it, before its deadline. The present still waits for the deadline, and the completion
+// records the preparation.
+void internalRealPreparedBeforeDeadline() {
+    auto queue = std::make_shared<DeferredPresentQueue>();
+    queue->queue = handle<VkQueue>(7);
+    DeferredPresent worker(queue, recordingPresent);
+    copyPresents.clear();
+    const auto swapchain = handle<VkSwapchainKHR>(11);
+    const auto continuation = handle<VkSemaphore>(12);
+    uint32_t applicationImage = 1;
+    const VkPresentInfoKHR info{.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+        .waitSemaphoreCount = 1, .pWaitSemaphores = &continuation,
+        .swapchainCount = 1, .pSwapchains = &swapchain, .pImageIndices = &applicationImage};
+    auto fake = std::make_shared<InternalFake>();
+    fake->lowerIndex = 3;
+    fake->presentWait = handle<VkSemaphore>(99);
+    // A wide margin: the worker must reach the preparation before this deadline under load.
+    const auto deadline = DeferredPresent::Clock::now() + 200ms;
+    expect(worker.beginBatch(1), "prepared internal batch rejected");
+    expect(worker.enqueueInternalReal(info, deadline, internalCopy(fake, 1)), "prepared internal real rejected");
+    worker.closeBatch();
+    const auto completion = worker.finish(UINT64_MAX);
+    expect(completion && completion->count == 1 && completion->result == VK_SUCCESS &&
+        !completion->calls[0].skipped, "prepared internal real was skipped or failed");
+    expect(completion->calls[0].internalPrepared, "prepared internal real did not record its preparation");
+    expect(fake->tryCalls == 1 && fake->submits == 1 && fake->abandons == 0,
+        "preparation did not acquire and submit the lower image exactly once");
+    expect(fake->submittedAt < deadline, "lower image was not acquired and copied before the deadline");
+    expect(completion->calls[0].started >= deadline, "prepared internal real was presented before its deadline");
+    expect(completion->calls[0].imageIndex == 3 && completion->calls[0].presentWait == handle<VkSemaphore>(99) &&
+        copyPresents.size() == 1 && copyPresents[0] == std::pair{3u, handle<VkSemaphore>(99)},
+        "prepared internal real was not presented once with the prepared lower index and presentWait");
+}
+
+// (e) F9b: without a lower image at preparation, the at-deadline poll acquires and copies,
+// and the output is not marked prepared.
+void internalRealNotPreparedPollsAtDeadline() {
+    auto queue = std::make_shared<DeferredPresentQueue>();
+    queue->queue = handle<VkQueue>(7);
+    DeferredPresent worker(queue, recordingPresent);
+    copyPresents.clear();
+    const auto swapchain = handle<VkSwapchainKHR>(11);
+    const auto continuation = handle<VkSemaphore>(12);
+    uint32_t applicationImage = 0;
+    const VkPresentInfoKHR info{.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+        .waitSemaphoreCount = 1, .pWaitSemaphores = &continuation,
+        .swapchainCount = 1, .pSwapchains = &swapchain, .pImageIndices = &applicationImage};
+    auto fake = std::make_shared<InternalFake>();
+    fake->notReadyPolls = 1;
+    fake->lowerIndex = 4;
+    fake->presentWait = handle<VkSemaphore>(100);
+    const auto deadline = DeferredPresent::Clock::now() + 20ms;
+    expect(worker.beginBatch(1), "unprepared internal batch rejected");
+    expect(worker.enqueueInternalReal(info, deadline, internalCopy(fake, 0)), "unprepared internal real rejected");
+    worker.closeBatch();
+    const auto completion = worker.finish(UINT64_MAX);
+    expect(completion && completion->count == 1 && completion->result == VK_SUCCESS &&
+        !completion->calls[0].skipped, "unprepared internal real was skipped or failed");
+    expect(!completion->calls[0].internalPrepared, "an unprepared internal real was marked prepared");
+    expect(fake->tryCalls == 2 && fake->submits == 1 && fake->abandons == 0,
+        "the at-deadline poll did not follow the failed preparation");
+    expect(fake->submittedAt >= deadline, "copy was submitted before the deadline without a lower image");
+    expect(completion->calls[0].started >= deadline && copyPresents.size() == 1 &&
+        copyPresents[0] == std::pair{4u, handle<VkSemaphore>(100)},
+        "unprepared internal real was not presented once at its deadline");
+}
+
+// (f) F9b: a prepared real whose lower image was acquired is presented when stopping is
+// set during its wait. No release exists for an acquired image.
+void internalRealPreparedPresentsWhenStopping() {
+    auto queue = std::make_shared<DeferredPresentQueue>();
+    queue->queue = handle<VkQueue>(7);
+    copyPresents.clear();
+    const auto swapchain = handle<VkSwapchainKHR>(11);
+    const auto continuation = handle<VkSemaphore>(12);
+    uint32_t applicationImage = 0;
+    const VkPresentInfoKHR info{.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+        .waitSemaphoreCount = 1, .pWaitSemaphores = &continuation,
+        .swapchainCount = 1, .pSwapchains = &swapchain, .pImageIndices = &applicationImage};
+    auto fake = std::make_shared<InternalFake>();
+    fake->lowerIndex = 2;
+    fake->presentWait = handle<VkSemaphore>(101);
+    DeferredPresent worker(queue, recordingPresent);
+    expect(worker.beginBatch(1), "stopping internal batch rejected");
+    expect(worker.enqueueInternalReal(info, DeferredPresent::Clock::now() + 200ms, internalCopy(fake, 0)),
+        "stopping internal real rejected");
+    worker.closeBatch();
+    for (int attempt = 0; attempt < 50000 && !fake->submitted.load(); ++attempt)
+        std::this_thread::sleep_for(100us);
+    expect(fake->submitted.load(), "preparation did not submit the lower copy before the stop");
+    DeferredPresentTestAccess::requestStop(worker);
+    const auto completion = worker.finish(UINT64_MAX);
+    expect(completion && completion->count == 1 && completion->result == VK_SUCCESS &&
+        !completion->calls[0].skipped, "a prepared real was abandoned while stopping");
+    expect(completion->calls[0].internalPrepared && fake->tryCalls == 1 && fake->submits == 1 &&
+        fake->abandons == 0, "a prepared real while stopping was not kept as prepared");
+    expect(copyPresents.size() == 1 && copyPresents[0] == std::pair{2u, handle<VkSemaphore>(101)},
+        "a prepared real while stopping was not presented with its lower image");
+}
+
+// (g) F9b: a preparation tryAcquire error abandons the application image once and settles
+// the job: no wait, no second acquire, no present.
+void internalRealPreparationErrorAbandonsOnce() {
+    auto queue = std::make_shared<DeferredPresentQueue>();
+    queue->queue = handle<VkQueue>(7);
+    DeferredPresent worker(queue, recordingPresent);
+    copyPresents.clear();
+    const auto swapchain = handle<VkSwapchainKHR>(11);
+    const auto continuation = handle<VkSemaphore>(12);
+    uint32_t applicationImage = 2;
+    const VkPresentInfoKHR info{.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+        .waitSemaphoreCount = 1, .pWaitSemaphores = &continuation,
+        .swapchainCount = 1, .pSwapchains = &swapchain, .pImageIndices = &applicationImage};
+    auto fake = std::make_shared<InternalFake>();
+    fake->failure = VK_ERROR_OUT_OF_DATE_KHR;
+    const auto deadline = DeferredPresent::Clock::now() + 1s;
+    expect(worker.beginBatch(1), "failing preparation batch rejected");
+    expect(worker.enqueueInternalReal(info, deadline, internalCopy(fake, 2)),
+        "failing preparation output rejected");
+    worker.closeBatch();
+    const auto completion = worker.finish(UINT64_MAX);
+    expect(completion && completion->count == 1 && completion->result == VK_ERROR_OUT_OF_DATE_KHR &&
+        completion->calls[0].skipped && completion->calls[0].skipReason == DeferredPresent::SkipReason::Error &&
+        completion->calls[0].result == VK_ERROR_OUT_OF_DATE_KHR,
+        "a preparation error was not carried as an Error skip");
+    expect(completion->calls[0].finished < deadline, "a settled preparation waited for its deadline");
+    expect(fake->tryCalls == 1 && fake->abandons == 1 && fake->abandonedApplication == 2 &&
+        fake->abandonedContinuation == continuation && fake->submits == 0 && copyPresents.empty(),
+        "a preparation error did not abandon the application image exactly once without presenting");
+}
+
+// (h) F9b: a preparation submit error does not abandon: submitCopyLocked has already freed
+// the image. The job is an Error skip with the submit result and the prepared lower index.
+void internalRealPreparationSubmitErrorSkipsWithoutAbandon() {
+    auto queue = std::make_shared<DeferredPresentQueue>();
+    queue->queue = handle<VkQueue>(7);
+    DeferredPresent worker(queue, recordingPresent);
+    copyPresents.clear();
+    const auto swapchain = handle<VkSwapchainKHR>(11);
+    const auto continuation = handle<VkSemaphore>(12);
+    uint32_t applicationImage = 3;
+    const VkPresentInfoKHR info{.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+        .waitSemaphoreCount = 1, .pWaitSemaphores = &continuation,
+        .swapchainCount = 1, .pSwapchains = &swapchain, .pImageIndices = &applicationImage};
+    auto fake = std::make_shared<InternalFake>();
+    fake->lowerIndex = 6;
+    fake->submitResult = VK_ERROR_DEVICE_LOST;
+    const auto deadline = DeferredPresent::Clock::now() + 1s;
+    expect(worker.beginBatch(1), "failing submit batch rejected");
+    expect(worker.enqueueInternalReal(info, deadline, internalCopy(fake, 3)),
+        "failing submit output rejected");
+    worker.closeBatch();
+    const auto completion = worker.finish(UINT64_MAX);
+    expect(completion && completion->count == 1 && completion->result == VK_ERROR_DEVICE_LOST &&
+        completion->calls[0].skipped && completion->calls[0].skipReason == DeferredPresent::SkipReason::Error &&
+        completion->calls[0].result == VK_ERROR_DEVICE_LOST && completion->calls[0].imageIndex == 6,
+        "a preparation submit error was not carried as an Error skip with its lower index");
+    expect(completion->calls[0].finished < deadline, "a settled submit error waited for its deadline");
+    expect(fake->tryCalls == 1 && fake->submits == 1 && fake->abandons == 0 && copyPresents.empty(),
+        "a preparation submit error abandoned the image, polled again or presented");
+}
+
+// (j) D6: the lock-hold split is recorded on the completion's call only with the pacing
+// profile. Each field is the longest worker call under queue->mutex for that output.
+void internalRealLockSplitIsProfileOnly() {
+    for (unsigned mode = 0; mode < 2; ++mode) {
+        auto queue = std::make_shared<DeferredPresentQueue>();
+        queue->queue = handle<VkQueue>(7);
+        DeferredPresent worker(queue, slowRecordingPresent);
+        copyPresents.clear();
+        const auto swapchain = handle<VkSwapchainKHR>(11);
+        const auto continuation = handle<VkSemaphore>(12);
+        uint32_t applicationImage = 0;
+        const VkPresentInfoKHR info{.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+            .waitSemaphoreCount = 1, .pWaitSemaphores = &continuation,
+            .swapchainCount = 1, .pSwapchains = &swapchain, .pImageIndices = &applicationImage};
+        auto fake = std::make_shared<InternalFake>();
+        fake->slow = true;
+        fake->lowerIndex = 5;
+        fake->presentWait = handle<VkSemaphore>(102);
+        expect(worker.beginBatch(1, {.profile = mode == 1}), "lock split batch rejected");
+        expect(worker.enqueueInternalReal(info, DeferredPresent::Clock::now() + 5ms, internalCopy(fake, 0)),
+            "lock split internal real rejected");
+        worker.closeBatch();
+        const auto completion = worker.finish(UINT64_MAX);
+        expect(completion && completion->count == 1 && !completion->calls[0].skipped,
+            "lock split internal real was skipped or failed");
+        const auto& call = completion->calls[0];
+        if (mode == 0)
+            expect(call.lockAcquireNs == 0 && call.lockSubmitNs == 0 && call.lockPresentNs == 0,
+                "the lock-hold split was recorded without the pacing profile");
+        else
+            expect(call.lockAcquireNs > 0 && call.lockSubmitNs > 0 && call.lockPresentNs > 0,
+                "the lock-hold split was not recorded on the completion's call with the pacing profile");
+    }
+}
+
 int main() {
     queueRequest(); acquireQueueRequest(); acquireTargetAvoidsPresentLock();
     lifecycle(); boundedBatch(); completePresentationOrder(); readinessDoesNotBlockProducer();
@@ -2095,4 +2321,7 @@ int main() {
     internalRealRetriesThenPresents(); internalRealNeverSkippedUnderExpedite();
     internalRealErrorAbandonsOnce(); internalRealAfterGeneratedKeepsCopyTail();
     internalRealTeardownPresentsOrAbandons();
+    internalRealPreparedBeforeDeadline(); internalRealNotPreparedPollsAtDeadline();
+    internalRealPreparedPresentsWhenStopping(); internalRealPreparationErrorAbandonsOnce();
+    internalRealPreparationSubmitErrorSkipsWithoutAbandon(); internalRealLockSplitIsProfileOnly();
 }

@@ -501,6 +501,8 @@ void logPacingProfile(const uint64_t context, const VkPresentModeKHR mode,
              << " generated_skip_other=" << window.generatedSkips[PacingProfile::SkipOther]
              << " late_readiness_batches=" << window.lateReadinessBatches
              << " generated_compressed=" << window.generatedCompressed
+             << " internal_real_prepared=" << window.internalRealPrepared
+             << " internal_real_at_deadline=" << window.internalRealAtDeadline
              << " internal_images=" << (window.internalImages ? 1 : 0)
              << " output_trace_version=" << (pacingFrameTraceEnabled() ? 2 : 1) << " output_trace_samples=" << (pacingFrameTraceEnabled() ? window.outputs : window.outputTraceCount)
              << " output_trace_dropped=" << (pacingFrameTraceEnabled() ? 0 : window.outputTraceDropped)
@@ -538,6 +540,12 @@ void logPacingProfile(const uint64_t context, const VkPresentModeKHR mode,
                  << ' ' << phaseNames[index] << "_mean_ms=" << window.phases[index].mean()
                  << ' ' << phaseNames[index] << "_max_ms=" << window.phases[index].maximum;
         }
+        constexpr std::array<std::string_view, 3> lockNames{"acquire", "submit", "present"};
+        const std::array<const PacingProfile::Samples*, 3> lockSamples{
+            &window.workerLockAcquire, &window.workerLockSubmit, &window.workerLockPresent};
+        for (size_t index = 0; index < lockNames.size(); ++index)
+            line << " worker_lock_" << lockNames[index] << "_mean_ms=" << lockSamples[index]->mean()
+                 << " worker_lock_" << lockNames[index] << "_max_ms=" << lockSamples[index]->maximum;
         for (size_t index = 0; index < names.size(); ++index) {
             const auto& sample = window.metrics[index];
             line << ' ' << names[index] << "_samples=" << sample.count
