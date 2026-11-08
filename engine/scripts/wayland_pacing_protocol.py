@@ -14,7 +14,7 @@ import tempfile
 import time
 
 
-LIMIT = 64 * 1024 * 1024
+LIMIT = 512 * 1024 * 1024
 ANSI = re.compile(rb"\x1b\[[0-9;]*m")
 MESSAGE = re.compile(
     r"^\[([0-9:. ]+)\]\s+.*?(->\s*)?([a-z][a-z0-9_]+)[@#](\d+)\.([a-z0-9_]+)\((.*)\)$")

@@ -111,7 +111,7 @@ public:
     PacingLog() noexcept {
         try {
             retainBeginning = pacingWaylandProfileEnabled();
-            byteLimit = retainBeginning ? 64 * 1024 * 1024 : 16 * 1024 * 1024;
+            byteLimit = retainBeginning ? 512ull * 1024 * 1024 : 16 * 1024 * 1024;
             const char* requested = std::getenv("FGVK_PACING_PROFILE_LOG");
             if (requested && std::string_view(requested) == "stderr") {
                 descriptor = STDERR_FILENO;

@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "present_diagnostics.hpp"
 #include "swapchain/present/internal.hpp"
+#include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -20,6 +21,16 @@ void expect(bool condition, const char* message) {
 std::string read(const std::filesystem::path& path) {
     std::ifstream stream(path);
     return {std::istreambuf_iterator<char>(stream), {}};
+}
+// Bounded read for large captures: never loads the whole file.
+std::string readRange(const std::filesystem::path& path, std::uintmax_t offset, size_t bytes) {
+    std::ifstream stream(path, std::ios::binary);
+    expect(stream.is_open(), "cannot open retained capture");
+    stream.seekg(static_cast<std::streamoff>(offset));
+    std::string data(bytes, '\0');
+    stream.read(data.data(), static_cast<std::streamsize>(bytes));
+    data.resize(static_cast<size_t>(stream.gcount()));
+    return data;
 }
 void setupFixture() {
     const char* incomingNames[]{"VK_KHR_swapchain"};
@@ -398,21 +409,26 @@ int main() {
         writePacingProfileRecords("framegen-vulkan: present diagnostics: operation=pacing-profile-test phase=fg-on\n");
         writePacingProfileRecords("framegen-vulkan: present diagnostics: operation=pacing-profile-test phase=fg-off\n");
         const std::string filler(1024 * 1024, 'x');
-        for (int i = 0; i < 70; ++i) writePacingProfileRecords(filler);
+        for (int i = 0; i < 520; ++i) writePacingProfileRecords(filler);
         writePacingProfileRecords("this must not replace earlier evidence\n");
         std::exit(0);
     }
     int childStatus{};
     expect(waitpid(child, &childStatus, 0) == child && WIFEXITED(childStatus) && WEXITSTATUS(childStatus) == 0,
         "retention regression child failed");
-    const auto beginning = read(retained);
-    expect(beginning.starts_with("framegen-vulkan: present diagnostics: operation=pacing-profile-session") &&
-        beginning.find("capture_limit_bytes=67108864 retention=stop") != std::string::npos &&
-        beginning.find("phase=fg-on") != std::string::npos && beginning.find("phase=fg-off") != std::string::npos &&
-        beginning.find("operation=pacing-profile-capture-limit") != std::string::npos &&
-        beginning.find("operation=pacing-profile-log-wrap") == std::string::npos &&
-        beginning.find("this must not replace") == std::string::npos && beginning.size() <= 64 * 1024 * 1024,
+    // The 512 MiB capture is checked by bounded reads only: the first and last 4 KiB plus its size.
+    constexpr std::uintmax_t captureLimit = 512ull * 1024 * 1024;
+    const auto retainedSize = std::filesystem::file_size(retained);
+    const auto head = readRange(retained, 0, 4096);
+    const auto tail = readRange(retained, retainedSize > 4096 ? retainedSize - 4096 : 0, 4096);
+    expect(head.starts_with("framegen-vulkan: present diagnostics: operation=pacing-profile-session") &&
+        head.find("capture_limit_bytes=536870912 retention=stop") != std::string::npos &&
+        head.find("phase=fg-on") != std::string::npos && head.find("phase=fg-off") != std::string::npos &&
+        head.find("operation=pacing-profile-log-wrap") == std::string::npos &&
+        tail.find("operation=pacing-profile-capture-limit") != std::string::npos &&
+        tail.find("this must not replace") == std::string::npos && retainedSize <= captureLimit,
         "Wayland capture overwrote earlier phases, lost its limit marker or exceeded its bound");
+    std::filesystem::remove(retained); // Release the RAM-backed fixture before the remaining scenarios.
     const auto trace = root / "detailed.log";
     const auto traceChild = fork();
     expect(traceChild >= 0, "cannot fork detailed trace regression");
