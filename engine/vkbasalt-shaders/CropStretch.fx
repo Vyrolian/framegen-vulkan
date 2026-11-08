@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
-// Original MAKO shader. Crop the source image, then stretch it to the full output.
+// Original framegen-vulkan shader. Crop the source image, then stretch it to the full output.
 
 #include "ReShade.fxh"
 

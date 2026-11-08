@@ -1,17 +1,17 @@
 # HDR pipeline architecture
 
-This guide defines MAKO Renderer's colour handling and its Gamescope HDR boundary. [WSI isolation](WSI-ISOLATION.md) owns Vulkan-layer discovery and presentation ownership.
+This guide defines framegen-vulkan's colour handling and its Gamescope HDR boundary. [WSI isolation](WSI-ISOLATION.md) owns Vulkan-layer discovery and presentation ownership.
 
 <!-- prettier-ignore -->
 > [!IMPORTANT]
-> HDR is experimental and disabled by default. Enable it through MAKO’s isolated Gamescope bridge with **Gamescope WSI** off. HDR10/PQ and linear scRGB support Scaling, Frame Generation and Shaders; display accuracy, game compatibility and performance require [hardware qualification](#hardware-qualification).
+> HDR is experimental and disabled by default. Enable it through framegen-vulkan’s isolated Gamescope bridge with **Gamescope WSI** off. HDR10/PQ and linear scRGB support Scaling, Frame Generation and Shaders; display accuracy, game compatibility and performance require [hardware qualification](#hardware-qualification).
 
 ## Separate colour and presentation decisions
 
 Two independent decisions are involved:
 
 1. The game swapchain encoding, cross-device exchange format, and model working space define the colour pipeline. Stable compositor feedback may replace these private resources while the process runs.
-2. The isolated surface bridge uses MAKO’s existing ordered presentation for both SDR and HDR. The legacy full-Gamescope-WSI HDR transport remains separate. Transport is selected before the swapchain is created and cannot change live.
+2. The isolated surface bridge uses framegen-vulkan’s existing ordered presentation for both SDR and HDR. The legacy full-Gamescope-WSI HDR transport remains separate. Transport is selected before the swapchain is created and cannot change live.
 
 Do not treat a private colour-resource transition as permission to add Gamescope WSI or reinterpret an existing swapchain's transport.
 
@@ -21,15 +21,15 @@ The normal managed launch establishes this policy before Vulkan starts:
 
 ```text
 DISABLE_GAMESCOPE_WSI=1
-MAKO_DISABLE_HDR_EXPOSURE=1
+FGVK_DISABLE_HDR_EXPOSURE=1
 DXVK_HDR unset
 ```
 
-Setting `disable_hdr_exposure = 0` in `launcher.conf` exports `MAKO_DISABLE_HDR_EXPOSURE=0` and `DXVK_HDR=1`, retaining `DISABLE_GAMESCOPE_WSI=1`. The default is `true`. The choice is stored globally in `launcher.conf`. A game restart applies it. HDR alone can provision the bridge without allocating Scaling or Frame Generation resources.
+Setting `disable_hdr_exposure = 0` in `launcher.conf` exports `FGVK_DISABLE_HDR_EXPOSURE=0` and `DXVK_HDR=1`, retaining `DISABLE_GAMESCOPE_WSI=1`. The default is `true`. The choice is stored globally in `launcher.conf`. A game restart applies it. HDR alone can provision the bridge without allocating Scaling or Frame Generation resources.
 
 With HDR disabled, the bridge performs no HDR capability query, format exposure, metadata emulation or protocol request. Scaling can still use its surface association; with both Scaling and HDR disabled, no isolated bridge connection is provisioned.
 
-Steam Deck OLED and external HDR displays use the same output-capability check in Gaming Mode. Gamescope owns panel calibration and display output; MAKO forwards the application’s encoding and metadata. HDR must be allowed in Gamescope, but HDR content need not already be active. Steam Deck LCD’s built-in panel remains SDR.
+Steam Deck OLED and external HDR displays use the same output-capability check in Gaming Mode. Gamescope owns panel calibration and display output; framegen-vulkan forwards the application’s encoding and metadata. HDR must be allowed in Gamescope, but HDR content need not already be active. Steam Deck LCD’s built-in panel remains SDR.
 
 At surface creation, `GamescopeScalingSurface` validates the X11 window, Gamescope identity and Wayland peer, then reads `GAMESCOPE_HDR_OUTPUT_FEEDBACK`. A newly created game Xwayland server may lack that property. Only a missing property on a nonzero server permits one server-zero query through `GamescopeHdrFeedbackReader`, with the same nonzero Gamescope PID and server-zero identity verified before and after. Explicit SDR, invalid values, failed reads or identity checks, and disabled HDR never permit fallback.
 
@@ -39,9 +39,9 @@ Both Vulkan surface-format query entrypoints apply this exposure policy. `vkGetP
 
 The layer manifest declares `VK_EXT_swapchain_colorspace`. The connected HDR bridge advertises `VK_EXT_hdr_metadata`, consumes it if the driver lacks it, and forwards metadata to the owning Gamescope swapchain in CTA-861 units. It suppresses wire-identical quantized metadata before submission and flushing, ignores SDR/retired objects, and gives replacements fresh metadata ownership.
 
-With HDR exposure disabled, the isolated bridge rejects HDR swapchain creation. On other surface paths, MAKO retains the existing disabled-HDR policy: no generation for an explicit HDR swapchain, with real-frame passthrough.
+With HDR exposure disabled, the isolated bridge rejects HDR swapchain creation. On other surface paths, framegen-vulkan retains the existing disabled-HDR policy: no generation for an explicit HDR swapchain, with real-frame passthrough.
 
-Native Steam Remote Play additionally enforces SDL3 sRGB renderer creation through its process-scoped packaged helper. `MAKO_DISABLE_HDR_EXPOSURE` is MAKO policy and does not itself override an application's SDL colourspace selection. The shared Remote Play owner supplies that startup policy; it does not relabel HDR pixels or change the Renderer colour classifier. HDR stream input and SDL tone mapping still require independent hardware validation.
+Native Steam Remote Play additionally enforces SDL3 sRGB renderer creation through its process-scoped packaged helper. `FGVK_DISABLE_HDR_EXPOSURE` is framegen-vulkan policy and does not itself override an application's SDL colourspace selection. The shared Remote Play owner supplies that startup policy; it does not relabel HDR pixels or change the Renderer colour classifier. HDR stream input and SDL tone mapping still require independent hardware validation.
 
 ## Gamescope application-HDR evidence
 
@@ -70,7 +70,7 @@ Feedback can initially describe a previous Gamescope commit. `StableBooleanFeedb
 | Packed 10-bit or RGBA16F normalized to nonlinear sRGB by Gamescope WSI | Confirmed application HDR | Recovered HDR10/PQ or scRGB | Format-dependent |
 | HLG, Dolby Vision, invalid format/colour-space pairs, or unvalidated wide colour | N/A | Unsupported | Real-frame passthrough |
 
-Gamescope WSI can consume the application's original HDR colour space before a lower layer sees the create structure. MAKO recovers that meaning only when Gamescope reports application-owned HDR intent and the normalized format is one of the validated HDR formats. It never promotes an ordinary 8-bit swapchain to HDR.
+Gamescope WSI can consume the application's original HDR colour space before a lower layer sees the create structure. framegen-vulkan recovers that meaning only when Gamescope reports application-owned HDR intent and the normalized format is one of the validated HDR formats. It never promotes an ordinary 8-bit swapchain to HDR.
 
 ## Colour flow
 
@@ -105,15 +105,15 @@ The internal Native output resize follows the same private-resource drain for li
 
 The isolated HDR bridge retains `OrderedSdr` and its Fixed/Adaptive scheduling; only `GamescopeHdr` requires full Gamescope WSI.
 
-Stable SDR/HDR feedback may rebuild private exchange images, backend resources, and colour conversions. It cannot recreate the game swapchain or change its transport. The replacement waits for MAKO-owned completion evidence, retains real-frame passthrough on failure, and retries on the bounded private-resource schedule described in [Runtime configuration transitions](RUNTIME-TRANSITIONS.md).
+Stable SDR/HDR feedback may rebuild private exchange images, backend resources, and colour conversions. It cannot recreate the game swapchain or change its transport. The replacement waits for framegen-vulkan-owned completion evidence, retains real-frame passthrough on failure, and retries on the bounded private-resource schedule described in [Runtime configuration transitions](RUNTIME-TRANSITIONS.md).
 
 ## Scaling and shaders
 
-Full-precision HDR scaling uses RGBA16F boundaries. Native Resolution and MAKO Scaler preserve source encoding. LS1 caches a high-precision reconstruction shader while retaining model-defined feature formats. For linear scRGB, it converts to bounded PQ BT.2020 before reconstruction and back afterwards; only this path needs extra storage/sampling usages. Where available, the final conversion writes directly into FG input, avoiding a full-resolution copy. Private output remains available for FG-off and transitions. Scaling retains RGBA16F FG transport so live scaler changes preserve compatible bindings.
+Full-precision HDR scaling uses RGBA16F boundaries. Native Resolution and framegen-vulkan Scaler preserve source encoding. LS1 caches a high-precision reconstruction shader while retaining model-defined feature formats. For linear scRGB, it converts to bounded PQ BT.2020 before reconstruction and back afterwards; only this path needs extra storage/sampling usages. Where available, the final conversion writes directly into FG input, avoiding a full-resolution copy. Private output remains available for FG-off and transitions. Scaling retains RGBA16F FG transport so live scaler changes preserve compatible bindings.
 
 ### HDR quality
 
-`hdr_quality` selects `quality`, `balanced`, or `performance` (default) per profile, including Handheld/Docked sets. Both UIs show it while launch HDR is allowed. Quality uses full-precision resources and linear-light generation. Balanced uses compact shader/scaling buffers but retains linear-light generation and full motion analysis. Performance additionally enables approximate HDR10 generation and coarser motion analysis. The environment equivalent is `MAKO_HDR_QUALITY`. The setting never enables HDR or changes swapchain encoding, output resolution or presentation; SDR ignores it. Only buffer precision changes for scRGB; scRGB generation stays unchanged.
+`hdr_quality` selects `quality`, `balanced`, or `performance` (default) per profile, including Handheld/Docked sets. Both UIs show it while launch HDR is allowed. Quality uses full-precision resources and linear-light generation. Balanced uses compact shader/scaling buffers but retains linear-light generation and full motion analysis. Performance additionally enables approximate HDR10 generation and coarser motion analysis. The environment equivalent is `FGVK_HDR_QUALITY`. The setting never enables HDR or changes swapchain encoding, output resolution or presentation; SDR ignores it. Only buffer precision changes for scRGB; scRGB generation stays unchanged.
 
 In Balanced and Performance, HDR10 scaling replaces RGBA16F source images with supported packed RGB10A2 inputs without changing output formats, direct FG bindings or arithmetic, or adding copies or conversions. Linear-scRGB scaler inputs remain RGBA16F.
 
@@ -131,15 +131,15 @@ Shader precision changes prepare a complete graph, drain the queue and retire th
 
 Allowing HDR can provision the bridge even if the game selects SDR. In-game HDR changes do not replace that transport. With FG provisioned, the shared [compositor-readiness policy](WSI-ISOLATION.md#private-bridge-presentation-wait-compatibility) also applies: application wait capabilities remain available, and CPU arrival gaps do not become GPU-readiness estimates. HDR colour processing and metadata remain independent of that presentation policy. Compare launch HDR exposure separately from in-game encoding when measuring overhead.
 
-Storage precision is separate from arithmetic: SDR exchange uses RGBA8 (four bytes per pixel), full-precision HDR scaling uses RGBA16F (eight), and supported FG-only HDR10 exchange uses packed 10-bit (four). MAKO Scaler and LSFG retain selected FP16/FP32 arithmetic; LS1 remains FP32. HDR does not require RGBA32F.
+Storage precision is separate from arithmetic: SDR exchange uses RGBA8 (four bytes per pixel), full-precision HDR scaling uses RGBA16F (eight), and supported FG-only HDR10 exchange uses packed 10-bit (four). framegen-vulkan Scaler and LSFG retain selected FP16/FP32 arithmetic; LS1 remains FP32. HDR does not require RGBA32F.
 
-Native Resolution and MAKO Scaler add no transfer-function pass; linear-scRGB LS1 adds two. Quality and Balanced HDR10 FG convert PQ↔linear; Performance omits those passes. Shader cost applies to every real and generated output; empty chains add no conversion. HDR10 chains starting with CAS, DLS or ReShade skip the input copy; chains ending with CAS or DLS skip the output copy. Either sharpener alone needs neither an intermediate image nor a copy. Linear-scRGB shader chains require two boundary conversions. Bandwidth, conversions, resolution and effect selection can still lower FPS; measure GPU cost and delivered cadence on the intended hardware.
+Native Resolution and framegen-vulkan Scaler add no transfer-function pass; linear-scRGB LS1 adds two. Quality and Balanced HDR10 FG convert PQ↔linear; Performance omits those passes. Shader cost applies to every real and generated output; empty chains add no conversion. HDR10 chains starting with CAS, DLS or ReShade skip the input copy; chains ending with CAS or DLS skip the output copy. Either sharpener alone needs neither an intermediate image nor a copy. Linear-scRGB shader chains require two boundary conversions. Bandwidth, conversions, resolution and effect selection can still lower FPS; measure GPU cost and delivered cadence on the intended hardware.
 
 Before exposing images, the colour-aware vkBasalt fork receives the original colour space through `makoSetSwapchainColorSpaceV1(VkDevice, VkSwapchainKHR, VkColorSpaceKHR) -> VkBool32`. Full-precision graphs use RGBA16F PQ BT.2020 intermediates; reduced precision can use packed 10-bit. Every real/generated frame uses the same chain. Older binaries without the colour-space handoff reject isolated HDR. Custom shaders may remap or clip colours or declare low-precision textures, so their appearance needs separate testing.
 
 CAS and DLS apply HDR contrast and denoise limits in an sRGB-like signal referenced to 203 nits, retaining BT.2020 primaries. A reversible RGB-wide scale places bright neighbourhoods at a 0.5 local maximum, matching the filters' SDR midrange response without mistaking HDR detail for clipped white. Darker neighbourhoods retain their original range, and the scale is reversed before PQ output to preserve HDR brightness. This correction stays within the existing pass; CAS reuses neighbourhood extrema to reduce work. SDR math is unchanged. The fork owns transfer-approximation accuracy and SDR contrast-equivalence tests; compare visual sharpening at matched game settings.
 
-For the internal HDR display resize, MAKO supplies the admitted source extent to `makoSetSwapchainSharpenSourceExtentV1` before image exposure. CAS/DLS keep a one-source-pixel sampling footprint instead of shrinking to one output pixel; shader-only, native-size HDR, explicit Scaling and SDR retain their existing footprint. The optional hook rejects invalid ownership, late calls, aspect changes and extents beyond the existing 2× bound. Missing support retains the old sampling. Live effect and precision graph replacements reuse the swapchain-owned extent; a new swapchain starts without it. This adds no pass, image, synchronization or per-frame update.
+For the internal HDR display resize, framegen-vulkan supplies the admitted source extent to `makoSetSwapchainSharpenSourceExtentV1` before image exposure. CAS/DLS keep a one-source-pixel sampling footprint instead of shrinking to one output pixel; shader-only, native-size HDR, explicit Scaling and SDR retain their existing footprint. The optional hook rejects invalid ownership, late calls, aspect changes and extents beyond the existing 2× bound. Missing support retains the old sampling. Live effect and precision graph replacements reuse the swapchain-owned extent; a new swapchain starts without it. This adds no pass, image, synchronization or per-frame update.
 
 ## Hardware qualification
 
@@ -154,7 +154,7 @@ Keep these invariants:
 - Output HDR capability is not application HDR intent.
 - A 10-bit format is not PQ without an HDR colour space or confirmed application feedback.
 - An isolated process never loads full Gamescope WSI or changes its presentation transport to enable HDR.
-- Discovery is not proof of `MAKO render -> Gamescope WSI -> optional MAKO spatial` call order.
+- Discovery is not proof of `framegen-vulkan render -> Gamescope WSI -> optional framegen-vulkan spatial` call order.
 - Presentation transport never changes for a live swapchain.
 - Generated images never take priority over the real frame on the HDR bridge.
 - Unsupported encodings and failed private transitions remain on real-frame passthrough.
@@ -164,15 +164,15 @@ Keep these invariants:
 
 | Responsibility | Source of truth |
 | --- | --- |
-| Process-start HDR/WSI policy and transport | `mako-render/src/presentation_policy.hpp` |
-| Isolated HDR surface, format exposure, metadata and lifetime | `mako-render/src/gamescope_scaling_surface.cpp` |
-| Gamescope discovery, feedback, and diagnostics | `mako-render/src/gamescope_hdr_feedback.cpp` |
-| Feedback stabilization | `mako-render/src/runtime_transition.hpp` |
-| Format and colour-space classification | `mako-render/src/color_pipeline.cpp` |
-| Swapchain resources and private transitions | `mako-render/src/swapchain/resources.cpp` |
-| Native-first experimental presentation | `mako-render/src/swapchain/present.cpp`, `mako-render/src/swapchain/present/real_frames.cpp` |
-| Backend encodings and conversion shaders | `mako-backend/src/mako.cpp`, `mako-backend/src/shaders/` |
+| Process-start HDR/WSI policy and transport | `fgvk-render/src/presentation_policy.hpp` |
+| Isolated HDR surface, format exposure, metadata and lifetime | `fgvk-render/src/gamescope_scaling_surface.cpp` |
+| Gamescope discovery, feedback, and diagnostics | `fgvk-render/src/gamescope_hdr_feedback.cpp` |
+| Feedback stabilization | `fgvk-render/src/runtime_transition.hpp` |
+| Format and colour-space classification | `fgvk-render/src/color_pipeline.cpp` |
+| Swapchain resources and private transitions | `fgvk-render/src/swapchain/resources.cpp` |
+| Native-first experimental presentation | `fgvk-render/src/swapchain/present.cpp`, `fgvk-render/src/swapchain/present/real_frames.cpp` |
+| Backend encodings and conversion shaders | `fgvk-backend/src/fgvk.cpp`, `fgvk-backend/src/shaders/` |
 | Embedded shader generation and freshness | `scripts/generate-color-conversion-spirv.py`, portable CTest |
-| Deterministic policy coverage | `mako-render/tests/color_pipeline_tests.cpp`, `mako-render/tests/presentation_policy_tests.cpp`, related Renderer tests |
+| Deterministic policy coverage | `fgvk-render/tests/color_pipeline_tests.cpp`, `fgvk-render/tests/presentation_policy_tests.cpp`, related Renderer tests |
 
-Follow [Collect diagnostics](COLLECT_DIAGNOSTICS.md) to capture a session. For a narrower technical report, replace the collector’s `all` argument with `hdr`, `layers`, or `recovery`; `mako-diagnostics --help` lists presets.
+Follow [Collect diagnostics](COLLECT_DIAGNOSTICS.md) to capture a session. For a narrower technical report, replace the collector’s `all` argument with `hdr`, `layers`, or `recovery`; `fgvk-diagnostics --help` lists presets.

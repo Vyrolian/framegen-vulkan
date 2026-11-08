@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regenerate or verify MAKO Renderer's embedded spatial-scaling SPIR-V."""
+"""Regenerate or verify framegen-vulkan's embedded spatial-scaling SPIR-V."""
 
 from __future__ import annotations
 
@@ -13,14 +13,14 @@ import tempfile
 
 
 ROOT = Path(__file__).resolve().parent.parent
-SHADER = ROOT / "mako-render/src/shaders/spatial_scaling.comp"
-OUTPUT = ROOT / "mako-render/src/shaders/spatial_scaling_spirv.hpp"
-HASH_MANIFEST = ROOT / "mako-render/src/shaders/spatial_scaling_spirv.hashes"
+SHADER = ROOT / "fgvk-render/src/shaders/spatial_scaling.comp"
+OUTPUT = ROOT / "fgvk-render/src/shaders/spatial_scaling_spirv.hpp"
+HASH_MANIFEST = ROOT / "fgvk-render/src/shaders/spatial_scaling_spirv.hashes"
 VARIANTS = (
     ("spatialScalingRgba8Spirv", ()),
-    ("spatialScalingRgba16fSpirv", ("-DMAKO_SCALING_RGBA16F=1",)),
-    ("spatialScalingRgba8Fp16Spirv", ("-DMAKO_SCALING_FP16=1",)),
-    ("spatialScalingRgba16fFp16Spirv", ("-DMAKO_SCALING_RGBA16F=1", "-DMAKO_SCALING_FP16=1")),
+    ("spatialScalingRgba16fSpirv", ("-DFGVK_SCALING_RGBA16F=1",)),
+    ("spatialScalingRgba8Fp16Spirv", ("-DFGVK_SCALING_FP16=1",)),
+    ("spatialScalingRgba16fFp16Spirv", ("-DFGVK_SCALING_RGBA16F=1", "-DFGVK_SCALING_FP16=1")),
 )
 
 
@@ -99,7 +99,7 @@ def check() -> None:
 def generate() -> None:
     source = source_digest()
     payloads: list[tuple[str, bytes]] = []
-    with tempfile.TemporaryDirectory(prefix="mako-scaling-spirv-") as temp_dir:
+    with tempfile.TemporaryDirectory(prefix="fgvk-scaling-spirv-") as temp_dir:
         for symbol, arguments in VARIANTS:
             binary = Path(temp_dir) / f"{symbol}.spv"
             subprocess.run(
@@ -122,7 +122,7 @@ def generate() -> None:
         "#include <array>",
         "#include <cstdint>",
         "",
-        "namespace mako::layer::embedded {",
+        "namespace fgvk::layer::embedded {",
     ]
     for symbol, payload in payloads:
         header_lines.extend((

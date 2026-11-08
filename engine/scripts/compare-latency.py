@@ -41,10 +41,10 @@ from typing import Any, Iterable, Mapping, Sequence
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_PROBE = REPO_ROOT / "engine/build/latency-probe/fgvk-latency-probe"
 DEFAULT_LAYER_BUILD = REPO_ROOT / "engine/build/repro-setup-release"
-LAYER_SUBDIR = "mako-render"
-MANIFEST_NAME = "VkLayer_MAKO_render.json"
-LAYER_LIBRARY_NAME = "libmako-render.so"
-GLOBAL_CONFIG_RELATIVE = Path(".config") / "mako-render" / "conf.toml"
+LAYER_SUBDIR = "fgvk-render"
+MANIFEST_NAME = "VkLayer_FGVK_render.json"
+LAYER_LIBRARY_NAME = "libfgvk-render.so"
+GLOBAL_CONFIG_RELATIVE = Path(".config") / "framegen-vulkan" / "conf.toml"
 
 PROFILE_NAME = "latency probe"
 PROBE_PROCESS_NAME = "fgvk-latency-probe"
@@ -66,12 +66,12 @@ SUCCESSFUL_PRESENTS = frozenset({"VK_SUCCESS", "VK_SUBOPTIMAL_KHR"})
 HIDDEN_WINDOW_EVENTS = ("hidden", "occluded", "minimized")
 WAYLAND_ATTACH = re.compile(r"-> wl_surface[#@]\d+\.attach\(")
 
-REMOVED_PREFIXES = ("MAKO_", "NVPRESENT_", "MANGOHUD")
+REMOVED_PREFIXES = ("FGVK_", "NVPRESENT_", "MANGOHUD")
 REMOVED_KEYS = frozenset({
-    "ENABLE_MAKO",
-    "DISABLE_MAKO",
-    "ENABLE_MAKO_SPATIAL_SCALING",
-    "DISABLE_MAKO_SPATIAL_SCALING",
+    "ENABLE_FGVK",
+    "DISABLE_FGVK",
+    "ENABLE_FGVK_SPATIAL_SCALING",
+    "DISABLE_FGVK_SPATIAL_SCALING",
     "DISABLE_LAYER_NV_PRESENT_1",
     "VK_INSTANCE_LAYERS",
     "VK_LAYER_PATH",
@@ -142,22 +142,22 @@ def mode_overrides(mode: str, session_dir: Path) -> dict[str, str]:
     """Return the variables that define one mode, on top of the sanitized base."""
     if mode == "baseline":
         return {
-            "DISABLE_MAKO": "1",
-            "DISABLE_MAKO_SPATIAL_SCALING": "1",
+            "DISABLE_FGVK": "1",
+            "DISABLE_FGVK_SPATIAL_SCALING": "1",
             "NVPRESENT_ENABLE_SMOOTH_MOTION": "0",
             "DISABLE_LAYER_NV_PRESENT_1": "1",
         }
     if mode == "smooth-motion":
         return {
-            "DISABLE_MAKO": "1",
-            "DISABLE_MAKO_SPATIAL_SCALING": "1",
+            "DISABLE_FGVK": "1",
+            "DISABLE_FGVK_SPATIAL_SCALING": "1",
             "NVPRESENT_ENABLE_SMOOTH_MOTION": "1",
         }
     if mode == "fgvk":
         return {
             "VK_IMPLICIT_LAYER_PATH": str(session_dir / "manifests"),
-            "ENABLE_MAKO": "1",
-            "MAKO_CONFIG": str(session_dir / "conf.toml"),
+            "ENABLE_FGVK": "1",
+            "FGVK_CONFIG": str(session_dir / "conf.toml"),
             "NVPRESENT_ENABLE_SMOOTH_MOTION": "0",
             "DISABLE_LAYER_NV_PRESENT_1": "1",
         }
@@ -221,14 +221,14 @@ def render_config(global_dll: str) -> str:
 
 
 def read_global_dll(config_path: Path) -> str:
-    """Return [global] dll from the user's mako-render config. The DLL itself is never touched."""
+    """Return [global] dll from the user's fgvk-render config. The DLL itself is never touched."""
     try:
         with config_path.open("rb") as handle:
             data = tomllib.load(handle)
     except FileNotFoundError as exc:
-        raise SetupError(f"mako-render config not found: {config_path}") from exc
+        raise SetupError(f"fgvk-render config not found: {config_path}") from exc
     except tomllib.TOMLDecodeError as exc:
-        raise SetupError(f"mako-render config is not valid TOML: {config_path}: {exc}") from exc
+        raise SetupError(f"fgvk-render config is not valid TOML: {config_path}: {exc}") from exc
     global_table = data.get("global")
     dll = global_table.get("dll") if isinstance(global_table, dict) else None
     if not isinstance(dll, str) or not dll:

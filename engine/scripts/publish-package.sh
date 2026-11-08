@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-if [[ -n "${MAKO_VKBASALT_LOCAL_ARCHIVE:-}" ]]; then
+if [[ -n "${FGVK_VKBASALT_LOCAL_ARCHIVE:-}" ]]; then
     echo "Local vkBasalt candidates cannot be published; verify and pin a public dependency first." >&2
     exit 1
 fi
@@ -9,10 +9,10 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 repository_root="$(cd "$repo_root/.." && pwd)"
 cd "$repo_root"
 
-release_remote="${MAKO_RELEASE_REMOTE:-origin}"
+release_remote="${FGVK_RELEASE_REMOTE:-origin}"
 requested_version=""
 ci_skip_suffix=""
-if [[ "${MAKO_RELEASE_SKIP_TESTS:-0}" == "1" ]]; then
+if [[ "${FGVK_RELEASE_SKIP_TESTS:-0}" == "1" ]]; then
     ci_skip_suffix=" [skip ci]"
 fi
 
@@ -20,7 +20,7 @@ usage() {
     cat <<'EOF'
 Usage: scripts/publish-package.sh [--version X.Y.Z]
 
-Builds, verifies, and publishes MAKO Renderer. When --version is supplied, the
+Builds, verifies, and publishes framegen-vulkan. When --version is supplied, the
 script updates and commits engine/VERSION first. After publishing, it commits
 the generated Renderer release pin and release links automatically.
 engine/RELEASE_NOTES.md must contain the matching manually curated heading.
@@ -80,7 +80,7 @@ fi
 notes_version="${requested_version:-$(tr -d '[:space:]' < VERSION)}"
 manual_release_notes="$(
     node "$repository_root/scripts/read-release-notes.mjs" \
-        "$repo_root/RELEASE_NOTES.md" "MAKO Renderer" "$notes_version"
+        "$repo_root/RELEASE_NOTES.md" "framegen-vulkan" "$notes_version"
 )"
 
 if ! git remote get-url "$release_remote" >/dev/null 2>&1; then
@@ -124,7 +124,7 @@ if [[ -n "$requested_version" ]]; then
     if [[ "$current_version" != "$requested_version" ]]; then
         printf '%s\n' "$requested_version" > VERSION
         git add VERSION
-        git commit -m "Release MAKO Renderer v$requested_version$ci_skip_suffix"
+        git commit -m "Release framegen-vulkan v$requested_version$ci_skip_suffix"
         git push "$release_remote" "$release_branch"
     fi
 fi
@@ -136,8 +136,8 @@ if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
 fi
 
 tag="render-v$version"
-archive="out/MAKO-Renderer-v$version-linux.tar.xz"
-flatpak_archive="out/MAKO-Renderer-v$version-flatpaks.tar.xz"
+archive="out/framegen-vulkan-v$version-linux.tar.xz"
+flatpak_archive="out/framegen-vulkan-v$version-flatpaks.tar.xz"
 source_commit="$(git rev-parse HEAD)"
 
 tag_exists=false
@@ -152,9 +152,9 @@ fi
 
 # Match the native builder used by complete local release candidates on every host.
 # Host SDK selection must not change the compiled presentation contract.
-MAKO_PORTABLE_PACKAGE=1 scripts/package-local.sh "$archive"
+FGVK_PORTABLE_PACKAGE=1 scripts/package-local.sh "$archive"
 checksum="$("${checksum_command[@]}" "$archive" | awk '{print $1}')"
-MAKO_PORTABLE_PACKAGE=1 scripts/package-flatpaks.sh "$flatpak_archive"
+FGVK_PORTABLE_PACKAGE=1 scripts/package-flatpaks.sh "$flatpak_archive"
 flatpak_checksum="$("${checksum_command[@]}" "$flatpak_archive" | awk '{print $1}')"
 
 pin_renderer_release() {
@@ -184,14 +184,14 @@ if [[ "$arch_pkgver" != "$version" || -z "$arch_pkgrel" ]]; then
     echo "Synchronized Arch package identity is invalid: ${arch_pkgver:-missing}-${arch_pkgrel:-missing}" >&2
     exit 1
 fi
-arch_package="out/mako-renderer-bin-${arch_pkgver}-${arch_pkgrel}-x86_64.pkg.tar.zst"
+arch_package="out/framegen-vulkan-bin-${arch_pkgver}-${arch_pkgrel}-x86_64.pkg.tar.zst"
 source_commit_epoch="$(git show -s --format=%ct "$source_commit")"
 SOURCE_DATE_EPOCH="$source_commit_epoch" \
     "$repo_root/dist/arch/verify-release-package.sh" "$archive" "$arch_package"
 arch_checksum="$("${checksum_command[@]}" "$arch_package" | awk '{print $1}')"
 pin_renderer_release "$arch_package" "$arch_checksum"
 
-notes_file="$(mktemp "${TMPDIR:-/tmp}/mako-release-notes.XXXXXX")"
+notes_file="$(mktemp "${TMPDIR:-/tmp}/fgvk-release-notes.XXXXXX")"
 cleanup() {
     rm -f "$notes_file"
 }
@@ -205,13 +205,13 @@ $manual_release_notes
 > [!TIP]
 > **Try the game’s V-Sync setting both on and off.** Neither setting is universally best: the result depends on the game, its FPS cap, VRR, and the compositor. Keep whichever option feels smoother and more responsive for that game.
 
-Every game, renderer, and display setup behaves differently. Compare Fixed Frame Generation, Adaptive Frame Generation, and scaling-only operation one setting at a time. If Frame Generation, Scaling, or Shaders do not work, test Fullscreen, Borderless Fullscreen, and Windowed; none is universally best. For Scaling, also test in-game resolutions and verify that the input is smaller than the display. Changing display mode can change GPU cost. Restart after changing a setting labelled **(Restart)**. Flow Scale and Lighter FG Model normally apply live and may cause one brief hitch while MAKO replaces their private resources.
+Every game, renderer, and display setup behaves differently. Compare Fixed Frame Generation, Adaptive Frame Generation, and scaling-only operation one setting at a time. If Frame Generation, Scaling, or Shaders do not work, test Fullscreen, Borderless Fullscreen, and Windowed; none is universally best. For Scaling, also test in-game resolutions and verify that the input is smaller than the display. Changing display mode can change GPU cost. Restart after changing a setting labelled **(Restart)**. Flow Scale and Lighter FG Model normally apply live and may cause one brief hitch while framegen-vulkan replaces their private resources.
 
 - **Adaptive target behaviour:** Adaptive varies the generated-frame count toward an average target. It cannot reduce a native frame rate already above that target, and the result still depends on the selected multiplier plus available GPU and compositor capacity.
 - **Quality and latency tuning:** Higher multipliers and lower real-frame rates can increase ghosting and input latency. Smooth Cadence may improve motion consistency while reducing responsiveness, so compare the available choices per game.
 
 > [!IMPORTANT]
-> MAKO does not contain or distribute Lossless Scaling, \`Lossless.dll\`, or extracted proprietary model payloads. Fixed or Adaptive Frame Generation and LS1 scaling read selected resources at runtime from a lawful, user-supplied Lossless Scaling installation. The open MAKO Scaler does not use it. MAKO does not alter the user's DLL file, and translated resources remain process-local. Users are responsible for complying with the terms applicable to their copy.
+> framegen-vulkan does not contain or distribute Lossless Scaling, \`Lossless.dll\`, or extracted proprietary model payloads. Fixed or Adaptive Frame Generation and LS1 scaling read selected resources at runtime from a lawful, user-supplied Lossless Scaling installation. The open framegen-vulkan Scaler does not use it. framegen-vulkan does not alter the user's DLL file, and translated resources remain process-local. Users are responsible for complying with the terms applicable to their copy.
 
 ## Installation
 
@@ -221,23 +221,23 @@ Every game, renderer, and display setup behaves differently. Compare Fixed Frame
 | --- | --- | --- |
 | \`$(basename "$archive")\` | General Linux and direct user-local installation, including SteamOS | The included graphical installer manages files under \`~/.local\`. |
 | \`$(basename "$arch_package")\` | Arch Linux or a traditional writable Arch-based distribution—not SteamOS | Pacman manages the system-wide files under \`/usr\`. |
-| \`$(basename "$flatpak_archive")\` | Flatpak games, launchers, and emulators | The archive contains separate MAKO Vulkan extensions for the supported Freedesktop runtimes; it does not install the host CLI. |
+| \`$(basename "$flatpak_archive")\` | Flatpak games, launchers, and emulators | The archive contains separate framegen-vulkan Vulkan extensions for the supported Freedesktop runtimes; it does not install the host CLI. |
 
-GitHub's automatically generated **Source code** ZIP and tarball contain source code, not ready-to-run MAKO Renderer packages.
+GitHub's automatically generated **Source code** ZIP and tarball contain source code, not ready-to-run framegen-vulkan packages.
 
 ### Host archive
 
 Download \`$(basename "$archive")\`, extract it into a new folder, then use the included graphical installer:
 
-1. Double-click **Install MAKO Renderer**.
+1. Double-click **Install framegen-vulkan**.
 2. Choose **Execute** if your file manager asks.
 3. Confirm the installation. The installer verifies the package, installs it under \`~/.local\`, safely updates existing files, and preserves profiles.
 
-To remove it later, run \`~/.local/bin/mako-installer --uninstall\` from a terminal. The removal keeps your profiles unless you explicitly choose to remove them.
+To remove it later, run \`~/.local/bin/fgvk-installer --uninstall\` from a terminal. The removal keeps your profiles unless you explicitly choose to remove them.
 
 The host archive includes 64-bit and 32-bit Vulkan layers; the CLI is 64-bit.
 
-Configure profiles in \`~/.config/mako-render/conf.toml\`, then validate them with \`~/.local/bin/mako-cli validate\`. Set the licensed DLL path in the profile when using Frame Generation or LS1 scaling, then use \`~/.local/bin/mako-launch %command%\` for a direct Steam launch.
+Configure profiles in \`~/.config/framegen-vulkan/conf.toml\`, then validate them with \`~/.local/bin/fgvk-cli validate\`. Set the licensed DLL path in the profile when using Frame Generation or LS1 scaling, then use \`~/.local/bin/fgvk-launch %command%\` for a direct Steam launch.
 
 ### Arch Linux package
 
@@ -249,37 +249,37 @@ sudo pacman -U ./$(basename "$arch_package")
 
 The \`./\` prefix refers to the terminal's current folder; this command does not download the package. If you saved the file elsewhere, use its full path instead. If pacman reports \`could not find or read package\`, check the path and exact filename, or download the package again if it is missing.
 
-The package installs MAKO Renderer under \`/usr\`, preserves profiles under \`~/.config/mako-render\`, and does not touch a user-local Renderer under \`~/.local\`. Use either the system package or the user-local installation as the active owner for a user; see the [Arch package guide](https://github.com/$release_repository/blob/main/engine/dist/arch/README.md) for coexistence details.
+The package installs framegen-vulkan under \`/usr\`, preserves profiles under \`~/.config/framegen-vulkan\`, and does not touch a user-local Renderer under \`~/.local\`. Use either the system package or the user-local installation as the active owner for a user; see the [Arch package guide](https://github.com/$release_repository/blob/main/engine/dist/arch/README.md) for coexistence details.
 
-After installation, create a game profile in \`~/.config/mako-render/conf.toml\`, validate it with \`mako-cli validate\`, and use \`/usr/bin/mako-launch %command%\` as that native Steam or Proton game's launch option. Installing the package alone does not activate MAKO globally.
+After installation, create a game profile in \`~/.config/framegen-vulkan/conf.toml\`, validate it with \`fgvk-cli validate\`, and use \`/usr/bin/fgvk-launch %command%\` as that native Steam or Proton game's launch option. Installing the package alone does not activate framegen-vulkan globally.
 
 ### Flatpak runtime extensions
 
-Download and extract \`$(basename "$flatpak_archive")\`. It contains one self-contained MAKO extension for each supported Flatpak runtime. Install the extension matching the application runtime, for example:
+Download and extract \`$(basename "$flatpak_archive")\`. It contains one self-contained framegen-vulkan extension for each supported Flatpak runtime. Install the extension matching the application runtime, for example:
 
 \`\`\`bash
-flatpak install --user org.freedesktop.Platform.VulkanLayer.makorender-24.08.flatpak
+flatpak install --user org.freedesktop.Platform.VulkanLayer.fgvkrender-24.08.flatpak
 \`\`\`
 
-## Updating an existing MAKO Renderer installation
+## Updating an existing framegen-vulkan installation
 
-1. Quit every game or application currently using MAKO Renderer.
-2. For a user-local installation, download the newer host archive, extract it into a new folder, and run **Install MAKO Renderer** again. For the Arch package, download the newer \`.pkg.tar.zst\` and run \`sudo pacman -U\` on it.
+1. Quit every game or application currently using framegen-vulkan.
+2. For a user-local installation, download the newer host archive, extract it into a new folder, and run **Install framegen-vulkan** again. For the Arch package, download the newer \`.pkg.tar.zst\` and run \`sudo pacman -U\` on it.
 3. If you use Flatpak applications, download the matching Flatpak archive and reinstall the extension for each runtime you use.
-4. Restart the game. Revalidate the configuration with \`mako-cli validate\` if you changed the DLL path or profiles.
+4. Restart the game. Revalidate the configuration with \`fgvk-cli validate\` if you changed the DLL path or profiles.
 
 Keep the previous archives until the new version has been tested with your games.
 
 ## Before you play
 
-- Test MAKO per game. Start with Frame Generation and Scaling disabled, then enable one path at a time before combining them.
-- If you use Frame Generation or LS1 scaling, confirm the detected \`Lossless.dll\` path before launching. Leaving it blank permits normal discovery. MAKO Scaler does not need it.
-- Do not combine MAKO with another frame-generation or scaling Vulkan wrapper for the same game.
+- Test framegen-vulkan per game. Start with Frame Generation and Scaling disabled, then enable one path at a time before combining them.
+- If you use Frame Generation or LS1 scaling, confirm the detected \`Lossless.dll\` path before launching. Leaving it blank permits normal discovery. framegen-vulkan Scaler does not need it.
+- Do not combine framegen-vulkan with another frame-generation or scaling Vulkan wrapper for the same game.
 
 EOF
 
 if [[ "$tag_exists" == false ]]; then
-    git tag -a "$tag" -m "MAKO Renderer v$version"
+    git tag -a "$tag" -m "framegen-vulkan v$version"
 fi
 git push "$release_remote" "$release_branch"
 git push "$release_remote" "$tag"
@@ -290,13 +290,13 @@ if gh release view "$tag" --repo "$release_repository" >/dev/null 2>&1; then
         "$archive" "$arch_package" "$flatpak_archive"
     gh release edit "$tag" \
         --repo "$release_repository" \
-        --title "MAKO Renderer v$version" \
+        --title "framegen-vulkan v$version" \
         --notes-file "$notes_file" \
         --latest
 else
     gh release create "$tag" "$archive" "$arch_package" "$flatpak_archive" \
         --repo "$release_repository" \
-        --title "MAKO Renderer v$version" \
+        --title "framegen-vulkan v$version" \
         --latest \
         --notes-file "$notes_file" \
         --verify-tag
@@ -312,9 +312,9 @@ release_metadata_paths=(
 )
 if ! git -C "$repository_root" diff --quiet -- "${release_metadata_paths[@]}"; then
     git -C "$repository_root" add "${release_metadata_paths[@]}"
-    git -C "$repository_root" commit -m "Pin MAKO Renderer v$version$ci_skip_suffix"
+    git -C "$repository_root" commit -m "Pin framegen-vulkan v$version$ci_skip_suffix"
     git -C "$repository_root" push "$release_remote" "$release_branch"
 fi
 
 echo "Published: https://github.com/$release_repository/releases/tag/$tag"
-echo "Committed the matching MAKO Renderer release pin and release links."
+echo "Committed the matching framegen-vulkan release pin and release links."

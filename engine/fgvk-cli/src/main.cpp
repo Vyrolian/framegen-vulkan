@@ -1,0 +1,828 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+
+#include "arguments.hpp"
+#include "i18n.hpp"
+#include "tools/benchmark.hpp"
+#include "tools/debug.hpp"
+#include "tools/inspect_dll.hpp"
+#include "tools/quality.hpp"
+#include "tools/validate.hpp"
+
+#include <array>
+#include <charconv>
+#include <cmath>
+#include <cstdlib>
+#include <cstring>
+#include <filesystem>
+#include <iostream>
+#include <optional>
+#include <span>
+#include <string>
+#include <string_view>
+#include <type_traits>
+#include <variant>
+#include <vector>
+
+#include <getopt.h> // NOLINT (IWYU)
+
+using namespace fgvk::cli;
+
+namespace {
+    template<typename Number>
+    Number numericArgument(
+            const char* const text, const std::string_view option) {
+        Number value{};
+        const char* const begin = text[0] == '+' ? text + 1 : text;
+        const char* const end = text + std::strlen(text);
+        const auto [parsed, error] = std::from_chars(begin, end, value);
+        const bool nonFinite = [](const Number parsedValue) {
+            if constexpr (std::is_floating_point_v<Number>)
+                return !std::isfinite(parsedValue);
+            return false;
+        }(value);
+        if (begin == end || error != std::errc{} || parsed != end || nonFinite) {
+            std::cerr << "error: " << option
+                << " requires a valid finite number: " << text << '\n';
+            std::exit(EXIT_FAILURE);
+        }
+        return value;
+    }
+
+    /// print usage information
+    void usage(const std::string& prog) {
+        std::cerr <<
+R"(Validate, benchmark, debug, and inspect framegen-vulkan.
+
+USAGE:
+    )" << prog << R"( [GLOBAL OPTIONS] <COMMAND> [OPTIONS] [ARGS]
+
+GLOBAL OPTIONS:
+    --lang <LANG>                       Output language: en, pt-BR, pt-PT, es
+    -h, --help                          Show this help
+
+COMMANDS:
+    validate    Validate a configuration file
+    benchmark   Run a benchmark
+    debug       Run fgvk on a set of images
+    inspect-dll Inspect and fingerprint licensed model-resource compatibility
+    quality-regression
+                Run a procedural LSFG image-quality regression
+    spatial-quality-regression
+                Run a procedural framegen-vulkan/LS1 spatial-quality regression
+    spatial-profile
+                Profile the production spatial graph with Vulkan GPU timestamps
+    synchronization-validation-canary
+                Record an intentional hazard to prove synchronization validation
+    combined-quality-regression
+                Run spatial scaling into LSFG on one procedural scene
+
+SUBCOMMAND OPTIONS:
+
+    validate
+        -c, --config <PATH>             Optional path to the configuration file
+
+    benchmark & debug
+        -d, --dll <PATH>                Path to Lossless.dll
+        -a, --allow-fp16                Request FP16 arithmetic (default)
+            --no-fp16                  Use FP32 arithmetic
+        -w, --width <INT>               Width of the input frames
+        -h, --height <INT>              Height of the input frames
+        -f, --flow <FLOAT>              Flow scale
+        -m, --multiplier <INT>          Multiplier
+        -p, --performance-mode          Use performance mode
+        -g, --gpu <STRING>              GPU to use
+
+    inspect-dll
+        -d, --dll <PATH>                Path to Lossless.dll
+            --ls1 <METHOD>             Probe FP32 ls1 or ls1-performance; emits JSON
+            --sharpness <FLOAT>        Selected LS1 sharpness from 0 to 1 (default 0.8)
+            --lsfg                     Probe the selected LSFG FP16 model; emits JSON
+            --no-fp16                  With --lsfg, select FP32; LS1 always uses FP32
+
+    benchmark
+        -t, --duration <SECONDS>        Benchmark duration in seconds
+            --profile                  Separate CPU/GPU diagnostic mode; ignores duration
+            --profile-samples <INT>     Measured iterations, 1-10000 (default 200)
+            --profile-warmup <INT>      Warm-up iterations, 6-10000 (default 200)
+            --profile-hdr10             Profile packed HDR10 inputs; requires --profile
+            --profile-hdr-reduced-precision  Approximate PQ generation; requires --profile-hdr10
+
+    debug
+        <folder>                        Path to the debug frames
+
+    quality-regression
+        -d, --dll <PATH>                Path to Lossless.dll
+        -a, --allow-fp16                Request FP16 arithmetic (default)
+            --no-fp16                  Use FP32 arithmetic
+        -g, --gpu <STRING>              GPU to use
+        -o, --output <DIRECTORY>        Write generated/reference PPM artifacts
+        -s, --scene <NAME>              Procedural scene name
+            --sequence-plan <PLAN>     Long temporal sequence; semicolon-separated frames
+            --width/--height <PIXELS>   Temporal sequence extents (default 321x181)
+            --hdr10                    Single-pair packed HDR10 quality probe
+            --hdr-reduced-precision    Approximate PQ generation; requires --hdr10
+            --hdr-white-nits <NITS>    HDR fixture white (default 203, max 10000)
+        -t, --interpolation <FLOAT>     Generated timestamp between 0 and 1
+        -f, --flow <FLOAT>              Flow scale from 0.25 to 1.0
+        -p, --performance-mode          Use the lighter LSFG model
+
+    spatial-quality-regression
+        -a, --allow-fp16                Request framegen-vulkan Scaler FP16 colour arithmetic
+            --no-fp16                  Use FP32 arithmetic (default)
+        -d, --dll <PATH>                Path to Lossless.dll for LS1 methods
+        -g, --gpu <STRING>              GPU to use
+        -o, --output <DIRECTORY>        Write generated/reference PPM artifacts
+        -c, --scene <NAME>              Procedural scene name
+        -m, --method <NAME>             native, fgvk, ls1, or ls1-performance
+        -f, --factor <FLOAT>            Scaling factor above 1.0 through 2.0
+        -s, --sharpness <FLOAT>         Sharpness from 0.0 through 1.0
+        -t, --scene-time <FLOAT>        Scene time from 0.0 through 1.0
+        -w, --width <INT>               Exact presentation width
+        -h, --height <INT>              Exact presentation height
+
+    spatial-profile
+        -a, --allow-fp16                Request framegen-vulkan Scaler FP16 colour arithmetic
+            --no-fp16                  Use FP32 arithmetic (default)
+        -d, --dll <PATH>                Path to Lossless.dll for LS1 methods
+        -g, --gpu <STRING>              GPU to use
+        -m, --method <NAME>             native, fgvk, ls1, or ls1-performance
+        -w, --width <INT>               Presentation width
+        -h, --height <INT>              Presentation height
+        -f, --factor <FLOAT>            Scaling factor above 1.0 through 2.0
+        -s, --sharpness <FLOAT>         Sharpness from 0.0 through 1.0
+        -u, --warmup <INT>              Untimed warm-up graph iterations
+        -n, --samples <INT>             Timestamped graph iterations
+        -x, --frame-generation-handoff Include the full-resolution FG source handoff
+
+    synchronization-validation-canary
+        -g, --gpu <STRING>              GPU to use
+
+    combined-quality-regression
+        -d, --dll <PATH>                Path to Lossless.dll
+        -a, --allow-fp16                Request LSFG/framegen-vulkan Scaler FP16 (default)
+            --no-fp16                  Use FP32 arithmetic
+        -g, --gpu <STRING>              GPU to use
+        -o, --output <DIRECTORY>        Write generated/reference PPM artifacts
+        -c, --scene <NAME>              Procedural scene name
+        -m, --method <NAME>             native, fgvk, ls1, or ls1-performance
+        -f, --factor <FLOAT>            Scaling factor above 1.0 through 2.0
+        -s, --sharpness <FLOAT>         Sharpness from 0.0 through 1.0
+        -t, --interpolation <FLOAT>     Generated timestamp between 0 and 1
+        -w, --flow <FLOAT>              Flow scale from 0.25 to 1.0
+        -p, --performance-mode          Use the lighter LSFG model
+            --width <INT>               Exact presentation width
+            --height <INT>              Exact presentation height
+)" << '\n';
+    }
+
+    /// parse the validate command options
+    [[noreturn]] void on_validate(int argc, char** argv,
+            const i18n::Language language, const std::string& program) {
+        validate::Options opts{};
+
+        const std::array<option, 3> GETOPT {{
+            { "config", required_argument, nullptr, 'c' },
+            { nullptr,        no_argument, nullptr,  0  }
+        }};
+
+        int c{0};
+        while ((c = getopt_long(argc, argv, "c:", GETOPT.data(), nullptr)) != -1) {
+            switch (c) {
+                case 'c':
+                    opts.config.emplace(optarg);
+                    break;
+                case '?':
+                default:
+                    usage(program);
+                    std::exit(EXIT_FAILURE);
+            }
+        }
+
+        if (optind < argc) {
+            usage(program);
+            std::exit(EXIT_FAILURE);
+        }
+
+        std::exit(validate::run(opts, language));
+    }
+
+    [[noreturn]] void on_inspect_dll(
+            int argc, char** argv, const std::string& program) {
+        inspect_dll::Options opts{};
+        const std::array<option, 6> GETOPT {{
+            { "dll", required_argument, nullptr, 'd' },
+            { "ls1", required_argument, nullptr, 'l' },
+            { "sharpness", required_argument, nullptr, 's' },
+            { "lsfg", no_argument, nullptr, 'f' },
+            { "no-fp16", no_argument, nullptr, 'A' },
+            { nullptr, no_argument, nullptr, 0 }
+        }};
+        int option{0};
+        while ((option = getopt_long(
+                argc, argv, "d:", GETOPT.data(), nullptr)) != -1) {
+            switch (option) {
+                case 'd':
+                    opts.dll = optarg;
+                    break;
+                case 'l':
+                    if (std::string_view(optarg) == "ls1")
+                        opts.ls1Mode = fgvk::backend::Ls1Mode::Quality;
+                    else if (std::string_view(optarg) == "ls1-performance")
+                        opts.ls1Mode = fgvk::backend::Ls1Mode::Performance;
+                    else {
+                        std::cerr << "error: --ls1 requires ls1 or ls1-performance\n";
+                        std::exit(EXIT_FAILURE);
+                    }
+                    break;
+                case 's':
+                    opts.sharpness = numericArgument<float>(optarg, "--sharpness");
+                    break;
+                case 'f':
+                    opts.lsfg = true;
+                    break;
+                case 'A':
+                    opts.allowFp16 = false;
+                    break;
+                case '?':
+                default:
+                    usage(program);
+                    std::exit(EXIT_FAILURE);
+            }
+        }
+        if (optind < argc || opts.dll.empty() || (opts.lsfg && opts.ls1Mode) ||
+                (!opts.allowFp16 && !opts.lsfg && !opts.ls1Mode) ||
+                opts.sharpness < 0.0F || opts.sharpness > 1.0F) {
+            usage(program);
+            std::exit(EXIT_FAILURE);
+        }
+        std::exit(inspect_dll::run(opts));
+    }
+
+    /// parse the benchmark command options
+    [[noreturn]] void on_benchmark(int argc, char** argv,
+            const i18n::Language language, const std::string& program) {
+        benchmark::Options opts{};
+        bool profileControlsExplicit{false};
+
+        const std::array<option, 16> GETOPT {{
+            { "dll",              required_argument, nullptr, 'd' },
+            { "allow-fp16",       no_argument,       nullptr, 'a' },
+            { "no-fp16",          no_argument,       nullptr, 'A' },
+            { "width",            required_argument, nullptr, 'w' },
+            { "height",           required_argument, nullptr, 'h' },
+            { "flow",             required_argument, nullptr, 'f' },
+            { "multiplier",       required_argument, nullptr, 'm' },
+            { "performance-mode",       no_argument, nullptr, 'p' },
+            { "gpu",              required_argument, nullptr, 'g' },
+            { "duration",         required_argument, nullptr, 't' },
+            { "profile",          no_argument,       nullptr, 1000 },
+            { "profile-samples",  required_argument, nullptr, 1001 },
+            { "profile-warmup",   required_argument, nullptr, 1002 },
+            { "profile-hdr10",    no_argument,       nullptr, 1003 },
+            { "profile-hdr-reduced-precision", no_argument, nullptr, 1004 },
+            { nullptr,                  no_argument, nullptr,  0  }
+        }};
+
+        int c{0};
+        while ((c = getopt_long(argc, argv, "d:aw:h:f:m:pg:t:", GETOPT.data(), nullptr)) != -1) {
+            switch (c) {
+                case 'd':
+                    opts.dll.emplace(optarg);
+                    break;
+                case 'a':
+                    opts.allow_fp16 = true;
+                    break;
+                case 'A':
+                    opts.allow_fp16 = false;
+                    break;
+                case 'w':
+                    opts.width = numericArgument<int>(optarg, "--width");
+                    break;
+                case 'h':
+                    opts.height = numericArgument<int>(optarg, "--height");
+                    break;
+                case 'f':
+                    opts.flow = numericArgument<float>(optarg, "--flow");
+                    break;
+                case 'm':
+                    opts.multiplier = numericArgument<int>(
+                        optarg, "--multiplier"
+                    );
+                    break;
+                case 'p':
+                    opts.performance_mode = true;
+                    break;
+                case 'g':
+                    opts.gpu.emplace(optarg);
+                    break;
+                case 't':
+                    opts.duration = numericArgument<int>(optarg, "--duration");
+                    break;
+                case 1000:
+                    opts.profile = true;
+                    break;
+                case 1001:
+                    opts.profile_samples = numericArgument<int>(optarg, "--profile-samples");
+                    profileControlsExplicit = true;
+                    break;
+                case 1002:
+                    opts.profile_warmup = numericArgument<int>(optarg, "--profile-warmup");
+                    profileControlsExplicit = true;
+                    break;
+                case 1003:
+                    opts.profile_hdr10 = true;
+                    profileControlsExplicit = true;
+                    break;
+                case 1004:
+                    opts.profile_hdr_reduced_precision = true;
+                    profileControlsExplicit = true;
+                    break;
+                case '?':
+                default:
+                    usage(program);
+                    std::exit(EXIT_FAILURE);
+            }
+        }
+
+        if (optind < argc) {
+            usage(program);
+            std::exit(EXIT_FAILURE);
+        }
+
+        if ((opts.profile_hdr_reduced_precision && !opts.profile_hdr10) ||
+                (profileControlsExplicit && !opts.profile) || opts.profile_samples < 1 ||
+                opts.profile_samples > 10000 || opts.profile_warmup < 6 || opts.profile_warmup > 10000) {
+            std::cerr << "Frame profiling requires --profile, 1-10000 samples and 6-10000 warm-up iterations\n";
+            std::exit(EXIT_FAILURE);
+        }
+        std::exit(benchmark::run(opts, language));
+    }
+
+    /// parse the debug command options
+    [[noreturn]] void on_debug(int argc, char** argv,
+            const i18n::Language language, const std::string& program) {
+        debug::Options opts{};
+
+        const std::array<option, 10> GETOPT {{
+            { "dll",              required_argument, nullptr, 'd' },
+            { "allow-fp16",       no_argument,       nullptr, 'a' },
+            { "no-fp16",          no_argument,       nullptr, 'A' },
+            { "width",            required_argument, nullptr, 'w' },
+            { "height",           required_argument, nullptr, 'h' },
+            { "flow",             required_argument, nullptr, 'f' },
+            { "multiplier",       required_argument, nullptr, 'm' },
+            { "performance-mode",       no_argument, nullptr, 'p' },
+            { "gpu",              required_argument, nullptr, 'g' },
+            { nullptr,                  no_argument, nullptr,  0  }
+        }};
+
+        int c{0};
+        while ((c = getopt_long(argc, argv, "d:aw:h:f:m:pg:", GETOPT.data(), nullptr)) != -1) {
+            switch (c) {
+                case 'd':
+                    opts.dll.emplace(optarg);
+                    break;
+                case 'a':
+                    opts.allow_fp16 = true;
+                    break;
+                case 'A':
+                    opts.allow_fp16 = false;
+                    break;
+                case 'w':
+                    opts.width = numericArgument<int>(optarg, "--width");
+                    break;
+                case 'h':
+                    opts.height = numericArgument<int>(optarg, "--height");
+                    break;
+                case 'f':
+                    opts.flow = numericArgument<float>(optarg, "--flow");
+                    break;
+                case 'm':
+                    opts.multiplier = numericArgument<int>(
+                        optarg, "--multiplier"
+                    );
+                    break;
+                case 'p':
+                    opts.performance_mode = true;
+                    break;
+                case 'g':
+                    opts.gpu.emplace(optarg);
+                    break;
+                case '?':
+                default:
+                    usage(program);
+                    std::exit(EXIT_FAILURE);
+            }
+        }
+
+        if ((optind + 1) != argc) {
+            usage(program);
+            std::exit(EXIT_FAILURE);
+        }
+
+        opts.path = argv[optind];
+
+        std::exit(debug::run(opts, language));
+    }
+
+    /// parse the quality-regression command options
+    [[noreturn]] void on_quality_regression(int argc, char** argv,
+            const std::string& program) {
+        quality::Options opts{};
+        const std::array<option, 16> GETOPT {{
+            { "hdr10", no_argument, nullptr, 1003 },
+            { "hdr-reduced-precision", no_argument, nullptr, 1004 },
+            { "hdr-white-nits", required_argument, nullptr, 1005 },
+            { "width",            required_argument, nullptr, 1001 },
+            { "height",           required_argument, nullptr, 1002 },
+            { "sequence-plan",    required_argument, nullptr, 1000 },
+            { "dll",              required_argument, nullptr, 'd' },
+            { "allow-fp16",       no_argument,       nullptr, 'a' },
+            { "no-fp16",          no_argument,       nullptr, 'A' },
+            { "gpu",              required_argument, nullptr, 'g' },
+            { "output",           required_argument, nullptr, 'o' },
+            { "scene",            required_argument, nullptr, 's' },
+            { "interpolation",    required_argument, nullptr, 't' },
+            { "flow",             required_argument, nullptr, 'f' },
+            { "performance-mode", no_argument,       nullptr, 'p' },
+            { nullptr,             no_argument,       nullptr,  0  }
+        }};
+
+        int c{0};
+        while ((c = getopt_long(
+                argc, argv, "d:ag:o:s:t:f:p", GETOPT.data(), nullptr)) != -1) {
+            switch (c) {
+                case 1003: opts.hdr10 = true; break;
+                case 1004: opts.hdr_reduced_precision = true; break;
+                case 1005: opts.hdr_white_nits = numericArgument<float>(optarg, "--hdr-white-nits"); break;
+                case 1001:
+                    opts.width = numericArgument<uint32_t>(optarg, "--width");
+                    break;
+                case 1002:
+                    opts.height = numericArgument<uint32_t>(optarg, "--height");
+                    break;
+                case 1000:
+                    opts.sequence_plan = optarg;
+                    break;
+                case 'd':
+                    opts.dll.emplace(optarg);
+                    break;
+                case 'a':
+                    opts.allow_fp16 = true;
+                    break;
+                case 'A':
+                    opts.allow_fp16 = false;
+                    break;
+                case 'g':
+                    opts.gpu.emplace(optarg);
+                    break;
+                case 'o':
+                    opts.output.emplace(optarg);
+                    break;
+                case 's':
+                    opts.scene = optarg;
+                    break;
+                case 't':
+                    opts.interpolation = numericArgument<float>(
+                        optarg, "--interpolation"
+                    );
+                    break;
+                case 'f':
+                    opts.flow_scale = numericArgument<float>(optarg, "--flow");
+                    break;
+                case 'p':
+                    opts.performance_mode = true;
+                    break;
+                case '?':
+                default:
+                    usage(program);
+                    std::exit(EXIT_FAILURE);
+            }
+        }
+        if (optind < argc) {
+            usage(program);
+            std::exit(EXIT_FAILURE);
+        }
+        std::exit(quality::run(opts));
+    }
+
+    /// parse the spatial-quality-regression command options
+    [[noreturn]] void on_spatial_quality_regression(int argc, char** argv,
+            const std::string& program) {
+        quality::SpatialOptions opts{};
+        const std::array<option, 13> GETOPT {{
+            { "allow-fp16", no_argument, nullptr, 'a' },
+            { "no-fp16", no_argument, nullptr, 'A' },
+            { "dll",        required_argument, nullptr, 'd' },
+            { "gpu",        required_argument, nullptr, 'g' },
+            { "output",     required_argument, nullptr, 'o' },
+            { "scene",      required_argument, nullptr, 'c' },
+            { "method",     required_argument, nullptr, 'm' },
+            { "factor",     required_argument, nullptr, 'f' },
+            { "sharpness",  required_argument, nullptr, 's' },
+            { "scene-time", required_argument, nullptr, 't' },
+            { "width",      required_argument, nullptr, 'w' },
+            { "height",     required_argument, nullptr, 'h' },
+            { nullptr,       no_argument,       nullptr,  0  }
+        }};
+
+        int c{0};
+        while ((c = getopt_long(
+                argc, argv, "ad:g:o:c:m:f:s:t:w:h:", GETOPT.data(), nullptr)) != -1) {
+            switch (c) {
+                case 'a': opts.allow_fp16 = true; break;
+                case 'A': opts.allow_fp16 = false; break;
+                case 'd':
+                    opts.dll.emplace(optarg);
+                    break;
+                case 'g':
+                    opts.gpu.emplace(optarg);
+                    break;
+                case 'o':
+                    opts.output.emplace(optarg);
+                    break;
+                case 'c':
+                    opts.scene = optarg;
+                    break;
+                case 'm':
+                    opts.method = optarg;
+                    break;
+                case 'f':
+                    opts.scaling_factor = numericArgument<float>(
+                        optarg, "--factor"
+                    );
+                    break;
+                case 's':
+                    opts.sharpness = numericArgument<float>(
+                        optarg, "--sharpness"
+                    );
+                    break;
+                case 't':
+                    opts.scene_time = numericArgument<float>(
+                        optarg, "--scene-time"
+                    );
+                    break;
+                case 'w':
+                    opts.width = numericArgument<uint32_t>(optarg, "--width");
+                    break;
+                case 'h':
+                    opts.height = numericArgument<uint32_t>(optarg, "--height");
+                    break;
+                case '?':
+                default:
+                    usage(program);
+                    std::exit(EXIT_FAILURE);
+            }
+        }
+        if (optind < argc) {
+            usage(program);
+            std::exit(EXIT_FAILURE);
+        }
+        std::exit(quality::runSpatial(opts));
+    }
+
+    /// Parse the spatial-profile command options.
+    [[noreturn]] void on_spatial_profile(int argc, char** argv,
+            const std::string& program) {
+        quality::SpatialProfileOptions opts{};
+        const std::array<option, 13> GETOPT {{
+            { "allow-fp16", no_argument, nullptr, 'a' },
+            { "no-fp16", no_argument, nullptr, 'A' },
+            { "dll",                      required_argument, nullptr, 'd' },
+            { "gpu",                      required_argument, nullptr, 'g' },
+            { "method",                   required_argument, nullptr, 'm' },
+            { "width",                    required_argument, nullptr, 'w' },
+            { "height",                   required_argument, nullptr, 'h' },
+            { "factor",                   required_argument, nullptr, 'f' },
+            { "sharpness",                required_argument, nullptr, 's' },
+            { "warmup",                   required_argument, nullptr, 'u' },
+            { "samples",                  required_argument, nullptr, 'n' },
+            { "frame-generation-handoff", no_argument,       nullptr, 'x' },
+            { nullptr,                       no_argument,       nullptr,  0  }
+        }};
+
+        int c{0};
+        while ((c = getopt_long(
+                argc, argv, "ad:g:m:w:h:f:s:u:n:x", GETOPT.data(), nullptr)) != -1) {
+            switch (c) {
+                case 'a': opts.allow_fp16 = true; break;
+                case 'A': opts.allow_fp16 = false; break;
+                case 'd':
+                    opts.dll.emplace(optarg);
+                    break;
+                case 'g':
+                    opts.gpu.emplace(optarg);
+                    break;
+                case 'm':
+                    opts.method = optarg;
+                    break;
+                case 'w':
+                    opts.width = numericArgument<uint32_t>(optarg, "--width");
+                    break;
+                case 'h':
+                    opts.height = numericArgument<uint32_t>(optarg, "--height");
+                    break;
+                case 'f':
+                    opts.scaling_factor = numericArgument<float>(
+                        optarg, "--factor"
+                    );
+                    break;
+                case 's':
+                    opts.sharpness = numericArgument<float>(
+                        optarg, "--sharpness"
+                    );
+                    break;
+                case 'u':
+                    opts.warmup_iterations = numericArgument<uint32_t>(
+                        optarg, "--warmup"
+                    );
+                    break;
+                case 'n':
+                    opts.samples = numericArgument<uint32_t>(
+                        optarg, "--samples"
+                    );
+                    break;
+                case 'x':
+                    opts.frame_generation_handoff = true;
+                    break;
+                case '?':
+                default:
+                    usage(program);
+                    std::exit(EXIT_FAILURE);
+            }
+        }
+        if (optind < argc) {
+            usage(program);
+            std::exit(EXIT_FAILURE);
+        }
+        std::exit(quality::runSpatialProfile(opts));
+    }
+
+    /// Parse the synchronization-validation-canary command options.
+    [[noreturn]] void on_synchronization_validation_canary(
+            int argc, char** argv, const std::string& program) {
+        quality::SynchronizationCanaryOptions opts{};
+        const std::array<option, 2> GETOPT {{
+            { "gpu", required_argument, nullptr, 'g' },
+            { nullptr,   no_argument, nullptr,  0  }
+        }};
+
+        int c{0};
+        while ((c = getopt_long(
+                argc, argv, "g:", GETOPT.data(), nullptr)) != -1) {
+            switch (c) {
+                case 'g':
+                    opts.gpu.emplace(optarg);
+                    break;
+                case '?':
+                default:
+                    usage(program);
+                    std::exit(EXIT_FAILURE);
+            }
+        }
+        if (optind < argc) {
+            usage(program);
+            std::exit(EXIT_FAILURE);
+        }
+        std::exit(quality::runSynchronizationCanary(opts));
+    }
+
+    /// parse the combined-quality-regression command options
+    [[noreturn]] void on_combined_quality_regression(int argc, char** argv,
+            const std::string& program) {
+        quality::CombinedOptions opts{};
+        const std::array<option, 15> GETOPT {{
+            { "dll",              required_argument, nullptr, 'd' },
+            { "allow-fp16",       no_argument,       nullptr, 'a' },
+            { "no-fp16",          no_argument,       nullptr, 'A' },
+            { "gpu",              required_argument, nullptr, 'g' },
+            { "output",           required_argument, nullptr, 'o' },
+            { "scene",            required_argument, nullptr, 'c' },
+            { "method",           required_argument, nullptr, 'm' },
+            { "factor",           required_argument, nullptr, 'f' },
+            { "sharpness",        required_argument, nullptr, 's' },
+            { "interpolation",    required_argument, nullptr, 't' },
+            { "flow",             required_argument, nullptr, 'w' },
+            { "performance-mode", no_argument,       nullptr, 'p' },
+            { "width",             required_argument, nullptr, 1000 },
+            { "height",            required_argument, nullptr, 1001 },
+            { nullptr,             no_argument,       nullptr,  0  }
+        }};
+
+        int c{0};
+        while ((c = getopt_long(
+                argc, argv, "d:ag:o:c:m:f:s:t:w:p", GETOPT.data(), nullptr)) != -1) {
+            switch (c) {
+                case 'd':
+                    opts.dll.emplace(optarg);
+                    break;
+                case 'a':
+                    opts.allow_fp16 = true;
+                    break;
+                case 'A':
+                    opts.allow_fp16 = false;
+                    break;
+                case 'g':
+                    opts.gpu.emplace(optarg);
+                    break;
+                case 'o':
+                    opts.output.emplace(optarg);
+                    break;
+                case 'c':
+                    opts.scene = optarg;
+                    break;
+                case 'm':
+                    opts.method = optarg;
+                    break;
+                case 'f':
+                    opts.scaling_factor = numericArgument<float>(
+                        optarg, "--factor"
+                    );
+                    break;
+                case 's':
+                    opts.sharpness = numericArgument<float>(
+                        optarg, "--sharpness"
+                    );
+                    break;
+                case 't':
+                    opts.interpolation = numericArgument<float>(
+                        optarg, "--interpolation"
+                    );
+                    break;
+                case 'w':
+                    opts.flow_scale = numericArgument<float>(optarg, "--flow");
+                    break;
+                case 'p':
+                    opts.performance_mode = true;
+                    break;
+                case 1000:
+                    opts.width = numericArgument<uint32_t>(optarg, "--width");
+                    break;
+                case 1001:
+                    opts.height = numericArgument<uint32_t>(optarg, "--height");
+                    break;
+                case '?':
+                default:
+                    usage(program);
+                    std::exit(EXIT_FAILURE);
+            }
+        }
+        if (optind < argc) {
+            usage(program);
+            std::exit(EXIT_FAILURE);
+        }
+        std::exit(quality::runCombined(opts));
+    }
+}
+
+int main(int argc, char** argv) {
+    const std::string program{argv[0]};
+    std::vector<std::string_view> arguments;
+    if (argc > 1)
+        arguments.reserve(static_cast<size_t>(argc - 1));
+    for (int index = 1; index < argc; ++index)
+        arguments.emplace_back(argv[index]);
+
+    const GlobalArgumentResult parsed = parse_global_arguments(
+        std::span<const std::string_view>{arguments}
+    );
+    if (const auto* error = std::get_if<std::string>(&parsed)) {
+        std::cerr << "fgvk-cli: " << *error << "\n\n";
+        usage(program);
+        return EXIT_FAILURE;
+    }
+    const GlobalArguments global = std::get<GlobalArguments>(parsed);
+    if (global.show_help) {
+        usage(program);
+        return EXIT_SUCCESS;
+    }
+
+    const int command_offset = static_cast<int>(global.command_index) + 1;
+    const int command_argc = argc - command_offset;
+    char** command_argv = argv + command_offset;
+    const std::string command{command_argv[0]};
+
+    if (command == "validate")
+        on_validate(command_argc, command_argv, global.language, program);
+    else if (command == "inspect-dll")
+        on_inspect_dll(command_argc, command_argv, program);
+    else if (command == "benchmark")
+        on_benchmark(command_argc, command_argv, global.language, program);
+    else if (command == "debug")
+        on_debug(command_argc, command_argv, global.language, program);
+    else if (command == "quality-regression")
+        on_quality_regression(command_argc, command_argv, program);
+    else if (command == "spatial-quality-regression")
+        on_spatial_quality_regression(command_argc, command_argv, program);
+    else if (command == "spatial-profile")
+        on_spatial_profile(command_argc, command_argv, program);
+    else if (command == "synchronization-validation-canary")
+        on_synchronization_validation_canary(
+            command_argc, command_argv, program
+        );
+    else if (command == "combined-quality-regression")
+        on_combined_quality_regression(command_argc, command_argv, program);
+
+    usage(program);
+    return EXIT_FAILURE;
+}

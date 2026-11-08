@@ -90,7 +90,7 @@ if (
     ).test(archPackageName)
 ) {
     throw new Error(
-        `Invalid Arch package name for MAKO Renderer ${version}: ${archPackageName}`,
+        `Invalid Arch package name for framegen-vulkan ${version}: ${archPackageName}`,
     );
 }
 
@@ -133,7 +133,7 @@ async function pinRelease() {
 
     await writeFile(packagePath, `${JSON.stringify(manifest, null, 2)}\n`);
     console.log(
-        `Pinned MAKO Renderer ${version} (${releaseTag}) in ${packagePath}`,
+        `Pinned framegen-vulkan ${version} (${releaseTag}) in ${packagePath}`,
     );
 }
 

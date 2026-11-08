@@ -111,7 +111,7 @@ async function main() {
                 remoteChecksum = digestMatch[1].toLowerCase();
             } else {
                 const verificationDirectory = mkdtempSync(
-                    join(tmpdir(), "mako-release-verify-"),
+                    join(tmpdir(), "fgvk-release-verify-"),
                 );
                 verificationDirectories.push(verificationDirectory);
                 runGh([

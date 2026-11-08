@@ -3,7 +3,7 @@
 set -euo pipefail
 
 engine_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-cache_root="${MAKO_BUILD_CACHE_ROOT:-$engine_root/build/cache}"
+cache_root="${FGVK_BUILD_CACHE_ROOT:-$engine_root/build/cache}"
 if [[ "$cache_root" != /* ]]; then
     cache_root="$engine_root/$cache_root"
 fi
@@ -28,7 +28,7 @@ fetch_archive() {
 
 fetch_archive SPIRV-Tools "$tools_commit" "$tools_sha" "$cache/tools.tar.gz"
 fetch_archive SPIRV-Headers "$headers_commit" "$headers_sha" "$cache/headers.tar.gz"
-if [[ ! -f "$source_dir/.mako-source-pin" ]]; then
+if [[ ! -f "$source_dir/.fgvk-source-pin" ]]; then
     if [[ -e "$source_dir" ]]; then
         echo "Incomplete optimizer cache: $source_dir" >&2
         exit 1
@@ -39,7 +39,7 @@ if [[ ! -f "$source_dir/.mako-source-pin" ]]; then
     tar -xzf "$cache/tools.tar.gz" --strip-components=1 -C "$stage/source"
     mkdir -p "$stage/source/external/spirv-headers"
     tar -xzf "$cache/headers.tar.gz" --strip-components=1 -C "$stage/source/external/spirv-headers"
-    printf 'SPIRV-Tools %s\nSPIRV-Headers %s\n' "$tools_commit" "$headers_commit" > "$stage/source/.mako-source-pin"
+    printf 'SPIRV-Tools %s\nSPIRV-Headers %s\n' "$tools_commit" "$headers_commit" > "$stage/source/.fgvk-source-pin"
     mv -- "$stage/source" "$source_dir"
     rm -rf -- "$stage"
     trap - EXIT

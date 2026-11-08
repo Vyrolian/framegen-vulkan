@@ -1,8 +1,8 @@
-# MAKO licensing
+# framegen-vulkan licensing
 
 Copyright (C) 2025-2026 Eugenio Segala and contributors.
 
-Except for the third-party material identified below, MAKO is distributed under the **GNU General Public License, version 3 or any later version** (`GPL-3.0-or-later`).
+Except for the third-party material identified below, framegen-vulkan is distributed under the **GNU General Public License, version 3 or any later version** (`GPL-3.0-or-later`).
 
 The complete GNU GPL version 3 license text follows. The third-party notices after it remain applicable to the portions identified there.
 

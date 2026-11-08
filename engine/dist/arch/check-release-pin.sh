@@ -14,7 +14,7 @@ set -eu
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 repo_root=$(CDPATH= cd -- "$script_dir/../../.." && pwd -P)
 pkgbuild="${1:-$script_dir/PKGBUILD}"
-install_script="$script_dir/mako-renderer-bin.install"
+install_script="$script_dir/framegen-vulkan-bin.install"
 pin_file="${2:-$repo_root/engine/renderer-release.json}"
 
 fail() {
@@ -61,10 +61,10 @@ pkg_source_url=$(printf '%s\n' "$pkg_source_url" | sed "s/\\\${pkgver}/$pin_vers
     fail "PKGBUILD source url $pkg_source_url does not match the pinned archive URL $pin_url"
 grep -Fq -- 'install="${pkgname}.install"' "$pkgbuild" ||
     fail 'PKGBUILD does not declare install="${pkgname}.install"'
-grep -Fq -- 'provides=("mako-renderer=${pkgver}")' "$pkgbuild" ||
-    fail 'PKGBUILD does not provide the versioned mako-renderer package identity'
-grep -Fq -- "conflicts=('mako-renderer')" "$pkgbuild" ||
-    fail 'PKGBUILD does not conflict with the alternate mako-renderer package'
+grep -Fq -- 'provides=("fgvk-renderer=${pkgver}")' "$pkgbuild" ||
+    fail 'PKGBUILD does not provide the versioned fgvk-renderer package identity'
+grep -Fq -- "conflicts=('fgvk-renderer')" "$pkgbuild" ||
+    fail 'PKGBUILD does not conflict with the alternate fgvk-renderer package'
 bash -n "$pkgbuild" || fail "$pkgbuild is not valid bash syntax"
 sh -n "$install_script" || fail "$install_script is not valid POSIX sh syntax"
 

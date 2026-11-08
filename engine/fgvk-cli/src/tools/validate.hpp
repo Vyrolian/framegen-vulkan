@@ -1,0 +1,23 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+
+#pragma once
+
+#include <optional>
+#include <string>
+
+namespace fgvk::cli::i18n {
+    enum class Language;
+}
+
+namespace fgvk::cli::validate {
+
+    /// options for the "validate" command
+    struct Options {
+        std::optional<std::string> config;
+    };
+
+    /// run the "validate" command
+    /// @param opts the command options
+    int run(const Options& opts, i18n::Language language);
+
+}

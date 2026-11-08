@@ -20,11 +20,11 @@ if (!/^[A-Za-z0-9._-]+$/.test(version)) {
 
 const componentDetails = {
   renderer: {
-    name: "MAKO Renderer",
+    name: "framegen-vulkan",
     releaseTarget: `render-v${version}`,
     releaseUrl: `https://github.com/${repository}/releases/tag/render-v${version}`,
-    tableText: "Latest MAKO Renderer release (Linux archive under Assets)",
-    linkText: "latest MAKO Renderer release",
+    tableText: "Latest framegen-vulkan release (Linux archive under Assets)",
+    linkText: "latest framegen-vulkan release",
     expectedLinks: {
       "README.md": 1,
       "engine/README.md": 1,

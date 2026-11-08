@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Capture selected Wayland messages and correlate commits with MAKO feedback."""
+"""Capture selected Wayland messages and correlate commits with framegen-vulkan feedback."""
 
 import argparse
 from collections import defaultdict
@@ -75,7 +75,7 @@ def read_protocol(path):
     limited = False
     with Path(path).open("rb") as stream:
         for raw in stream:
-            if raw.startswith(b"MAKO Renderer: wayland protocol clock "):
+            if raw.startswith(b"framegen-vulkan: wayland protocol clock "):
                 fields = dict(re.findall(rb"([a-z_]+)=(\d+)", raw))
                 try:
                     before, after, realtime = (int(fields[k]) for k in
@@ -86,7 +86,7 @@ def read_protocol(path):
                 except (KeyError, ValueError):
                     invalid += 1
                 continue
-            if raw.startswith(b"MAKO Renderer: wayland protocol capture-limit"):
+            if raw.startswith(b"framegen-vulkan: wayland protocol capture-limit"):
                 limited = True
             parsed = message(raw)
             if not parsed:
@@ -261,13 +261,13 @@ def clock_record():
     before = time.monotonic_ns()
     realtime = time.time_ns()
     after = time.monotonic_ns()
-    return (f"MAKO Renderer: wayland protocol clock monotonic_before_ns={before} "
+    return (f"framegen-vulkan: wayland protocol clock monotonic_before_ns={before} "
             f"realtime_ns={realtime} monotonic_after_ns={after}\n").encode("ascii")
 
 
 def capture(command, path=None, limit=LIMIT, frame_trace=False, runtime_log=None):
     if path is None:
-        fd, name = tempfile.mkstemp(prefix=f"mako-wayland-protocol-{os.getuid()}-", suffix=".log")
+        fd, name = tempfile.mkstemp(prefix=f"fgvk-wayland-protocol-{os.getuid()}-", suffix=".log")
     else:
         name = str(Path(path).absolute())
         fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
@@ -280,7 +280,7 @@ def capture(command, path=None, limit=LIMIT, frame_trace=False, runtime_log=None
         nonlocal runtime_bytes, runtime_stopped
         if runtime_fd is None or runtime_stopped:
             return
-        marker = b"MAKO Renderer: runtime capture-limit; beginning preserved\n"
+        marker = b"framegen-vulkan: runtime capture-limit; beginning preserved\n"
         if runtime_bytes + len(data) + len(marker) > 4 * 1024 * 1024:
             data = marker
             runtime_stopped = True
@@ -294,12 +294,12 @@ def capture(command, path=None, limit=LIMIT, frame_trace=False, runtime_log=None
                 remaining = remaining[count:]
         except OSError as error:
             runtime_stopped = True
-            print(f"MAKO Renderer: runtime capture stopped: {error}", file=sys.stderr, flush=True)
+            print(f"framegen-vulkan: runtime capture stopped: {error}", file=sys.stderr, flush=True)
     def save(data):
         nonlocal written, stopped
         if stopped:
             return
-        marker = b"MAKO Renderer: wayland protocol capture-limit; beginning preserved\n"
+        marker = b"framegen-vulkan: wayland protocol capture-limit; beginning preserved\n"
         if written + len(data) + len(marker) > limit:
             data = marker
             stopped = True
@@ -317,24 +317,24 @@ def capture(command, path=None, limit=LIMIT, frame_trace=False, runtime_log=None
             # Diagnostic disk failures must not stop draining the child's
             # stderr pipe or terminate the running game.
             stopped = True
-            print(f"MAKO Renderer: Wayland protocol capture stopped: {error}", file=sys.stderr, flush=True)
+            print(f"framegen-vulkan: Wayland protocol capture stopped: {error}", file=sys.stderr, flush=True)
     try:
-        print(f"MAKO Renderer: Wayland protocol capture: {name}", file=sys.stderr, flush=True)
-        save(b"MAKO Renderer: wayland protocol session version=1 retention=stop\n" + clock_record())
+        print(f"framegen-vulkan: Wayland protocol capture: {name}", file=sys.stderr, flush=True)
+        save(b"framegen-vulkan: wayland protocol session version=1 retention=stop\n" + clock_record())
         env = os.environ.copy()
-        env.update(WAYLAND_DEBUG="client", MAKO_PACING_PROFILE_WAYLAND="1")
+        env.update(WAYLAND_DEBUG="client", FGVK_PACING_PROFILE_WAYLAND="1")
         if frame_trace:
-            env["MAKO_PACING_PROFILE_TRACE"] = "1"
+            env["FGVK_PACING_PROFILE_TRACE"] = "1"
         if runtime_log is not None:
             runtime_fd = os.open(runtime_log, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
             env.update(VKD3D_DEBUG="info", DXVK_LOG_LEVEL="info")
             keys = ("SteamAppId", "SteamGameId", "VKD3D_CONFIG", "VKD3D_DISABLE_EXTENSIONS",
                     "VKD3D_SWAPCHAIN_PRESENT_MODE", "VKD3D_FRAME_RATE", "PROTON_ENABLE_WAYLAND",
-                    "PROTON_USE_WAYLAND", "MAKO_PROFILE", "MANGOHUD", "MANGOHUD_CONFIG",
+                    "PROTON_USE_WAYLAND", "FGVK_PROFILE", "MANGOHUD", "MANGOHUD_CONFIG",
                     "VKD3D_LOG_FILE", "DXVK_LOG_PATH")
-            save_runtime(("MAKO Renderer: runtime capture environment=" + json.dumps(
+            save_runtime(("framegen-vulkan: runtime capture environment=" + json.dumps(
                 {key: env[key] for key in keys if key in env}, ensure_ascii=True) + "\n").encode())
-            print(f"MAKO Renderer: runtime capture: {runtime_log}", file=sys.stderr, flush=True)
+            print(f"framegen-vulkan: runtime capture: {runtime_log}", file=sys.stderr, flush=True)
         child = subprocess.Popen(command, env=env, stderr=subprocess.PIPE)
         handlers = {}
         def forward(signum, _frame):
@@ -361,7 +361,7 @@ def capture(command, path=None, limit=LIMIT, frame_trace=False, runtime_log=None
                         # Retain runtime startup diagnostics, never unrelated game
                         # stderr, Wayland input, titles, or shader/picture payloads.
                         clean = ANSI.sub(b"", raw)
-                        if (clean.startswith((b"MAKO Renderer:", b"info:", b"warn:", b"err:")) or
+                        if (clean.startswith((b"framegen-vulkan:", b"info:", b"warn:", b"err:")) or
                                 re.match(rb"[0-9.]+:[0-9a-f]+:[0-9a-f]+:(?:info|warn|err):vkd3d-proton:", clean)):
                             save_runtime(clean)
                         sys.stderr.buffer.write(raw)
@@ -380,7 +380,7 @@ def capture(command, path=None, limit=LIMIT, frame_trace=False, runtime_log=None
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--output", type=Path, help="new private file; default: /tmp/mako-wayland-protocol-UID-*.log")
+    parser.add_argument("--output", type=Path, help="new private file; default: /tmp/fgvk-wayland-protocol-UID-*.log")
     parser.add_argument("--frame-trace", action="store_true", help="enable correlated per-source CPU/GPU/application tracing in the child")
     parser.add_argument("--runtime-log", type=Path, help="new private bounded runtime log; enables VKD3D/DXVK info logging in the child")
     parser.add_argument("command", nargs=argparse.REMAINDER, help="-- followed by the existing game launch command")

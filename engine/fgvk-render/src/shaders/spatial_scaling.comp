@@ -1,0 +1,205 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+
+#version 450
+
+#ifdef FGVK_SCALING_FP16
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#define Color float16_t
+#define Color3 f16vec3
+#define Color4 f16vec4
+#else
+#define Color float
+#define Color3 vec3
+#define Color4 vec4
+#endif
+
+// framegen-vulkan's spatial reconstruction pass is deliberately independent from the
+// proprietary LS1 resources. It combines a clamped sharpened-cubic reconstruction
+// with contrast-aware anti-ringing and a bounded local sharpening term at a
+// threefold baseline, scaled by the profile multiplier, in one output-resolution
+// pass.
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std140) uniform SpatialScalingParameters {
+    vec4 sizes;  // source width/height, output width/height
+    vec4 tuning; // normalized sharpness, reserved
+} parameters;
+
+layout(set = 0, binding = 16) uniform sampler sourceSampler;
+layout(set = 0, binding = 32) uniform texture2D sourceTexture;
+#ifdef FGVK_SCALING_RGBA16F
+layout(set = 0, binding = 48, rgba16f) uniform writeonly image2D outputImage;
+#else
+layout(set = 0, binding = 48, rgba8) uniform writeonly image2D outputImage;
+#endif
+
+Color luma(Color3 color) {
+    return dot(color, Color3(0.2126, 0.7152, 0.0722));
+}
+
+Color4 sourceTexel(ivec2 coordinate) {
+    return Color4(texelFetch(
+        sampler2D(sourceTexture, sourceSampler), coordinate, 0
+    ));
+}
+
+Color4 filteredSource(vec2 coordinate) {
+    return Color4(textureLod(
+        sampler2D(sourceTexture, sourceSampler), coordinate, 0.0
+    ));
+}
+
+vec4 sharpenedCubicWeights(float fraction) {
+    float f2 = fraction * fraction;
+    float f3 = f2 * fraction;
+    // Catmull-Rom uses a tension of 0.5. A higher tension establishes a
+    // crisper reconstruction before the separately configurable sharpening
+    // pass while the local clamp and anti-ringing logic below bound halos.
+    const float reconstructionTension = 0.8;
+    return vec4(
+        reconstructionTension * (-fraction + 2.0 * f2 - f3),
+        1.0 + (reconstructionTension - 3.0) * f2 + (2.0 - reconstructionTension) * f3,
+        reconstructionTension * fraction + (3.0 - 2.0 * reconstructionTension) * f2 + (reconstructionTension - 2.0) * f3,
+        reconstructionTension * (-f2 + f3)
+    );
+}
+
+void main() {
+    ivec2 outputCoordinate = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 outputSize = ivec2(parameters.sizes.zw);
+    if (any(greaterThanEqual(outputCoordinate, outputSize)))
+        return;
+
+    vec2 sourcePosition =
+        (vec2(outputCoordinate) + vec2(0.5)) *
+        parameters.sizes.xy / parameters.sizes.zw - vec2(0.5);
+    ivec2 sourceBase = ivec2(floor(sourcePosition));
+    vec2 fraction = fract(sourcePosition);
+    vec4 horizontalWeights = sharpenedCubicWeights(fraction.x);
+    vec4 verticalWeights = sharpenedCubicWeights(fraction.y);
+
+    // The two positive inner sharpened-cubic lobes can be folded into one linear
+    // sample. The three resulting positions per axis produce the same
+    // separable 4x4 reconstruction with nine filtered samples, without a
+    // private vec4[16], dynamic indexing, or shader loops.
+    vec3 horizontalSampleWeights = vec3(
+        horizontalWeights.x,
+        horizontalWeights.y + horizontalWeights.z,
+        horizontalWeights.w
+    );
+    vec3 verticalSampleWeights = vec3(
+        verticalWeights.x,
+        verticalWeights.y + verticalWeights.z,
+        verticalWeights.w
+    );
+    vec2 inverseSourceSize = vec2(1.0) / parameters.sizes.xy;
+    vec3 horizontalSampleCoordinates = (
+        vec3(
+            float(sourceBase.x - 1),
+            float(sourceBase.x) + horizontalWeights.z /
+                horizontalSampleWeights.y,
+            float(sourceBase.x + 2)
+        ) + vec3(0.5)
+    ) * inverseSourceSize.x;
+    vec3 verticalSampleCoordinates = (
+        vec3(
+            float(sourceBase.y - 1),
+            float(sourceBase.y) + verticalWeights.z /
+                verticalSampleWeights.y,
+            float(sourceBase.y + 2)
+        ) + vec3(0.5)
+    ) * inverseSourceSize.y;
+
+    // Pixel coordinates and cubic sample locations retain FP32 precision.
+    // The selected arithmetic precision applies to colour reconstruction,
+    // anti-ringing, and sharpening; image storage keeps its existing format.
+    Color4 reconstructed = filteredSource(vec2(
+        horizontalSampleCoordinates.x, verticalSampleCoordinates.x
+    )) * Color(horizontalSampleWeights.x * verticalSampleWeights.x);
+    reconstructed += filteredSource(vec2(
+        horizontalSampleCoordinates.y, verticalSampleCoordinates.x
+    )) * Color(horizontalSampleWeights.y * verticalSampleWeights.x);
+    reconstructed += filteredSource(vec2(
+        horizontalSampleCoordinates.z, verticalSampleCoordinates.x
+    )) * Color(horizontalSampleWeights.z * verticalSampleWeights.x);
+    reconstructed += filteredSource(vec2(
+        horizontalSampleCoordinates.x, verticalSampleCoordinates.y
+    )) * Color(horizontalSampleWeights.x * verticalSampleWeights.y);
+    reconstructed += filteredSource(vec2(
+        horizontalSampleCoordinates.y, verticalSampleCoordinates.y
+    )) * Color(horizontalSampleWeights.y * verticalSampleWeights.y);
+    reconstructed += filteredSource(vec2(
+        horizontalSampleCoordinates.z, verticalSampleCoordinates.y
+    )) * Color(horizontalSampleWeights.z * verticalSampleWeights.y);
+    reconstructed += filteredSource(vec2(
+        horizontalSampleCoordinates.x, verticalSampleCoordinates.z
+    )) * Color(horizontalSampleWeights.x * verticalSampleWeights.z);
+    reconstructed += filteredSource(vec2(
+        horizontalSampleCoordinates.y, verticalSampleCoordinates.z
+    )) * Color(horizontalSampleWeights.y * verticalSampleWeights.z);
+    reconstructed += filteredSource(vec2(
+        horizontalSampleCoordinates.z, verticalSampleCoordinates.z
+    )) * Color(horizontalSampleWeights.z * verticalSampleWeights.z);
+
+    ivec2 maximumSourceCoordinate = ivec2(parameters.sizes.xy) - ivec2(1);
+    int centerX0 = clamp(sourceBase.x, 0, maximumSourceCoordinate.x);
+    int centerX1 = clamp(sourceBase.x + 1, 0, maximumSourceCoordinate.x);
+    int centerY0 = clamp(sourceBase.y, 0, maximumSourceCoordinate.y);
+    int centerY1 = clamp(sourceBase.y + 1, 0, maximumSourceCoordinate.y);
+    Color4 center00 = sourceTexel(ivec2(centerX0, centerY0));
+    Color4 center10 = sourceTexel(ivec2(centerX1, centerY0));
+    Color4 center01 = sourceTexel(ivec2(centerX0, centerY1));
+    Color4 center11 = sourceTexel(ivec2(centerX1, centerY1));
+    Color4 bilinear = mix(
+        mix(center00, center10, Color(fraction.x)),
+        mix(center01, center11, Color(fraction.x)),
+        Color(fraction.y)
+    );
+    Color4 localMinimum = min(min(center00, center10), min(center01, center11));
+    Color4 localMaximum = max(max(center00, center10), max(center01, center11));
+    reconstructed = clamp(reconstructed, localMinimum, localMaximum);
+
+    Color minimumLuma = min(
+        min(luma(center00.rgb), luma(center10.rgb)),
+        min(luma(center01.rgb), luma(center11.rgb))
+    );
+    Color maximumLuma = max(
+        max(luma(center00.rgb), luma(center10.rgb)),
+        max(luma(center01.rgb), luma(center11.rgb))
+    );
+    Color contrast = maximumLuma - minimumLuma;
+    Color ringingRisk = smoothstep(Color(0.06), Color(0.30), contrast);
+    Color3 baseColor = mix(
+        reconstructed.rgb, bilinear.rgb, ringingRisk * Color(0.22)
+    );
+
+    Color3 localAverage = Color(0.25) * (
+        center00.rgb + center10.rgb + center01.rgb + center11.rgb
+    );
+    Color horizontalEdge =
+        abs(luma(center10.rgb) - luma(center00.rgb)) +
+        abs(luma(center11.rgb) - luma(center01.rgb));
+    Color verticalEdge =
+        abs(luma(center01.rgb) - luma(center00.rgb)) +
+        abs(luma(center11.rgb) - luma(center10.rgb));
+    Color edgeDirectionConfidence = abs(horizontalEdge - verticalEdge) /
+        (horizontalEdge + verticalEdge + Color(0.0001));
+    const Color sharpeningBaseline = Color(3.0);
+    Color sharpeningGain = sharpeningBaseline * Color(parameters.tuning.x) *
+        mix(Color(0.18), Color(0.32), edgeDirectionConfidence) *
+        mix(Color(1.0), Color(0.55), ringingRisk);
+    Color3 sharpened = baseColor + (baseColor - localAverage) * sharpeningGain;
+
+    // Scale the contrast-relative sharpening envelope with the threefold
+    // baseline, but never permit the unbounded overshoot that produces bright
+    // halos around UI and text.
+    Color3 envelope = Color3(sharpeningBaseline * (Color(0.02) + contrast * Color(0.08)));
+    sharpened = clamp(
+        sharpened, localMinimum.rgb - envelope, localMaximum.rgb + envelope
+    );
+    imageStore(
+        outputImage, outputCoordinate,
+        vec4(Color4(sharpened, clamp(reconstructed.a, Color(0.0), Color(1.0))))
+    );
+}

@@ -1,4 +1,0 @@
-interface:
-  display_name: "Prepare Release"
-  short_description: "Draft MAKO release notes, artwork, and flavor quote"
-  default_prompt: "Use $mako-prepare-release to prepare MAKO Renderer release notes from the current branch, with a capitalized codename, optimized artwork, and a flavor quote, without publishing."

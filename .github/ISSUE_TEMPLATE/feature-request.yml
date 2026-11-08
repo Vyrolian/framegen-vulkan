@@ -1,12 +1,12 @@
 name: Feature request
-description: Suggest an idea that would make MAKO better.
+description: Suggest an idea that would make framegen-vulkan better.
 title: "[Feature]: "
 labels: [enhancement]
 body:
   - type: markdown
     attributes:
       value: |
-        Thanks for sharing an idea for MAKO. A clear problem statement helps us evaluate it.
+        Thanks for sharing an idea for framegen-vulkan. A clear problem statement helps us evaluate it.
 
   - type: textarea
     id: problem

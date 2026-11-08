@@ -66,7 +66,7 @@ jobs:
         run: npm run format:markdown:check
 
   renderer:
-    name: MAKO Renderer (${{ matrix.toolchain }})
+    name: framegen-vulkan (${{ matrix.toolchain }})
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
@@ -97,18 +97,18 @@ jobs:
         run: |
           revision="$(cat engine/vulkan-headers-revision.txt)"
           git clone --depth=1 --branch "$revision" \
-            https://github.com/KhronosGroup/Vulkan-Headers "$RUNNER_TEMP/mako-vulkan-headers"
-          echo "CXXFLAGS=-I$RUNNER_TEMP/mako-vulkan-headers/include" >> "$GITHUB_ENV"
+            https://github.com/KhronosGroup/Vulkan-Headers "$RUNNER_TEMP/fgvk-vulkan-headers"
+          echo "CXXFLAGS=-I$RUNNER_TEMP/fgvk-vulkan-headers/include" >> "$GITHUB_ENV"
 
       - name: Configure Renderer tests
         run: >-
           cmake -S engine -B engine/build/ci-${{ matrix.toolchain }} -G Ninja
           -DCMAKE_BUILD_TYPE=Release
           -DBUILD_TESTING=ON
-          -DMAKO_BUILD_VK_LAYER=ON
-          -DMAKO_BUILD_CLI=ON
-          -DMAKO_REQUIRE_NATIVE_PACKAGE_HEADERS=ON
-          -DMAKO_GPU_QUALITY_TEST=OFF
+          -DFGVK_BUILD_VK_LAYER=ON
+          -DFGVK_BUILD_CLI=ON
+          -DFGVK_REQUIRE_NATIVE_PACKAGE_HEADERS=ON
+          -DFGVK_GPU_QUALITY_TEST=OFF
 
       - name: Build Renderer and test executables
         run: cmake --build engine/build/ci-${{ matrix.toolchain }}
@@ -117,13 +117,13 @@ jobs:
         run: ctest --test-dir engine/build/ci-${{ matrix.toolchain }} --output-on-failure
 
   renderer-sanitizers:
-    name: MAKO Renderer (ASan + UBSan)
+    name: framegen-vulkan (ASan + UBSan)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
       CC: gcc
       CXX: g++
-      MAKO_ENABLE_SANITIZERS: ON
+      FGVK_ENABLE_SANITIZERS: ON
     steps:
       - name: Check out source
         uses: actions/checkout@v6
@@ -146,8 +146,8 @@ jobs:
         run: |
           revision="$(cat engine/vulkan-headers-revision.txt)"
           git clone --depth=1 --branch "$revision" \
-            https://github.com/KhronosGroup/Vulkan-Headers "$RUNNER_TEMP/mako-vulkan-headers"
-          echo "CXXFLAGS=-I$RUNNER_TEMP/mako-vulkan-headers/include" >> "$GITHUB_ENV"
+            https://github.com/KhronosGroup/Vulkan-Headers "$RUNNER_TEMP/fgvk-vulkan-headers"
+          echo "CXXFLAGS=-I$RUNNER_TEMP/fgvk-vulkan-headers/include" >> "$GITHUB_ENV"
 
       - name: Run sanitized portable policy tests
         working-directory: engine

@@ -1,6 +1,6 @@
-MAKO website third-party notices
+framegen-vulkan website third-party notices
 
-The MAKO website source is distributed under GPL-3.0-or-later. The following notices apply to third-party software included in a deployed website artifact.
+The framegen-vulkan website source is distributed under GPL-3.0-or-later. The following notices apply to third-party software included in a deployed website artifact.
 
 React, React DOM, Scheduler, and React Server DOM Webpack
 Copyright (c) Meta Platforms, Inc. and affiliates.

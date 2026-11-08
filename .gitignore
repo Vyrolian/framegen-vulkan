@@ -51,7 +51,7 @@ htmlcov/
 /mako-profile/
 /smooth-motion-profile/
 
-# MAKO Renderer (CMake and packaging)
+# framegen-vulkan (CMake and packaging)
 /engine/build/
 /engine/build-*/
 /engine/out/

@@ -4,7 +4,7 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Capture one completed MAKO Renderer game session.
+Capture one completed framegen-vulkan game session.
 
 Usage:
   capture-trace.sh --game NAME --version LABEL --session-start ISO_TIME [options]
@@ -22,8 +22,8 @@ Options:
   --diagnostics PATH       Present diagnostics source
   --steam-log PATH         Steam console log to clip to the session window
   --config PATH            Renderer configuration source
-  --mako-repo PATH         MAKO source checkout used for branch/commit identity
-  --trace-repo PATH        MAKO Traces checkout that receives the capture
+  --fgvk-repo PATH         framegen-vulkan source checkout used for branch/commit identity
+  --trace-repo PATH        fgvk Traces checkout that receives the capture
   --notes PATH             Prepared Markdown observations
   -h, --help               Show this help
 
@@ -414,13 +414,13 @@ label='playthrough'
 run_index=1
 session_start=''
 session_end=''
-diagnostics="$HOME/.config/mako-render/present-diagnostics.log"
-config="$HOME/.config/mako-render/conf.toml"
+diagnostics="$HOME/.config/framegen-vulkan/present-diagnostics.log"
+config="$HOME/.config/framegen-vulkan/conf.toml"
 steam_log=''
 notes=''
 
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-mako_repo=$(cd -- "$script_dir/.." && pwd)
+fgvk_repo=$(cd -- "$script_dir/.." && pwd)
 trace_repo=''
 
 while [[ $# -gt 0 ]]; do
@@ -475,9 +475,9 @@ while [[ $# -gt 0 ]]; do
       config=$2
       shift 2
       ;;
-    --mako-repo)
+    --fgvk-repo)
       require_value "$@"
-      mako_repo=$2
+      fgvk_repo=$2
       shift 2
       ;;
     --trace-repo)
@@ -523,7 +523,7 @@ version_component=$version
 start_epoch_microseconds=$(iso_value microseconds "$session_start") || die "invalid ISO timestamp: $session_start"
 
 if [[ -z "$trace_repo" ]]; then
-  trace_repo=$(dirname -- "$mako_repo")/MAKO-Traces
+  trace_repo=$(dirname -- "$fgvk_repo")/MAKO-Traces
 fi
 [[ -d "$trace_repo" ]] || die "trace repository does not exist: $trace_repo"
 git -C "$trace_repo" rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "trace repository is not a Git checkout: $trace_repo"
@@ -604,7 +604,7 @@ else
     printf -- '- Runtime: `<Proton/runtime and version>`\n'
     printf -- '- GPU/display: `<GPU, driver, refresh rate, HDR/SDR>`\n'
     printf -- '- Game settings: `<resolution and relevant graphics settings>`\n'
-    printf -- '- MAKO profile: `<mode, target, multiplier, precision, flow scale, performance mode, pacing>`\n'
+    printf -- '- framegen-vulkan profile: `<mode, target, multiplier, precision, flow scale, performance mode, pacing>`\n'
     if [[ -n "$game_id" ]]; then
       printf -- '- Game ID: `%s`\n' "$game_id"
     fi
@@ -617,15 +617,15 @@ fi
 source_branch='unknown'
 source_commit='unknown'
 source_dirty=false
-source_path=$mako_repo
+source_path=$fgvk_repo
 if [[ "$source_path" == "$HOME" || "$source_path" == "$HOME/"* ]]; then
   source_path="\$HOME${source_path#"$HOME"}"
 fi
-if git -C "$mako_repo" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-  source_branch=$(git -C "$mako_repo" branch --show-current)
+if git -C "$fgvk_repo" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  source_branch=$(git -C "$fgvk_repo" branch --show-current)
   source_branch=${source_branch:-detached}
-  source_commit=$(git -C "$mako_repo" rev-parse HEAD)
-  if [[ -n "$(git -C "$mako_repo" status --porcelain)" ]]; then
+  source_commit=$(git -C "$fgvk_repo" rev-parse HEAD)
+  if [[ -n "$(git -C "$fgvk_repo" status --porcelain)" ]]; then
     source_dirty=true
   fi
 fi
@@ -732,7 +732,7 @@ for path in sorted((entry for entry in root.iterdir() if entry.is_file()), key=l
 PY
 )
 
-capture_lock_path="$(git -C "$trace_repo" rev-parse --absolute-git-dir)/mako-capture.lock"
+capture_lock_path="$(git -C "$trace_repo" rev-parse --absolute-git-dir)/fgvk-capture.lock"
 if publish_and_validate_capture "$working" "$destination" "$traces_root" "$capture_lock_path" "$trace_repo/scripts/validate.sh"; then
   working=''
 else

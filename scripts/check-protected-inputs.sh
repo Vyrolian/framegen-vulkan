@@ -7,7 +7,7 @@ if [[ -z "$repository_root" ]]; then
 fi
 repository_root="$(git -C "$repository_root" rev-parse --show-toplevel)"
 
-snapshot_root="$(mktemp -d "${TMPDIR:-/tmp}/mako-protected-inputs.XXXXXX")"
+snapshot_root="$(mktemp -d "${TMPDIR:-/tmp}/fgvk-protected-inputs.XXXXXX")"
 cleanup() {
     rm -rf "$snapshot_root"
 }

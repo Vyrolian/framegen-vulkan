@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Restore the SteamOS system packages used by direct MAKO development builds.
+# Restore the SteamOS system packages used by direct framegen-vulkan development builds.
 set -euo pipefail
 
 usage() {
@@ -12,8 +12,8 @@ Usage: scripts/install-steamos-build-tools.sh --check|--install
 
 Run as your normal SteamOS user. Installation prompts for sudo and Pacman
 confirmation, preserves the original read-only state, and does not build,
-deploy, or install MAKO. Portable release builds use Docker/Podman separately.
-The fast SteamOS builder fetches MAKO's pinned Vulkan headers into its own
+deploy, or install framegen-vulkan. Portable release builds use Docker/Podman separately.
+The fast SteamOS builder fetches framegen-vulkan's pinned Vulkan headers into its own
 repository-local cache; the system headers serve manual builds and other tools.
 EOF
 }

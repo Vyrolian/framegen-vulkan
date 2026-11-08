@@ -46,18 +46,18 @@ class FlatpakVulkanHeadersTests(unittest.TestCase):
             self.assertEqual(output.read_text(), "preserved\n")
 
     def test_all_runtime_architectures_use_and_require_shared_headers(self):
-        directory = ENGINE_ROOT / "dist/flatpak/mako-render"
+        directory = ENGINE_ROOT / "dist/flatpak/fgvk-render"
         module = json.loads((directory / "vulkan-headers.json").read_text())
         self.assertEqual(module["cleanup"], ["/include/vulkan", "/include/vk_video"])
         for runtime in (directory / "runtime-versions.txt").read_text().splitlines():
             if not runtime or runtime.startswith("#"):
                 continue
             with self.subTest(runtime=runtime):
-                manifest = (directory / f"org.freedesktop.Platform.VulkanLayer.makorender_{runtime}.yml").read_text()
+                manifest = (directory / f"org.freedesktop.Platform.VulkanLayer.fgvkrender_{runtime}.yml").read_text()
                 self.assertEqual(manifest.count("  - vulkan-headers.json\n"), 1)
-                self.assertLess(manifest.index("  - vulkan-headers.json\n"), manifest.index("  - name: mako\n"))
-                self.assertIn("  cxxflags: -I/usr/lib/extensions/vulkan/makorender/include\n", manifest)
-                self.assertEqual(manifest.count("- -DMAKO_REQUIRE_NATIVE_PACKAGE_HEADERS=ON\n"), 2)
+                self.assertLess(manifest.index("  - vulkan-headers.json\n"), manifest.index("  - name: fgvk\n"))
+                self.assertIn("  cxxflags: -I/usr/lib/extensions/vulkan/fgvkrender/include\n", manifest)
+                self.assertEqual(manifest.count("- -DFGVK_REQUIRE_NATIVE_PACKAGE_HEADERS=ON\n"), 2)
 
 
 if __name__ == "__main__":

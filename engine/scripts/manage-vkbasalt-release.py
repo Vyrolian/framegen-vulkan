@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate, stage, and generate build metadata for MAKO's vkBasalt pin."""
+"""Validate, stage, and generate build metadata for framegen-vulkan's vkBasalt pin."""
 
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ SOURCE_PATHS = {
     "source": "share/doc/vkbasalt/SOURCE",
     "checksums": "SHA256SUMS",
 }
-OPTIONAL_SOURCE_PATHS = {"bin/mako-shader-tool"}
+OPTIONAL_SOURCE_PATHS = {"bin/fgvk-shader-tool"}
 LAYER_NAME = "VK_LAYER_VKBASALT_post_processing"
 ENABLE_ENVIRONMENT = {"ENABLE_VKBASALT": "1"}
 DISABLE_ENVIRONMENT = {"DISABLE_VKBASALT": "1"}
@@ -95,15 +95,15 @@ def _validate_pin(pin: Any) -> dict[str, Any]:
     revision = pin.get("vulkan_headers_revision")
     expected_revision = (ENGINE_ROOT / "vulkan-headers-revision.txt").read_text().strip()
     if revision != expected_revision:
-        raise ValueError("vkBasalt Vulkan header pin must match MAKO Renderer: " + expected_revision)
+        raise ValueError("vkBasalt Vulkan header pin must match framegen-vulkan: " + expected_revision)
     header_commit = pin.get("vulkan_headers_commit")
     if not isinstance(header_commit, str) or COMMIT_PATTERN.fullmatch(header_commit) is None:
         raise ValueError("vkBasalt Vulkan headers must record their resolved commit")
     api_version = pin.get("vulkan_api_version")
-    for name in ("VkLayer_MAKO_render.json.in", "VkLayer_MAKO_spatial_scaling.json.in"):
-        renderer_api = json.loads((ENGINE_ROOT / "mako-render" / name).read_text())["layer"]["api_version"]
+    for name in ("VkLayer_FGVK_render.json.in", "VkLayer_FGVK_spatial_scaling.json.in"):
+        renderer_api = json.loads((ENGINE_ROOT / "fgvk-render" / name).read_text())["layer"]["api_version"]
         if api_version != renderer_api:
-            raise ValueError("vkBasalt API declaration must match the reviewed MAKO Renderer API: " + renderer_api)
+            raise ValueError("vkBasalt API declaration must match the reviewed framegen-vulkan API: " + renderer_api)
     return pin
 
 
@@ -164,7 +164,7 @@ def _validate_live_reload_markers(key: str, binary: bytes) -> None:
     ]
     if missing_live_markers:
         raise ValueError(
-            f"vkBasalt {key} library is missing MAKO live reload markers: "
+            f"vkBasalt {key} library is missing framegen-vulkan live reload markers: "
             + ", ".join(missing_live_markers)
         )
 
@@ -282,7 +282,7 @@ def _stage_native(
     files: list[tuple[Path, bytes, int]] = [
         (target / "lib/vkbasalt/libvkbasalt.so", members[SOURCE_PATHS["lib64"]], 0o755),
         (
-            target / "share/mako-render/vulkan/vkbasalt.d/vkBasalt.json",
+            target / "share/framegen-vulkan/vulkan/vkbasalt.d/vkBasalt.json",
             _manifest(
                 members[SOURCE_PATHS["manifest64"]],
                 "64",
@@ -291,22 +291,22 @@ def _stage_native(
             0o644,
         ),
         (
-            target / "share/doc/mako-render/vkbasalt/LICENSE",
+            target / "share/doc/framegen-vulkan/vkbasalt/LICENSE",
             members[SOURCE_PATHS["license"]],
             0o644,
         ),
         (
-            target / "share/doc/mako-render/vkbasalt/RESHade-LICENSE.md",
+            target / "share/doc/framegen-vulkan/vkbasalt/RESHade-LICENSE.md",
             members[SOURCE_PATHS["reshade_license"]],
             0o644,
         ),
         (
-            target / "share/doc/mako-render/vkbasalt/SOURCE",
+            target / "share/doc/framegen-vulkan/vkbasalt/SOURCE",
             members[SOURCE_PATHS["source"]],
             0o644,
         ),
         (
-            target / "share/doc/mako-render/vkbasalt/MAKO-PIN.json",
+            target / "share/doc/framegen-vulkan/vkbasalt/framegen-vulkan-PIN.json",
             (json.dumps(pin, indent=2) + "\n").encode("utf-8"),
             0o644,
         ),
@@ -319,7 +319,7 @@ def _stage_native(
                 0o755,
             ),
             (
-                target / "share/mako-render/vulkan/vkbasalt.d/vkBasalt.x86.json",
+                target / "share/framegen-vulkan/vulkan/vkbasalt.d/vkBasalt.x86.json",
                 _manifest(
                     members[SOURCE_PATHS["manifest32"]],
                     "32",
@@ -328,8 +328,8 @@ def _stage_native(
                 0o644,
             ),
         ])
-    if "bin/mako-shader-tool" in members:
-        files.append((target / "bin/mako-shader-tool", members["bin/mako-shader-tool"], 0o755))
+    if "bin/fgvk-shader-tool" in members:
+        files.append((target / "bin/fgvk-shader-tool", members["bin/fgvk-shader-tool"], 0o755))
     for path, content, mode in files:
         _write(path, content, mode)
 
@@ -341,11 +341,11 @@ def _flatpak_manifest(pin: dict[str, Any], architecture: str) -> str:
         "layer": {
             "name": LAYER_NAME,
             "type": "GLOBAL",
-            "library_path": f"/usr/lib/extensions/vulkan/makorender/{library}/vkbasalt/libvkbasalt.so",
+            "library_path": f"/usr/lib/extensions/vulkan/fgvkrender/{library}/vkbasalt/libvkbasalt.so",
             "library_arch": architecture,
             "api_version": pin["vulkan_api_version"],
             "implementation_version": "1",
-            "description": "vkBasalt post processing layer (MAKO build)",
+            "description": "vkBasalt post processing layer (framegen-vulkan build)",
             "functions": {
                 "vkGetInstanceProcAddr": "vkBasalt_GetInstanceProcAddr",
                 "vkGetDeviceProcAddr": "vkBasalt_GetDeviceProcAddr",
@@ -359,17 +359,17 @@ def _flatpak_manifest(pin: dict[str, Any], architecture: str) -> str:
 
 def _flatpak_module(pin: dict[str, Any]) -> str:
     module = {
-        "name": "vkbasalt-mako-bundle",
+        "name": "vkbasalt-fgvk-bundle",
         "buildsystem": "simple",
         "build-commands": [
             "install -Dm755 lib/libvkbasalt.so $FLATPAK_DEST/lib64/vkbasalt/libvkbasalt.so",
             "install -Dm755 lib32/libvkbasalt.so $FLATPAK_DEST/lib/i386-linux-gnu/vkbasalt/libvkbasalt.so",
             "install -Dm644 vkBasalt.flatpak.json $FLATPAK_DEST/share/vulkan/implicit_layer.d/vkBasalt.json",
             "install -Dm644 vkBasalt.flatpak.x86.json $FLATPAK_DEST/share/vulkan/implicit_layer.d/vkBasalt.x86.json",
-            "install -Dm644 share/doc/vkbasalt/LICENSE $FLATPAK_DEST/share/doc/mako-render/vkbasalt/LICENSE",
-            "install -Dm644 share/doc/vkbasalt/RESHade-LICENSE.md $FLATPAK_DEST/share/doc/mako-render/vkbasalt/RESHade-LICENSE.md",
-            "install -Dm644 share/doc/vkbasalt/SOURCE $FLATPAK_DEST/share/doc/mako-render/vkbasalt/SOURCE",
-            "install -Dm644 vkbasalt-release.json $FLATPAK_DEST/share/doc/mako-render/vkbasalt/MAKO-PIN.json",
+            "install -Dm644 share/doc/vkbasalt/LICENSE $FLATPAK_DEST/share/doc/framegen-vulkan/vkbasalt/LICENSE",
+            "install -Dm644 share/doc/vkbasalt/RESHade-LICENSE.md $FLATPAK_DEST/share/doc/framegen-vulkan/vkbasalt/RESHade-LICENSE.md",
+            "install -Dm644 share/doc/vkbasalt/SOURCE $FLATPAK_DEST/share/doc/framegen-vulkan/vkbasalt/SOURCE",
+            "install -Dm644 vkbasalt-release.json $FLATPAK_DEST/share/doc/framegen-vulkan/vkbasalt/framegen-vulkan-PIN.json",
         ],
         "sources": [
             {"type": "archive", "url": pin["url"], "sha256": pin["sha256"]},
@@ -398,7 +398,7 @@ def _local_candidate(archive: Path) -> tuple[dict[str, Any], dict[str, bytes]]:
 def _prepare_local_flatpak(archive: Path, target: Path) -> None:
     pin, _ = _local_candidate(archive)
     target.mkdir(parents=True, exist_ok=True)
-    source = ENGINE_ROOT / "dist/flatpak/mako-render"
+    source = ENGINE_ROOT / "dist/flatpak/fgvk-render"
     module = json.loads(_flatpak_module(pin))
     module["sources"][0] = {
         "type": "archive", "path": str(archive.resolve()), "sha256": pin["sha256"],
@@ -411,7 +411,7 @@ def _prepare_local_flatpak(archive: Path, target: Path) -> None:
     shutil.copyfile(source / "vulkan-headers.json", target / "vulkan-headers.json")
     # Keep the generated runtime manifests authoritative. Relocate only their
     # checkout source path in this ignored build directory, never tracked files.
-    for manifest in source.glob("org.freedesktop.Platform.VulkanLayer.makorender_*.yml"):
+    for manifest in source.glob("org.freedesktop.Platform.VulkanLayer.fgvkrender_*.yml"):
         text = manifest.read_text()
         if text.count("path: ../../../..") != 2:
             raise ValueError("unexpected Flatpak source layout: " + str(manifest))

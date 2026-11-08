@@ -1,6 +1,6 @@
 # Advanced configuration reference
 
-For normal setup, use the [configuration guide](CONFIGURATION.md). This page covers every `conf.toml` field and environment variable. The file is `~/.config/mako-render/conf.toml`.
+For normal setup, use the [configuration guide](CONFIGURATION.md). This page covers every `conf.toml` field and environment variable. The file is `~/.config/framegen-vulkan/conf.toml`.
 
 ## Format compatibility
 
@@ -8,7 +8,7 @@ Only `version = 2` is supported. Unknown keys are ignored. Launcher compatibilit
 
 ## Profiles
 
-`active_in` matches executable names, process names, or executable-path suffixes. `MAKO_PROFILE` selects an exact profile and overrides automatic matching. If nothing matches, MAKO Renderer stays inactive. A minimal example:
+`active_in` matches executable names, process names, or executable-path suffixes. `FGVK_PROFILE` selects an exact profile and overrides automatic matching. If nothing matches, framegen-vulkan stays inactive. A minimal example:
 
 ```toml
 version = 2
@@ -52,14 +52,14 @@ Battery selects Handheld; confirmed AC selects Docked. Unavailable startup detec
 
 ### Launcher exclusions
 
-Known launchers and helpers stay inactive while their child games can match. The [shared registry](../mako-common/launcher_exclusions.json) owns the exact exclusions; generic `Launcher.exe` is not globally excluded. If only a launcher is detected, wait for gameplay and match the game executable instead. Maintainers can find registry changes in [the compatibility ledger](../../CLEANUPS.md).
+Known launchers and helpers stay inactive while their child games can match. The [shared registry](../fgvk-common/launcher_exclusions.json) owns the exact exclusions; generic `Launcher.exe` is not globally excluded. If only a launcher is detected, wait for gameplay and match the game executable instead. Maintainers can find registry changes in [the compatibility ledger](../../CLEANUPS.md).
 
 ## Global settings
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `dll` | Automatic | Optional absolute path to `Lossless.dll`. LSFG and LS1 require it; MAKO Scaler and Native Resolution do not. |
-| `allow_fp16` | `true` | Selects FP16 for supported LSFG models and MAKO Scaler; `false` selects FP32. If a model lacks native FP16, select FP32. LS1 always uses FP32. Requires restart; Ultra Performance respects this choice. [Experimental source builds](BUILDING-FROM-SOURCE.md#experimental-forced-lsfg-fp16) have separate limits. |
+| `dll` | Automatic | Optional absolute path to `Lossless.dll`. LSFG and LS1 require it; framegen-vulkan Scaler and Native Resolution do not. |
+| `allow_fp16` | `true` | Selects FP16 for supported LSFG models and framegen-vulkan Scaler; `false` selects FP32. If a model lacks native FP16, select FP32. LS1 always uses FP32. Requires restart; Ultra Performance respects this choice. [Experimental source builds](BUILDING-FROM-SOURCE.md#experimental-forced-lsfg-fp16) have separate limits. |
 
 ## Profile settings
 
@@ -90,7 +90,7 @@ See [Adaptive validation](ADAPTIVE-VALIDATION.md) for scheduling details.
 | Setting | Default | Meaning |
 | --- | --- | --- |
 | `scaling_enabled` | `false` | Enables scaling at process start. Requires restart. |
-| `scaling_method` | `ls1` | `native`, `mako`, `ls1`, or `ls1-performance`. LS1 failures fall back to MAKO Scaler. |
+| `scaling_method` | `ls1` | `native`, `fgvk`, `ls1`, or `ls1-performance`. LS1 failures fall back to framegen-vulkan Scaler. |
 | `scaling_factor` | `1.5` | Target output-to-source ratio per dimension from 1.0–2.0; the surface, display target, and resource limits may reduce the effective ratio. |
 | `scaling_supersampling` | `false` | Allows supported variable Gamescope surfaces to render beyond the display target before downsampling. |
 | `scaling_sharpness` | `0.8` | Sharpening strength from 0.0–1.0. |
@@ -123,37 +123,37 @@ See [Adaptive validation](ADAPTIVE-VALIDATION.md#gpu-headroom) for controller sa
 ## Explicit launch selection
 
 ```text
-MAKO_CONFIG="$HOME/.config/mako-render/conf.toml" MAKO_PROFILE="My game" ~/.local/bin/mako-launch %command%
+FGVK_CONFIG="$HOME/.config/framegen-vulkan/conf.toml" FGVK_PROFILE="My game" ~/.local/bin/fgvk-launch %command%
 ```
 
-`DISABLE_MAKO=1` bypasses MAKO. Native Remote Play uses `MAKO_FOLLOW_CURRENT_PROFILE=1` to follow a valid root `current_profile` selection on reload, falling back to `MAKO_PROFILE`. Ordinary game launchers use normal matching.
+`DISABLE_FGVK=1` bypasses framegen-vulkan. Native Remote Play uses `FGVK_FOLLOW_CURRENT_PROFILE=1` to follow a valid root `current_profile` selection on reload, falling back to `FGVK_PROFILE`. Ordinary game launchers use normal matching.
 
 ## Environment-only configuration
 
-With `MAKO_ENV=1`, `MAKO_GPU_HEADROOM_PERCENT=0|5|10|15|20` selects the same reserve. Other values are rejected.
+With `FGVK_ENV=1`, `FGVK_GPU_HEADROOM_PERCENT=0|5|10|15|20` selects the same reserve. Other values are rejected.
 
-Set `MAKO_ENV=1` to build one profile from environment variables instead of TOML:
+Set `FGVK_ENV=1` to build one profile from environment variables instead of TOML:
 
-- global: `MAKO_DLL_PATH`, `MAKO_NO_FP16`;
-- Fixed and identity: `MAKO_GPU`, `MAKO_MULTIPLIER`, `MAKO_FRAME_GENERATION_PROVISIONED`, `MAKO_FRAME_GENERATION_ENABLED`, `MAKO_FRAME_GENERATION_REFRESH_THRESHOLD`, `MAKO_BASE_FPS_CAP`;
-- Adaptive: `MAKO_ADAPTIVE`, `MAKO_ADAPTIVE_AUTO_BASE_FPS_CAP`, `MAKO_ADAPTIVE_FRACTIONAL_REAL_FRAME_PRIORITY`, `MAKO_TARGET_FPS`, `MAKO_ADAPTIVE_TARGET_REFRESH_RATE`, `MAKO_ADAPTIVE_MAX_MULTIPLIER`, `MAKO_ADAPTIVE_STABLE_CADENCE`, `MAKO_DYNAMIC_CADENCE_RECOVERY`, `MAKO_DYNAMIC_CADENCE_PROBE_INTERVAL_SECONDS`;
-- Gamescope VRR: `MAKO_GAMESCOPE_VRR_MODE` (`follow-steam`, `on`, or `off`);
-- HDR quality: `MAKO_HDR_QUALITY` (`quality`, `balanced`, or `performance`; defaults to `performance`);
-- Scaling: `MAKO_SCALING_ENABLED`, `MAKO_SCALING_METHOD`, `MAKO_SCALING_FACTOR`, `MAKO_SCALING_SUPERSAMPLING`, `MAKO_SCALING_SHARPNESS`, `MAKO_SWAPCHAIN_IMAGE_COUNT_COMPATIBILITY`; and
-- resources: `MAKO_ULTRA_PERFORMANCE`, `MAKO_FLOW_SCALE`, `MAKO_PERFORMANCE_MODE`, `MAKO_PACING`.
+- global: `FGVK_DLL_PATH`, `FGVK_NO_FP16`;
+- Fixed and identity: `FGVK_GPU`, `FGVK_MULTIPLIER`, `FGVK_FRAME_GENERATION_PROVISIONED`, `FGVK_FRAME_GENERATION_ENABLED`, `FGVK_FRAME_GENERATION_REFRESH_THRESHOLD`, `FGVK_BASE_FPS_CAP`;
+- Adaptive: `FGVK_ADAPTIVE`, `FGVK_ADAPTIVE_AUTO_BASE_FPS_CAP`, `FGVK_ADAPTIVE_FRACTIONAL_REAL_FRAME_PRIORITY`, `FGVK_TARGET_FPS`, `FGVK_ADAPTIVE_TARGET_REFRESH_RATE`, `FGVK_ADAPTIVE_MAX_MULTIPLIER`, `FGVK_ADAPTIVE_STABLE_CADENCE`, `FGVK_DYNAMIC_CADENCE_RECOVERY`, `FGVK_DYNAMIC_CADENCE_PROBE_INTERVAL_SECONDS`;
+- Gamescope VRR: `FGVK_GAMESCOPE_VRR_MODE` (`follow-steam`, `on`, or `off`);
+- HDR quality: `FGVK_HDR_QUALITY` (`quality`, `balanced`, or `performance`; defaults to `performance`);
+- Scaling: `FGVK_SCALING_ENABLED`, `FGVK_SCALING_METHOD`, `FGVK_SCALING_FACTOR`, `FGVK_SCALING_SUPERSAMPLING`, `FGVK_SCALING_SHARPNESS`, `FGVK_SWAPCHAIN_IMAGE_COUNT_COMPATIBILITY`; and
+- resources: `FGVK_ULTRA_PERFORMANCE`, `FGVK_FLOW_SCALE`, `FGVK_PERFORMANCE_MODE`, `FGVK_PACING`.
 
-`MAKO_DISABLE_HDR_EXPOSURE=1` disables HDR exposure by default. The restart-only HDR control exports `MAKO_DISABLE_HDR_EXPOSURE=0` and `DXVK_HDR=1` while retaining `DISABLE_GAMESCOPE_WSI=1`; see the [HDR launch contract](HDR-PIPELINE.md#toggle-and-launch-contract). Environment-only settings are process-start settings, not live profile controls.
+`FGVK_DISABLE_HDR_EXPOSURE=1` disables HDR exposure by default. The restart-only HDR control exports `FGVK_DISABLE_HDR_EXPOSURE=0` and `DXVK_HDR=1` while retaining `DISABLE_GAMESCOPE_WSI=1`; see the [HDR launch contract](HDR-PIPELINE.md#toggle-and-launch-contract). Environment-only settings are process-start settings, not live profile controls.
 
 ## Pacing profiler
 
-`MAKO_PACING_PROFILE_TRACE=1` enables per-source CPU phases/settings, individual outer present/acquire/wait calls, worker readiness/queue-lock timing, exact source-tagged completed backend GPU batches and native Wayland feedback. It implies CPU/GPU/Wayland profiling, retains mapped ELF build and process/profile identity, and preserves the beginning of a private 64 MiB capture before stopping explicitly. It adds per-call file publication and observer overhead without changing saved settings, introducing host GPU waits or querying fences before presentation. Native unscaled FG copies additionally use one bounded timestamp query pool in their existing command buffers, completion-proven nonblocking readback and optional supported KHR/EXT device-to-host clock calibration; reports retain calibration uncertainty and separate estimated copy-end timing from WSI semaphore signals and physical scanout. These additions use the same flag. See the [detailed frame trace](COLLECT_DIAGNOSTICS.md#detailed-game-frame-trace) for raw capture retention, exact/missing joins, private JSON export and the optional protocol companion.
+`FGVK_PACING_PROFILE_TRACE=1` enables per-source CPU phases/settings, individual outer present/acquire/wait calls, worker readiness/queue-lock timing, exact source-tagged completed backend GPU batches and native Wayland feedback. It implies CPU/GPU/Wayland profiling, retains mapped ELF build and process/profile identity, and preserves the beginning of a private 64 MiB capture before stopping explicitly. It adds per-call file publication and observer overhead without changing saved settings, introducing host GPU waits or querying fences before presentation. Native unscaled FG copies additionally use one bounded timestamp query pool in their existing command buffers, completion-proven nonblocking readback and optional supported KHR/EXT device-to-host clock calibration; reports retain calibration uncertainty and separate estimated copy-end timing from WSI semaphore signals and physical scanout. These additions use the same flag. See the [detailed frame trace](COLLECT_DIAGNOSTICS.md#detailed-game-frame-trace) for raw capture retention, exact/missing joins, private JSON export and the optional protocol companion.
 
-`MAKO_PACING_PROFILE=1` enables independent process-start CPU pacing/phase summaries and application acquire/present observations without broad presentation diagnostics. The default is a private, bounded timing-only capture under `${TMPDIR:-/tmp}`; `MAKO_PACING_PROFILE_LOG` selects a new absolute file or `stderr` for console-only output. See the [pacing capture guide](COLLECT_DIAGNOSTICS.md#lightweight-minecraft-pacing-capture). `MAKO_PACING_PROFILE_GPU=1` additionally enables backend GPU timestamp collection and implies the CPU capture; it reads completed batches at the existing backend fence boundary, with no new wait. It is diagnostic measurement overhead and excludes game rendering, application-device scaling/copies and scanout. Profiling changes no saved profile or pacing policy.
+`FGVK_PACING_PROFILE=1` enables independent process-start CPU pacing/phase summaries and application acquire/present observations without broad presentation diagnostics. The default is a private, bounded timing-only capture under `${TMPDIR:-/tmp}`; `FGVK_PACING_PROFILE_LOG` selects a new absolute file or `stderr` for console-only output. See the [pacing capture guide](COLLECT_DIAGNOSTICS.md#lightweight-minecraft-pacing-capture). `FGVK_PACING_PROFILE_GPU=1` additionally enables backend GPU timestamp collection and implies the CPU capture; it reads completed batches at the existing backend fence boundary, with no new wait. It is diagnostic measurement overhead and excludes game rendering, application-device scaling/copies and scanout. Profiling changes no saved profile or pacing policy.
 
-`MAKO_PACING_PROFILE_WAYLAND=1` implies CPU capture and adds native Wayland `wp_presentation` feedback on the application's borrowed surface. It records compositor-reported presentation timestamps/discards separately from lower-call timing, without GPU queries, socket reads, commits, target-time changes or an event-reader worker. It uses a private event queue serviced by the application's existing display reader. The [capture guide](COLLECT_DIAGNOSTICS.md#lightweight-minecraft-pacing-capture) describes clock domains, bounded storage, protocol/callback gaps and ambiguous commit association. This process-start observer adds protocol and dispatch overhead; remove it after the capture.
+`FGVK_PACING_PROFILE_WAYLAND=1` implies CPU capture and adds native Wayland `wp_presentation` feedback on the application's borrowed surface. It records compositor-reported presentation timestamps/discards separately from lower-call timing, without GPU queries, socket reads, commits, target-time changes or an event-reader worker. It uses a private event queue serviced by the application's existing display reader. The [capture guide](COLLECT_DIAGNOSTICS.md#lightweight-minecraft-pacing-capture) describes clock domains, bounded storage, protocol/callback gaps and ambiguous commit association. This process-start observer adds protocol and dispatch overhead; remove it after the capture.
 
-`MAKO_PACING_PROFILE_CONTENT=1` implies CPU capture and arms an explicit-trigger image sequence capture for Fixed 2x SDR without spatial scaling. It records at most 128 small real/generated picture pairs plus source/history/image/queue identities, using the existing copy commands and completed render-fence boundary. No capture GPU resources or readback are created before the named trigger exists. Pictures are stored separately from timing-only logs and add transfer/readback/I/O overhead. See the same [capture guide](COLLECT_DIAGNOSTICS.md#lightweight-minecraft-pacing-capture) for warm-scene triggering, bounds and offline analysis.
+`FGVK_PACING_PROFILE_CONTENT=1` implies CPU capture and arms an explicit-trigger image sequence capture for Fixed 2x SDR without spatial scaling. It records at most 128 small real/generated picture pairs plus source/history/image/queue identities, using the existing copy commands and completed render-fence boundary. No capture GPU resources or readback are created before the named trigger exists. Pictures are stored separately from timing-only logs and add transfer/readback/I/O overhead. See the same [capture guide](COLLECT_DIAGNOSTICS.md#lightweight-minecraft-pacing-capture) for warm-scene triggering, bounds and offline analysis.
 
 ## Presentation acquisition timeout
 
-`MAKO_PRESENT_ACQUIRE_TIMEOUT_MS` limits how long MAKO waits for generated-image availability before native recovery. Adaptive VRR delivery and constrained Fixed image pools enforce a 50 ms limit when no explicit value is set. For a focused stall reproduction, try `25` and include the log. See [presentation recovery](LIFECYCLE.md) for deadline and fallback rules.
+`FGVK_PRESENT_ACQUIRE_TIMEOUT_MS` limits how long framegen-vulkan waits for generated-image availability before native recovery. Adaptive VRR delivery and constrained Fixed image pools enforce a 50 ms limit when no explicit value is set. For a focused stall reproduction, try `25` and include the log. See [presentation recovery](LIFECYCLE.md) for deadline and fallback rules.

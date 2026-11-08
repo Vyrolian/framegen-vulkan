@@ -48,14 +48,14 @@ case "$name" in
         esac ;;
     steamos-readonly)
         if [[ "$1" == status ]]; then
-            printf '%s\\n' "$MAKO_TEST_STATE"
-            exit "$MAKO_TEST_STATUS"
+            printf '%s\\n' "$FGVK_TEST_STATE"
+            exit "$FGVK_TEST_STATUS"
         fi
-        printf '%s %s\\n' "$name" "$*" >> "$MAKO_TEST_LOG"
-        if [[ "$1" == enable ]]; then exit "$MAKO_TEST_RESTORE_EXIT"; fi ;;
+        printf '%s %s\\n' "$name" "$*" >> "$FGVK_TEST_LOG"
+        if [[ "$1" == enable ]]; then exit "$FGVK_TEST_RESTORE_EXIT"; fi ;;
     pacman|pacman-key)
-        printf '%s %s\\n' "$name" "$*" >> "$MAKO_TEST_LOG"
-        if [[ "$name" == pacman ]]; then exit "$MAKO_TEST_PACMAN_EXIT"; fi ;;
+        printf '%s %s\\n' "$name" "$*" >> "$FGVK_TEST_LOG"
+        if [[ "$name" == pacman ]]; then exit "$FGVK_TEST_PACMAN_EXIT"; fi ;;
 esac
 """
         commands = re.search(r"local commands=\(([^)]+)\)", source).group(1).split()
@@ -66,10 +66,10 @@ esac
 
     def run_installer(self, state, status, *, pacman_exit=0, restore_exit=0):
         environment = dict(os.environ, PATH=str(self.bin),
-                           MAKO_TEST_STATE=state, MAKO_TEST_STATUS=str(status),
-                           MAKO_TEST_LOG=str(self.log),
-                           MAKO_TEST_PACMAN_EXIT=str(pacman_exit),
-                           MAKO_TEST_RESTORE_EXIT=str(restore_exit))
+                           FGVK_TEST_STATE=state, FGVK_TEST_STATUS=str(status),
+                           FGVK_TEST_LOG=str(self.log),
+                           FGVK_TEST_PACMAN_EXIT=str(pacman_exit),
+                           FGVK_TEST_RESTORE_EXIT=str(restore_exit))
         result = subprocess.run(["/bin/bash", str(self.script), "--install"],
                                 env=environment, text=True, capture_output=True)
         calls = self.log.read_text().splitlines() if self.log.exists() else []

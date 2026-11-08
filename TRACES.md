@@ -1,26 +1,26 @@
-# MAKO trace extractor
+# framegen-vulkan trace extractor
 
 [`scripts/capture-trace.sh`](scripts/capture-trace.sh) turns one completed game session into a sanitized evidence bundle for comparing Renderer versions.
 
-> **Private evidence:** Game-session logs, machine and runtime metadata, test observations, and performance evidence belong outside the public MAKO repository. External evidence storage is not required to build, test, package, install, or release MAKO.
+> **Private evidence:** Game-session logs, machine and runtime metadata, test observations, and performance evidence belong outside the public framegen-vulkan repository. External evidence storage is not required to build, test, package, install, or release framegen-vulkan.
 
 ## Repository boundary
 
 | Location | Visibility | Responsibility |
 | --- | --- | --- |
-| `MAKO/scripts/capture-trace.sh` | Public | Session extraction, time slicing, sanitization, metadata generation, credential rejection, and the initial checksum manifest |
-| `MAKO/TRACES.md` | Public | Extractor behavior, safety contract, and maintainer workflow |
+| `framegen-vulkan/scripts/capture-trace.sh` | Public | Session extraction, time slicing, sanitization, metadata generation, credential rejection, and the initial checksum manifest |
+| `framegen-vulkan/TRACES.md` | Public | Extractor behavior, safety contract, and maintainer workflow |
 | External evidence archive | Private | Controlled traces, user reports, schemas, checksum verification, history, validation, and comparison policy |
 
-The archive is never a runtime or distribution dependency; MAKO must work normally without it.
+The archive is never a runtime or distribution dependency; framegen-vulkan must work normally without it.
 
 ## Local setup
 
-Keep the authorized evidence archive outside the public MAKO worktree and pass it with `--trace-repo <path>`.
+Keep the authorized evidence archive outside the public framegen-vulkan worktree and pass it with `--trace-repo <path>`.
 
 ## Capture a completed session
 
-Close the game so buffered diagnostics are complete. The managed wrapper stores the latest session at `~/.config/mako-render/present-diagnostics.log` and nine older sessions as `.1` through `.9`. The extractor uses the latest by default; select one rotated file with `--diagnostics` for an earlier run. Do not pass a combined multi-session report.
+Close the game so buffered diagnostics are complete. The managed wrapper stores the latest session at `~/.config/framegen-vulkan/present-diagnostics.log` and nine older sessions as `.1` through `.9`. The extractor uses the latest by default; select one rotated file with `--diagnostics` for an earlier run. Do not pass a combined multi-session report.
 
 ```bash
 ./scripts/capture-trace.sh \
@@ -46,7 +46,7 @@ Existing destinations are never overwritten. Dot segments, symlink escapes, and 
 Each run is written to `traces/<version-label>/<game-slug>/<run-id>/`. The run ID combines the UTC session start, scenario label, and repetition number. A run normally contains:
 
 - `metadata.json`: machine-readable identity and provenance;
-- `present-diagnostics.log`: raw session-scoped MAKO Renderer evidence;
+- `present-diagnostics.log`: raw session-scoped framegen-vulkan evidence;
 - `events.log`: derived navigation index for transitions, misses, fallback, and failures;
 - `config.toml`: sanitized Renderer configuration;
 - `steam-session.log`: optional time-clipped Steam console context;
@@ -69,13 +69,13 @@ Private storage does not replace minimization. Inspect every run before committi
 
 ## Validation and contract changes
 
-Validate the private archive after every capture or user-report import from the MAKO Traces checkout:
+Validate the private archive after every capture or user-report import from the fgvk Traces checkout:
 
 ```bash
 ./scripts/check.sh
 # or: just check
 ```
 
-The public producer creates the initial manifest. MAKO Traces owns schemas, chronology, path identity, checksums, privacy, protected-input checks, and history. Permitted notes, derived-event, report, or factual metadata corrections use `./scripts/refresh-checksums.sh <evidence-directory>` (or `just refresh <evidence-directory>`) followed by `./scripts/check.sh`. Raw diagnostics, configurations, clipped logs, and supplied user artifacts remain immutable.
+The public producer creates the initial manifest. fgvk Traces owns schemas, chronology, path identity, checksums, privacy, protected-input checks, and history. Permitted notes, derived-event, report, or factual metadata corrections use `./scripts/refresh-checksums.sh <evidence-directory>` (or `just refresh <evidence-directory>`) followed by `./scripts/check.sh`. Raw diagnostics, configurations, clipped logs, and supplied user artifacts remain immutable.
 
-When the contract changes, update the producer, its test, this guide, and the corresponding MAKO Traces schema, guides, templates, validator, and tests together. Preserve historical raw evidence through compatible readers or factual metadata migration.
+When the contract changes, update the producer, its test, this guide, and the corresponding fgvk Traces schema, guides, templates, validator, and tests together. Preserve historical raw evidence through compatible readers or factual metadata migration.

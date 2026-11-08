@@ -2,12 +2,12 @@ import { releaseData } from './release-data';
 
 export const siteUrl = 'https://eugeniosegala.github.io/MAKO/';
 export const siteTitle =
-  'MAKO: Frame Generation, Scaling, and Shaders for SteamOS and Linux';
+  'framegen-vulkan: Frame Generation, Scaling, and Shaders for SteamOS and Linux';
 export const siteDescription =
-  'MAKO brings frame generation, spatial scaling, and per-game shader effects to Steam Deck, SteamOS, and desktop Linux through Vulkan.';
+  'framegen-vulkan brings frame generation, spatial scaling, and per-game shader effects to Steam Deck, SteamOS, and desktop Linux through Vulkan.';
 export const socialImageUrl = `${siteUrl}og.png`;
 export const siteKeywords = [
-  'MAKO',
+  'framegen-vulkan',
   'Steam Deck frame generation',
   'Linux frame generation',
   'SteamOS frame generation',
@@ -24,16 +24,16 @@ export const structuredData = {
       '@type': 'WebSite',
       '@id': `${siteUrl}#website`,
       url: siteUrl,
-      name: 'MAKO',
-      alternateName: 'MAKO Renderer',
+      name: 'framegen-vulkan',
+      alternateName: 'framegen-vulkan',
       description: siteDescription,
       inLanguage: 'en',
     },
     {
       '@type': 'SoftwareApplication',
       '@id': `${siteUrl}#software`,
-      name: 'MAKO',
-      alternateName: 'MAKO Renderer',
+      name: 'framegen-vulkan',
+      alternateName: 'framegen-vulkan',
       url: siteUrl,
       description: siteDescription,
       applicationCategory: 'UtilitiesApplication',
@@ -45,19 +45,19 @@ export const structuredData = {
         priceCurrency: 'USD',
         availability: 'https://schema.org/InStock',
       },
-      softwareVersion: `MAKO Renderer ${releaseData.rendererVersion}`,
+      softwareVersion: `framegen-vulkan ${releaseData.rendererVersion}`,
       downloadUrl: releaseData.links.rendererDownload,
       codeRepository: releaseData.links.repository,
       license: `${releaseData.links.repository}/blob/main/LICENSE.md`,
       image: socialImageUrl,
       softwareRequirements:
-        'Lossless Scaling is required only for LSFG frame generation and LS1 scaling. MAKO Scaler and bundled shaders work independently.',
+        'Lossless Scaling is required only for LSFG frame generation and LS1 scaling. framegen-vulkan Scaler and bundled shaders work independently.',
       featureList: [
         'Fixed and adaptive frame generation',
-        'Spatial scaling with MAKO Scaler or LS1',
+        'Spatial scaling with framegen-vulkan Scaler or LS1',
         'Per-game Vulkan shader effects',
         'Steam Deck and SteamOS launch integration through a Steam launch option',
-        'Standalone MAKO Renderer for desktop Linux',
+        'Standalone framegen-vulkan for desktop Linux',
       ],
       mainEntityOfPage: { '@id': `${siteUrl}#website` },
     },
@@ -67,18 +67,18 @@ export const structuredData = {
       mainEntity: [
         {
           '@type': 'Question',
-          name: 'Which MAKO version should I install?',
+          name: 'Which framegen-vulkan version should I install?',
           acceptedAnswer: {
             '@type': 'Answer',
-            text: 'Use the MAKO Renderer host archive for SteamOS and desktop Linux, or the Arch package on Arch Linux.',
+            text: 'Use the framegen-vulkan host archive for SteamOS and desktop Linux, or the Arch package on Arch Linux.',
           },
         },
         {
           '@type': 'Question',
-          name: 'Does MAKO include Lossless Scaling?',
+          name: 'Does framegen-vulkan include Lossless Scaling?',
           acceptedAnswer: {
             '@type': 'Answer',
-            text: 'No. MAKO is independent and does not distribute Lossless Scaling or its proprietary resources. Frame generation and LS1 scaling require a separate Lossless Scaling purchase. MAKO Scaler and the bundled shaders do not.',
+            text: 'No. framegen-vulkan is independent and does not distribute Lossless Scaling or its proprietary resources. Frame generation and LS1 scaling require a separate Lossless Scaling purchase. framegen-vulkan Scaler and the bundled shaders do not.',
           },
         },
         {
@@ -86,15 +86,15 @@ export const structuredData = {
           name: 'Can frame generation, scaling, and shaders run together?',
           acceptedAnswer: {
             '@type': 'Answer',
-            text: 'Yes. A MAKO profile can combine spatial scaling, fixed or adaptive frame generation, and per-game shader effects.',
+            text: 'Yes. A framegen-vulkan profile can combine spatial scaling, fixed or adaptive frame generation, and per-game shader effects.',
           },
         },
         {
           '@type': 'Question',
-          name: 'Which operating systems and architectures does MAKO support?',
+          name: 'Which operating systems and architectures does framegen-vulkan support?',
           acceptedAnswer: {
             '@type': 'Answer',
-            text: 'MAKO targets SteamOS and desktop Linux on x86_64 hosts. Published Renderer packages include both 64-bit and 32-bit x86 Vulkan layers.',
+            text: 'framegen-vulkan targets SteamOS and desktop Linux on x86_64 hosts. Published Renderer packages include both 64-bit and 32-bit x86 Vulkan layers.',
           },
         },
       ],

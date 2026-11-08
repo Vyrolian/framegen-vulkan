@@ -1,0 +1,3507 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+
+#include "adaptive_scheduler.hpp"
+
+#include "adaptive_policy_limits.hpp"
+#include "generated_frame_delivery.hpp"
+
+#include <algorithm>
+#include <chrono>
+#include <cmath>
+#include <cstddef>
+#include <limits>
+#include <optional>
+#include <stdexcept>
+
+using namespace fgvk::layer;
+
+#if defined(__OPTIMIZE__) && (defined(__GNUC__) || defined(__clang__))
+#define FGVK_ADAPTIVE_STAGE_INLINE inline __attribute__((always_inline))
+#else
+#define FGVK_ADAPTIVE_STAGE_INLINE inline
+#endif
+
+namespace {
+    static_assert(
+        ls::GameConfLimits::maximumAdaptiveMaxMultiplier ==
+            GeneratedFramePlan::capacity + 1,
+        "Adaptive multiplier limit must fit the inline generated-frame plan"
+    );
+
+    constexpr size_t adaptiveHistoryWarmupFrames = 3;
+    constexpr size_t adaptiveSdrCadenceRefreshFrames = 2;
+    constexpr double adaptiveSdrCadenceResumeBaseFps = 12.0;
+    constexpr size_t adaptiveSdrCadenceResumeFrameCount = 3;
+    constexpr double adaptiveIntervalSmoothing = 0.25;
+    constexpr double adaptiveTargetSatisfiedRatio = 0.98;
+    constexpr auto adaptivePacedLoadWatchDuration = std::chrono::seconds{8};
+    constexpr auto adaptivePacedLoadSettlingDuration =
+        std::chrono::milliseconds{250};
+    constexpr double adaptivePacedLoadSampleSeconds = 1.0;
+    constexpr double adaptivePacedLoadWindowSeconds = 0.25;
+    constexpr double adaptiveCadenceDropRatio = 2.0;
+    constexpr size_t adaptiveCadenceDropFrameCount = 3;
+    constexpr double adaptiveTransientFastBurstCadenceRatio = 3.0;
+    constexpr double adaptiveTransientFastBurstTargetRatio = 2.0;
+    // Prefer the first workload that delivers the target over a proven deficit.
+    // Otherwise extra output must still pay for the real frames it costs.
+    // Both paths require a meaningful gain rather than promoting on noise.
+    struct AdaptiveLoadOutcome {
+        double baseFps{0.0};
+        double outputFps{0.0};
+    };
+
+    [[nodiscard]] AdaptiveLoadOutcome adaptiveLoadOutcome(
+            const uint32_t targetFps, const size_t generatedLimit,
+            const double baseFps) {
+        return {
+            .baseFps = baseFps,
+            .outputFps = std::min(
+                static_cast<double>(targetFps),
+                baseFps * static_cast<double>(generatedLimit + 1)
+            ),
+        };
+    }
+
+    [[nodiscard]] bool adaptiveHigherLoadIsUseful(
+            const uint32_t targetFps, const size_t testedLimit,
+            const AdaptiveLoadOutcome lower,
+            const AdaptiveLoadOutcome higher,
+            const bool targetDeliveryQualified) {
+        const double outputGain = higher.outputFps - lower.outputFps;
+        const double targetFloor = static_cast<double>(targetFps) *
+            adaptiveTargetSatisfiedRatio;
+        const bool reachesTarget = testedLimit > 1 && targetDeliveryQualified &&
+            lower.outputFps < targetFloor && higher.outputFps >= targetFloor;
+        // Target/multiplier pacing intentionally lowers the real-frame rate.
+        // Accept that trade only with delivered target evidence; a projected
+        // rate or an already sufficient lower workload cannot claim it.
+        const double realFrameCost = reachesTarget ? 0.0
+            : std::max(0.0, lower.baseFps - higher.baseFps);
+        const double comparisonScale = std::max({
+            1.0, lower.baseFps, higher.baseFps,
+            lower.outputFps, higher.outputFps
+        });
+        const double roundingTolerance =
+            std::numeric_limits<double>::epsilon() * comparisonScale * 8.0;
+        constexpr double minimumNetOutputGainRatio = 0.02;
+        const double margin = testedLimit > 1
+            ? static_cast<double>(targetFps) * minimumNetOutputGainRatio
+            : 0.0;
+        return outputGain + roundingTolerance >= realFrameCost +
+            margin;
+    }
+
+    constexpr double adaptiveStableCadenceMaximumProbeOvershootRatio = 1.40;
+    constexpr double adaptiveStableCadenceMaximumRetainedOvershootRatio = 1.50;
+    constexpr double adaptiveStableCadenceMinimumQualificationTargetRatio =
+        0.98;
+    constexpr double adaptiveStableCadenceMinimumRetentionTargetRatio = 0.95;
+    constexpr double adaptiveStableCadenceMinimumBaseRetention = 0.74;
+    constexpr double adaptiveStableCadenceMinimumDemandRatio = 0.95;
+    constexpr double adaptiveStableCadenceMinimumConvergenceDemandRatio =
+        0.875;
+    constexpr double adaptiveStableCadenceMaximumConvergenceOutputRatio =
+        1.02;
+    constexpr double adaptiveNativeCadenceMinimumRiseRatio = 1.25;
+    constexpr size_t adaptiveNativeCadenceConfirmationFrames = 3;
+    constexpr auto adaptiveStabilizationDuration = std::chrono::seconds(1);
+    constexpr auto adaptiveRecoveryStabilizationDuration = std::chrono::seconds(3);
+    constexpr auto adaptiveRampEvaluationDuration = std::chrono::seconds(1);
+    constexpr auto adaptiveTargetDeficitDuration = std::chrono::seconds(1);
+    constexpr auto adaptiveTargetConstraintDiagnosticDuration =
+        std::chrono::seconds(2);
+    constexpr auto adaptiveNearTargetNativeHoldDuration =
+        std::chrono::seconds(1);
+    // Opposite evidence decays twice as quickly as qualifying evidence grows.
+    // A one-frame boundary excursion therefore cannot reset a real cadence
+    // drop, while evenly oscillating measurements cannot accumulate enough
+    // one-sided evidence to chatter the policy.
+    constexpr int adaptiveNearTargetOppositeEvidenceDecay = 2;
+    constexpr auto adaptiveNearTargetMaximumEvidenceSample =
+        std::chrono::milliseconds(100);
+    // Fractional Adaptive promises to approach the requested output target.
+    // Native preference is therefore only eligible when the real cadence is
+    // already within Adaptive's established 95% retention envelope. The
+    // interval-quality comparison still avoids sparse generated work at a
+    // genuinely near-target cadence, without stranding a 95-110 FPS source
+    // below a 120 FPS target indefinitely.
+    constexpr double adaptiveNearTargetNativeMinimumOutputRatio = 0.95;
+    // Inside the final five-percent output envelope, measured cadence can
+    // naturally wander around a close quality decision. Admit a half-percent
+    // target-interval RMS tolerance so a nominal near-target cadence cannot
+    // chatter back into an equally irregular sparse Fractional sequence.
+    // Expressing the margin as target time keeps it proportional at 60, 90,
+    // 120, 144 Hz, and other configured targets.
+    constexpr double adaptiveNearTargetEntryTargetIntervalTolerance = 0.005;
+    constexpr auto adaptiveRampStepDelay = std::chrono::milliseconds(250);
+    constexpr auto adaptiveRampFirstRetryDelay = std::chrono::seconds(5);
+    constexpr auto adaptiveRampSecondRetryDelay = std::chrono::seconds(15);
+    constexpr auto adaptiveRampThirdRetryDelay = std::chrono::seconds(30);
+    constexpr auto adaptiveRampMaximumRetryDelay = std::chrono::seconds(60);
+    constexpr auto adaptiveRecoveryHigherProbeDelay = std::chrono::seconds(5);
+    constexpr auto adaptiveStableCadenceEvaluationDuration = std::chrono::seconds(1);
+    constexpr auto adaptiveStableCadenceExitGraceDuration = std::chrono::milliseconds(500);
+    constexpr auto adaptiveStableCadenceRetryDelay = std::chrono::seconds(15);
+    constexpr auto adaptiveStableCadenceConvergenceRetryDelay =
+        std::chrono::seconds(60);
+    constexpr auto adaptiveStableCadenceStrictSettlingDuration = std::chrono::seconds(2);
+    constexpr auto adaptiveStableCadenceCandidateDuration = std::chrono::seconds(2);
+    constexpr double adaptiveStableCadenceMaximumCandidateSpreadRatio = 1.15;
+    constexpr auto adaptiveEfficiencyProbeHoldDuration = std::chrono::seconds(5);
+    constexpr auto adaptiveEfficiencyProbeEvaluationDuration = std::chrono::milliseconds(250);
+    constexpr auto adaptiveEfficiencyProbeSampleDuration = std::chrono::seconds(1);
+    constexpr auto adaptiveEfficiencyProbeSettlingGraceDuration =
+        std::chrono::milliseconds(250);
+    constexpr auto adaptiveEfficiencyProbeNearTargetRetryDelay =
+        std::chrono::seconds(60);
+    constexpr auto adaptiveEfficiencyProbeModerateDeficitRetryDelay =
+        std::chrono::seconds(120);
+    constexpr auto adaptiveEfficiencyProbeSevereDeficitRetryDelay =
+        std::chrono::seconds(300);
+    constexpr double adaptiveEfficiencyProbeMinimumTargetRatio = 0.98;
+    constexpr double adaptiveEfficiencyProbeSettlingMinimumTargetRatio = 0.90;
+    constexpr double adaptiveEfficiencyProbeSevereDeficitTargetRatio = 0.75;
+    constexpr double adaptiveEfficiencyProbeSettlingMinimumBaseRiseRatio = 1.20;
+    constexpr double adaptiveRescueBaseCollapseRatio = 0.78;
+    constexpr double adaptiveRescueOutputCollapseRatio = 0.80;
+    constexpr double adaptiveRescueRecoveredBaseRatio = 0.90;
+    constexpr auto adaptiveRescueMeasurementDuration = std::chrono::seconds(1);
+    constexpr auto adaptiveRescueCollapseWatchDuration = std::chrono::seconds(2);
+    constexpr auto adaptiveRescueCooldown = std::chrono::seconds(15);
+    constexpr double adaptiveDiscontinuityRecoveredBaseRatio = 0.90;
+    constexpr auto adaptiveDiscontinuityStableDuration = std::chrono::seconds(1);
+    constexpr auto adaptiveDiscontinuityMaximumDuration = std::chrono::seconds(5);
+    constexpr auto adaptiveFailedProbeCooldown = std::chrono::seconds(15);
+    constexpr auto adaptiveInterruptedProbeCooldown = std::chrono::seconds(2);
+    constexpr auto adaptiveStableRearmDuration = std::chrono::seconds(2);
+    constexpr auto adaptiveLowerLoadCadenceWindowDuration =
+        std::chrono::milliseconds(250);
+    constexpr auto adaptivePlanDiagnosticInterval = std::chrono::seconds(1);
+    constexpr auto adaptiveFastBurstDiagnosticInterval = std::chrono::seconds(1);
+    // Start Fractional workload at the nearest-output phase rather than the
+    // trailing edge of its first source frame. This keeps cumulative output
+    // demand within half an output of the target from activation, reducing
+    // the chance that an ordered FIFO begins Fractional pacing one frame
+    // short. It changes only the bounded prefix phase, not the long-term rate.
+    constexpr double adaptiveTargetClockInitialBudgetPhaseOutputs = 0.5;
+    // Keep almost one bounded output of credit when the configured multiplier
+    // cannot currently satisfy target demand. Wrapping the excess to its
+    // fractional remainder discards slow-side credit, so ordinary source
+    // jitter can then spend a fast frame below an otherwise achievable integer
+    // ceiling after an external throttle. Leave enough distance from one for
+    // the target-clock floor tolerance below.
+    constexpr double adaptiveTargetClockMaximumCeilingCreditOutputs =
+        1.0 - 2e-9;
+    // Do not move earned work between almost-equivalent source intervals.
+    // Five percent of one target period filters ordinary high-base cadence
+    // noise while preserving the materially better long-interval placement
+    // used by uneven Fractional traces.
+    constexpr double adaptiveTargetClockPlacementDeadbandRatio = 0.05;
+    constexpr double adaptiveTargetClockMinimumRepaymentHeadroomOutputs = 0.25;
+    constexpr std::array adaptiveOutputCountReciprocals{
+        0.0, 1.0, 0.5, 1.0 / 3.0, 0.25, 0.2,
+    };
+    static_assert(
+        adaptiveOutputCountReciprocals.size() ==
+            GeneratedFramePlan::capacity + 2
+    );
+
+    AdaptiveSchedulerDiagnostics nullDiagnostics;
+
+    struct NearTargetCadenceQualityPrediction {
+        bool valid{false};
+        double nativeIntervalSquaredErrorMilliseconds{0.0};
+        double fractionalIntervalSquaredErrorMilliseconds{0.0};
+
+        [[nodiscard]] double nativeIntervalRmsMilliseconds() const {
+            return std::sqrt(std::max(
+                0.0, this->nativeIntervalSquaredErrorMilliseconds
+            ));
+        }
+
+        [[nodiscard]] double fractionalIntervalRmsMilliseconds() const {
+            return std::sqrt(std::max(
+                0.0, this->fractionalIntervalSquaredErrorMilliseconds
+            ));
+        }
+    };
+
+    [[nodiscard]] NearTargetCadenceQualityPrediction
+    predictNearTargetCadenceQuality(const double baseFps,
+            const uint32_t targetFps) {
+        const double target = static_cast<double>(targetFps);
+        if (baseFps <= target * 0.5 || baseFps >= target)
+            return {};
+
+        const double desiredOutputsPerRealFrame = target / baseFps;
+        const double generatedSourceShare = desiredOutputsPerRealFrame - 1.0;
+        const double sourceIntervalMilliseconds = 1000.0 / baseFps;
+        const double targetIntervalMilliseconds = 1000.0 / target;
+        const double nativeError =
+            sourceIntervalMilliseconds - targetIntervalMilliseconds;
+        const double dividedError =
+            sourceIntervalMilliseconds * 0.5 - targetIntervalMilliseconds;
+        const double fractionalSquaredError = (
+            (1.0 - generatedSourceShare) * nativeError * nativeError +
+            2.0 * generatedSourceShare * dividedError * dividedError
+        ) / desiredOutputsPerRealFrame;
+        return {
+            .valid = true,
+            .nativeIntervalSquaredErrorMilliseconds =
+                nativeError * nativeError,
+            .fractionalIntervalSquaredErrorMilliseconds =
+                std::max(0.0, fractionalSquaredError),
+        };
+    }
+
+    std::chrono::steady_clock::duration adaptiveRampRetryDelayForFailures(
+            const size_t failures) {
+        if (failures <= 1)
+            return adaptiveRampFirstRetryDelay;
+        if (failures == 2)
+            return adaptiveRampSecondRetryDelay;
+        if (failures == 3)
+            return adaptiveRampThirdRetryDelay;
+        return adaptiveRampMaximumRetryDelay;
+    }
+}
+
+AdaptiveScheduler::AdaptiveScheduler(AdaptiveSchedulerConfig config,
+        AdaptiveSchedulerDiagnostics* diagnostics) :
+        config(config),
+        diagnostics(diagnostics ? diagnostics : &nullDiagnostics),
+        diagnosticsActive(this->diagnostics->enabled()) {
+    this->state.historyWarmup.remaining = adaptiveHistoryWarmupFrames;
+    if (this->config.targetFps < ls::GameConfLimits::minimumTargetFps ||
+            this->config.targetFps > ls::GameConfLimits::maximumTargetFps) {
+        throw std::invalid_argument(
+            "Adaptive target FPS must be between " + std::to_string(
+                ls::GameConfLimits::minimumTargetFps
+            ) + " and " + std::to_string(
+                ls::GameConfLimits::maximumTargetFps
+            )
+        );
+    }
+    if (this->config.dynamicCadenceProbeInterval <
+                ls::dynamicCadenceProbeIntervalDuration(
+                    ls::GameConfLimits::minimumDynamicCadenceProbeIntervalSeconds
+                ) ||
+            this->config.dynamicCadenceProbeInterval >
+                ls::dynamicCadenceProbeIntervalDuration(
+                    ls::GameConfLimits::maximumDynamicCadenceProbeIntervalSeconds
+                )) {
+        throw std::invalid_argument(
+            "Dynamic cadence probe interval is outside the accepted range"
+        );
+    }
+    if (this->config.maximumMultiplier <
+            ls::GameConfLimits::minimumAdaptiveMaxMultiplier ||
+            this->config.maximumMultiplier >
+                ls::GameConfLimits::maximumAdaptiveMaxMultiplier) {
+        throw std::invalid_argument(
+            "Adaptive maximum multiplier must be between " + std::to_string(
+                ls::GameConfLimits::minimumAdaptiveMaxMultiplier
+            ) + " and " + std::to_string(
+                ls::GameConfLimits::maximumAdaptiveMaxMultiplier
+            )
+        );
+    }
+    if (this->config.generatedFrameCapacity > GeneratedFramePlan::capacity) {
+        throw std::invalid_argument(
+            "Adaptive generated-frame capacity exceeds plan capacity"
+        );
+    }
+}
+
+void AdaptiveScheduler::requestHeadroomRecovery(const TimePoint now, const double restoredSourceFps) {
+    const auto retainedLimit = this->validatedGenerationLimit();
+    if (this->config.recoveryPolicy == AdaptiveRecoveryPolicy::OrderedSdr &&
+            retainedLimit > 1 && std::isfinite(restoredSourceFps) && restoredSourceFps > 0 &&
+            !this->state.efficiencyProbe.evaluationAt) {
+        // The old uncapped source rate selects a candidate, never acceptance.
+        // This can test 2x directly after a 5x episode; delivery still has to
+        // prove the target rather than retaining several lower-rung delays.
+        const double candidate = std::ceil(static_cast<double>(this->config.targetFps) *
+            adaptiveEfficiencyProbeMinimumTargetRatio / restoredSourceFps) - 1.0;
+        // A ceiling measured in the old heavy scene can underestimate the
+        // recovered source. Still allow one adjacent trial in that case;
+        // current sustained delivery, not the old ceiling, decides acceptance.
+        this->state.efficiencyProbe.headroomTestLimit = static_cast<size_t>(
+            std::clamp(candidate, 1.0, static_cast<double>(retainedLimit - 1)));
+        this->state.efficiencyProbe.headroomRequestUntil = now + std::chrono::seconds(2);
+    }
+}
+
+void AdaptiveScheduler::updateDynamicCadenceProbeInterval(
+        const TimePoint now, const std::chrono::milliseconds interval) {
+    if (interval < ls::dynamicCadenceProbeIntervalDuration(
+                ls::GameConfLimits::minimumDynamicCadenceProbeIntervalSeconds) ||
+            interval > ls::dynamicCadenceProbeIntervalDuration(
+                ls::GameConfLimits::maximumDynamicCadenceProbeIntervalSeconds)) {
+        throw std::invalid_argument(
+            "Dynamic cadence probe interval is outside the accepted range"
+        );
+    }
+
+    this->config.dynamicCadenceProbeInterval = interval;
+    auto& probe = this->state.nativeCadenceProbe;
+    if (!probe.active && probe.nextAt)
+        probe.nextAt = now + interval;
+}
+
+void AdaptiveScheduler::beginHistoryWarmup(const size_t frames,
+        const bool recovery) {
+    this->state.historyWarmup.remaining = frames;
+    this->state.historyWarmup.recovery = recovery && frames > 0;
+}
+
+void AdaptiveScheduler::ensureHistoryWarmup(const size_t frames,
+        const bool recovery) {
+    if (this->state.historyWarmup.remaining > 0)
+        return;
+    this->beginHistoryWarmup(frames, recovery);
+}
+
+void AdaptiveScheduler::cancelHistoryWarmup() {
+    this->state.historyWarmup.remaining = 0;
+    this->state.historyWarmup.recovery = false;
+}
+
+void AdaptiveScheduler::consumeHistoryWarmupFrame(const TimePoint frameStarted) {
+    if (this->state.historyWarmup.remaining == 0)
+        return;
+
+    this->state.historyWarmup.remaining--;
+    if (this->state.historyWarmup.remaining == 0)
+        this->state.historyWarmup.recovery = false;
+    this->resetTiming(frameStarted);
+}
+
+void AdaptiveScheduler::reportGeneratedFrameDelivery(
+        const GeneratedFrameDelivery delivery) {
+    if (this->state.ramp.evaluationAt)
+        this->state.ramp.targetDeliveryReports++;
+    auto& efficiency = this->state.efficiencyProbe;
+    if (efficiency.sampling) {
+        efficiency.sampleComplete = efficiency.sampleComplete &&
+            !efficiency.deliveryObserved &&
+            delivery.requested == efficiency.testedLimit &&
+            delivery.acceptedForPresentation == efficiency.testedLimit;
+        efficiency.deliveryObserved = true;
+    }
+    auto& rescue = this->state.rescue;
+    if (rescue.verificationUntil && rescue.pendingGeneratedFrames > 0) {
+        rescue.deliveryHealthy = rescue.deliveryHealthy &&
+            delivery.requested == rescue.pendingGeneratedFrames &&
+            delivery.acceptedForPresentation == rescue.pendingGeneratedFrames;
+        rescue.deliveredGeneratedFrames += std::min(
+            delivery.acceptedForPresentation, rescue.pendingGeneratedFrames);
+        rescue.pendingGeneratedFrames = 0;
+    }
+    auto& pacedLoad = this->state.ramp.pacedLoad;
+    if (pacedLoad.until) {
+        pacedLoad.deliveryObserved = delivery.requested > 0 &&
+            delivery.acceptedForPresentation == delivery.requested;
+        pacedLoad.deliveredOutputs = delivery.acceptedForPresentation + 1;
+    }
+    auto& lowerLoad = this->state.ramp.lowerLoadSample;
+    if (lowerLoad.since) {
+        if (delivery.requested > 0 &&
+                delivery.acceptedForPresentation >= delivery.requested) {
+            lowerLoad.deliveryObserved = true;
+        } else if (delivery.requested != 0 ||
+                !this->state.nativeCadenceProbe.active) {
+            lowerLoad.reset();
+        }
+    }
+    if (delivery.requested == 0)
+        return;
+    if (this->state.ramp.evaluationAt) {
+        this->state.ramp.delivery.record(delivery);
+    }
+    if (this->state.stableCadence.evaluationAt) {
+        this->state.stableCadence.delivery.record(delivery);
+    }
+    if (this->state.efficiencyProbe.evaluationAt) {
+        this->state.efficiencyProbe.delivery.record(delivery);
+    }
+}
+
+AdaptiveSchedulerSnapshot AdaptiveScheduler::snapshot() const {
+    AdaptiveSchedulerPhase phase = AdaptiveSchedulerPhase::Active;
+    if (this->state.historyWarmup.remaining > 0) {
+        phase = AdaptiveSchedulerPhase::HistoryWarmup;
+    } else if (!this->state.cadence.lastRealFrame) {
+        phase = AdaptiveSchedulerPhase::Uninitialized;
+    } else if (this->state.discontinuityRecovery.deadline) {
+        phase = AdaptiveSchedulerPhase::DiscontinuityRecovery;
+    } else if (this->state.rescue.until) {
+        phase = AdaptiveSchedulerPhase::RescueMeasurement;
+    } else if (this->state.stabilization.until) {
+        phase = AdaptiveSchedulerPhase::Stabilizing;
+    } else if (this->state.rearm.required) {
+        phase = AdaptiveSchedulerPhase::RearmCooldown;
+    } else if (this->state.ramp.evaluationAt) {
+        phase = AdaptiveSchedulerPhase::RampEvaluation;
+    } else if (this->state.nativeCadenceProbe.active) {
+        phase = AdaptiveSchedulerPhase::NativeCadenceProbe;
+    } else if (this->state.stableCadence.limit) {
+        phase = AdaptiveSchedulerPhase::StableCadence;
+    } else if (this->state.nearTargetNativePreference.active) {
+        phase = AdaptiveSchedulerPhase::NearTargetNative;
+    }
+
+    return {
+        .phase = phase,
+        .generationLimit = this->state.outputPlanner.generationLimit,
+        .validatedGenerationLimit = this->validatedGenerationLimit(),
+        .stableCadenceLimit = this->state.stableCadence.limit,
+        .stableCadenceEvaluationActive =
+            this->state.stableCadence.evaluationAt.has_value(),
+        .historyWarmupRemaining = this->state.historyWarmup.remaining,
+        .smoothedBaseFps = this->state.cadence.smoothedIntervalSeconds > 0.0
+            ? 1.0 / this->state.cadence.smoothedIntervalSeconds
+            : 0.0,
+        .rampEvaluationActive = this->state.ramp.evaluationAt.has_value(),
+        .pacedLoadValidationPending =
+            this->state.ramp.pacedLoad.until.has_value(),
+        .pacedLoadRollbackGenerationLimit =
+            this->state.ramp.pacedLoadRollbackLimit,
+        .efficiencyProbeGenerationLimit =
+            this->state.efficiencyProbe.evaluationAt
+                ? std::optional<size_t>{
+                    this->state.efficiencyProbe.testedLimit
+                }
+                : std::nullopt,
+        .rearmRequired = this->state.rearm.required,
+        .discontinuityRecoveryActive =
+            this->state.discontinuityRecovery.deadline.has_value(),
+        .nativeCadenceProbeActive = this->state.nativeCadenceProbe.active,
+        .nearTargetNativePreference =
+            this->state.nearTargetNativePreference.active,
+        .automaticBaseCapSuppressed =
+            this->state.automaticBaseCap.suppressed,
+        .targetOutputClockActive =
+            this->state.outputPlanner.targetClockActive,
+        .targetOutputBudgetCreditOutputs =
+            this->state.outputPlanner.budgetCreditOutputs,
+        .targetOutputPhaseErrorOutputs =
+            this->state.outputPlanner.targetPhaseErrorOutputs,
+        .targetOutputDeferredBudgetOutput =
+            this->state.outputPlanner.deferredBudgetOutput,
+    };
+}
+
+void AdaptiveScheduler::suppressAutomaticBaseCap(
+        const size_t generationLimit, const double baselineBaseFps,
+        const double currentBaseFps, const std::string_view reason) {
+    if (this->state.automaticBaseCap.suppressed)
+        return;
+
+    this->state.automaticBaseCap.suppressed = true;
+    this->diagnostics->automaticBaseCapSuppressed(
+        generationLimit, baselineBaseFps, currentBaseFps, reason
+    );
+}
+
+void AdaptiveScheduler::startRescueMeasurement(
+        const TimePoint now, const size_t generationLimit,
+        const double baselineBaseFps, const double currentBaseFps) {
+    this->cancelPacedLoadValidation("native-rescue-started");
+    this->state.ramp.resetPacingObservation();
+    auto& rescue = this->state.rescue;
+    rescue.resetAttempt();
+    rescue.previousLimit = generationLimit;
+    rescue.baselineBaseFps = baselineBaseFps;
+    rescue.collapsedBaseFps = currentBaseFps;
+    if (this->config.recoveryPolicy == AdaptiveRecoveryPolicy::OrderedSdr &&
+            this->config.automaticBaseFpsCap) {
+        this->suppressAutomaticBaseCap(generationLimit, baselineBaseFps,
+            currentBaseFps, "stable-cadence-collapse");
+    }
+    rescue.until = now + adaptiveRescueMeasurementDuration;
+    rescue.cooldownUntil = now + adaptiveRescueCooldown;
+    this->state.ramp.targetDeficitSince.reset();
+    this->state.outputPlanner.resetTargetClock();
+    this->diagnostics->rescueStart(generationLimit, baselineBaseFps,
+        currentBaseFps, currentBaseFps * static_cast<double>(generationLimit + 1));
+}
+
+void AdaptiveScheduler::restoreRescueAutomaticBaseCap(const std::string_view reason) {
+    auto& rescue = this->state.rescue;
+    if (this->state.automaticBaseCap.suppressed) {
+        this->state.automaticBaseCap.suppressed = false;
+        this->diagnostics->automaticBaseCapRestored(rescue.previousLimit,
+            rescue.baselineBaseFps, rescue.measuredBaseFps(), reason);
+        this->state.outputPlanner.resetTargetClock();
+    }
+}
+
+void AdaptiveScheduler::cancelRescueMeasurement(const std::string_view reason) {
+    auto& rescue = this->state.rescue;
+    this->restoreRescueAutomaticBaseCap(reason);
+    if (rescue.verificationUntil) {
+        this->diagnostics->rescueComplete(rescue.previousLimit,
+            this->state.outputPlanner.generationLimit,
+            rescue.previousLimit, this->configuredGenerationLimit(),
+            rescue.baselineBaseFps, rescue.measuredBaseFps(), reason);
+    }
+    rescue.resetAttempt();
+}
+
+size_t AdaptiveScheduler::configuredGenerationLimit() const {
+    if (this->config.maximumMultiplier <
+            ls::GameConfLimits::minimumAdaptiveMaxMultiplier) {
+        return 0;
+    }
+    return std::min(
+        this->config.generatedFrameCapacity,
+        this->config.maximumMultiplier - 1
+    );
+}
+
+FGVK_ADAPTIVE_STAGE_INLINE AdaptiveScheduler::CadenceObservation
+AdaptiveScheduler::observeCadence(
+        const std::chrono::steady_clock::time_point now,
+        const bool generatedImageAcquireBackoff) {
+    if (generatedImageAcquireBackoff) {
+        this->cancelPacedLoadValidation("generated-acquire-backoff");
+        this->state.ramp.resetPacingObservation();
+        this->cancelRescueMeasurement("generated-acquire-backoff");
+        // Keep probing for one generated-image slot without advancing ramp,
+        // stable-cadence, or load-shed policy while the generated workload is
+        // deliberately bypassed. Evaluating a multiplier during this phase
+        // would measure only the real-frame path and could falsely accept it.
+        // Pressure belongs to the compositor admission path, not the game's
+        // cadence. Keep the real-frame clock current so clearing pressure does
+        // not manufacture a cadence stall from the bypass interval.
+        if (this->state.cadence.lastRealFrame) {
+            const auto bypassDuration = now - *this->state.cadence.lastRealFrame;
+            if (this->state.efficiencyProbe.eligibleSince)
+                *this->state.efficiencyProbe.eligibleSince += bypassDuration;
+            if (this->state.efficiencyProbe.evaluationAt)
+                *this->state.efficiencyProbe.evaluationAt += bypassDuration;
+        }
+        this->state.cadence.lastRealFrame = now;
+        this->state.cadence.dropFrames = 0;
+        this->state.outputPlanner.resetTargetClock();
+        auto& nativeProbe = this->state.nativeCadenceProbe;
+        auto& preference = this->state.nearTargetNativePreference;
+        if (nativeProbe.active || preference.nativeBaseFps || preference.nativeSampleFrames) {
+            // The transport now requests one generated image. Native samples
+            // on either side are no longer consecutive native-only evidence.
+            // Preserve accepted policy, but restart this optional measurement.
+            nativeProbe.reset();
+            nativeProbe.nextAt = now + this->config.dynamicCadenceProbeInterval;
+            preference.resetCandidate();
+            preference.resetNativeSample();
+        }
+        return {
+            .terminalPlan = AdaptiveFramePlan::evenlySpaced(1),
+        };
+    }
+
+    if (!this->state.cadence.lastRealFrame) {
+        this->state.cadence.lastRealFrame = now;
+        return {};
+    }
+
+    const auto rawInterval = now - *this->state.cadence.lastRealFrame;
+    const double rawIntervalSeconds = std::chrono::duration<double>(
+        rawInterval
+    ).count();
+    this->state.cadence.lastRealFrame = now;
+
+    const auto finishFastCadenceBurst = [&] {
+        if (!this->state.fastBurst.startedAt)
+            return;
+
+        this->diagnostics->fastCadenceBurstComplete(
+            this->state.fastBurst.frames,
+            now - *this->state.fastBurst.startedAt
+        );
+        this->state.fastBurst.startedAt.reset();
+        this->state.fastBurst.lastDiagnosticAt.reset();
+        this->state.fastBurst.frames = 0;
+        this->state.fastBurst.framesSinceDiagnostic = 0;
+    };
+
+    // Loading screens, suspension and base rates below 10 FPS do not provide
+    // useful motion history. Present real frames until cadence has been stable
+    // for a bounded interval instead of immediately reapplying model load.
+    if (rawIntervalSeconds <= 0.0) {
+        finishFastCadenceBurst();
+        if (this->config.recoveryPolicy == AdaptiveRecoveryPolicy::OrderedSdr) {
+            if (this->state.cadence.sdrStallBypass) {
+                this->state.cadence.sdrResumeFrames = 0;
+                this->state.outputPlanner.resetTargetClock();
+                return {};
+            }
+            this->beginCadenceRefresh(now, "cadence-stall");
+            return {};
+        }
+        this->beginStabilization(now, "cadence-stall");
+        return {};
+    }
+
+    const double baselineBaseFps = this->state.cadence.smoothedIntervalSeconds > 0.0
+        ? 1.0 / this->state.cadence.smoothedIntervalSeconds
+        : 0.0;
+    const double instantaneousBaseFps = 1.0 / rawIntervalSeconds;
+    auto& nativePreference = this->state.nearTargetNativePreference;
+    if (this->state.nativeCadenceProbe.qualifyingNearTarget ||
+            (nativePreference.active &&
+             (nativePreference.nativeBaseFps || nativePreference.nativeSampleFrames))) {
+        nativePreference.nativeSampleSeconds += rawIntervalSeconds;
+        nativePreference.nativeSampleFrames++;
+        if (nativePreference.nativeSampleSeconds >= adaptivePacedLoadWindowSeconds) {
+            nativePreference.nativeBaseFps =
+                static_cast<double>(nativePreference.nativeSampleFrames) /
+                    nativePreference.nativeSampleSeconds;
+            nativePreference.nativeSampleSeconds = 0.0;
+            nativePreference.nativeSampleFrames = 0;
+        }
+    } else if (nativePreference.nativeBaseFps || nativePreference.nativeSampleFrames) {
+        nativePreference.resetNativeSample();
+    }
+    const double fastBurstThresholdFps = std::max(
+        baselineBaseFps * adaptiveTransientFastBurstCadenceRatio,
+        static_cast<double>(this->config.targetFps) *
+            adaptiveTransientFastBurstTargetRatio
+    );
+    if (instantaneousBaseFps > fastBurstThresholdFps) {
+        auto& paced = this->state.ramp.pacedLoad;
+        // Releasing the higher cap/FIFO for our lower-load probe can drain a
+        // queued app return. This interval is already outside the measurement
+        // window: keep the bounded turnover, not an immediately retried probe.
+        // Do not extend settling or accept this native-only burst as evidence.
+        const bool lowerProbeTurnover = paced.lowerLoadProbe &&
+            paced.settlingUntil && now <= *paced.settlingUntil;
+        if (lowerProbeTurnover) {
+            paced.discardTurnoverInterval = true;
+        } else {
+            this->cancelPacedLoadValidation("fast-cadence-burst");
+            this->state.ramp.resetPacingObservation();
+        }
+        // This native-only interval is untrusted cadence evidence, but it can
+        // finish draining the captured presentation horizon. The next whole
+        // interval is then measurable instead of needlessly discarded too.
+        auto& nativeProbe = this->state.nativeCadenceProbe;
+        if (nativeProbe.active && nativeProbe.drainUntil &&
+                now >= *nativeProbe.drainUntil)
+            nativeProbe.drainUntil.reset();
+        // Do not manufacture generated work for a transient that is already
+        // faster than the requested output. Preserve the proven gameplay
+        // baseline and pause evaluation windows which require real generated
+        // workload instead of letting wall-clock time validate an untested
+        // multiplier while DX12 is submitting the burst.
+        if (!this->state.fastBurst.startedAt)
+            this->state.fastBurst.startedAt = now;
+        this->state.fastBurst.frames++;
+        this->state.fastBurst.framesSinceDiagnostic++;
+
+        const auto pauseEvaluation = [&rawInterval](auto& deadline) {
+            if (deadline)
+                *deadline += rawInterval;
+        };
+        pauseEvaluation(this->state.stabilization.until);
+        pauseEvaluation(this->state.ramp.evaluationAt);
+        pauseEvaluation(this->state.stableCadence.evaluationAt);
+        pauseEvaluation(this->state.efficiencyProbe.eligibleSince);
+        pauseEvaluation(this->state.efficiencyProbe.evaluationAt);
+        this->cancelRescueMeasurement("fast-cadence-burst");
+
+        this->state.outputPlanner.resetTargetClock();
+        this->state.cadence.dropFrames = 0;
+        this->state.ramp.targetDeficitSince.reset();
+        this->state.rearm.stableSince.reset();
+        this->state.stableCadence.outsideRangeSince.reset();
+        this->state.discontinuityRecovery.stableSince.reset();
+        if (this->state.cadence.sdrStallBypass)
+            this->state.cadence.sdrResumeFrames = 0;
+
+        if (!this->state.fastBurst.lastDiagnosticAt ||
+                now - *this->state.fastBurst.lastDiagnosticAt >=
+                    adaptiveFastBurstDiagnosticInterval) {
+            this->diagnostics->fastCadenceBurst(
+                baselineBaseFps,
+                instantaneousBaseFps,
+                fastBurstThresholdFps,
+                this->state.fastBurst.framesSinceDiagnostic,
+                this->state.fastBurst.frames,
+                now - *this->state.fastBurst.startedAt
+            );
+            this->state.fastBurst.lastDiagnosticAt = now;
+            this->state.fastBurst.framesSinceDiagnostic = 0;
+        }
+        return {};
+    }
+    finishFastCadenceBurst();
+
+    if (rawIntervalSeconds > 1.0 / adaptiveMinimumBaseFps) {
+        if (this->config.recoveryPolicy == AdaptiveRecoveryPolicy::OrderedSdr) {
+            if (this->state.cadence.sdrStallBypass) {
+                // The initial refresh already left the backend receiving a
+                // history-only update for every real frame. Repeating that
+                // two-frame warm-up while a game is temporarily below the
+                // useful cadence threshold turns one stall into a visible
+                // recovery loop. Keep the real frames flowing until timing is
+                // viable again, then re-establish the normal policy below.
+                this->state.cadence.smoothedIntervalSeconds = rawIntervalSeconds;
+                this->state.cadence.dropFrames = 0;
+                this->state.outputPlanner.resetTargetClock();
+                this->state.cadence.sdrResumeFrames = 0;
+                return {};
+            }
+            this->beginCadenceRefresh(now, "cadence-stall");
+            return {};
+        }
+
+        this->beginStabilization(now, "cadence-stall");
+        return {};
+    }
+
+    if (this->state.cadence.sdrStallBypass) {
+        // A cadence hovering around the 10-FPS stall boundary is not a real
+        // recovery. Require a small run above a separate resume threshold so
+        // one short interval cannot resume generation and immediately start
+        // another history refresh on the next long interval.
+        this->state.cadence.smoothedIntervalSeconds = rawIntervalSeconds;
+        this->state.cadence.dropFrames = 0;
+        this->state.outputPlanner.resetTargetClock();
+        if (instantaneousBaseFps < adaptiveSdrCadenceResumeBaseFps) {
+            this->state.cadence.sdrResumeFrames = 0;
+            return {};
+        }
+
+        this->state.cadence.sdrResumeFrames++;
+        if (this->state.cadence.sdrResumeFrames <
+                adaptiveSdrCadenceResumeFrameCount) {
+            return {};
+        }
+
+        // Discard the pre-stall estimate. The confirmed recovered cadence is
+        // now the baseline, so a recovered 60-FPS game cannot be mistaken for
+        // a fresh cadence drop.
+        this->state.cadence.sdrStallBypass = false;
+        this->state.cadence.sdrResumeFrames = 0;
+    }
+
+    // A sustained interval jump can be a menu/focus transition, but it can
+    // also be a legitimate heavier gameplay scene. Three samples avoid
+    // treating an isolated hitch as a cadence change. Unlike a hard stall,
+    // this path performs only the ordinary one-second stabilization and then
+    // rebases Adaptive at the new measured rate.
+    const bool cadenceDropCandidate =
+        this->state.cadence.smoothedIntervalSeconds > 0.0 &&
+            rawIntervalSeconds >=
+                this->state.cadence.smoothedIntervalSeconds * adaptiveCadenceDropRatio;
+    if (cadenceDropCandidate) {
+        this->state.rearm.stableSince.reset();
+        if (this->state.cadence.dropFrames == 0)
+            this->state.cadence.pendingDropIntervalSeconds =
+                this->state.cadence.smoothedIntervalSeconds;
+        this->state.cadence.pendingDropIntervalSeconds =
+            (1.0 - adaptiveIntervalSmoothing) *
+                this->state.cadence.pendingDropIntervalSeconds +
+            adaptiveIntervalSmoothing * rawIntervalSeconds;
+        this->state.cadence.dropFrames++;
+    } else {
+        if (this->state.cadence.dropFrames > 0)
+            this->state.cadence.smoothedIntervalSeconds =
+                this->state.cadence.pendingDropIntervalSeconds;
+        this->state.cadence.dropFrames = 0;
+    }
+    if (this->state.cadence.dropFrames >= adaptiveCadenceDropFrameCount) {
+        if (this->config.recoveryPolicy == AdaptiveRecoveryPolicy::OrderedSdr) {
+            this->beginCadenceRefresh(now, "cadence-drop");
+            return {};
+        }
+        this->beginStabilization(now, "cadence-drop");
+        return {};
+    }
+
+    if (this->state.cadence.smoothedIntervalSeconds == 0.0) {
+        this->state.cadence.smoothedIntervalSeconds = rawIntervalSeconds;
+    } else if (!cadenceDropCandidate) {
+        // Keep the pre-disruption baseline while confirming a sustained drop.
+        // Otherwise smoothing the first slow samples raises the comparison
+        // threshold and can hide the third confirming frame. A rejected drop
+        // restores the shadow estimate above before adding this next sample.
+        this->state.cadence.smoothedIntervalSeconds =
+            (1.0 - adaptiveIntervalSmoothing) * this->state.cadence.smoothedIntervalSeconds +
+            adaptiveIntervalSmoothing * rawIntervalSeconds;
+    }
+
+    return {
+        .planningReady = true,
+        .baseFps = 1.0 / this->state.cadence.smoothedIntervalSeconds,
+        .instantaneousBaseFps = instantaneousBaseFps,
+        .rawIntervalSeconds = rawIntervalSeconds,
+    };
+}
+
+FGVK_ADAPTIVE_STAGE_INLINE AdaptiveScheduler::PlanningStageResult
+AdaptiveScheduler::advanceDiscontinuityRecovery(
+        const TimePoint now, const double baseFps) {
+    if (this->state.discontinuityRecovery.deadline) {
+        const size_t recoveryLimit = this->state.discontinuityRecovery.generationLimit;
+        const size_t recoveryFallbackLimit =
+            this->state.discontinuityRecovery.fallbackGenerationLimit;
+        const double recoveryBaselineBaseFps =
+            this->state.discontinuityRecovery.baselineBaseFps;
+        const bool initialStabilizationComplete =
+            !this->state.stabilization.until ||
+            now >= *this->state.stabilization.until;
+        const bool baseRecovered = recoveryBaselineBaseFps > 0.0 &&
+            baseFps >= recoveryBaselineBaseFps *
+                adaptiveDiscontinuityRecoveredBaseRatio;
+
+        if (baseRecovered) {
+            if (!this->state.discontinuityRecovery.stableSince)
+                this->state.discontinuityRecovery.stableSince = now;
+        } else {
+            this->state.discontinuityRecovery.stableSince.reset();
+        }
+
+        const bool recoveredCadenceStable = initialStabilizationComplete &&
+            this->state.discontinuityRecovery.stableSince &&
+            now - *this->state.discontinuityRecovery.stableSince >=
+                adaptiveDiscontinuityStableDuration;
+        const bool recoveryExpired =
+            now >= *this->state.discontinuityRecovery.deadline;
+
+        if (recoveredCadenceStable || recoveryExpired) {
+            const std::string_view decision = recoveredCadenceStable
+                ? "restore-validated-level"
+                : "timeout-ramp-from-zero";
+            this->state.discontinuityRecovery.reset();
+            this->state.stabilization.until.reset();
+            this->state.outputPlanner.resetTargetClock();
+            if (recoveredCadenceStable) {
+                this->restoreGenerationLimit(
+                    now,
+                    recoveryLimit,
+                    "cadence-discontinuity",
+                    recoveryFallbackLimit,
+                    baseFps
+                );
+                if (this->config.stableCadence) {
+                    this->state.stableCadence.retryAt =
+                        now + adaptiveStableCadenceStrictSettlingDuration;
+                }
+            } else {
+                this->state.outputPlanner.generationLimit = 0;
+                this->state.ramp.evaluationAt.reset();
+                this->state.ramp.targetDeficitSince.reset();
+                this->state.rearm.required = false;
+                this->state.rearm.notBefore.reset();
+                this->state.rearm.stableSince.reset();
+                this->state.rearm.reason.clear();
+                this->state.rearm.baselineBaseFps = 0.0;
+                this->state.rearm.fallbackLimit = 0;
+                this->state.rearm.consecutiveProbeFailures = 0;
+                this->state.ramp.lastFailedLimit = 0;
+                this->state.ramp.consecutiveFailures = 0;
+                this->state.ramp.failedBaselineBaseFps = 0.0;
+                this->state.ramp.nextAt = now + adaptiveRampStepDelay;
+            }
+            this->diagnostics->discontinuityRecoveryComplete(
+                recoveryLimit,
+                recoveryBaselineBaseFps,
+                baseFps,
+                decision
+            );
+            // Keep this transition frame real-only. The restored or freshly
+            // ramped policy starts on the following real frame.
+            return {};
+        }
+
+        this->state.outputPlanner.resetTargetClock();
+        if (this->diagnosticsActive &&
+                (!this->state.diagnosticThrottle.lastPlanAt ||
+                 now - *this->state.diagnosticThrottle.lastPlanAt >=
+                    adaptivePlanDiagnosticInterval)) {
+            this->state.diagnosticThrottle.lastPlanAt = now;
+            AdaptivePlanDiagnostic plan;
+            plan.baseFps = baseFps;
+            plan.targetFps = this->config.targetFps;
+            plan.phase = "discontinuity-recovery";
+            plan.recoveryGenerationLimit = recoveryLimit;
+            this->diagnostics->plan(plan);
+        }
+        return {};
+    }
+
+    return {.planningReady = true};
+}
+
+FGVK_ADAPTIVE_STAGE_INLINE AdaptiveScheduler::PlanningStageResult
+AdaptiveScheduler::advanceRescueMeasurement(
+        const TimePoint now, const double baseFps,
+        const double rawIntervalSeconds) {
+    auto& rescue = this->state.rescue;
+    if (rescue.watchUntil) {
+        if (this->state.stableCadence.limit ||
+                this->state.ramp.evaluationAt ||
+                this->state.efficiencyProbe.evaluationAt ||
+                this->state.nativeCadenceProbe.active ||
+                this->state.rearm.required ||
+                this->state.outputPlanner.generationLimit !=
+                    rescue.previousLimit) {
+            rescue.resetAttempt();
+        } else {
+            rescue.observe(rawIntervalSeconds);
+            const double measuredFps = rescue.measuredBaseFps();
+            if (rescue.sampleSeconds >= 1.0 &&
+                    measuredFps <= rescue.baselineBaseFps *
+                        adaptiveRescueBaseCollapseRatio &&
+                    measuredFps * static_cast<double>(rescue.previousLimit + 1)
+                        <= static_cast<double>(this->config.targetFps) *
+                            adaptiveRescueOutputCollapseRatio) {
+                this->startRescueMeasurement(now, rescue.previousLimit,
+                    rescue.baselineBaseFps, measuredFps);
+            } else if (now >= *rescue.watchUntil) {
+                rescue.resetAttempt();
+            }
+        }
+    }
+    if (rescue.verificationUntil) {
+        if (rescue.pendingGeneratedFrames > 0) {
+            rescue.deliveryHealthy = false;
+            rescue.pendingGeneratedFrames = 0;
+        }
+        rescue.observe(rawIntervalSeconds);
+        if (now >= *rescue.verificationUntil) {
+            // Both the cap and generated workload have already returned.
+            // Judge recovery under the user's policy, never use improved
+            // source cadence to authorize an indefinite cap override.
+            const bool improvementSurvived = rescue.sampleFrames >= 8 &&
+                rescue.deliveryHealthy && rescue.deliveredGeneratedFrames > 0 &&
+                rescue.measuredBaseFps() >= rescue.baselineBaseFps *
+                    adaptiveRescueRecoveredBaseRatio &&
+                rescue.measuredBaseFps() >= rescue.collapsedBaseFps *
+                    adaptiveNativeCadenceMinimumRiseRatio;
+            this->diagnostics->rescueComplete(rescue.previousLimit,
+                this->state.outputPlanner.generationLimit,
+                rescue.previousLimit, this->configuredGenerationLimit(),
+                rescue.baselineBaseFps, rescue.measuredBaseFps(),
+                improvementSurvived ? "restored-policy-recovered"
+                    : "restored-policy-not-recovered");
+            rescue.resetAttempt();
+        }
+    }
+    if (this->state.rescue.until) {
+        rescue.observe(rawIntervalSeconds);
+        if (now < *this->state.rescue.until) {
+            this->state.outputPlanner.resetTargetClock();
+            if (this->diagnosticsActive &&
+                    (!this->state.diagnosticThrottle.lastPlanAt ||
+                     now - *this->state.diagnosticThrottle.lastPlanAt >=
+                        adaptivePlanDiagnosticInterval)) {
+                this->state.diagnosticThrottle.lastPlanAt = now;
+                AdaptivePlanDiagnostic plan;
+                plan.baseFps = baseFps;
+                plan.targetFps = this->config.targetFps;
+                plan.phase = "rescue";
+                this->diagnostics->plan(plan);
+            }
+            return {};
+        }
+
+        const size_t configuredLimit = std::min(
+            this->config.generatedFrameCapacity,
+            this->config.maximumMultiplier - 1
+        );
+        const size_t previousLimit = std::min(
+            this->state.rescue.previousLimit, configuredLimit
+        );
+        const double rescueBaselineBaseFps =
+            this->state.rescue.baselineBaseFps;
+        const size_t requiredOutputs = std::max<size_t>(
+            1,
+            static_cast<size_t>(std::ceil(
+                static_cast<double>(this->config.targetFps) / baseFps - 1e-9
+            ))
+        );
+        const size_t requiredLimit = requiredOutputs - 1;
+        const size_t requestedLimit = std::min(requiredLimit, configuredLimit);
+        const double measuredBaseFps = rescue.measuredBaseFps();
+        const bool baseRecovered = rescue.sampleFrames >= 8 &&
+            rescueBaselineBaseFps > 0.0 &&
+            measuredBaseFps >= rescueBaselineBaseFps *
+                adaptiveRescueRecoveredBaseRatio;
+        std::string_view decision = "resume-strict";
+        this->state.outputPlanner.generationLimit = previousLimit;
+        this->state.ramp.evaluationAt.reset();
+        this->state.ramp.nextAt.reset();
+        if (baseRecovered) {
+            decision = "recovered-strict";
+        } else if (requestedLimit > previousLimit) {
+            // updateGenerationLimit() below will probe only the next
+            // allowed level and apply its existing throughput checks.
+            this->state.ramp.nextAt = now;
+            decision = "probe-higher-limit";
+        } else if (requiredLimit > configuredLimit) {
+            decision = "ceiling-limited";
+        }
+        if (this->state.automaticBaseCap.suppressed) {
+            this->restoreRescueAutomaticBaseCap("rescue-measurement-complete");
+            rescue.verificationUntil = now + adaptiveRescueMeasurementDuration;
+            // Verify the previous workload with its configured cap before
+            // ordinary Adaptive scene adaptation may try another workload.
+            this->state.ramp.nextAt = rescue.verificationUntil;
+            rescue.resetSamples();
+            decision = "verify-restored-policy";
+        } else {
+            rescue.resetAttempt();
+        }
+        rescue.until.reset();
+        this->state.ramp.targetDeficitSince.reset();
+        this->state.outputPlanner.resetTargetClock();
+        if (this->state.rescue.cooldownUntil)
+            this->state.stableCadence.retryAt = this->state.rescue.cooldownUntil;
+        this->diagnostics->rescueComplete(
+            previousLimit,
+            this->state.outputPlanner.generationLimit,
+            requestedLimit,
+            configuredLimit,
+            rescueBaselineBaseFps,
+            measuredBaseFps,
+            decision
+        );
+    }
+
+    return {.planningReady = true};
+}
+
+FGVK_ADAPTIVE_STAGE_INLINE AdaptiveScheduler::PlanningStageResult
+AdaptiveScheduler::advanceStableCadence(
+        const TimePoint now, const double baseFps,
+        const double desiredOutputsPerRealFrame,
+        const size_t maximumGeneratedFrameCount) {
+    // A downward efficiency probe deliberately runs one cheaper constant
+    // cadence while retaining the previously qualified policy for immediate
+    // rollback. The fresh applied-pacing comparison also owns both delivery
+    // samples; a new cadence trial would prevent its planned FIFO release.
+    // Do not disable or requalify Smooth Cadence during either comparison.
+    if (this->state.efficiencyProbe.evaluationAt ||
+            (this->state.ramp.pacedLoad.until &&
+             this->state.ramp.pacedLoad.refreshBaseline))
+        return {.planningReady = true};
+
+    struct StableCadenceCandidate {
+        size_t generatedFrames{0};
+        bool convergenceProbe{false};
+    };
+    const auto stableCadenceCandidate =
+            [&]() -> std::optional<StableCadenceCandidate> {
+        if (!this->config.stableCadence)
+            return std::nullopt;
+        if (desiredOutputsPerRealFrame <= 1.0)
+            return std::nullopt;
+
+        const double minimumUsefulOutputFps =
+            static_cast<double>(this->config.targetFps) *
+                adaptiveStableCadenceMinimumQualificationTargetRatio;
+        const size_t candidateOutputs = static_cast<size_t>(std::ceil(
+            minimumUsefulOutputFps / baseFps - 1e-9
+        ));
+        if (candidateOutputs <= 1)
+            return std::nullopt;
+
+        const size_t candidateGenerated = candidateOutputs - 1;
+        if (candidateGenerated > maximumGeneratedFrameCount)
+            return std::nullopt;
+
+        const double cadenceDemandRatio =
+            desiredOutputsPerRealFrame /
+                static_cast<double>(candidateOutputs);
+        const bool normalCandidate = cadenceDemandRatio >=
+            adaptiveStableCadenceMinimumDemandRatio;
+        const bool twoXConvergenceCandidate = !normalCandidate &&
+            candidateGenerated == 1 &&
+            cadenceDemandRatio >=
+                adaptiveStableCadenceMinimumConvergenceDemandRatio &&
+            this->config.recoveryPolicy ==
+                AdaptiveRecoveryPolicy::OrderedSdr &&
+            adaptiveTargetMatchesRefresh(
+                this->config.targetFps, this->config.displayRefreshFps
+            );
+        if (!normalCandidate && !twoXConvergenceCandidate)
+            return std::nullopt;
+
+        const double projectedOutputFps = baseFps *
+            static_cast<double>(candidateOutputs);
+        if (projectedOutputFps >
+                static_cast<double>(this->config.targetFps) *
+                    adaptiveStableCadenceMaximumProbeOvershootRatio)
+            return std::nullopt;
+
+        return StableCadenceCandidate{
+            .generatedFrames = candidateGenerated,
+            .convergenceProbe = twoXConvergenceCandidate,
+        };
+    }();
+
+    if (this->state.stableCadence.limit) {
+        const size_t generatedLimit = *this->state.stableCadence.limit;
+        const double targetFps = static_cast<double>(this->config.targetFps);
+        const double projectedOutputFps = baseFps *
+            static_cast<double>(generatedLimit + 1);
+        const double cadenceDemandRatio =
+            desiredOutputsPerRealFrame /
+            static_cast<double>(generatedLimit + 1);
+        const bool capacityAvailable =
+            generatedLimit <= maximumGeneratedFrameCount;
+        const bool convergenceEvaluation =
+            this->state.stableCadence.convergenceProbe &&
+            this->state.stableCadence.evaluationAt.has_value();
+        const bool cadenceStillUseful =
+            desiredOutputsPerRealFrame > 1.0 &&
+            cadenceDemandRatio >= adaptiveStableCadenceMinimumDemandRatio &&
+            projectedOutputFps >=
+                targetFps * adaptiveStableCadenceMinimumRetentionTargetRatio &&
+            projectedOutputFps <=
+                targetFps * adaptiveStableCadenceMaximumRetainedOvershootRatio;
+
+        if (!capacityAvailable) {
+            this->diagnostics->stableCadence(
+                "adaptive-stable-cadence-disabled",
+                generatedLimit,
+                this->state.stableCadence.baselineBaseFps,
+                baseFps,
+                "capacity-changed"
+            );
+            this->state.stableCadence.limit.reset();
+            this->state.stableCadence.evaluationAt.reset();
+            this->state.stableCadence.convergenceProbe = false;
+            this->state.stableCadence.convergedTwoX = false;
+            this->state.stableCadence.delivery.reset();
+            this->state.stableCadence.outsideRangeSince.reset();
+            this->state.stableCadence.retryAt =
+                now + adaptiveStableCadenceRetryDelay;
+        } else if (!cadenceStillUseful && !convergenceEvaluation) {
+            if (!this->state.stableCadence.outsideRangeSince)
+                this->state.stableCadence.outsideRangeSince = now;
+            if (now - *this->state.stableCadence.outsideRangeSince >=
+                    adaptiveStableCadenceExitGraceDuration) {
+                const bool rescueCooldownElapsed =
+                    !this->state.rescue.cooldownUntil ||
+                    now >= *this->state.rescue.cooldownUntil;
+                const bool severeCollapse =
+                    rescueCooldownElapsed &&
+                    this->state.stableCadence.baselineBaseFps > 0.0 &&
+                    baseFps <= this->state.stableCadence.baselineBaseFps *
+                        adaptiveRescueBaseCollapseRatio &&
+                    projectedOutputFps <= targetFps *
+                        adaptiveRescueOutputCollapseRatio;
+                this->diagnostics->stableCadence(
+                    "adaptive-stable-cadence-disabled",
+                    generatedLimit,
+                    this->state.stableCadence.baselineBaseFps,
+                    baseFps,
+                    severeCollapse ? "collapse-rescue" : "outside-useful-range"
+                );
+                const double rescueBaselineBaseFps =
+                    this->state.stableCadence.baselineBaseFps;
+                const bool convergedTwoX =
+                    this->state.stableCadence.convergedTwoX;
+                this->state.stableCadence.limit.reset();
+                this->state.stableCadence.evaluationAt.reset();
+                this->state.stableCadence.convergenceProbe = false;
+                this->state.stableCadence.convergedTwoX = false;
+                this->state.stableCadence.delivery.reset();
+                this->state.stableCadence.outsideRangeSince.reset();
+                this->state.stableCadence.retryAt =
+                    now + (convergedTwoX
+                        ? adaptiveStableCadenceConvergenceRetryDelay
+                        : adaptiveStableCadenceRetryDelay);
+                if (severeCollapse) {
+                    this->startRescueMeasurement(now, generatedLimit,
+                        rescueBaselineBaseFps, baseFps);
+                    return {};
+                }
+                if (rescueCooldownElapsed &&
+                        this->config.recoveryPolicy ==
+                            AdaptiveRecoveryPolicy::OrderedSdr &&
+                        !this->state.ramp.evaluationAt &&
+                        rescueBaselineBaseFps > 0.0) {
+                    // The exit sample need not coincide with the deepest part
+                    // of a bursty or gradual collapse. Keep this accepted
+                    // baseline for one bounded mean-cadence qualification.
+                    auto& rescue = this->state.rescue;
+                    rescue.resetAttempt();
+                    rescue.previousLimit = generatedLimit;
+                    rescue.baselineBaseFps = rescueBaselineBaseFps;
+                    rescue.watchUntil = now + adaptiveRescueCollapseWatchDuration;
+                    rescue.resetSamples(false);
+                }
+            }
+        } else {
+            this->state.stableCadence.outsideRangeSince.reset();
+        }
+
+        if (this->state.stableCadence.limit &&
+                this->state.stableCadence.evaluationAt &&
+                now >= *this->state.stableCadence.evaluationAt) {
+            const size_t evaluatedGeneratedLimit =
+                *this->state.stableCadence.limit;
+            const double evaluatedProjectedOutputFps = baseFps *
+                static_cast<double>(evaluatedGeneratedLimit + 1);
+            const double evaluatedDemandRatio =
+                desiredOutputsPerRealFrame /
+                static_cast<double>(evaluatedGeneratedLimit + 1);
+            const bool deliveryHealthy =
+                this->state.stableCadence.delivery.healthy();
+            const bool convergenceProbe =
+                this->state.stableCadence.convergenceProbe;
+            const double maximumOutputRatio = convergenceProbe
+                ? adaptiveStableCadenceMaximumConvergenceOutputRatio
+                : adaptiveStableCadenceMaximumRetainedOvershootRatio;
+            const bool accepted = deliveryHealthy &&
+                evaluatedDemandRatio >=
+                    adaptiveStableCadenceMinimumDemandRatio &&
+                evaluatedProjectedOutputFps >=
+                    targetFps *
+                        adaptiveStableCadenceMinimumQualificationTargetRatio &&
+                evaluatedProjectedOutputFps <=
+                    targetFps * maximumOutputRatio &&
+                baseFps >= this->state.stableCadence.baselineBaseFps *
+                    adaptiveStableCadenceMinimumBaseRetention;
+            this->diagnostics->stableCadence(
+                accepted ? "adaptive-stable-cadence-accepted"
+                         : "adaptive-stable-cadence-rejected",
+                evaluatedGeneratedLimit,
+                this->state.stableCadence.baselineBaseFps,
+                baseFps,
+                convergenceProbe ? "ordered-2x-convergence" : ""
+            );
+            this->state.stableCadence.evaluationAt.reset();
+            this->state.stableCadence.convergenceProbe = false;
+            this->state.stableCadence.convergedTwoX =
+                accepted && convergenceProbe;
+            this->state.stableCadence.delivery.reset();
+            if (!accepted) {
+                this->state.stableCadence.limit.reset();
+                this->state.stableCadence.outsideRangeSince.reset();
+                this->state.stableCadence.retryAt = now + (
+                    convergenceProbe
+                        ? adaptiveStableCadenceConvergenceRetryDelay
+                        : adaptiveStableCadenceRetryDelay
+                );
+            }
+        }
+    }
+
+    const bool stableCadenceProbePermitted =
+        !this->state.stableCadence.limit && stableCadenceCandidate &&
+            !this->state.ramp.evaluationAt &&
+            !this->state.rearm.required &&
+            (!this->state.rescue.cooldownUntil ||
+             now >= *this->state.rescue.cooldownUntil) &&
+            (!this->state.stableCadence.retryAt ||
+             now >= *this->state.stableCadence.retryAt);
+    bool stableCadenceCandidateQualified = false;
+    if (!stableCadenceProbePermitted) {
+        this->state.stableCadence.candidate.reset();
+    } else if (this->state.stableCadence.candidate.limit !=
+                stableCadenceCandidate->generatedFrames ||
+            this->state.stableCadence.candidate.convergenceProbe !=
+                stableCadenceCandidate->convergenceProbe) {
+        this->state.stableCadence.candidate.limit =
+            stableCadenceCandidate->generatedFrames;
+        this->state.stableCadence.candidate.convergenceProbe =
+            stableCadenceCandidate->convergenceProbe;
+        this->state.stableCadence.candidate.since = now;
+        this->state.stableCadence.candidate.minimumBaseFps = baseFps;
+        this->state.stableCadence.candidate.maximumBaseFps = baseFps;
+    } else {
+        this->state.stableCadence.candidate.minimumBaseFps = std::min(
+            this->state.stableCadence.candidate.minimumBaseFps, baseFps
+        );
+        this->state.stableCadence.candidate.maximumBaseFps = std::max(
+            this->state.stableCadence.candidate.maximumBaseFps, baseFps
+        );
+        const bool spreadTooWide =
+            this->state.stableCadence.candidate.minimumBaseFps > 0.0 &&
+            this->state.stableCadence.candidate.maximumBaseFps >
+                this->state.stableCadence.candidate.minimumBaseFps *
+                    adaptiveStableCadenceMaximumCandidateSpreadRatio;
+        if (spreadTooWide) {
+            // Begin a fresh qualification window at the new cadence instead
+            // of allowing old low/high samples to trigger a workload switch.
+            this->state.stableCadence.candidate.since = now;
+            this->state.stableCadence.candidate.minimumBaseFps = baseFps;
+            this->state.stableCadence.candidate.maximumBaseFps = baseFps;
+        } else {
+            stableCadenceCandidateQualified =
+                this->state.stableCadence.candidate.since &&
+                now - *this->state.stableCadence.candidate.since >=
+                    adaptiveStableCadenceCandidateDuration;
+        }
+    }
+
+    if (stableCadenceCandidateQualified) {
+        this->state.stableCadence.limit =
+            this->state.stableCadence.candidate.limit;
+        this->state.stableCadence.convergenceProbe =
+            this->state.stableCadence.candidate.convergenceProbe;
+        this->state.stableCadence.convergedTwoX = false;
+        this->state.stableCadence.baselineBaseFps = baseFps;
+        this->state.stableCadence.evaluationAt =
+            now + adaptiveStableCadenceEvaluationDuration;
+        this->state.stableCadence.delivery.reset();
+        this->state.stableCadence.outsideRangeSince.reset();
+        this->state.stableCadence.retryAt.reset();
+        this->state.stableCadence.candidate.reset();
+        this->state.outputPlanner.resetTargetClock();
+        this->diagnostics->stableCadence(
+            "adaptive-stable-cadence-probe",
+            *this->state.stableCadence.limit,
+            baseFps,
+            baseFps,
+            this->state.stableCadence.convergenceProbe
+                ? "ordered-2x-convergence" : ""
+        );
+    }
+
+    return {.planningReady = true};
+}
+
+FGVK_ADAPTIVE_STAGE_INLINE void AdaptiveScheduler::advanceEfficiencyProbe(
+        const TimePoint now, const double baseFps,
+        const double rawIntervalSeconds, const double headroomSourceCapFps) {
+    auto& probe = this->state.efficiencyProbe;
+    const double targetFps = static_cast<double>(this->config.targetFps);
+    if (probe.headroomRequestUntil && now > *probe.headroomRequestUntil)
+        probe.headroomRequestUntil.reset();
+
+    // The applied-pacing comparison owns the same lower-load probe while it
+    // collects a continuous delivered sample rather than an EWMA endpoint.
+    if (this->state.ramp.pacedLoad.lowerLoadProbe)
+        return;
+
+    const auto headroomBlocksTarget = [&](const size_t generatedLimit) {
+        return headroomSourceCapFps > 0.0 && std::isfinite(headroomSourceCapFps) &&
+            headroomSourceCapFps * static_cast<double>(generatedLimit + 1) <
+                targetFps * adaptiveEfficiencyProbeMinimumTargetRatio;
+    };
+    if (probe.evaluationAt && headroomBlocksTarget(probe.testedLimit)) {
+        // A live cap can make an already-running trial impossible. Restore
+        // the retained workload without recording a failed GPU experiment or
+        // poisoning its retry history with an intentional source restriction.
+        this->diagnostics->stableCadence("adaptive-efficiency-probe-cancelled",
+            probe.testedLimit, probe.baselineBaseFps, baseFps,
+            "gpu-headroom-source-cap");
+        probe.resetEvaluation();
+        this->state.outputPlanner.resetTargetClock();
+        this->state.ramp.pacingResumePending =
+            this->state.ramp.observedPacingLimit.has_value();
+        return;
+    }
+
+    if (probe.evaluationAt) {
+        if (probe.sampling) {
+            probe.sampleComplete = probe.sampleComplete && probe.deliveryObserved;
+            probe.deliveryObserved = false;
+            probe.sampleSeconds += rawIntervalSeconds;
+            probe.sampleFrames++;
+        }
+        if (now < *probe.evaluationAt)
+            return;
+
+        const size_t testedLimit = probe.testedLimit;
+        const double measuredBaseFps = probe.sampling && probe.sampleSeconds > 0.0
+            ? static_cast<double>(probe.sampleFrames) / probe.sampleSeconds : baseFps;
+        const double projectedOutputFps = measuredBaseFps *
+            static_cast<double>(testedLimit + 1);
+        const bool deliveryHealthy = probe.delivery.healthy() &&
+            (!probe.sampling || (probe.sampleComplete &&
+                probe.sampleSeconds + 1e-9 >= std::chrono::duration<double>(
+                    adaptiveEfficiencyProbeSampleDuration).count()));
+        const bool accepted = deliveryHealthy &&
+            baseFps >= adaptiveMinimumBaseFps &&
+            measuredBaseFps >= adaptiveMinimumBaseFps &&
+            baseFps * static_cast<double>(testedLimit + 1) >=
+                targetFps * adaptiveEfficiencyProbeMinimumTargetRatio &&
+            projectedOutputFps >=
+                targetFps * adaptiveEfficiencyProbeMinimumTargetRatio;
+        if (accepted && !probe.sampling) {
+            // Queue turnover can briefly expose a target-rate source even
+            // when the lower workload cannot sustain it. Keep the proven
+            // rung until a full second of raw intervals and complete output
+            // delivery confirms the cheaper policy, as for upward trials.
+            probe.sampling = true;
+            probe.evaluationAt = now + adaptiveEfficiencyProbeSampleDuration;
+            return;
+        }
+        const bool stillSettling = !accepted && deliveryHealthy &&
+            !probe.sampling && !probe.settlingGraceUsed &&
+            probe.baselineBaseFps > 0.0 &&
+            baseFps >= probe.baselineBaseFps *
+                adaptiveEfficiencyProbeSettlingMinimumBaseRiseRatio &&
+            projectedOutputFps >= targetFps *
+                adaptiveEfficiencyProbeSettlingMinimumTargetRatio;
+        if (stillSettling) {
+            // Ordered FIFO backpressure can take longer than the first 250 ms
+            // to release after reducing generated work. Extend only a probe
+            // that is already close to target and recovering strongly, then
+            // retain the original 98% acceptance requirement at the new
+            // deadline. A true fixed-rate deficit still rolls back promptly.
+            probe.settlingGraceUsed = true;
+            probe.evaluationAt =
+                now + adaptiveEfficiencyProbeSettlingGraceDuration;
+            this->diagnostics->stableCadence(
+                "adaptive-efficiency-probe-extended",
+                testedLimit,
+                probe.baselineBaseFps,
+                baseFps,
+                "base-recovering"
+            );
+            return;
+        }
+        this->diagnostics->stableCadence(
+            accepted
+                ? "adaptive-efficiency-probe-accepted"
+                : "adaptive-efficiency-probe-rejected",
+            testedLimit,
+            probe.baselineBaseFps,
+            measuredBaseFps,
+            accepted
+                ? "target-preserved"
+                : deliveryHealthy ? "target-deficit" : "delivery-pressure"
+        );
+
+        if (accepted) {
+            // The cheaper constant cadence preserved the requested output, so
+            // make it the qualified policy rather than immediately ramping
+            // back into the more expensive local optimum.
+            this->state.stableCadence.limit = testedLimit;
+            this->state.stableCadence.baselineBaseFps = measuredBaseFps;
+            this->state.stableCadence.evaluationAt.reset();
+            this->state.stableCadence.convergenceProbe = false;
+            this->state.stableCadence.convergedTwoX = false;
+            this->state.stableCadence.delivery.reset();
+            this->state.stableCadence.outsideRangeSince.reset();
+            this->state.stableCadence.retryAt.reset();
+            this->state.stableCadence.candidate.reset();
+            this->state.outputPlanner.generationLimit = testedLimit;
+            this->state.ramp.previousLimit = testedLimit;
+            this->state.ramp.targetDeficitSince.reset();
+            this->state.acceptedLoadBaseline = {};
+            probe.retryAt[testedLimit - 1].reset();
+        } else {
+            // Resume the retained qualified multiplier on this same decision
+            // and scale the retry interval with the measured deficit. A near
+            // miss or delivery-pressure event may be transient, while a
+            // lower level that cannot reach even 75% of target should not
+            // create a minute-period pacing disturbance in steady gameplay.
+            auto retryDelay = adaptiveEfficiencyProbeNearTargetRetryDelay;
+            if (deliveryHealthy) {
+                const double projectedTargetRatio = targetFps > 0.0
+                    ? projectedOutputFps / targetFps : 0.0;
+                if (projectedTargetRatio <
+                        adaptiveEfficiencyProbeSevereDeficitTargetRatio) {
+                    retryDelay =
+                        adaptiveEfficiencyProbeSevereDeficitRetryDelay;
+                } else if (projectedTargetRatio <
+                        adaptiveEfficiencyProbeSettlingMinimumTargetRatio) {
+                    retryDelay =
+                        adaptiveEfficiencyProbeModerateDeficitRetryDelay;
+                }
+            }
+            probe.retryAt[testedLimit - 1] = now + retryDelay;
+        }
+        probe.resetEvaluation();
+        this->state.outputPlanner.resetTargetClock();
+        this->state.ramp.pacingResumePending =
+            this->state.ramp.observedPacingLimit.has_value();
+        return;
+    }
+
+    const bool headroomRecovery = probe.headroomRequestUntil.has_value();
+    const size_t currentLimit = this->state.stableCadence.limit.value_or(
+        this->state.outputPlanner.generationLimit);
+    const size_t candidateLimit = currentLimit > 1
+        ? (headroomRecovery ? std::min(probe.headroomTestLimit, currentLimit - 1)
+            : currentLimit - 1)
+        : 0;
+    const bool eligible =
+        this->config.recoveryPolicy == AdaptiveRecoveryPolicy::OrderedSdr &&
+        !this->state.ramp.pacedLoad.until &&
+        (this->state.stableCadence.limit || headroomRecovery) &&
+        currentLimit > 1 &&
+        !headroomBlocksTarget(candidateLimit) &&
+        !this->state.stableCadence.evaluationAt &&
+        !this->state.stableCadence.outsideRangeSince &&
+        !this->state.ramp.evaluationAt &&
+        !this->state.rearm.required &&
+        !this->state.rescue.until &&
+        !this->state.rescue.verificationUntil &&
+        !this->state.discontinuityRecovery.deadline &&
+        !this->state.stabilization.until &&
+        !this->state.nativeCadenceProbe.active;
+    if (!eligible) {
+        probe.eligibleSince.reset();
+        if (!this->state.stableCadence.limit)
+            probe.resetEvaluation();
+        return;
+    }
+    auto& retryAt = probe.retryAt[currentLimit - 2];
+    if (!headroomRecovery && retryAt && now < *retryAt) {
+        probe.eligibleSince.reset();
+        return;
+    }
+
+    const double currentOutputFps = baseFps *
+        static_cast<double>(currentLimit + 1);
+    if (currentOutputFps <
+            targetFps * adaptiveEfficiencyProbeMinimumTargetRatio) {
+        probe.eligibleSince.reset();
+        return;
+    }
+    if (!headroomRecovery && !probe.eligibleSince) {
+        probe.eligibleSince = now;
+        return;
+    }
+    if (!headroomRecovery && now - *probe.eligibleSince < adaptiveEfficiencyProbeHoldDuration)
+        return;
+
+    probe.headroomRequestUntil.reset();
+    probe.testedLimit = candidateLimit;
+    probe.baselineBaseFps = baseFps;
+    probe.evaluationAt = now + adaptiveEfficiencyProbeEvaluationDuration;
+    probe.eligibleSince.reset();
+    retryAt.reset();
+    probe.delivery.reset();
+    probe.settlingGraceUsed = false;
+    this->state.nativeCadenceProbe.reset();
+    this->state.outputPlanner.resetTargetClock();
+    this->diagnostics->stableCadence(
+        "adaptive-efficiency-probe",
+        probe.testedLimit,
+        probe.baselineBaseFps,
+        baseFps,
+        headroomRecovery ? "gpu-headroom-released" : "lower-generated-load"
+    );
+}
+
+FGVK_ADAPTIVE_STAGE_INLINE size_t AdaptiveScheduler::selectGeneratedFrameCount(
+        const double desiredOutputsPerRealFrame,
+        const double rawIntervalSeconds,
+        const size_t maximumGeneratedFrameCount) {
+    size_t generatedFrameCount = 0;
+    if (this->state.efficiencyProbe.evaluationAt) {
+        generatedFrameCount = this->state.efficiencyProbe.testedLimit;
+        this->state.outputPlanner.resetTargetClock();
+    } else if (this->state.stableCadence.limit) {
+        generatedFrameCount = *this->state.stableCadence.limit;
+        this->state.outputPlanner.resetTargetClock();
+    } else if (desiredOutputsPerRealFrame > 1.0 &&
+            maximumGeneratedFrameCount > 0) {
+        auto& targetClock = this->state.outputPlanner;
+        if (!targetClock.targetClockActive) {
+            targetClock.budgetCreditOutputs =
+                adaptiveTargetClockInitialBudgetPhaseOutputs;
+            targetClock.targetClockActive = true;
+        }
+        targetClock.budgetCreditOutputs += desiredOutputsPerRealFrame;
+        const size_t requestedOutputs = std::max<size_t>(
+            1,
+            static_cast<size_t>(std::floor(
+                targetClock.budgetCreditOutputs + 1e-9
+            ))
+        );
+        const size_t maximumOutputs = maximumGeneratedFrameCount + 1;
+        const size_t baselineOutputs = std::min(
+            requestedOutputs, maximumOutputs
+        );
+        targetClock.budgetCreditOutputs -=
+            static_cast<double>(baselineOutputs);
+        if (targetClock.budgetCreditOutputs < 0.0)
+            targetClock.budgetCreditOutputs = 0.0;
+        if (baselineOutputs == maximumOutputs &&
+                targetClock.budgetCreditOutputs >= 1.0) {
+            targetClock.budgetCreditOutputs = std::min(
+                targetClock.budgetCreditOutputs,
+                adaptiveTargetClockMaximumCeilingCreditOutputs
+            );
+        }
+        size_t scheduledOutputs = baselineOutputs;
+
+        const double rawIntervalOutputs =
+            rawIntervalSeconds * static_cast<double>(this->config.targetFps);
+        const double rawAccumulatedOutputs =
+            targetClock.targetPhaseErrorOutputs +
+            rawIntervalOutputs;
+        const size_t rawPreferredOutputs = std::clamp<size_t>(
+            static_cast<size_t>(std::max(
+                1.0,
+                std::floor(rawAccumulatedOutputs + 0.5 + 1e-9)
+            )),
+            1,
+            maximumOutputs
+        );
+        const auto placementSquaredError = [rawIntervalOutputs](
+                const size_t outputCount) {
+            const double spacingError =
+                rawIntervalOutputs *
+                    adaptiveOutputCountReciprocals[outputCount] -
+                1.0;
+            return static_cast<double>(outputCount) *
+                spacingError * spacingError;
+        };
+        const double baselineSpacingOutputs =
+            rawIntervalOutputs *
+                adaptiveOutputCountReciprocals[baselineOutputs];
+        const double maximumBaselineSpacingOutputs = std::max(
+            targetClock.maximumBaselineSpacingOutputs,
+            baselineSpacingOutputs
+        );
+
+        // Raw timing is a placement signal, never a source of additional
+        // generated work. It may defer one output already earned by the
+        // smoothed workload budget when the current interval is materially
+        // better left undivided. A separate one-output ledger then makes that
+        // earned work available to a later interval without confusing it with
+        // impossible ceiling debt. A deferral may not exceed the running worst
+        // requested spacing of the unmodified workload plan.
+        if (targetClock.deferredBudgetOutput &&
+                scheduledOutputs < maximumOutputs &&
+                placementSquaredError(scheduledOutputs + 1) -
+                    placementSquaredError(scheduledOutputs) <=
+                    targetClock.deferredPlacementBenefit + 1e-12) {
+            // Repay exactly one output previously earned by the baseline
+            // workload ledger. Keeping it separate from fractional credit
+            // prevents ceiling normalization from discarding intentional
+            // placement work or confusing it with impossible target debt.
+            // The saved squared-spacing benefit is the repayment budget, so
+            // a still-short interval cannot undo the pacing improvement.
+            scheduledOutputs++;
+            targetClock.deferredBudgetOutput = false;
+            targetClock.deferredPlacementBenefit = 0.0;
+        } else if (this->config.recoveryPolicy !=
+                    AdaptiveRecoveryPolicy::OrderedSdr &&
+                !targetClock.deferredBudgetOutput &&
+                requestedOutputs <= maximumOutputs &&
+                baselineOutputs > 1 &&
+                desiredOutputsPerRealFrame <=
+                    static_cast<double>(maximumOutputs) -
+                        adaptiveTargetClockMinimumRepaymentHeadroomOutputs &&
+                rawPreferredOutputs < baselineOutputs) {
+            const size_t deferredOutputs = baselineOutputs - 1;
+            const double deferredSpacingOutputs =
+                rawIntervalOutputs *
+                    adaptiveOutputCountReciprocals[deferredOutputs];
+            const double deferredSpacingError = std::abs(
+                deferredSpacingOutputs - 1.0
+            );
+            const double budgetedSpacingError = std::abs(
+                rawIntervalOutputs *
+                    adaptiveOutputCountReciprocals[baselineOutputs] -
+                1.0
+            );
+            const double placementBenefit =
+                placementSquaredError(baselineOutputs) -
+                placementSquaredError(deferredOutputs);
+            if (deferredSpacingError +
+                    adaptiveTargetClockPlacementDeadbandRatio <
+                    budgetedSpacingError &&
+                    deferredSpacingOutputs <=
+                        maximumBaselineSpacingOutputs + 1e-12 &&
+                    placementBenefit > 0.0) {
+                scheduledOutputs = deferredOutputs;
+                targetClock.deferredBudgetOutput = true;
+                targetClock.deferredPlacementBenefit = placementBenefit;
+            }
+        }
+        targetClock.maximumBaselineSpacingOutputs =
+            maximumBaselineSpacingOutputs;
+
+        generatedFrameCount = scheduledOutputs - 1;
+        targetClock.targetPhaseErrorOutputs =
+            rawAccumulatedOutputs - static_cast<double>(scheduledOutputs);
+        targetClock.targetPhaseErrorOutputs -= std::floor(
+            targetClock.targetPhaseErrorOutputs + 0.5
+        );
+        if (std::abs(targetClock.targetPhaseErrorOutputs) < 1e-12)
+            targetClock.targetPhaseErrorOutputs = 0.0;
+    } else {
+        // A Vulkan layer cannot present fewer real frames than the application
+        // submits. Do not carry phase debt when the base rate is already at or
+        // above the target, or while no generated-frame capacity is admitted.
+        this->state.outputPlanner.resetTargetClock();
+    }
+    return generatedFrameCount;
+}
+
+FGVK_ADAPTIVE_STAGE_INLINE AdaptiveScheduler::PlanningStageResult
+AdaptiveScheduler::advanceNativeCadenceProbe(
+        const TimePoint now, const double baseFps,
+        const double instantaneousBaseFps,
+        const double desiredOutputsPerRealFrame,
+        const size_t maximumGeneratedFrameCount,
+        size_t& generatedFrameCount,
+        const std::optional<TimePoint> queuedPresentationDeadline) {
+    // Ordered FIFO work makes a genuine 30-FPS source observationally
+    // identical to a native 60-FPS source held at 30 by framegen-vulkan's previous
+    // generated-plus-original present. The opt-in probe removes generated
+    // work for one frame, then requires a short faster run before rebasing.
+    // A rejected probe immediately resumes the proven generated policy.
+    auto& probe = this->state.nativeCadenceProbe;
+    if (probe.qualifyingNearTarget) {
+        // The native sample already proved a real cadence rise. Keep that
+        // measurement free of sparse generated FIFO work until the existing
+        // near-target hold qualifies it. Otherwise that work can hide the
+        // recovered source again before the hold has enough evidence.
+        const auto& preference = this->state.nearTargetNativePreference;
+        if (!preference.nativeBaseFps ||
+                (*preference.nativeBaseFps >= this->config.targetFps *
+                    adaptiveNearTargetNativeMinimumOutputRatio &&
+                 preference.candidateActive.value_or(false))) {
+            this->state.outputPlanner.resetTargetClock();
+            generatedFrameCount = 0;
+            return {};
+        }
+        probe.reset();
+        probe.nextAt = now + this->config.dynamicCadenceProbeInterval;
+        this->state.nearTargetNativePreference.resetCandidate();
+        this->state.nearTargetNativePreference.resetNativeSample();
+        return {.planningReady = true};
+    }
+
+    const bool eligible =
+        this->config.recoveryPolicy == AdaptiveRecoveryPolicy::OrderedSdr &&
+        desiredOutputsPerRealFrame > 1.0 &&
+        maximumGeneratedFrameCount > 0 &&
+        !this->state.ramp.evaluationAt &&
+        !this->state.rearm.required &&
+        !this->state.rescue.until &&
+        !this->state.rescue.verificationUntil &&
+        !this->state.discontinuityRecovery.deadline &&
+        !this->state.stableCadence.evaluationAt &&
+        !this->state.efficiencyProbe.evaluationAt;
+    if (!eligible) {
+        this->state.nativeCadenceProbe.reset();
+        return {.planningReady = true};
+    }
+
+    if (probe.active) {
+        if (probe.drainUntil) {
+            // Earlier scheduled outputs can still pace this source interval.
+            // Capture their horizon once, never extend it with the native
+            // frames emitted by the probe, and discard the straddling sample.
+            if (now >= *probe.drainUntil)
+                probe.drainUntil.reset();
+            this->state.outputPlanner.resetTargetClock();
+            generatedFrameCount = 0;
+            return {};
+        }
+        const bool fasterCadence = instantaneousBaseFps >=
+            probe.baselineBaseFps * adaptiveNativeCadenceMinimumRiseRatio;
+        if (!fasterCadence) {
+            this->diagnostics->nativeCadenceProbe(
+                "dynamic-cadence-probe-rejected",
+                this->state.outputPlanner.generationLimit,
+                probe.baselineBaseFps,
+                instantaneousBaseFps,
+                probe.confirmedSamples
+            );
+            probe.active = false;
+            probe.baselineBaseFps = 0.0;
+            probe.minimumMeasuredBaseFps = 0.0;
+            probe.confirmedSamples = 0;
+            probe.nextAt = now + this->config.dynamicCadenceProbeInterval;
+            this->state.outputPlanner.resetTargetClock();
+            generatedFrameCount = std::max<size_t>(generatedFrameCount, 1);
+            return {.planningReady = true};
+        }
+
+        probe.confirmedSamples++;
+        if (probe.minimumMeasuredBaseFps == 0.0) {
+            probe.minimumMeasuredBaseFps = instantaneousBaseFps;
+        } else {
+            probe.minimumMeasuredBaseFps = std::min(
+                probe.minimumMeasuredBaseFps, instantaneousBaseFps
+            );
+        }
+        this->state.outputPlanner.resetTargetClock();
+        generatedFrameCount = 0;
+        if (probe.confirmedSamples <
+                adaptiveNativeCadenceConfirmationFrames) {
+            return {};
+        }
+
+        const double recoveredBaseFps = probe.minimumMeasuredBaseFps;
+        this->state.cadence.smoothedIntervalSeconds = 1.0 / recoveredBaseFps;
+        this->state.cadence.dropFrames = 0;
+        this->state.ramp.targetDeficitSince.reset();
+        this->state.stableCadence.limit.reset();
+        this->state.stableCadence.evaluationAt.reset();
+        this->state.stableCadence.convergenceProbe = false;
+        this->state.stableCadence.convergedTwoX = false;
+        this->state.stableCadence.delivery.reset();
+        this->state.stableCadence.outsideRangeSince.reset();
+        this->state.stableCadence.retryAt.reset();
+        this->state.stableCadence.baselineBaseFps = 0.0;
+        this->state.stableCadence.candidate.reset();
+        this->state.efficiencyProbe.reset();
+        this->diagnostics->nativeCadenceProbe(
+            "dynamic-cadence-recovered",
+            this->state.outputPlanner.generationLimit,
+            probe.baselineBaseFps,
+            recoveredBaseFps,
+            probe.confirmedSamples
+        );
+        probe.qualifyingNearTarget = this->config.nearTargetNativePreference &&
+            recoveredBaseFps >= this->config.targetFps *
+                adaptiveNearTargetNativeMinimumOutputRatio;
+        this->state.nearTargetNativePreference.resetNativeSample();
+        probe.active = probe.qualifyingNearTarget;
+        probe.baselineBaseFps = 0.0;
+        probe.minimumMeasuredBaseFps = 0.0;
+        probe.confirmedSamples = 0;
+        probe.nextAt = now + this->config.dynamicCadenceProbeInterval;
+        return {};
+    }
+
+    if (!probe.nextAt) {
+        probe.nextAt = now + this->config.dynamicCadenceProbeInterval;
+        return {.planningReady = true};
+    }
+    if (now < *probe.nextAt)
+        return {.planningReady = true};
+
+    probe.active = true;
+    probe.nextAt.reset();
+    probe.drainUntil = queuedPresentationDeadline &&
+            *queuedPresentationDeadline > now
+        ? queuedPresentationDeadline : std::nullopt;
+    probe.baselineBaseFps = baseFps;
+    probe.minimumMeasuredBaseFps = 0.0;
+    probe.confirmedSamples = 0;
+    this->state.outputPlanner.resetTargetClock();
+    generatedFrameCount = 0;
+    this->diagnostics->nativeCadenceProbe(
+        "dynamic-cadence-probe-start",
+        this->state.outputPlanner.generationLimit,
+        baseFps,
+        0.0,
+        0
+    );
+    return {};
+}
+
+FGVK_ADAPTIVE_STAGE_INLINE bool
+AdaptiveScheduler::advanceNearTargetNativePreference(
+        const TimePoint now, const double schedulerBaseFps,
+        const size_t configuredGenerationLimit) {
+    auto& preference = this->state.nearTargetNativePreference;
+    const double baseFps = preference.nativeBaseFps.value_or(schedulerBaseFps);
+    if (!this->config.nearTargetNativePreference ||
+            configuredGenerationLimit == 0) {
+        preference.reset();
+        return false;
+    }
+    if (this->state.nativeCadenceProbe.qualifyingNearTarget &&
+            !preference.nativeBaseFps)
+        return false;
+
+    // Recovery, delivery evaluation, and qualified Smooth Cadence retain their
+    // existing ownership. Near-target preference cannot override a qualified
+    // cadence or change a transition already being measured.
+    if (this->state.discontinuityRecovery.deadline ||
+            this->state.rescue.until || this->state.rescue.verificationUntil ||
+            this->state.rearm.required ||
+            this->state.ramp.evaluationAt ||
+            this->state.stableCadence.limit ||
+            this->state.stableCadence.evaluationAt ||
+            this->state.efficiencyProbe.evaluationAt ||
+            (this->state.nativeCadenceProbe.active &&
+             !this->state.nativeCadenceProbe.qualifyingNearTarget)) {
+        preference.resetCandidate();
+        return preference.active;
+    }
+
+    const double targetFps = static_cast<double>(this->config.targetFps);
+    const bool nativeOutputMeetsTarget =
+        baseFps >= targetFps * adaptiveNearTargetNativeMinimumOutputRatio;
+    const bool nativeOutputBelowRetentionFloor =
+        preference.active && !nativeOutputMeetsTarget;
+    const bool couldPreferNative = nativeOutputMeetsTarget &&
+        baseFps < targetFps;
+    const auto quality = preference.active || couldPreferNative
+        ? predictNearTargetCadenceQuality(baseFps, this->config.targetFps)
+        : NearTargetCadenceQualityPrediction{};
+    bool requestedActive = false;
+    if (preference.active) {
+        if (baseFps >= targetFps) {
+            requestedActive = true;
+        } else if (!nativeOutputMeetsTarget) {
+            requestedActive = false;
+        } else if (quality.valid) {
+            const double exitToleranceMilliseconds =
+                1000.0 / targetFps *
+                adaptiveNearTargetEntryTargetIntervalTolerance;
+            requestedActive =
+                quality.fractionalIntervalRmsMilliseconds() +
+                    exitToleranceMilliseconds >=
+                quality.nativeIntervalRmsMilliseconds();
+        }
+    } else if (baseFps >= targetFps &&
+            (this->config.qualifyTargetNativeCadence ||
+             preference.candidateActive.value_or(false) ||
+             this->state.nativeCadenceProbe.qualifyingNearTarget)) {
+        // Qualify sustained at/above-target native cadence through the same
+        // hold as near-target cadence. Presentation uses this state to release
+        // Automatic's output ceiling, including when that ceiling prevents
+        // observing the game's full native rate yet. Other modes only retain
+        // an existing candidate or a confirmed native recovery measurement.
+        requestedActive = true;
+    } else if (quality.valid) {
+        // The output-retention floor has already rejected material target
+        // deficits. Compare the two derived RMS values with a small target-
+        // interval tolerance so measurement noise inside the final five
+        // percent does not retain sparse Fractional placement unnecessarily.
+        const double entryToleranceMilliseconds =
+            1000.0 / targetFps *
+            adaptiveNearTargetEntryTargetIntervalTolerance;
+        requestedActive =
+            quality.fractionalIntervalRmsMilliseconds() +
+                entryToleranceMilliseconds >=
+            quality.nativeIntervalRmsMilliseconds();
+    }
+
+    auto evidenceSample = AdaptiveScheduler::Clock::duration{};
+    if (preference.lastEvaluationAt) {
+        evidenceSample = std::clamp(
+            now - *preference.lastEvaluationAt,
+            AdaptiveScheduler::Clock::duration{},
+            std::chrono::duration_cast<AdaptiveScheduler::Clock::duration>(
+                adaptiveNearTargetMaximumEvidenceSample
+            )
+        );
+    }
+    preference.lastEvaluationAt = now;
+
+    if (requestedActive == preference.active) {
+        const auto decay = evidenceSample *
+            adaptiveNearTargetOppositeEvidenceDecay;
+        preference.candidateEvidence = decay >= preference.candidateEvidence
+            ? AdaptiveScheduler::Clock::duration{}
+            : preference.candidateEvidence - decay;
+        if (preference.candidateEvidence ==
+                AdaptiveScheduler::Clock::duration{})
+            preference.candidateActive.reset();
+        return preference.active;
+    }
+    if (preference.candidateActive != requestedActive) {
+        preference.candidateActive = requestedActive;
+        preference.candidateEvidence = AdaptiveScheduler::Clock::duration{};
+    }
+    preference.candidateEvidence += evidenceSample;
+    if (preference.candidateEvidence < adaptiveNearTargetNativeHoldDuration) {
+        return preference.active;
+    }
+
+    preference.active = requestedActive;
+    preference.resetCandidate();
+    this->state.outputPlanner.resetTargetClock();
+    if (preference.active) {
+        this->state.outputPlanner.generationLimit = 0;
+        this->state.ramp.nextAt.reset();
+        this->state.ramp.evaluationAt.reset();
+        this->state.ramp.targetDeficitSince.reset();
+        this->state.ramp.delivery.reset();
+        this->state.ramp.previousLimit = 0;
+        this->state.ramp.baselineBaseFps = 0.0;
+        this->state.acceptedLoadBaseline = {};
+        this->state.efficiencyProbe.reset();
+        this->state.nativeCadenceProbe.reset();
+    } else {
+        // The one-second quality hold already proved a sustained Fractional
+        // advantage. Credit that interval to the normal ramp deficit hold so
+        // generation can resume without imposing a second policy delay.
+        this->state.ramp.targetDeficitSince =
+            now - adaptiveTargetDeficitDuration;
+    }
+    this->diagnostics->nearTargetNativePreference(
+        preference.active
+            ? "adaptive-near-target-native-enabled"
+            : "adaptive-near-target-native-disabled",
+        this->config.targetFps,
+        baseFps,
+        quality.nativeIntervalRmsMilliseconds(),
+        quality.fractionalIntervalRmsMilliseconds(),
+        adaptiveNearTargetNativeHoldDuration,
+        preference.active
+            ? "native-predicted-rms-not-worse"
+            : (nativeOutputBelowRetentionFloor
+                ? "native-output-below-retention-floor"
+                : "fractional-predicted-rms-advantage")
+    );
+    return preference.active;
+}
+
+#if defined(__OPTIMIZE__) && (defined(__GNUC__) || defined(__clang__))
+// The stage methods are ownership boundaries on the per-present hot path.
+// Flatten them in optimized builds so that modularity adds no call overhead.
+__attribute__((flatten))
+#endif
+AdaptiveFramePlan AdaptiveScheduler::planFrame(
+        const std::chrono::steady_clock::time_point now,
+        const bool generatedImageAcquireBackoff,
+        const std::optional<size_t> orderedFifoGenerationLimit,
+        const std::optional<size_t> integerBaseCapGenerationLimit,
+        const std::optional<TimePoint> queuedPresentationDeadline,
+        const double headroomSourceCapFps) {
+    this->state.ramp.pacedLoadRollbackLimit.reset();
+    // Wall time alone cannot qualify a lower workload. An intentional native
+    // probe pauses the delivered-work clock; any other missing observation
+    // breaks continuity. Short probe intervals must not starve qualification.
+    auto& lowerLoad = this->state.ramp.lowerLoadSample;
+    if (!lowerLoad.deliveryObserved) {
+        if (lowerLoad.since && this->state.nativeCadenceProbe.active &&
+                this->state.cadence.lastRealFrame &&
+                now >= *this->state.cadence.lastRealFrame) {
+            *lowerLoad.since += now - *this->state.cadence.lastRealFrame;
+        } else {
+            lowerLoad.reset();
+        }
+    }
+    lowerLoad.deliveryObserved = false;
+    if (this->diagnosticsActive)
+        this->state.pacingWindow.beginFrame();
+    // A real owner change also invalidates a lower probe during an excluded
+    // turnover burst, before cadence observation can return a native-only plan.
+    const auto& paced = this->state.ramp.pacedLoad;
+    if (paced.lowerLoadProbe && (paced.fifo
+            ? integerBaseCapGenerationLimit.has_value()
+            : orderedFifoGenerationLimit.has_value()))
+        this->cancelPacedLoadValidation("pacing-policy-changed");
+    const auto cadence = this->observeCadence(
+        now, generatedImageAcquireBackoff
+    );
+    if (!cadence.planningReady) {
+        lowerLoad.reset();
+        this->state.ramp.targetSampleComplete = false;
+        if (this->state.efficiencyProbe.sampling)
+            this->state.efficiencyProbe.sampleComplete = false;
+        return cadence.terminalPlan;
+    }
+    const double baseFps = cadence.baseFps;
+
+    const auto discontinuity = this->advanceDiscontinuityRecovery(
+        now, baseFps
+    );
+    if (!discontinuity.planningReady)
+        return discontinuity.terminalPlan;
+
+    const auto rescue = this->advanceRescueMeasurement(
+        now, baseFps, cadence.rawIntervalSeconds
+    );
+    if (!rescue.planningReady)
+        return rescue.terminalPlan;
+    if (this->state.stabilization.until &&
+            now < *this->state.stabilization.until) {
+        this->state.outputPlanner.resetTargetClock();
+        if (this->diagnosticsActive &&
+                (!this->state.diagnosticThrottle.lastPlanAt ||
+                 now - *this->state.diagnosticThrottle.lastPlanAt >=
+                    adaptivePlanDiagnosticInterval)) {
+            this->state.diagnosticThrottle.lastPlanAt = now;
+            AdaptivePlanDiagnostic plan;
+            plan.baseFps = baseFps;
+            plan.targetFps = this->config.targetFps;
+            plan.phase = "stabilizing";
+            this->diagnostics->plan(plan);
+        }
+        return {};
+    }
+    this->state.stabilization.until.reset();
+    this->advancePacedLoadValidation(now, cadence.rawIntervalSeconds,
+        orderedFifoGenerationLimit, integerBaseCapGenerationLimit);
+    this->updateGenerationLimit(now, baseFps, cadence.rawIntervalSeconds);
+
+    const double desiredOutputsPerRealFrame =
+        this->state.cadence.smoothedIntervalSeconds *
+        static_cast<double>(this->config.targetFps);
+
+    const size_t maximumGeneratedFrameCount = std::min(
+        {
+            this->config.generatedFrameCapacity,
+            this->config.maximumMultiplier - 1,
+            this->state.outputPlanner.generationLimit,
+        }
+    );
+
+    const auto stableCadence = this->advanceStableCadence(
+        now, baseFps, desiredOutputsPerRealFrame,
+        maximumGeneratedFrameCount
+    );
+    if (!stableCadence.planningReady)
+        return stableCadence.terminalPlan;
+
+    this->advanceEfficiencyProbe(now, baseFps, cadence.rawIntervalSeconds,
+        headroomSourceCapFps);
+
+    // A VRR-only presentation handoff can let ordered FIFO pace a full
+    // validated higher rung. Recheck the scheduler after its frame stages:
+    // a same-frame ramp, probe, or capacity change must fall back to the
+    // ordinary target clock rather than forcing unvalidated generated work.
+    const bool fullOrderedFifoRung = orderedFifoGenerationLimit &&
+        *orderedFifoGenerationLimit >= 2 &&
+        *orderedFifoGenerationLimit <= maximumGeneratedFrameCount &&
+        this->config.stableCadence && this->config.automaticBaseFpsCap &&
+        this->config.recoveryPolicy == AdaptiveRecoveryPolicy::OrderedSdr &&
+        this->validatedGenerationLimit() >= *orderedFifoGenerationLimit &&
+        (!this->state.stableCadence.limit ||
+         this->state.stableCadence.limit == orderedFifoGenerationLimit) &&
+        !this->state.ramp.evaluationAt &&
+        !this->state.efficiencyProbe.evaluationAt &&
+        !this->state.nativeCadenceProbe.active &&
+        !this->state.rearm.required;
+    if (fullOrderedFifoRung)
+        this->state.outputPlanner.resetTargetClock();
+    size_t generatedFrameCount = fullOrderedFifoRung
+        ? *orderedFifoGenerationLimit
+        : this->selectGeneratedFrameCount(
+            desiredOutputsPerRealFrame, cadence.rawIntervalSeconds,
+            maximumGeneratedFrameCount
+        );
+    if (this->config.dynamicCadenceRecovery) {
+        const auto nativeCadenceProbe = this->advanceNativeCadenceProbe(
+            now,
+            baseFps,
+            cadence.instantaneousBaseFps,
+            desiredOutputsPerRealFrame,
+            maximumGeneratedFrameCount,
+            generatedFrameCount,
+            queuedPresentationDeadline
+        );
+        if (!nativeCadenceProbe.planningReady)
+            return nativeCadenceProbe.terminalPlan;
+    }
+    const size_t policyGenerationLimit =
+        this->state.efficiencyProbe.evaluationAt
+        ? this->state.efficiencyProbe.testedLimit
+        : this->state.outputPlanner.generationLimit;
+    const size_t effectiveMaximumGeneratedFrameCount = std::min(
+        {
+            this->config.generatedFrameCapacity,
+            this->config.maximumMultiplier - 1,
+            policyGenerationLimit,
+        }
+    );
+    if (this->diagnosticsActive) {
+        this->state.pacingWindow.record(
+            cadence.rawIntervalSeconds,
+            generatedFrameCount,
+            this->state.outputPlanner.targetClockActive,
+            this->state.outputPlanner.targetPhaseErrorOutputs,
+            this->config.targetFps,
+            this->state.stableCadence.limit.has_value(),
+            effectiveMaximumGeneratedFrameCount,
+            this->state.outputPlanner.targetClockEpoch
+        );
+    }
+    if (this->diagnosticsActive &&
+            (!this->state.diagnosticThrottle.lastPlanAt ||
+             now - *this->state.diagnosticThrottle.lastPlanAt >=
+                adaptivePlanDiagnosticInterval)) {
+        this->state.diagnosticThrottle.lastPlanAt = now;
+        const auto& pacing = this->state.pacingWindow;
+        const auto rearmRemaining = this->state.rearm.required &&
+                this->state.rearm.notBefore &&
+                now < *this->state.rearm.notBefore
+            ? *this->state.rearm.notBefore - now
+            : AdaptiveScheduler::Clock::duration::zero();
+        const auto nearTargetQuality = predictNearTargetCadenceQuality(
+            baseFps, this->config.targetFps
+        );
+        this->diagnostics->plan({
+            .baseFps = baseFps,
+            .targetFps = this->config.targetFps,
+            .generatedFrames = generatedFrameCount,
+            .maximumGeneratedFrames = effectiveMaximumGeneratedFrameCount,
+            .configuredMaximumGeneratedFrames =
+                this->configuredGenerationLimit(),
+            .stableCadence = this->state.stableCadence.limit.has_value(),
+            .nearTargetNativePreference =
+                this->state.nearTargetNativePreference.active,
+            .predictedNativeIntervalRmsMilliseconds =
+                nearTargetQuality.nativeIntervalRmsMilliseconds(),
+            .predictedFractionalIntervalRmsMilliseconds =
+                nearTargetQuality.fractionalIntervalRmsMilliseconds(),
+            .phase = this->state.rearm.required
+                ? "rearm-cooldown"
+                : this->state.ramp.pacedLoad.settlingUntil
+                    ? "paced-load-validation"
+                : this->state.nearTargetNativePreference.active
+                    ? "near-target-native"
+                    : "",
+            .consecutiveFailures = this->state.rearm.consecutiveProbeFailures,
+            .rearmReason = this->state.rearm.reason,
+            .rearmCooldownRemaining = rearmRemaining,
+            .rearmBaselineBaseFps = this->state.rearm.baselineBaseFps,
+            .targetOutputClockActive =
+                this->state.outputPlanner.targetClockActive,
+            .targetOutputBudgetCreditOutputs =
+                this->state.outputPlanner.budgetCreditOutputs,
+            .targetOutputPhaseErrorMilliseconds =
+                this->state.outputPlanner.targetPhaseErrorOutputs * 1000.0 /
+                static_cast<double>(this->config.targetFps),
+            .targetOutputDeferredBudgetOutput =
+                this->state.outputPlanner.deferredBudgetOutput,
+            .pacingSourceSamples = pacing.sourceIntervals.samples,
+            .sourceIntervalMeanMilliseconds = pacing.sourceIntervals.mean,
+            .sourceIntervalStdDevMilliseconds =
+                pacing.sourceIntervals.standardDeviation(),
+            .sourceIntervalP95Milliseconds =
+                pacing.sourceIntervals.percentile(0.95),
+            .sourceIntervalP99Milliseconds =
+                pacing.sourceIntervals.percentile(0.99),
+            .generatedCountChanges = pacing.generatedCountChanges,
+            .requestedIntervalSamples = pacing.requestedIntervals.samples,
+            .requestedIntervalMeanMilliseconds =
+                pacing.requestedIntervals.mean,
+            .requestedIntervalStdDevMilliseconds =
+                pacing.requestedIntervals.standardDeviation(),
+            .requestedIntervalP95Milliseconds =
+                pacing.requestedIntervals.percentile(0.95),
+            .requestedIntervalP99Milliseconds =
+                pacing.requestedIntervals.percentile(0.99),
+            .targetPhaseErrorSamples = pacing.phaseErrorSamples,
+            .targetPhaseErrorRmsMilliseconds = pacing.phaseErrorSamples > 0
+                ? std::sqrt(
+                    pacing.phaseErrorSquaredMilliseconds /
+                    static_cast<double>(pacing.phaseErrorSamples)
+                )
+                : 0.0,
+            .targetPhaseErrorMaximumMilliseconds =
+                pacing.maximumAbsolutePhaseErrorMilliseconds,
+        });
+        this->state.pacingWindow.resetWindow();
+    }
+
+    if (this->state.rescue.verificationUntil)
+        this->state.rescue.pendingGeneratedFrames = generatedFrameCount;
+    return AdaptiveFramePlan::evenlySpaced(generatedFrameCount);
+}
+
+size_t AdaptiveScheduler::historyWarmupFrameCount() {
+    return adaptiveHistoryWarmupFrames;
+}
+
+AdaptiveScheduler::Clock::duration
+AdaptiveScheduler::rescueMeasurementDuration() {
+    return adaptiveRescueMeasurementDuration;
+}
+
+AdaptiveScheduler::Clock::duration AdaptiveScheduler::rescueCooldown() {
+    return adaptiveRescueCooldown;
+}
+
+AdaptiveScheduler::Clock::duration AdaptiveScheduler::stableRearmDuration() {
+    return adaptiveStableRearmDuration;
+}
+
+void AdaptiveScheduler::resetTiming(
+        const std::chrono::steady_clock::time_point now) {
+    this->cancelPacedLoadValidation("timing-reset");
+    this->state.ramp.resetPacingObservation();
+    this->cancelRescueMeasurement("timing-reset");
+    this->state.ramp.lowerLoadSample.reset();
+    this->state.cadence.lastRealFrame = now;
+    this->state.ramp.targetSampleComplete = false;
+    this->state.cadence.smoothedIntervalSeconds = 0.0;
+    this->state.cadence.dropFrames = 0;
+    if (this->state.fastBurst.startedAt) {
+        this->diagnostics->fastCadenceBurstComplete(
+            this->state.fastBurst.frames,
+            now - *this->state.fastBurst.startedAt
+        );
+    }
+    this->state.fastBurst.startedAt.reset();
+    this->state.fastBurst.lastDiagnosticAt.reset();
+    this->state.fastBurst.frames = 0;
+    this->state.fastBurst.framesSinceDiagnostic = 0;
+    this->state.ramp.targetDeficitSince.reset();
+    this->state.outputPlanner.resetTargetClock();
+    this->state.nativeCadenceProbe.reset();
+    this->state.nearTargetNativePreference.resetCandidate();
+    this->state.nearTargetNativePreference.resetNativeSample();
+    // Fresh timing/history does not prove that a rejected lower workload now
+    // reaches the target. Keep its original deadline through stalls and
+    // warm-up; a new scheduler or confirmed native recovery clears it.
+    this->state.efficiencyProbe.resetEvaluation();
+    // A pending Headroom hint belongs to the source history just invalidated,
+    // unlike the retained backoff for a previously rejected workload.
+    this->state.efficiencyProbe.headroomRequestUntil.reset();
+    this->state.pacingWindow.reset();
+}
+
+size_t AdaptiveScheduler::validatedGenerationLimit() const {
+    const size_t configuredLimit = std::min(
+        this->config.generatedFrameCapacity,
+        this->config.maximumMultiplier - 1
+    );
+    size_t generationLimit = this->state.outputPlanner.generationLimit;
+    if (this->state.rearm.required) {
+        generationLimit = this->state.rearm.fallbackLimit;
+    } else if (this->state.ramp.evaluationAt) {
+        generationLimit = this->state.ramp.previousLimit;
+    }
+    return std::min(generationLimit, configuredLimit);
+}
+
+bool AdaptiveScheduler::refreshHigherLoadRetry(const TimePoint now) {
+    auto& ramp = this->state.ramp;
+    const auto retainedLimit = this->validatedGenerationLimit();
+    if (retainedLimit == 0 || ramp.consecutiveFailures == 0 ||
+            ramp.lastFailedLimit <= retainedLimit || ramp.evaluationAt ||
+            ramp.pacedLoad.until || this->state.rearm.required ||
+            this->discontinuityRecoveryActive())
+        return false;
+
+    // Explicit presentation policy changes invalidate failed higher-workload
+    // evidence, not the current qualified load or source/history state. The
+    // ordinary delay and continuous delivered lower-load sample still gate
+    // the next trial, including when this change occurs under Steam UI focus.
+    ramp.lastFailedLimit = 0;
+    ramp.consecutiveFailures = 0;
+    ramp.failedBaselineBaseFps = 0.0;
+    ramp.nextAt = now + adaptiveRecoveryHigherProbeDelay;
+    ramp.lowerLoadSample.reset();
+    ramp.targetDeficitSince.reset();
+    this->diagnostics->recoveryResume(retainedLimit,
+        adaptiveRecoveryHigherProbeDelay, "gamescope-vrr-policy-change");
+    return true;
+}
+
+void AdaptiveScheduler::restoreGenerationLimit(
+        const std::chrono::steady_clock::time_point now,
+        const size_t generationLimit,
+        const std::string_view reason,
+        const std::optional<size_t> monitoredFallbackLimit,
+        const double monitoredBaselineBaseFps,
+        const bool preserveRampBackoff) {
+    this->cancelPacedLoadValidation("generation-limit-restored");
+    this->state.ramp.resetPacingObservation();
+    const size_t configuredLimit = std::min(
+        this->config.generatedFrameCapacity,
+        this->config.maximumMultiplier - 1
+    );
+    const size_t restoredLimit = std::min(generationLimit, configuredLimit);
+    const size_t retainedFailedLimit = this->state.ramp.lastFailedLimit;
+    const size_t retainedFailureCount = this->state.ramp.consecutiveFailures;
+    const double retainedFailedBaselineBaseFps =
+        this->state.ramp.failedBaselineBaseFps;
+    const auto retainedRetryAt = this->state.ramp.nextAt;
+    const bool retainBackoff = preserveRampBackoff &&
+        retainedFailureCount > 0 && retainedFailedLimit > restoredLimit;
+
+    this->state.outputPlanner.generationLimit = restoredLimit;
+    this->state.ramp.previousLimit = restoredLimit;
+    this->state.ramp.evaluationAt.reset();
+    this->state.ramp.targetDeficitSince.reset();
+    this->state.ramp.baselineBaseFps = 0.0;
+    this->state.rearm.required = false;
+    this->state.rearm.notBefore.reset();
+    this->state.rearm.stableSince.reset();
+    this->state.rearm.reason.clear();
+    this->state.rearm.baselineBaseFps = 0.0;
+    this->state.rearm.fallbackLimit = 0;
+    this->state.rearm.consecutiveProbeFailures = 0;
+    this->state.ramp.lastFailedLimit = retainBackoff
+        ? retainedFailedLimit
+        : 0;
+    this->state.ramp.consecutiveFailures = retainBackoff
+        ? retainedFailureCount
+        : 0;
+    this->state.ramp.failedBaselineBaseFps = retainBackoff
+        ? retainedFailedBaselineBaseFps
+        : 0.0;
+    const size_t fallbackLimit = std::min(
+        monitoredFallbackLimit.value_or(restoredLimit), configuredLimit
+    );
+    const bool monitorRestoredLoad = restoredLimit > fallbackLimit &&
+        monitoredBaselineBaseFps > 0.0;
+    this->state.acceptedLoadBaseline.generationLimit = monitorRestoredLoad
+        ? fallbackLimit
+        : 0;
+    this->state.acceptedLoadBaseline.baseFps = monitorRestoredLoad
+        ? monitoredBaselineBaseFps
+        : 0.0;
+    this->state.efficiencyProbe.resetEvaluation();
+    this->state.nearTargetNativePreference.reset();
+    this->state.outputPlanner.resetTargetClock();
+
+    const auto stabilizationEnd = this->state.stabilization.until.value_or(now);
+    const auto higherProbeDelay = restoredLimit > 0 && restoredLimit < configuredLimit
+        ? adaptiveRecoveryHigherProbeDelay
+        : AdaptiveScheduler::Clock::duration::zero();
+    this->state.ramp.nextAt = retainBackoff && retainedRetryAt
+        ? retainedRetryAt
+        : stabilizationEnd + higherProbeDelay;
+    const auto scheduledHigherProbeDelay =
+        *this->state.ramp.nextAt > stabilizationEnd
+        ? *this->state.ramp.nextAt - stabilizationEnd
+        : AdaptiveScheduler::Clock::duration::zero();
+    this->diagnostics->recoveryResume(
+        restoredLimit, scheduledHigherProbeDelay, reason
+    );
+}
+
+void AdaptiveScheduler::beginCadenceRefresh(
+        const std::chrono::steady_clock::time_point now,
+        const std::string_view reason) {
+    // Ordinary SDR menu/game cadence changes invalidate temporal history, but
+    // they do not prove that the already validated multiplier is unsafe. Drop
+    // only an unvalidated probe, refresh two real frames, and resume the proven
+    // level immediately instead of entering a 1-3 second real-only recovery.
+    const size_t retainedGenerationLimit = this->validatedGenerationLimit();
+    const AdaptiveGenerationLoadBaseline loadBaseline =
+        this->generationLoadBaseline();
+    if (this->state.ramp.evaluationAt) {
+        this->diagnostics->probeAborted(reason, this->state.outputPlanner.generationLimit);
+    }
+
+    this->state.stabilization.until.reset();
+    this->state.discontinuityRecovery.reset();
+    this->state.ramp.delivery.reset();
+    this->state.cadence.dropFrames = 0;
+    this->state.cadence.sdrStallBypass = reason == "cadence-stall";
+    this->state.cadence.sdrResumeFrames = 0;
+
+    this->restoreGenerationLimit(
+        now,
+        retainedGenerationLimit,
+        "sdr-cadence-refresh",
+        loadBaseline.baseFps > 0.0
+            ? std::optional<size_t>{loadBaseline.fallbackGenerationLimit}
+            : std::nullopt,
+        loadBaseline.baseFps,
+        true
+    );
+    this->beginHistoryWarmup(adaptiveSdrCadenceRefreshFrames, false);
+    this->resetTiming(now);
+    this->diagnostics->cadenceRefresh(
+        reason, retainedGenerationLimit, adaptiveSdrCadenceRefreshFrames
+    );
+}
+
+void AdaptiveScheduler::beginDiscontinuityRecovery(
+        const std::chrono::steady_clock::time_point now,
+        const size_t generationLimit,
+        const size_t fallbackGenerationLimit,
+        const double baselineBaseFps,
+        const std::optional<std::chrono::steady_clock::time_point> deadline,
+        const bool softRecoveryAttempted,
+        const std::string_view reason) {
+    if (generationLimit == 0 || baselineBaseFps <= 0.0)
+        return;
+
+    const size_t configuredLimit = std::min(
+        this->config.generatedFrameCapacity,
+        this->config.maximumMultiplier - 1
+    );
+    this->state.discontinuityRecovery.generationLimit = std::min(
+        generationLimit, configuredLimit
+    );
+    if (this->state.discontinuityRecovery.generationLimit == 0)
+        return;
+
+    this->state.discontinuityRecovery.fallbackGenerationLimit = std::min(
+        fallbackGenerationLimit,
+        this->state.discontinuityRecovery.generationLimit
+    );
+    this->state.discontinuityRecovery.baselineBaseFps = baselineBaseFps;
+    const auto minimumDeadline = now + adaptiveDiscontinuityStableDuration;
+    this->state.discontinuityRecovery.deadline = deadline
+        ? std::max(*deadline, minimumDeadline)
+        : now + adaptiveDiscontinuityMaximumDuration;
+    this->state.discontinuityRecovery.stableSince.reset();
+    this->state.discontinuityRecovery.softRecoveryAttempted = softRecoveryAttempted;
+    this->state.nearTargetNativePreference.reset();
+    this->state.ramp.targetDeficitSince.reset();
+    this->state.outputPlanner.resetTargetClock();
+
+    const auto remainingDuration =
+        *this->state.discontinuityRecovery.deadline > now
+        ? *this->state.discontinuityRecovery.deadline - now
+        : AdaptiveScheduler::Clock::duration::zero();
+    this->diagnostics->discontinuityRecoveryStart(
+        this->state.discontinuityRecovery.generationLimit,
+        baselineBaseFps,
+        reason,
+        remainingDuration
+    );
+}
+
+void AdaptiveScheduler::scheduleRearm(
+        const std::chrono::steady_clock::time_point now,
+        const std::string_view reason,
+        const size_t fallbackLimit,
+        const double baselineBaseFps) {
+    const bool interrupted = reason == "probe-interrupted";
+    if (!interrupted)
+        this->state.rearm.consecutiveProbeFailures++;
+    const auto cooldown = interrupted
+        ? adaptiveInterruptedProbeCooldown
+        : std::max(
+            std::chrono::duration_cast<AdaptiveScheduler::Clock::duration>(
+                adaptiveFailedProbeCooldown
+            ),
+            adaptiveRampRetryDelayForFailures(
+                this->state.rearm.consecutiveProbeFailures + 1
+            )
+        );
+    this->state.rearm.required = true;
+    this->state.rearm.notBefore = now + cooldown;
+    this->state.rearm.stableSince.reset();
+    this->state.rearm.reason = reason;
+    this->state.rearm.baselineBaseFps = baselineBaseFps;
+    this->state.rearm.fallbackLimit = fallbackLimit;
+    this->state.ramp.targetDeficitSince.reset();
+    this->state.ramp.nextAt = this->state.rearm.notBefore;
+    this->diagnostics->rearm(
+        "adaptive-rearm-scheduled",
+        reason,
+        this->state.rearm.consecutiveProbeFailures,
+        this->state.rearm.fallbackLimit,
+        cooldown,
+        this->state.rearm.baselineBaseFps
+    );
+}
+
+void AdaptiveScheduler::beginStabilization(
+        const std::chrono::steady_clock::time_point now,
+        const std::string_view reason) {
+    this->beginStabilization(now, reason, reason == "startup"
+        ? adaptiveRecoveryStabilizationDuration
+        : adaptiveStabilizationDuration);
+}
+
+void AdaptiveScheduler::beginStabilization(
+        const TimePoint now, const std::string_view reason,
+        const Clock::duration stabilizationDuration) {
+    const bool cadenceChange =
+        reason == "cadence-stall" || reason == "cadence-drop";
+    const bool hardDiscontinuity = reason == "cadence-stall";
+    if (cadenceChange)
+        this->state.discontinuityRecovery.stableSince.reset();
+    if (hardDiscontinuity &&
+            !this->state.discontinuityRecovery.deadline &&
+            this->state.cadence.smoothedIntervalSeconds > 0.0) {
+        size_t recoveryLimit = this->validatedGenerationLimit();
+        if (this->state.stableCadence.limit) {
+            recoveryLimit = std::max(
+                recoveryLimit, *this->state.stableCadence.limit
+            );
+        }
+        size_t recoveryFallbackLimit = recoveryLimit > 0
+            ? recoveryLimit - 1
+            : 0;
+        if (this->state.acceptedLoadBaseline.baseFps > 0.0 &&
+                this->state.acceptedLoadBaseline.generationLimit < recoveryLimit) {
+            recoveryFallbackLimit =
+                this->state.acceptedLoadBaseline.generationLimit;
+        }
+        this->beginDiscontinuityRecovery(
+            now,
+            recoveryLimit,
+            recoveryFallbackLimit,
+            1.0 / this->state.cadence.smoothedIntervalSeconds,
+            std::nullopt,
+            false,
+            reason
+        );
+    }
+
+    const bool alreadyStabilizing = this->state.stabilization.until &&
+        now < *this->state.stabilization.until;
+    size_t rearmFallbackLimit = 0;
+    if (this->state.ramp.evaluationAt) {
+        rearmFallbackLimit = this->state.ramp.previousLimit;
+        const double rearmBaselineBaseFps =
+            this->state.ramp.baselineBaseFps;
+        this->diagnostics->probeAborted(reason, this->state.outputPlanner.generationLimit);
+        this->scheduleRearm(
+            now,
+            "probe-interrupted",
+            rearmFallbackLimit,
+            rearmBaselineBaseFps
+        );
+    } else if (this->state.rearm.required) {
+        // A fresh cadence disruption restarts the stable-cadence requirement,
+        // but it does not extend the already bounded cooldown indefinitely.
+        this->state.rearm.stableSince.reset();
+    }
+    // Cold startup can include an uncapped splash screen or launcher followed
+    // by normal gameplay. Do not let those first samples start a probe that
+    // the gameplay transition immediately interrupts and penalizes. A Vulkan
+    // oldSwapchain replacement is already inside a running game: its new
+    // backend still receives the normal temporal-history warm-up, while one
+    // second of fresh source cadence is enough before the measured ramp.
+    this->state.stabilization.until = now + stabilizationDuration;
+    this->state.ramp.nextAt = this->state.stabilization.until;
+    if (this->state.rearm.notBefore &&
+            *this->state.rearm.notBefore > *this->state.ramp.nextAt) {
+        this->state.ramp.nextAt = this->state.rearm.notBefore;
+    }
+    this->state.ramp.evaluationAt.reset();
+    this->state.ramp.delivery.reset();
+    this->state.outputPlanner.generationLimit = 0;
+    this->state.nearTargetNativePreference.reset();
+    this->state.ramp.previousLimit = 0;
+    this->state.ramp.baselineBaseFps = 0.0;
+    this->state.stableCadence.limit.reset();
+    this->state.stableCadence.evaluationAt.reset();
+    this->state.stableCadence.convergenceProbe = false;
+    this->state.stableCadence.convergedTwoX = false;
+    this->state.stableCadence.delivery.reset();
+    this->state.stableCadence.outsideRangeSince.reset();
+    this->state.stableCadence.retryAt.reset();
+    this->state.stableCadence.baselineBaseFps = 0.0;
+    this->state.stableCadence.candidate.reset();
+    this->cancelRescueMeasurement("stabilization-interrupted");
+    this->state.acceptedLoadBaseline = {};
+    this->state.cadence.dropFrames = 0;
+    this->state.cadence.sdrStallBypass = false;
+    this->state.cadence.sdrResumeFrames = 0;
+    this->state.diagnosticThrottle.lastPlanAt.reset();
+    this->resetTiming(now);
+    if (!alreadyStabilizing)
+        this->diagnostics->stabilization(reason, stabilizationDuration);
+}
+
+void AdaptiveScheduler::resumeAfterExternalInterruption(
+        const TimePoint now, const bool confirmedReturn) {
+    // The caller did not feed menu-throttled frames into the scheduler. Keep
+    // the last proven level, abandon interrupted experiments and remeasure
+    // source cadence without retaining their elapsed timers or stale history.
+    const auto retainedLimit = this->validatedGenerationLimit();
+    const auto rejectedLoadRetryAt = this->state.ramp.consecutiveFailures > 0
+        ? this->state.ramp.nextAt : std::nullopt;
+    auto rejectedFirstProbe = retainedLimit == 0 &&
+            this->state.rearm.consecutiveProbeFailures > 0
+        ? std::make_optional(this->state.rearm) : std::nullopt;
+    const double retainedBaseFps = this->state.stableCadence.limit &&
+            *this->state.stableCadence.limit == retainedLimit &&
+            this->state.stableCadence.baselineBaseFps > 0.0
+        ? this->state.stableCadence.baselineBaseFps
+        : this->state.cadence.smoothedIntervalSeconds > 0.0
+            ? 1.0 / this->state.cadence.smoothedIntervalSeconds
+            : 0.0;
+    // A confirmed return can reuse proven capacity after fresh temporal
+    // history. Unknown focus and newly reset policies have no such proof.
+    // The caller's transport and fence guards still apply.
+    const bool fastResume = confirmedReturn && retainedLimit > 0 &&
+        this->config.recoveryPolicy == AdaptiveRecoveryPolicy::OrderedSdr;
+    const bool retainedLoadMetTarget = retainedBaseFps *
+        static_cast<double>(retainedLimit + 1) >=
+        static_cast<double>(this->config.targetFps) * adaptiveTargetSatisfiedRatio;
+    if (fastResume && retainedLoadMetTarget) {
+        // Keep the proven lower-load measurement through the bounded recovery
+        // interval. A temporarily slow return must not lower the comparison
+        // baseline and make extra generated work look beneficial.
+        this->state.menuReturnLoadGuard.active = true;
+        this->state.menuReturnLoadGuard.provenGenerationLimit = retainedLimit;
+        this->state.menuReturnLoadGuard.baselineBaseFps = retainedBaseFps;
+    } else {
+        this->state.menuReturnLoadGuard.reset();
+    }
+    const auto remainingStabilization =
+        this->state.stabilization.until.value_or(now) - now;
+    // A menu event cannot advance an existing transport/lifecycle deadline.
+    // With no such deadline, the fixed three-frame history contract is the
+    // only wait before the proven workload resumes.
+    this->beginStabilization(now, "gamescope-focus-return", fastResume
+        ? std::max<Clock::duration>(Clock::duration::zero(),
+            remainingStabilization)
+        : adaptiveStabilizationDuration);
+    // Menu timing is not evidence that a rejected higher workload became
+    // cheaper. Stabilization replaces nextAt, so restore the failed trial's
+    // deadline before retaining its failure count and lower-load baseline.
+    // An expired deadline still observes the ordinary post-return probe delay.
+    if (rejectedLoadRetryAt) {
+        this->state.ramp.nextAt = std::max(*rejectedLoadRetryAt,
+            this->state.stabilization.until.value_or(now) +
+                adaptiveRecoveryHigherProbeDelay);
+    }
+    this->restoreGenerationLimit(now, retainedLimit, "gamescope-focus-return",
+        std::nullopt, 0.0, true);
+    if (rejectedFirstProbe) {
+        // Native fallback has its own rejection cooldown. Preserve both its
+        // deadline and escalation, but never count menu time as stable source
+        // evidence or turn an interrupted trial into a throughput failure.
+        this->state.rearm.consecutiveProbeFailures =
+            rejectedFirstProbe->consecutiveProbeFailures;
+        if (rejectedFirstProbe->required &&
+                rejectedFirstProbe->reason == "ramp-rejected") {
+            this->state.rearm = std::move(*rejectedFirstProbe);
+            this->state.rearm.stableSince.reset();
+        }
+    }
+    // A second menu may interrupt the first warm-up after only one frame.
+    // Every return needs fresh history, not the remainder of the old gap.
+    this->beginHistoryWarmup(historyWarmupFrameCount(), true);
+}
+
+void AdaptiveScheduler::beginTransportRecovery(
+        const TimePoint now, const bool classifyGeneratedLoadFailure) {
+    // A lower-image timeout invalidates cadence and stable-pacing proofs. A
+    // confirmed event/ramp failure or qualified native-drain recovery may also
+    // prove the current generated load unsafe for this transport. Requalify
+    // for one second at native cadence, optionally resume the proven lower
+    // level and delay the next higher probe. Keep unrelated efficiency-probe
+    // backoff intact.
+    // The caller sets classifyGeneratedLoadFailure only for direct transport
+    // evidence such as headroom failure during a higher-load evaluation or a
+    // qualified native-drain probe.
+    // Normal VRR deadline pressure uses a zero-wait circuit breaker and does
+    // not enter this load-failure path.
+    const bool failedRampProbe = classifyGeneratedLoadFailure &&
+        this->state.ramp.evaluationAt.has_value();
+    const size_t failedGenerationLimit =
+        this->state.outputPlanner.generationLimit;
+    const size_t previousProbeFailures =
+        this->state.ramp.lastFailedLimit == failedGenerationLimit
+        ? this->state.ramp.consecutiveFailures
+        : 0;
+    const double previousFailedBaselineBaseFps =
+        this->state.ramp.lastFailedLimit == failedGenerationLimit
+        ? this->state.ramp.failedBaselineBaseFps
+        : 0.0;
+    AdaptiveGenerationLoadBaseline loadBaseline =
+        this->generationLoadBaseline();
+    if (failedRampProbe) {
+        loadBaseline = {
+            .fallbackGenerationLimit = this->state.ramp.previousLimit,
+            .baseFps = this->state.ramp.baselineBaseFps,
+        };
+        this->diagnostics->probeAborted(
+            "generated-image-recovery", failedGenerationLimit
+        );
+        // This is direct evidence that the tested load is unsafe, not an
+        // unrelated cadence interruption. End the probe before generic
+        // stabilization so it cannot be rearmed as a benign interruption.
+        this->state.ramp.evaluationAt.reset();
+        this->state.ramp.delivery.reset();
+    }
+    const bool failedGeneratedLoad = classifyGeneratedLoadFailure &&
+        failedGenerationLimit > loadBaseline.fallbackGenerationLimit &&
+        loadBaseline.baseFps > 0.0;
+    this->beginStabilization(now, "generated-image-recovery");
+    if (loadBaseline.baseFps > 0.0) {
+        this->restoreGenerationLimit(
+            now,
+            loadBaseline.fallbackGenerationLimit,
+            "generated-image-pressure-fallback"
+        );
+    }
+    if (failedGeneratedLoad) {
+        const size_t failureCount = previousProbeFailures + 1;
+        const auto retryDelay = adaptiveRampRetryDelayForFailures(
+            failureCount
+        );
+        this->state.ramp.lastFailedLimit = failedGenerationLimit;
+        this->state.ramp.consecutiveFailures = failureCount;
+        this->state.ramp.failedBaselineBaseFps = std::max(
+            previousFailedBaselineBaseFps, loadBaseline.baseFps
+        );
+        const auto stabilizationEnd =
+            this->state.stabilization.until.value_or(now);
+        this->state.ramp.nextAt = stabilizationEnd + retryDelay;
+        this->diagnostics->rampBackoff(
+            failedGenerationLimit,
+            failureCount,
+            loadBaseline.baseFps,
+            retryDelay
+        );
+    }
+}
+
+bool AdaptiveScheduler::rejectActiveRampForTransportMiss(
+        const TimePoint now) {
+    if (!this->state.ramp.evaluationAt)
+        return false;
+
+    // A generated image that times out while a higher multiplier is still
+    // experimental is direct evidence against that experiment. Do not let a
+    // mostly successful one-second delivery window validate the load and only
+    // discover the same FIFO pressure again after the next cadence refresh.
+    this->beginTransportRecovery(now, true);
+    return true;
+}
+
+void AdaptiveScheduler::cancelPacedLoadValidation(
+        const std::string_view reason) {
+    auto& paced = this->state.ramp.pacedLoad;
+    if (!paced.until)
+        return;
+    this->diagnostics->stableCadence("adaptive-paced-load-cancelled",
+        paced.testedLimit, paced.baselineBaseFps,
+        paced.sampleSeconds > 0.0
+            ? static_cast<double>(paced.sampleFrames) / paced.sampleSeconds
+            : 0.0,
+        reason);
+    if (paced.lowerLoadProbe) {
+        this->state.efficiencyProbe.resetEvaluation();
+        this->state.outputPlanner.resetTargetClock();
+        this->state.ramp.pacingResumePending =
+            this->state.ramp.observedPacingLimit.has_value();
+    }
+    paced.reset();
+}
+
+FGVK_ADAPTIVE_STAGE_INLINE void AdaptiveScheduler::advancePacedLoadValidation(
+        const TimePoint now, const double rawIntervalSeconds,
+        const std::optional<size_t> orderedFifoGenerationLimit,
+        const std::optional<size_t> integerBaseCapGenerationLimit) {
+    auto& ramp = this->state.ramp;
+    auto& paced = ramp.pacedLoad;
+    const auto pacingLimit = orderedFifoGenerationLimit
+        ? orderedFifoGenerationLimit : integerBaseCapGenerationLimit;
+    const bool fifo = orderedFifoGenerationLimit.has_value();
+    // Expiration can coincide with the first applied handoff. Discard its old
+    // baseline before observing that owner so the same frame can start fresh.
+    if (paced.until && (now >= *paced.until ||
+            this->state.outputPlanner.generationLimit != paced.testedLimit)) {
+        this->cancelPacedLoadValidation(paced.refreshBaseline
+            ? "applied-pacing-validation-expired-or-replaced"
+            : "recent-trial-expired-or-replaced");
+    }
+    // A lower probe can leave the estimator above FIFO's entry range or
+    // leave the automatic cap qualifying its higher rung. That planned return
+    // is the same pacing lifetime even when it takes longer than settling.
+    const bool probePause = paced.lowerLoadProbe ||
+        this->state.efficiencyProbe.evaluationAt.has_value();
+    if (ramp.pacingResumePending && !probePause) {
+        const bool sameWorkload = ramp.observedPacingLimit &&
+            this->state.outputPlanner.generationLimit == *ramp.observedPacingLimit &&
+            this->state.stableCadence.limit.value_or(*ramp.observedPacingLimit) ==
+                *ramp.observedPacingLimit &&
+            this->validatedGenerationLimit() >= *ramp.observedPacingLimit &&
+            !ramp.evaluationAt && !this->state.stableCadence.evaluationAt &&
+            !this->state.nativeCadenceProbe.active && !this->state.rearm.required &&
+            !this->state.rescue.until && !this->state.rescue.verificationUntil &&
+            !this->state.discontinuityRecovery.deadline;
+        const bool sameOwner = !pacingLimit ||
+            (fifo == ramp.observedPacingFifo &&
+             (pacingLimit == ramp.observedPacingLimit ||
+              (!fifo && pacingLimit < ramp.observedPacingLimit)));
+        if (!sameWorkload || !sameOwner)
+            ramp.resetPacingObservation();
+    }
+    if (!probePause && !ramp.pacingResumePending) {
+        if (!pacingLimit) {
+            ramp.observedPacingLimit.reset();
+        } else if (ramp.observedPacingLimit != pacingLimit ||
+                ramp.observedPacingFifo != fifo) {
+            if (!paced.until && *pacingLimit > 1 &&
+                    this->config.validateIntegerPacing &&
+                    this->config.stableCadence &&
+                    !this->config.dynamicCadenceRecovery &&
+                    this->config.recoveryPolicy == AdaptiveRecoveryPolicy::OrderedSdr &&
+                    this->state.outputPlanner.generationLimit == *pacingLimit &&
+                    this->validatedGenerationLimit() >= *pacingLimit &&
+                    !ramp.evaluationAt &&
+                    !this->state.stableCadence.evaluationAt &&
+                    !this->state.nativeCadenceProbe.active &&
+                    !this->state.rearm.required &&
+                    !this->state.rescue.until &&
+                    !this->state.rescue.verificationUntil) {
+                // The old promotion baseline may belong to another scene.
+                // Measure the paced workload first, then the adjacent lower
+                // load through the existing efficiency-probe owner.
+                paced = {
+                    .until = now + adaptivePacedLoadWatchDuration,
+                    .testedLimit = *pacingLimit,
+                    .previousLimit = *pacingLimit - 1,
+                    .previousFailures = ramp.lastFailedLimit == *pacingLimit
+                        ? ramp.consecutiveFailures : 0,
+                    .fifo = fifo,
+                    .refreshBaseline = true,
+                };
+            }
+            // Keep a not-yet-qualified owner observable until its scheduler
+            // evaluation ends; merely seeing its cap cannot validate it.
+            if (paced.until) {
+                ramp.observedPacingLimit = pacingLimit;
+                ramp.observedPacingFifo = fifo;
+            }
+        }
+    }
+    if (!probePause && pacingLimit == ramp.observedPacingLimit &&
+            fifo == ramp.observedPacingFifo)
+        ramp.pacingResumePending = false;
+    if (!paced.until)
+        return;
+    if (paced.lowerLoadProbe) {
+        // FIFO is deliberately released for the lower probe. An automatic
+        // cap instead follows its lower multiplier. Allow the first owner's
+        // turnover, but never measure a lower load through the old high cap.
+        const bool lowerOwnerReady = paced.fifo
+            ? !orderedFifoGenerationLimit
+            : integerBaseCapGenerationLimit == paced.previousLimit;
+        if (now > *paced.settlingUntil && !lowerOwnerReady) {
+            this->cancelPacedLoadValidation("pacing-policy-changed");
+            return;
+        }
+    } else if (pacingLimit != paced.testedLimit ||
+            (paced.settlingUntil &&
+             paced.fifo != orderedFifoGenerationLimit.has_value())) {
+        if (paced.settlingUntil)
+            this->cancelPacedLoadValidation("pacing-policy-changed");
+        return;
+    }
+    const bool deliveryObserved = paced.deliveryObserved;
+    paced.deliveryObserved = false;
+    if (!paced.settlingUntil) {
+        // The first interval still belongs to the previous pacing owner.
+        // Permit its bounded turnover, then measure actual source intervals
+        // and fully delivered output counts rather than an EWMA endpoint.
+        paced.fifo = orderedFifoGenerationLimit.has_value();
+        paced.settlingUntil = now + adaptivePacedLoadSettlingDuration;
+        this->diagnostics->stableCadence("adaptive-paced-load-start",
+            paced.testedLimit, paced.baselineBaseFps,
+            this->state.cadence.smoothedIntervalSeconds > 0.0
+                ? 1.0 / this->state.cadence.smoothedIntervalSeconds : 0.0,
+            paced.fifo ? "ordered-fifo" : "automatic-integer-cap");
+        return;
+    }
+    if (paced.discardTurnoverInterval) {
+        // The preceding fast interval delivered only a real frame. Exclude
+        // its return even when it crosses the fixed settling boundary.
+        paced.discardTurnoverInterval = false;
+        return;
+    }
+    if (now <= *paced.settlingUntil)
+        return;
+    if (!deliveryObserved || rawIntervalSeconds <= 0.0) {
+        this->cancelPacedLoadValidation("incomplete-delivery-evidence");
+        return;
+    }
+    paced.sampleSeconds += rawIntervalSeconds;
+    paced.sampleFrames++;
+    paced.sampleOutputs += paced.deliveredOutputs;
+    paced.windowSeconds += rawIntervalSeconds;
+    paced.windowFrames++;
+    if (paced.windowSeconds < adaptivePacedLoadWindowSeconds)
+        return;
+    const double windowFps = static_cast<double>(paced.windowFrames) /
+        paced.windowSeconds;
+    paced.minimumWindowFps = paced.minimumWindowFps > 0.0
+        ? std::min(paced.minimumWindowFps, windowFps) : windowFps;
+    paced.maximumWindowFps = std::max(paced.maximumWindowFps, windowFps);
+    paced.windowSeconds = 0.0;
+    paced.windowFrames = 0;
+    if (paced.maximumWindowFps > paced.minimumWindowFps *
+            adaptiveStableCadenceMaximumCandidateSpreadRatio) {
+        // A moving scene cannot turn a recent pacing experiment into an
+        // enduring authority to demote an otherwise accepted workload.
+        this->cancelPacedLoadValidation("source-cadence-changing");
+        return;
+    }
+    if (paced.sampleSeconds < adaptivePacedLoadSampleSeconds)
+        return;
+    const AdaptiveLoadOutcome measured{
+        .baseFps = static_cast<double>(paced.sampleFrames) / paced.sampleSeconds,
+        .outputFps = std::min(static_cast<double>(this->config.targetFps),
+            static_cast<double>(paced.sampleOutputs) / paced.sampleSeconds),
+    };
+    if (paced.refreshBaseline && !paced.lowerLoadProbe) {
+        paced.pacedBaseFps = measured.baseFps;
+        paced.pacedOutputFps = measured.outputFps;
+        paced.lowerLoadProbe = true;
+        paced.until = now + adaptivePacedLoadWatchDuration;
+        paced.settlingUntil = now + adaptivePacedLoadSettlingDuration;
+        paced.resetSamples();
+        auto& probe = this->state.efficiencyProbe;
+        probe.resetEvaluation();
+        probe.testedLimit = paced.previousLimit;
+        probe.baselineBaseFps = measured.baseFps;
+        probe.evaluationAt = paced.until;
+        this->state.outputPlanner.resetTargetClock();
+        this->diagnostics->stableCadence("adaptive-paced-load-baseline-probe",
+            paced.previousLimit, measured.baseFps, measured.baseFps,
+            "fresh-adjacent-lower-load");
+        return;
+    }
+    const auto previous = paced.lowerLoadProbe ? measured
+        : adaptiveLoadOutcome(this->config.targetFps,
+            paced.previousLimit, paced.baselineBaseFps);
+    const auto current = paced.lowerLoadProbe
+        ? AdaptiveLoadOutcome{paced.pacedBaseFps, paced.pacedOutputFps}
+        : measured;
+    if (paced.lowerLoadProbe) {
+        paced.baselineBaseFps = previous.baseFps;
+        this->state.efficiencyProbe.resetEvaluation();
+        this->state.outputPlanner.resetTargetClock();
+        ramp.pacingResumePending = ramp.observedPacingLimit.has_value();
+    }
+    if (adaptiveHigherLoadIsUseful(this->config.targetFps,
+            paced.testedLimit, previous, current, true)) {
+        this->diagnostics->stableCadence("adaptive-paced-load-accepted",
+            paced.testedLimit, paced.baselineBaseFps, current.baseFps,
+            "settled-output-qualified");
+        paced.reset();
+        return;
+    }
+    this->diagnostics->rampResult(false, paced.previousLimit, paced.testedLimit,
+        previous.baseFps, current.baseFps, previous.outputFps,
+        current.outputFps, "paced-unpaid-real-frame-cost");
+    // Reuse the ordinary adjacent-rung retry ladder and lower-load proof.
+    // A planned scheduler rollback does not classify transport pressure or
+    // gain permission to recreate resources.
+    ramp.lastFailedLimit = paced.testedLimit;
+    ramp.consecutiveFailures = paced.previousFailures + 1;
+    ramp.failedBaselineBaseFps = paced.baselineBaseFps;
+    const auto retry = adaptiveRampRetryDelayForFailures(ramp.consecutiveFailures);
+    ramp.nextAt = now + retry;
+    ramp.pacedLoadRollbackLimit = paced.testedLimit;
+    this->state.outputPlanner.generationLimit = paced.previousLimit;
+    ramp.previousLimit = paced.previousLimit;
+    ramp.baselineBaseFps = paced.baselineBaseFps;
+    ramp.targetDeficitSince.reset();
+    ramp.lowerLoadSample.reset();
+    this->state.stableCadence = {};
+    this->state.efficiencyProbe.resetEvaluation();
+    this->state.acceptedLoadBaseline = {};
+    this->state.outputPlanner.resetTargetClock();
+    this->diagnostics->rampBackoff(ramp.lastFailedLimit,
+        ramp.consecutiveFailures, ramp.failedBaselineBaseFps, retry);
+    paced.reset();
+}
+
+FGVK_ADAPTIVE_STAGE_INLINE void AdaptiveScheduler::updateGenerationLimit(
+        const std::chrono::steady_clock::time_point now,
+        const double baseFps, const double rawIntervalSeconds) {
+    const size_t configuredLimit = std::min(
+        this->config.generatedFrameCapacity,
+        this->config.maximumMultiplier - 1
+    );
+    this->state.outputPlanner.generationLimit = std::min(
+        this->state.outputPlanner.generationLimit, configuredLimit
+    );
+
+    if (this->state.ramp.pacedLoad.until) {
+        const auto& paced = this->state.ramp.pacedLoad;
+        if (!paced.settlingUntil &&
+                baseFps * static_cast<double>(paced.testedLimit + 1) <
+                    static_cast<double>(this->config.targetFps) *
+                        adaptiveStableCadenceMinimumRetentionTargetRatio) {
+            // Integer pacing cannot serve this deficit. Do not hold a useful
+            // 4x/5x trial behind an experiment which cannot take effect.
+            this->cancelPacedLoadValidation("integer-pacing-target-deficit");
+        } else {
+            return;
+        }
+    }
+
+    if (this->state.rearm.required) {
+        this->state.ramp.lowerLoadSample.reset();
+        // The stabilization phase itself remains real-frame-only. Once it has
+        // completed, retain the last proven level while the failed higher
+        // probe cools down instead of dropping frame generation altogether.
+        this->state.outputPlanner.generationLimit = std::min(
+            this->state.rearm.fallbackLimit, configuredLimit
+        );
+        const bool cooldownElapsed =
+            !this->state.rearm.notBefore || now >= *this->state.rearm.notBefore;
+        const bool baselineRecovered =
+            this->state.rearm.reason == "probe-interrupted" ||
+            this->state.rearm.baselineBaseFps <= 0.0 ||
+            baseFps >= this->state.rearm.baselineBaseFps;
+        const auto fallbackOutcome = adaptiveLoadOutcome(
+            this->config.targetFps,
+            this->state.rearm.fallbackLimit,
+            baseFps
+        );
+        const bool stableLowerBaselineEligible =
+            this->state.rearm.reason == "ramp-rejected" &&
+            this->state.rearm.fallbackLimit == 0 &&
+            fallbackOutcome.outputFps <
+                static_cast<double>(this->config.targetFps) *
+                    adaptiveNearTargetNativeMinimumOutputRatio;
+        const bool rearmEligible =
+            baselineRecovered || stableLowerBaselineEligible;
+        if (!rearmEligible) {
+            this->state.rearm.stableSince.reset();
+            return;
+        }
+        if (!this->state.rearm.stableSince)
+            this->state.rearm.stableSince = now;
+        const bool cadenceStable =
+            now - *this->state.rearm.stableSince >= adaptiveStableRearmDuration;
+        if (!cadenceStable || !cooldownElapsed)
+            return;
+
+        const std::string_view decision =
+            this->state.rearm.reason == "probe-interrupted"
+            ? "interruption-settled"
+            : baselineRecovered
+                ? "baseline-recovered"
+                : "stable-target-deficit-rebased";
+        this->diagnostics->rearm(
+            "adaptive-rearm-ready",
+            this->state.rearm.reason,
+            this->state.rearm.consecutiveProbeFailures,
+            this->state.rearm.fallbackLimit,
+            AdaptiveScheduler::Clock::duration::zero(),
+            this->state.rearm.baselineBaseFps,
+            baseFps,
+            decision
+        );
+        this->state.rearm.required = false;
+        this->state.rearm.notBefore.reset();
+        this->state.rearm.stableSince.reset();
+        this->state.rearm.reason.clear();
+        this->state.rearm.baselineBaseFps = 0.0;
+        this->state.rearm.fallbackLimit = 0;
+        this->state.ramp.nextAt.reset();
+    }
+
+    // A validated constant cadence already supplies the desired smoothness.
+    // Do not probe a higher generated-frame level until it becomes unsuitable.
+    if (this->state.stableCadence.limit) {
+        this->state.ramp.lowerLoadSample.reset();
+        this->state.menuReturnLoadGuard.reset();
+        this->state.ramp.targetDeficitSince.reset();
+        return;
+    }
+
+    if (this->state.ramp.evaluationAt) {
+        auto& ramp = this->state.ramp;
+        ramp.targetTrialFrames++;
+        ramp.targetSampleComplete = ramp.targetSampleComplete &&
+            ramp.targetDeliveryReports == ramp.targetTrialFrames;
+        if (now <= ramp.targetSampleStartsAt) {
+            // Let the old output clock turn over before measuring the trial.
+            ramp.targetGeneratedBeforeSample = ramp.delivery.acceptedForPresentation();
+        } else {
+            ramp.targetSampleSeconds += rawIntervalSeconds;
+            ramp.targetSampleFrames++;
+        }
+        if (now < *this->state.ramp.evaluationAt)
+            return;
+
+        const size_t testedLimit = this->state.outputPlanner.generationLimit;
+        double comparisonBaselineBaseFps = this->state.ramp.baselineBaseFps;
+        const bool menuBaselineApplies =
+            this->state.menuReturnLoadGuard.active &&
+            this->state.ramp.previousLimit ==
+                this->state.menuReturnLoadGuard.provenGenerationLimit &&
+            testedLimit > this->state.ramp.previousLimit;
+        if (menuBaselineApplies) {
+            comparisonBaselineBaseFps = std::max(
+                comparisonBaselineBaseFps,
+                this->state.menuReturnLoadGuard.baselineBaseFps
+            );
+        }
+        if (this->state.ramp.lastFailedLimit == testedLimit) {
+            comparisonBaselineBaseFps = std::max(
+                comparisonBaselineBaseFps,
+                this->state.ramp.failedBaselineBaseFps
+            );
+        }
+        const auto previousOutcome = adaptiveLoadOutcome(
+            this->config.targetFps,
+            this->state.ramp.previousLimit,
+            comparisonBaselineBaseFps
+        );
+        const auto currentOutcome = adaptiveLoadOutcome(
+            this->config.targetFps, testedLimit, baseFps
+        );
+        const bool deliveryHealthy = this->state.ramp.delivery.healthy();
+        const bool costPaid = adaptiveHigherLoadIsUseful(this->config.targetFps,
+            testedLimit, previousOutcome, currentOutcome, false);
+        const bool completeTargetTrial = ramp.targetSampleComplete &&
+            ramp.delivery.requested() > 0 &&
+            ramp.delivery.acceptedForPresentation() == ramp.delivery.requested();
+        const double sampleSeconds =
+            std::chrono::duration<double>(adaptiveRampEvaluationDuration).count();
+        if (!costPaid && completeTargetTrial &&
+                adaptiveHigherLoadIsUseful(this->config.targetFps,
+                    testedLimit, previousOutcome, currentOutcome, true) &&
+                ramp.targetSampleSeconds + 1e-9 < sampleSeconds) {
+            // Only the new target preference needs the extra turnover sample.
+            // Ordinary cost decisions keep their original one-second trial.
+            ramp.evaluationAt = ramp.targetSampleStartsAt + adaptiveRampEvaluationDuration;
+            return;
+        }
+        // Use the settled trial's accepted output, not its final smoothed FPS.
+        // Missing reports, partial delivery, and bypassed intervals cannot
+        // turn a short fast tail into permission to sacrifice real cadence.
+        const double measuredOutputFps = ramp.targetSampleSeconds > 0.0
+            ? std::min(static_cast<double>(this->config.targetFps),
+                static_cast<double>(ramp.targetSampleFrames +
+                    ramp.delivery.acceptedForPresentation() -
+                    ramp.targetGeneratedBeforeSample) / ramp.targetSampleSeconds)
+            : 0.0;
+        const bool targetDeliveryQualified = completeTargetTrial &&
+            ramp.targetSampleSeconds + 1e-9 >= sampleSeconds &&
+            measuredOutputFps >= static_cast<double>(this->config.targetFps) *
+                adaptiveTargetSatisfiedRatio;
+        const bool accepted = deliveryHealthy && (costPaid ||
+            (targetDeliveryQualified && adaptiveHigherLoadIsUseful(
+                this->config.targetFps, testedLimit, previousOutcome,
+                {.baseFps = baseFps, .outputFps = measuredOutputFps}, true)));
+
+        this->diagnostics->rampResult(
+            accepted,
+            this->state.ramp.previousLimit,
+            testedLimit,
+            comparisonBaselineBaseFps,
+            baseFps,
+            previousOutcome.outputFps,
+            currentOutcome.outputFps,
+            accepted
+                ? std::string_view{}
+                : deliveryHealthy
+                    ? "unpaid-real-frame-cost"
+                    : "delivery-pressure"
+        );
+        // A pre-menu result belongs only to this first post-return workload
+        // decision. Do not carry it into a later game scene.
+        this->state.menuReturnLoadGuard.reset();
+
+        this->state.ramp.evaluationAt.reset();
+        this->state.ramp.delivery.reset();
+        this->state.outputPlanner.resetTargetClock();
+        if (!accepted) {
+            this->state.outputPlanner.generationLimit = this->state.ramp.previousLimit;
+            if (this->state.ramp.previousLimit == 0) {
+                this->scheduleRearm(
+                    now,
+                    "ramp-rejected",
+                    this->state.ramp.previousLimit,
+                    this->state.ramp.baselineBaseFps
+                );
+            } else {
+                if (this->state.ramp.lastFailedLimit != testedLimit) {
+                    this->state.ramp.lastFailedLimit = testedLimit;
+                    this->state.ramp.consecutiveFailures = 0;
+                    this->state.ramp.failedBaselineBaseFps = 0.0;
+                }
+                this->state.ramp.consecutiveFailures++;
+                this->state.ramp.failedBaselineBaseFps = std::max(
+                    this->state.ramp.failedBaselineBaseFps,
+                    comparisonBaselineBaseFps
+                );
+                const auto retryDelay = adaptiveRampRetryDelayForFailures(
+                    this->state.ramp.consecutiveFailures
+                );
+                this->state.ramp.nextAt = now + retryDelay;
+                this->diagnostics->rampBackoff(
+                    testedLimit,
+                    this->state.ramp.consecutiveFailures,
+                    this->state.ramp.failedBaselineBaseFps,
+                    retryDelay
+                );
+            }
+            return;
+        }
+        this->state.rearm.consecutiveProbeFailures = 0;
+        this->state.acceptedLoadBaseline.generationLimit =
+            this->state.ramp.previousLimit;
+        this->state.acceptedLoadBaseline.baseFps =
+            comparisonBaselineBaseFps;
+        if (testedLimit > 1 && this->config.validateIntegerPacing &&
+                this->config.stableCadence &&
+                currentOutcome.outputFps >=
+                    static_cast<double>(this->config.targetFps) *
+                        adaptiveStableCadenceMinimumRetentionTargetRatio &&
+                !this->config.dynamicCadenceRecovery &&
+                this->config.recoveryPolicy ==
+                    AdaptiveRecoveryPolicy::OrderedSdr) {
+            this->state.ramp.pacedLoad = {
+                .until = now + adaptivePacedLoadWatchDuration,
+                .testedLimit = testedLimit,
+                .previousLimit = this->state.ramp.previousLimit,
+                .baselineBaseFps = comparisonBaselineBaseFps,
+                .previousFailures = this->state.ramp.lastFailedLimit == testedLimit
+                    ? this->state.ramp.consecutiveFailures : 0,
+            };
+        }
+        this->state.ramp.lastFailedLimit = 0;
+        this->state.ramp.consecutiveFailures = 0;
+        this->state.ramp.failedBaselineBaseFps = 0.0;
+        this->state.ramp.nextAt = now + adaptiveRampStepDelay;
+        if (this->config.stableCadence) {
+            this->state.stableCadence.retryAt =
+                now + adaptiveStableCadenceStrictSettlingDuration;
+        }
+    }
+
+    if (this->advanceNearTargetNativePreference(
+            now, baseFps, configuredLimit)) {
+        this->state.ramp.lowerLoadSample.reset();
+        this->state.menuReturnLoadGuard.reset();
+        this->state.ramp.targetDeficitSince.reset();
+        return;
+    }
+
+    // Once the current proven ceiling can already supply the requested target,
+    // a higher multiplier adds inference load without useful output. Keep the
+    // lower level and reconsider automatically if the measured base rate later
+    // falls far enough that this capacity is no longer sufficient.
+    const double validatedOutputFps = baseFps *
+        static_cast<double>(this->state.outputPlanner.generationLimit + 1);
+    // A current rung within ordinary cadence noise of the target does not
+    // need another generated output. Recheck this before every promotion so
+    // a recovered source cancels an earlier transient target deficit.
+    const bool targetSatisfied = validatedOutputFps >=
+        static_cast<double>(this->config.targetFps) *
+            adaptiveTargetSatisfiedRatio;
+    if (targetSatisfied) {
+        this->state.ramp.lowerLoadSample.reset();
+        this->state.menuReturnLoadGuard.reset();
+        this->state.ramp.targetDeficitSince.reset();
+        this->state.ramp.targetConstraintSince.reset();
+        this->state.ramp.targetConstraintReported = false;
+        return;
+    }
+
+    // Preserve the pre-menu load while a return is unsettled. A changed game
+    // scene need not ever recover that old FPS, so fresh lower-load evidence
+    // can also release the hold after the ordinary recovery delay below.
+    const bool awaitingMenuReturnTargetRecovery =
+        this->state.menuReturnLoadGuard.active &&
+        this->state.outputPlanner.generationLimit ==
+            this->state.menuReturnLoadGuard.provenGenerationLimit;
+    if (this->state.outputPlanner.generationLimit >= configuredLimit) {
+        this->state.ramp.lowerLoadSample.reset();
+        this->state.menuReturnLoadGuard.reset();
+        this->state.ramp.targetDeficitSince.reset();
+        if (!this->state.ramp.targetConstraintSince) {
+            this->state.ramp.targetConstraintSince = now;
+        } else if (!this->state.ramp.targetConstraintReported &&
+                now - *this->state.ramp.targetConstraintSince >=
+                    adaptiveTargetConstraintDiagnosticDuration) {
+            this->diagnostics->targetConstrained(
+                this->config.targetFps,
+                configuredLimit + 1,
+                baseFps,
+                validatedOutputFps
+            );
+            this->state.ramp.targetConstraintReported = true;
+        }
+        return;
+    }
+    this->state.ramp.targetConstraintSince.reset();
+    this->state.ramp.targetConstraintReported = false;
+    if (!this->state.ramp.targetDeficitSince) {
+        this->state.ramp.lowerLoadSample.reset();
+        this->state.ramp.targetDeficitSince = now;
+    }
+
+    const size_t nextLimit = this->state.outputPlanner.generationLimit + 1;
+    const bool failedRampPending =
+        this->state.ramp.consecutiveFailures > 0 &&
+        this->state.ramp.lastFailedLimit == nextLimit &&
+        this->state.ramp.failedBaselineBaseFps > 0.0;
+    double retryBaselineBaseFps = failedRampPending
+        ? this->state.ramp.failedBaselineBaseFps : 0.0;
+    const bool failedLoadRecovered = retryBaselineBaseFps <= 0.0 ||
+        baseFps >= retryBaselineBaseFps;
+
+    auto& lowerLoad = this->state.ramp.lowerLoadSample;
+    if (this->state.ramp.nextAt && now < *this->state.ramp.nextAt) {
+        lowerLoad.reset();
+        return;
+    }
+
+    const bool requalifyingBaseline =
+        awaitingMenuReturnTargetRecovery || !failedLoadRecovered;
+    if (this->state.outputPlanner.generationLimit > 0 ||
+            requalifyingBaseline) {
+        // Use the existing cadence qualification envelope and rearm interval.
+        // Qualify short windows of the existing source estimate. Regular
+        // short/long frame patterns must not look like changing game scenes.
+        // Missing/failed delivery and timing resets still break continuity.
+        if (!lowerLoad.since)
+            lowerLoad.since = now;
+        lowerLoad.intervalSecondsSum += 1.0 / baseFps;
+        lowerLoad.frames++;
+        if (lowerLoad.intervalSecondsSum <
+                std::chrono::duration<double>(
+                    adaptiveLowerLoadCadenceWindowDuration).count())
+            return;
+        const double sampledBaseFps = static_cast<double>(lowerLoad.frames) /
+            lowerLoad.intervalSecondsSum;
+        lowerLoad.intervalSecondsSum = 0.0;
+        lowerLoad.frames = 0;
+        const double minimumBaseFps = lowerLoad.minimumBaseFps > 0.0
+            ? std::min(lowerLoad.minimumBaseFps, sampledBaseFps) : sampledBaseFps;
+        const double maximumBaseFps = lowerLoad.maximumBaseFps > 0.0
+            ? std::max(lowerLoad.maximumBaseFps, sampledBaseFps) : sampledBaseFps;
+        if (maximumBaseFps > minimumBaseFps *
+                adaptiveStableCadenceMaximumCandidateSpreadRatio) {
+            lowerLoad.since = now;
+            lowerLoad.minimumBaseFps = sampledBaseFps;
+            lowerLoad.maximumBaseFps = sampledBaseFps;
+        } else {
+            lowerLoad.minimumBaseFps = minimumBaseFps;
+            lowerLoad.maximumBaseFps = maximumBaseFps;
+        }
+        if (now - *lowerLoad.since < adaptiveStableRearmDuration)
+            return;
+
+        const double oldBaselineBaseFps = std::max(
+            retryBaselineBaseFps,
+            awaitingMenuReturnTargetRecovery
+                ? this->state.menuReturnLoadGuard.baselineBaseFps : 0.0
+        );
+        retryBaselineBaseFps = lowerLoad.maximumBaseFps;
+        if (requalifyingBaseline) {
+            this->diagnostics->rearm(
+                "adaptive-rearm-ready",
+                awaitingMenuReturnTargetRecovery ? "menu-return" : "ramp-rejected",
+                this->state.ramp.consecutiveFailures,
+                this->state.outputPlanner.generationLimit,
+                Clock::duration::zero(),
+                oldBaselineBaseFps,
+                retryBaselineBaseFps,
+                "stable-target-deficit-rebased"
+            );
+        }
+        this->state.menuReturnLoadGuard.reset();
+        if (failedRampPending)
+            this->state.ramp.failedBaselineBaseFps = retryBaselineBaseFps;
+        // Keep failure counts and their backoff; the next actual trial must
+        // still earn its real-frame cost and pass the delivery test.
+    }
+    if (now - *this->state.ramp.targetDeficitSince <
+            adaptiveTargetDeficitDuration)
+        return;
+    lowerLoad.reset();
+
+    this->state.ramp.previousLimit = this->state.outputPlanner.generationLimit;
+    this->state.ramp.baselineBaseFps = std::max(
+        baseFps, retryBaselineBaseFps
+    );
+    this->state.outputPlanner.generationLimit++;
+    this->state.ramp.evaluationAt = now + adaptiveRampEvaluationDuration;
+    this->state.ramp.delivery.reset();
+    this->state.ramp.targetSampleSeconds = 0.0;
+    this->state.ramp.targetSampleStartsAt = now + adaptivePacedLoadSettlingDuration;
+    this->state.ramp.targetSampleFrames = 0;
+    this->state.ramp.targetDeliveryReports = 0;
+    this->state.ramp.targetTrialFrames = 0;
+    this->state.ramp.targetGeneratedBeforeSample = 0;
+    this->state.ramp.targetSampleComplete = true;
+    this->state.ramp.targetDeficitSince.reset();
+    this->state.outputPlanner.resetTargetClock();
+    this->diagnostics->ramp(
+        this->state.ramp.previousLimit,
+        this->state.outputPlanner.generationLimit,
+        baseFps
+    );
+}
+
+#undef FGVK_ADAPTIVE_STAGE_INLINE

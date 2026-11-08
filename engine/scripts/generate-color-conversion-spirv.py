@@ -12,7 +12,7 @@ import tempfile
 
 
 ROOT = Path(__file__).resolve().parent.parent
-SHADER_DIR = ROOT / "mako-backend/src/shaders"
+SHADER_DIR = ROOT / "fgvk-backend/src/shaders"
 OUTPUT = SHADER_DIR / "color_conversion_spirv.hpp"
 HASH_MANIFEST = SHADER_DIR / "color_conversion_spirv.hashes"
 SHADERS = (
@@ -124,7 +124,7 @@ def check_source_hashes() -> None:
 def generate() -> None:
     hashes = source_hashes()
     arrays: list[tuple[str, bytes]] = []
-    with tempfile.TemporaryDirectory(prefix="mako-spirv-") as temp_dir:
+    with tempfile.TemporaryDirectory(prefix="fgvk-spirv-") as temp_dir:
         for filename, symbol in SHADERS:
             source = SHADER_DIR / filename
             binary = Path(temp_dir) / f"{filename}.spv"
@@ -147,7 +147,7 @@ def generate() -> None:
         "#include <cstdint>",
         "#include <vector>",
         "",
-        "namespace mako::backend::embedded {",
+        "namespace fgvk::backend::embedded {",
     ))
     for symbol, data in arrays:
         lines.extend((

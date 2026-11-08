@@ -1,16 +1,16 @@
 # Maintainer: xidongbot <xidong-ai@foxmail.com>
 # Upstream: https://github.com/eugeniosegala/MAKO
 #
-# This PKGBUILD repackages the official prebuilt MAKO Renderer host archive
-# (MAKO-Renderer-vX.Y.Z-linux.tar.xz) into a system-wide pacman package.
-# It does not build MAKO from source. The upstream ELF binaries and shared
+# This PKGBUILD repackages the official prebuilt framegen-vulkan host archive
+# (framegen-vulkan-vX.Y.Z-linux.tar.xz) into a system-wide pacman package.
+# It does not build framegen-vulkan from source. The upstream ELF binaries and shared
 # libraries are installed byte-identical to the release archive so they stay
-# verifiable against MAKO-Renderer-install-manifest.txt.
+# verifiable against framegen-vulkan-install-manifest.txt.
 #
 # Run check-release-pin.sh next to this file to confirm that pkgver, source
 # and sha256sums still match the release pinned in engine/renderer-release.json.
 
-pkgname=mako-renderer-bin
+pkgname=framegen-vulkan-bin
 pkgver=4.6.0
 pkgrel=1
 pkgdesc="Frame generation and spatial scaling Vulkan layers for Linux games"
@@ -21,8 +21,8 @@ install="${pkgname}.install"
 
 # Runtime dependencies mapped to the DT_NEEDED entries of the shipped binaries.
 # Both layer sets ship 64-bit and 32-bit libraries, hence the lib32 entries.
-# bash is intentionally not listed even though /usr/bin/mako-launch and
-# /usr/bin/mako-diagnostics are bash scripts: bash is guaranteed by base.
+# bash is intentionally not listed even though /usr/bin/fgvk-launch and
+# /usr/bin/fgvk-diagnostics are bash scripts: bash is guaranteed by base.
 depends=(
     # libc.so.6, libm.so.6, ld-linux-x86-64.so.2
     'glibc'
@@ -54,51 +54,51 @@ optdepends=(
 
 # Upstream binaries are already stripped and must remain byte-identical to the
 # official archive so they can be checked against
-# MAKO-Renderer-install-manifest.txt. Do not strip them or generate debug symbols.
+# framegen-vulkan-install-manifest.txt. Do not strip them or generate debug symbols.
 options=('!strip' '!debug')
 
-# Treat a future source-built mako-renderer package as the interchangeable
+# Treat a future source-built fgvk-renderer package as the interchangeable
 # implementation. Pacman then resolves dependencies against either package and
 # removes one before installing the other instead of relying on a late file
 # conflict.
-provides=("mako-renderer=${pkgver}")
-conflicts=('mako-renderer')
+provides=("fgvk-renderer=${pkgver}")
+conflicts=('fgvk-renderer')
 
-source=("MAKO-Renderer-v${pkgver}-linux.tar.xz::https://github.com/eugeniosegala/MAKO/releases/download/render-v${pkgver}/MAKO-Renderer-v${pkgver}-linux.tar.xz")
+source=("framegen-vulkan-v${pkgver}-linux.tar.xz::https://github.com/eugeniosegala/MAKO/releases/download/render-v${pkgver}/MAKO-Renderer-v${pkgver}-linux.tar.xz")
 sha256sums=('66224414e2d94f7cb019226735b3b6d26b9be7103c5334250522f7260213be56')
-noextract=("MAKO-Renderer-v${pkgver}-linux.tar.xz")
+noextract=("framegen-vulkan-v${pkgver}-linux.tar.xz")
 
-_mako_install_payload_file() {
+_fgvk_install_payload_file() {
     local relative_path="$1"
     local destination_path=""
     local install_mode=644
 
     case "$relative_path" in
         "" | /* | ../* | */../* | */.. | ./* | */./* | */.)
-            printf 'mako-renderer-bin: unsafe archive manifest path: %s\n' "$relative_path" >&2
+            printf 'framegen-vulkan-bin: unsafe archive manifest path: %s\n' "$relative_path" >&2
             return 1
             ;;
     esac
     if [[ ! -f "$relative_path" ]]; then
-        printf 'mako-renderer-bin: archive manifest path is missing: %s\n' "$relative_path" >&2
+        printf 'framegen-vulkan-bin: archive manifest path is missing: %s\n' "$relative_path" >&2
         return 1
     fi
 
     case "$relative_path" in
-        bin/mako-installer | bin/*-ui | share/applications/*)
+        bin/fgvk-installer | bin/*-ui | share/applications/*)
             # The user-local installer must never manage a pacman-owned system
             # prefix. The Renderer-only package ships no configuration app or
             # desktop entries, including those in older archives.
             return 0
             ;;
-        share/doc/mako-render/LICENSE.md | share/doc/mako-render/THIRD_PARTY_NOTICES.md)
+        share/doc/framegen-vulkan/LICENSE.md | share/doc/framegen-vulkan/THIRD_PARTY_NOTICES.md)
             destination_path="$pkgdir/usr/share/licenses/$pkgname/${relative_path##*/}"
             ;;
-        share/doc/mako-render/vkbasalt/LICENSE | share/doc/mako-render/vkbasalt/RESHade-LICENSE.md)
+        share/doc/framegen-vulkan/vkbasalt/LICENSE | share/doc/framegen-vulkan/vkbasalt/RESHade-LICENSE.md)
             destination_path="$pkgdir/usr/share/licenses/$pkgname/vkbasalt/${relative_path##*/}"
             ;;
-        share/doc/mako-render/*)
-            destination_path="$pkgdir/usr/share/doc/$pkgname/${relative_path#share/doc/mako-render/}"
+        share/doc/framegen-vulkan/*)
+            destination_path="$pkgdir/usr/share/doc/$pkgname/${relative_path#share/doc/framegen-vulkan/}"
             ;;
         bin/*)
             destination_path="$pkgdir/usr/$relative_path"
@@ -112,7 +112,7 @@ _mako_install_payload_file() {
             destination_path="$pkgdir/usr/$relative_path"
             ;;
         *)
-            printf 'mako-renderer-bin: unsupported archive manifest path: %s\n' "$relative_path" >&2
+            printf 'framegen-vulkan-bin: unsupported archive manifest path: %s\n' "$relative_path" >&2
             return 1
             ;;
     esac
@@ -125,11 +125,11 @@ prepare() {
     # and verify one private payload copy outside fakeroot on every preparation.
     rm -rf payload
     mkdir -p payload
-    tar -xJf "$srcdir/MAKO-Renderer-v${pkgver}-linux.tar.xz" -C payload
+    tar -xJf "$srcdir/framegen-vulkan-v${pkgver}-linux.tar.xz" -C payload
     cd "$srcdir/payload"
 
-    if ! sha256sum --check --status MAKO-Renderer-install-manifest.txt; then
-        printf '%s\n' 'mako-renderer-bin: archive payload does not match its install manifest' >&2
+    if ! sha256sum --check --status framegen-vulkan-install-manifest.txt; then
+        printf '%s\n' 'framegen-vulkan-bin: archive payload does not match its install manifest' >&2
         return 1
     fi
 }
@@ -139,29 +139,29 @@ package() {
 
     local required_path
     local required_paths=(
-        bin/mako-cli
-        bin/mako-diagnostics
-        bin/mako-installer
-        bin/mako-launch
-        lib/libmako-render-scaling.so
-        lib/libmako-render.so
-        lib32/libmako-render-scaling.so
-        lib32/libmako-render.so
-        share/doc/mako-render/ASSET_PROVENANCE.md
-        share/doc/mako-render/LICENSE.md
-        share/doc/mako-render/THIRD_PARTY_NOTICES.md
-        share/mako-render/vulkan/implicit_layer.d/VkLayer_MAKO_render.json
-        share/mako-render/vulkan/implicit_layer.d/VkLayer_MAKO_render.x86.json
-        share/mako-render/vulkan/spatial_scaling.d/VkLayer_MAKO_spatial_scaling.json
-        share/mako-render/vulkan/spatial_scaling.d/VkLayer_MAKO_spatial_scaling.x86.json
-        share/vulkan/implicit_layer.d/VkLayer_MAKO_render.json
-        share/vulkan/implicit_layer.d/VkLayer_MAKO_render.x86.json
-        share/vulkan/implicit_layer.d/VkLayer_MAKO_spatial_scaling.json
-        share/vulkan/implicit_layer.d/VkLayer_MAKO_spatial_scaling.x86.json
+        bin/fgvk-cli
+        bin/fgvk-diagnostics
+        bin/fgvk-installer
+        bin/fgvk-launch
+        lib/libfgvk-render-scaling.so
+        lib/libfgvk-render.so
+        lib32/libfgvk-render-scaling.so
+        lib32/libfgvk-render.so
+        share/doc/framegen-vulkan/ASSET_PROVENANCE.md
+        share/doc/framegen-vulkan/LICENSE.md
+        share/doc/framegen-vulkan/THIRD_PARTY_NOTICES.md
+        share/framegen-vulkan/vulkan/implicit_layer.d/VkLayer_FGVK_render.json
+        share/framegen-vulkan/vulkan/implicit_layer.d/VkLayer_FGVK_render.x86.json
+        share/framegen-vulkan/vulkan/spatial_scaling.d/VkLayer_FGVK_spatial_scaling.json
+        share/framegen-vulkan/vulkan/spatial_scaling.d/VkLayer_FGVK_spatial_scaling.x86.json
+        share/vulkan/implicit_layer.d/VkLayer_FGVK_render.json
+        share/vulkan/implicit_layer.d/VkLayer_FGVK_render.x86.json
+        share/vulkan/implicit_layer.d/VkLayer_FGVK_spatial_scaling.json
+        share/vulkan/implicit_layer.d/VkLayer_FGVK_spatial_scaling.x86.json
     )
     for required_path in "${required_paths[@]}"; do
         if [[ ! -f "$required_path" ]]; then
-            printf 'mako-renderer-bin: required archive payload is missing: %s\n' "$required_path" >&2
+            printf 'framegen-vulkan-bin: required archive payload is missing: %s\n' "$required_path" >&2
             return 1
         fi
     done
@@ -171,19 +171,19 @@ package() {
         manifest_checksum="${manifest_line%%  *}"
         manifest_path="${manifest_line#*  }"
         if [[ ! "$manifest_checksum" =~ ^[0-9a-f]{64}$ || "$manifest_path" == "$manifest_line" ]]; then
-            printf 'mako-renderer-bin: invalid archive manifest entry: %s\n' "$manifest_line" >&2
+            printf 'framegen-vulkan-bin: invalid archive manifest entry: %s\n' "$manifest_line" >&2
             return 1
         fi
-        _mako_install_payload_file "$manifest_path"
-    done < MAKO-Renderer-install-manifest.txt
+        _fgvk_install_payload_file "$manifest_path"
+    done < framegen-vulkan-install-manifest.txt
 
     # Version and the upstream checksum manifest are outside the installer's
     # managed payload but remain available for package provenance audits.
-    install -Dm644 MAKO-Renderer-version.txt "$pkgdir/usr/share/doc/mako-renderer-bin/MAKO-Renderer-version.txt"
-    install -Dm644 MAKO-Renderer-install-manifest.txt "$pkgdir/usr/share/doc/mako-renderer-bin/MAKO-Renderer-install-manifest.txt"
+    install -Dm644 framegen-vulkan-version.txt "$pkgdir/usr/share/doc/framegen-vulkan-bin/framegen-vulkan-version.txt"
+    install -Dm644 framegen-vulkan-install-manifest.txt "$pkgdir/usr/share/doc/framegen-vulkan-bin/framegen-vulkan-install-manifest.txt"
 
     # Deliberately not installed:
-    # - bin/mako-installer: the user-local installer, which targets ~/.local and
+    # - bin/fgvk-installer: the user-local installer, which targets ~/.local and
     #   manages its own renderer copy.
     # - bin/*-ui and share/applications/*: the Qt configuration app and desktop
     #   entries were removed from the Renderer, and this package does not ship

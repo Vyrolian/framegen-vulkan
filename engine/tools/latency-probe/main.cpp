@@ -183,7 +183,7 @@ void sleep_until_monotonic(uint64_t deadline_ns) {
 }
 
 void log_error(const std::string& message) {
-    std::fprintf(stderr, "MAKO Renderer: latency probe: %s\n", message.c_str());
+    std::fprintf(stderr, "framegen-vulkan: latency probe: %s\n", message.c_str());
 }
 
 std::string vk_result_name(VkResult result) {

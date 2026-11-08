@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 MAKO contributors
 //
-// A compact bleach-bypass-inspired finishing effect authored for MAKO.
+// A compact bleach-bypass-inspired finishing effect authored for framegen-vulkan.
 
 uniform float Strength <
     ui_type = "slider";

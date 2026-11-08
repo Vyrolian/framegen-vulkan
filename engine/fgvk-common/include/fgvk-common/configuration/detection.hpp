@@ -1,0 +1,59 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+
+#pragma once
+
+#include "config.hpp"
+
+#include <cstdint>
+#include <filesystem>
+#include <optional>
+#include <string>
+#include <utility>
+
+namespace ls {
+
+    /// identification data for a process
+    struct Identification {
+        /// optional override name
+        std::optional<std::string> override;
+        /// optional low-priority profile used only when process matching fails
+        std::optional<std::string> fallback;
+        /// path to exe file
+        std::string executable;
+        /// path to exe file when running under wine
+        std::optional<std::string> wine_executable;
+        /// traditional process name (e.g. GameThread)
+        std::string process_name;
+        /// opt in to the editor's saved selection on configuration reload
+        bool follow_current_profile = false;
+    };
+
+    /// enum describing which identification method was used
+    enum class IdentType : uint8_t {
+        OVERRIDE, // identified by explicit override
+        EXECUTABLE, // identified by executable path
+        WINE_EXECUTABLE, // identified by wine executable path
+        PROCESS_NAME, // identified by process name
+        FALLBACK // no process match; use the wrapper's safe default
+    };
+
+    /// identify the current process
+    Identification identify();
+
+    /// Read the same executable identities from a procfs process directory.
+    /// Does not read the target's environment or apply this process's overrides.
+    Identification identifyProcess(const std::filesystem::path& processDirectory);
+
+    /// Whether the authoritative executable belongs to an excluded launcher.
+    bool isExcludedLauncher(const Identification& id) noexcept;
+
+    /// find a profile for the current process
+    /// @param config configuration to search in
+    /// @param id identification data
+    /// @param allowEnvironmentProfile honor FGVK_ENV for the current process;
+    /// disable when previewing another process's ordinary profile match
+    /// @return ident pair if found
+    std::optional<std::pair<IdentType, GameConf>> findProfile(
+        const ConfigFile& config, const Identification& id,
+        bool allowEnvironmentProfile = true);
+}

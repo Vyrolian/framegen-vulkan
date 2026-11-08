@@ -1,0 +1,922 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+
+#include "fgvk-common/configuration/config.hpp"
+#include "atomic_write.hpp"
+#include "power_source.hpp"
+#include "fgvk-common/helpers/errors.hpp"
+
+#include <algorithm>
+#include <charconv>
+#include <cstdint>
+#include <cstdlib>
+#include <exception>
+#include <filesystem>
+#include <fstream>
+#include <iostream>
+#include <optional>
+#include <sstream>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include <toml.hpp>
+
+using namespace ls;
+
+void ConfigFile::createDefaultConfigFile(const std::filesystem::path& path) {
+    try {
+        std::ostringstream ofs;
+
+        ofs << "version = " << ConfigFile::formatVersion << R"(
+
+[global]
+# dll = '/media/games/Lossless Scaling/Lossless.dll' # if you don't have LS in the default location
+allow_fp16 = true # request FP16 model/scaling arithmetic; false selects FP32
+
+[[profile]]
+name = "4x FG / 85% [Performance]"
+active_in = [ # see the wiki for more info
+    'vkcube',
+    'vkcubepp'
+]
+# gpu = 'NVIDIA GeForce RTX 5080' # see the wiki for more info
+multiplier = 4
+frame_generation_provisioned = true
+frame_generation_enabled = true
+scaling_enabled = false
+swapchain_image_count_compatibility = false
+scaling_method = 'ls1'
+scaling_factor = 1.5
+scaling_supersampling = false
+scaling_sharpness = 0.8
+frame_generation_refresh_threshold = 0
+base_fps_cap = 0
+gpu_headroom_percent = 0
+adaptive = false
+adaptive_auto_base_fps_cap = false
+adaptive_fractional_real_frame_priority = 'auto'
+target_fps = 120
+adaptive_target_refresh_rate = false
+adaptive_max_multiplier = 3
+adaptive_stable_cadence = true
+gamescope_vrr_mode = 'follow-steam'
+dynamic_cadence_recovery = false
+dynamic_cadence_probe_interval_seconds = 2
+ultra_performance = false
+flow_scale = 0.85
+performance_mode = true
+pacing = 'none' # see the wiki for more info
+
+[[profile]]
+name = "2x FG / 100%"
+active_in = 'GenshinImpact.exe'
+gpu = 'NVIDIA GeForce RTX 5080'
+multiplier = 2
+)";
+        detail::writeConfigurationAtomically(path, ofs.str());
+    } catch (const std::exception& e) {
+        throw ls::error("unable to create default configuration file", e);
+    }
+}
+
+ConfigFile::ConfigFile() {
+    this->globalConf = {
+        .allow_fp16 = true
+    };
+    this->profileConfs.emplace_back(GameConf {
+        .name = "4x FG / 85% [Performance]",
+        .active_in = {
+            "vkcube",
+            "vkcubepp"
+        },
+        .multiplier = 4,
+        .frame_generation_provisioned =
+            GameConfDefaults::frameGenerationProvisioned,
+        .frame_generation_enabled = GameConfDefaults::frameGenerationEnabled,
+        .scaling_enabled = GameConfDefaults::scalingEnabled,
+        .swapchain_image_count_compatibility =
+            GameConfDefaults::swapchainImageCountCompatibility,
+        .scaling_method = GameConfDefaults::scalingMethod,
+        .scaling_factor = GameConfDefaults::scalingFactor,
+        .scaling_supersampling = GameConfDefaults::scalingSupersampling,
+        .scaling_sharpness = GameConfDefaults::scalingSharpness,
+        .frame_generation_refresh_threshold =
+            GameConfDefaults::frameGenerationRefreshThreshold,
+        .base_fps_cap = GameConfDefaults::baseFpsCap,
+        .gpu_headroom_percent = GameConfDefaults::gpuHeadroomPercent,
+        .adaptive = GameConfDefaults::adaptive,
+        .adaptive_auto_base_fps_cap =
+            GameConfDefaults::adaptiveAutoBaseFpsCap,
+        .adaptive_fractional_real_frame_priority =
+            GameConfDefaults::adaptiveFractionalRealFramePriority,
+        .target_fps = GameConfDefaults::targetFps,
+        .adaptive_max_multiplier = GameConfDefaults::adaptiveMaxMultiplier,
+        .adaptive_stable_cadence = GameConfDefaults::adaptiveStableCadence,
+        .gamescope_vrr_mode = GameConfDefaults::gamescopeVrrMode,
+        .dynamic_cadence_recovery = GameConfDefaults::dynamicCadenceRecovery,
+        .dynamic_cadence_probe_interval_seconds =
+            GameConfDefaults::dynamicCadenceProbeIntervalSeconds,
+        .ultra_performance = GameConfDefaults::ultraPerformance,
+        .flow_scale = 0.85F,
+        .performance_mode = true,
+        .pacing = GameConfDefaults::pacing
+    });
+    this->profileConfs.emplace_back(GameConf {
+        .name = "2x FG / 100%",
+        .active_in = {
+            "GenshinImpact.exe"
+        },
+        .gpu = "NVIDIA GeForce RTX 5080",
+        .multiplier = GameConfDefaults::multiplier
+    });
+}
+
+namespace {
+    constexpr auto configurationParseRetryDelay = std::chrono::milliseconds(50);
+
+    std::string formatFloatingLimit(const float value) {
+        auto result = std::to_string(value);
+        while (result.ends_with('0'))
+            result.pop_back();
+        if (result.ends_with('.'))
+            result.push_back('0');
+        return result;
+    }
+
+    /// parse an activity array from toml value
+    std::vector<std::string> activityFromString(const toml::node_view<const toml::node>& val) {
+        std::vector<std::string> active_in{};
+
+        if (const auto& as_str = val.value<std::string>()) {
+            active_in.push_back(*as_str);
+        }
+
+        if (const auto& as_arr = val.as_array()) {
+            for (const auto& item : *as_arr) {
+                if (const auto& item_str = item.value<std::string>())
+                    active_in.push_back(*item_str);
+            }
+        }
+
+        return active_in;
+    }
+    /// parse a pacing method from string
+    Pacing parcingFromString(const std::string& str) {
+        if (str == "none")
+            return Pacing::None;
+        throw ls::error("unknown pacing method: " + str);
+    }
+    ScalingMethod scalingMethodFromString(const std::string& value) {
+        if (const auto method = scalingMethodFromName(value))
+            return *method;
+        throw ls::error("unknown scaling method: " + value);
+    }
+    HdrQuality hdrQualityFromString(const std::string& value) {
+        if (const auto quality = hdrQualityFromName(value))
+            return *quality;
+        throw ls::error("unknown HDR quality: " + value);
+    }
+    GamescopeVrrMode gamescopeVrrModeFromString(const std::string& value) {
+        if (const auto mode = gamescopeVrrModeFromName(value))
+            return *mode;
+        throw ls::error("unknown Gamescope VRR mode: " + value);
+    }
+    AdaptiveFractionalRealFramePriority
+    adaptiveFractionalRealFramePriorityFromString(const std::string& value) {
+        if (const auto priority =
+                adaptiveFractionalRealFramePriorityFromName(value)) {
+            return *priority;
+        }
+        throw ls::error(
+            "unknown Adaptive Fractional real-frame priority: " + value
+        );
+    }
+    /// validate the shared file/environment game-profile contract
+    void validateGameConf(const GameConf& conf) {
+        if (conf.multiplier < GameConfLimits::minimumMultiplier ||
+                conf.multiplier > GameConfLimits::maximumMultiplier)
+            throw ls::error(
+                "multiplier must be between " + std::to_string(
+                    GameConfLimits::minimumMultiplier
+                ) + " and " + std::to_string(
+                    GameConfLimits::maximumMultiplier
+                )
+            );
+        if (!(conf.scaling_factor >= GameConfLimits::minimumScalingFactor &&
+                conf.scaling_factor <= GameConfLimits::maximumScalingFactor)) {
+            throw ls::error(
+                "scaling_factor must be between " + formatFloatingLimit(
+                    GameConfLimits::minimumScalingFactor
+                ) + " and " + formatFloatingLimit(
+                    GameConfLimits::maximumScalingFactor
+                )
+            );
+        }
+        if (!(conf.scaling_sharpness >=
+                    GameConfLimits::minimumScalingSharpness &&
+                conf.scaling_sharpness <=
+                    GameConfLimits::maximumScalingSharpness)) {
+            throw ls::error(
+                "scaling_sharpness must be between " + formatFloatingLimit(
+                    GameConfLimits::minimumScalingSharpness
+                ) + " and " + formatFloatingLimit(
+                    GameConfLimits::maximumScalingSharpness
+                )
+            );
+        }
+        if (conf.gpu_headroom_percent > 20 || conf.gpu_headroom_percent % 5 != 0)
+            throw ls::error("gpu_headroom_percent must be 0, 5, 10, 15 or 20");
+        if (conf.base_fps_cap > GameConfLimits::maximumBaseFpsCap)
+            throw ls::error(
+                "base_fps_cap must be " + std::to_string(
+                    GameConfLimits::minimumBaseFpsCap
+                ) + " or between " + std::to_string(
+                    GameConfLimits::minimumBaseFpsCap + 1
+                ) + " and " + std::to_string(
+                    GameConfLimits::maximumBaseFpsCap
+                )
+            );
+        if (conf.frame_generation_refresh_threshold >
+                GameConfLimits::maximumFrameGenerationRefreshThreshold) {
+            throw ls::error(
+                "frame_generation_refresh_threshold must be " + std::to_string(
+                    GameConfLimits::minimumFrameGenerationRefreshThreshold
+                ) + " or between " + std::to_string(
+                    GameConfLimits::minimumFrameGenerationRefreshThreshold + 1
+                ) + " and " + std::to_string(
+                    GameConfLimits::maximumFrameGenerationRefreshThreshold
+                )
+            );
+        }
+        if (conf.target_fps < GameConfLimits::minimumTargetFps ||
+                conf.target_fps > GameConfLimits::maximumTargetFps) {
+            throw ls::error(
+                "target_fps must be between " + std::to_string(
+                    GameConfLimits::minimumTargetFps
+                ) + " and " + std::to_string(
+                    GameConfLimits::maximumTargetFps
+                )
+            );
+        }
+        if (conf.adaptive_max_multiplier <
+                GameConfLimits::minimumAdaptiveMaxMultiplier ||
+                conf.adaptive_max_multiplier >
+                    GameConfLimits::maximumAdaptiveMaxMultiplier) {
+            throw ls::error(
+                "adaptive_max_multiplier must be between " + std::to_string(
+                    GameConfLimits::minimumAdaptiveMaxMultiplier
+                ) + " and " + std::to_string(
+                    GameConfLimits::maximumAdaptiveMaxMultiplier
+                )
+            );
+        }
+        if (!(conf.dynamic_cadence_probe_interval_seconds >=
+                    GameConfLimits::minimumDynamicCadenceProbeIntervalSeconds &&
+                conf.dynamic_cadence_probe_interval_seconds <=
+                    GameConfLimits::maximumDynamicCadenceProbeIntervalSeconds)) {
+            throw ls::error(
+                "dynamic_cadence_probe_interval_seconds must be between " +
+                formatFloatingLimit(
+                    GameConfLimits::minimumDynamicCadenceProbeIntervalSeconds
+                ) + " and " + formatFloatingLimit(
+                    GameConfLimits::maximumDynamicCadenceProbeIntervalSeconds
+                )
+            );
+        }
+        if (conf.flow_scale < GameConfLimits::minimumFlowScale ||
+                conf.flow_scale > GameConfLimits::maximumFlowScale) {
+            throw ls::error(
+                "flow_scale must be between " + formatFloatingLimit(
+                    GameConfLimits::minimumFlowScale
+                ) + " and " + formatFloatingLimit(
+                    GameConfLimits::maximumFlowScale
+                )
+            );
+        }
+    }
+    /// parse the global configuration
+    GlobalConf parseGlobalConf(const toml::table& tbl) {
+        const GlobalConf conf{
+            .dll = tbl["dll"].value<std::string>(),
+            .allow_fp16 = tbl["allow_fp16"].value_or(true)
+        };
+
+        // Availability belongs to LSFG/LS1 loading, not profile validity.
+        // Preserve missing paths so open scaling and shaders remain usable.
+        return conf;
+    }
+    /// parse a game profile configuration
+    GameConf parseGameConf(const toml::table& tbl) {
+        uint32_t headroom = GameConfDefaults::gpuHeadroomPercent;
+        if (tbl.contains("gpu_headroom_percent")) {
+            const auto value = tbl["gpu_headroom_percent"].value<int64_t>();
+            if (!tbl["gpu_headroom_percent"].is_integer() || !value || *value < 0 || *value > 20 || *value % 5 != 0)
+                throw ls::error("gpu_headroom_percent must be 0, 5, 10, 15 or 20");
+            headroom = static_cast<uint32_t>(*value);
+        }
+        GameConf conf{
+            .name = tbl["name"].value_or<std::string>("unnamed"),
+            .active_in = activityFromString(tbl["active_in"]),
+            .gpu = tbl["gpu"].value<std::string>(),
+            .multiplier = tbl["multiplier"].value_or(GameConfDefaults::multiplier),
+            .frame_generation_provisioned =
+                tbl["frame_generation_provisioned"].value_or(
+                    GameConfDefaults::frameGenerationProvisioned
+                ),
+            .frame_generation_enabled = tbl["frame_generation_enabled"].value_or(
+                GameConfDefaults::frameGenerationEnabled
+            ),
+            .scaling_enabled = tbl["scaling_enabled"].value_or(
+                GameConfDefaults::scalingEnabled
+            ),
+            .swapchain_image_count_compatibility =
+                tbl["swapchain_image_count_compatibility"].value_or(
+                    GameConfDefaults::swapchainImageCountCompatibility
+                ),
+            .scaling_method = scalingMethodFromString(
+                tbl["scaling_method"].value_or<std::string>(
+                    scalingMethodName(GameConfDefaults::scalingMethod)
+                )
+            ),
+            .scaling_factor = tbl["scaling_factor"].value_or(
+                GameConfDefaults::scalingFactor
+            ),
+            .scaling_supersampling = tbl["scaling_supersampling"].value_or(
+                GameConfDefaults::scalingSupersampling
+            ),
+            .scaling_sharpness = tbl["scaling_sharpness"].value_or(
+                GameConfDefaults::scalingSharpness
+            ),
+            .hdr_quality = hdrQualityFromString(tbl["hdr_quality"].value_or<std::string>(
+                hdrQualityName(GameConfDefaults::hdrQuality)
+            )),
+            .frame_generation_refresh_threshold =
+                tbl["frame_generation_refresh_threshold"].value_or(
+                    GameConfDefaults::frameGenerationRefreshThreshold
+                ),
+            .base_fps_cap = tbl["base_fps_cap"].value_or(GameConfDefaults::baseFpsCap),
+            .gpu_headroom_percent = headroom,
+            .adaptive = tbl["adaptive"].value_or(GameConfDefaults::adaptive),
+            .adaptive_auto_base_fps_cap =
+                tbl["adaptive_auto_base_fps_cap"].value_or(
+                    GameConfDefaults::adaptiveAutoBaseFpsCap
+                ),
+            .adaptive_fractional_real_frame_priority =
+                adaptiveFractionalRealFramePriorityFromString(
+                    tbl["adaptive_fractional_real_frame_priority"]
+                        .value_or<std::string>(
+                            adaptiveFractionalRealFramePriorityName(
+                                GameConfDefaults::
+                                    adaptiveFractionalRealFramePriority
+                            )
+                        )
+                ),
+            .target_fps = tbl["target_fps"].value_or(GameConfDefaults::targetFps),
+            .adaptive_target_refresh_rate = tbl["adaptive_target_refresh_rate"].value_or(
+                GameConfDefaults::adaptiveTargetRefreshRate
+            ),
+            .adaptive_max_multiplier = tbl["adaptive_max_multiplier"].value_or(
+                GameConfDefaults::adaptiveMaxMultiplier
+            ),
+            .adaptive_stable_cadence = tbl["adaptive_stable_cadence"].value_or(
+                GameConfDefaults::adaptiveStableCadence
+            ),
+            .gamescope_vrr_mode = gamescopeVrrModeFromString(
+                tbl["gamescope_vrr_mode"].value_or<std::string>(
+                    gamescopeVrrModeName(GameConfDefaults::gamescopeVrrMode)
+                )
+            ),
+            .dynamic_cadence_recovery = tbl["dynamic_cadence_recovery"].value_or(
+                GameConfDefaults::dynamicCadenceRecovery
+            ),
+            .dynamic_cadence_probe_interval_seconds =
+                tbl["dynamic_cadence_probe_interval_seconds"].value_or(
+                    GameConfDefaults::dynamicCadenceProbeIntervalSeconds
+                ),
+            .ultra_performance = tbl["ultra_performance"].value_or(
+                GameConfDefaults::ultraPerformance
+            ),
+            .flow_scale = tbl["flow_scale"].value_or(GameConfDefaults::flowScale),
+            .performance_mode = tbl["performance_mode"].value_or(
+                GameConfDefaults::performanceMode
+            ),
+            .pacing = parcingFromString(tbl["pacing"].value_or<std::string>("none"))
+        };
+
+        if (conf.gpu && conf.gpu->empty()) conf.gpu.reset();
+        validateGameConf(conf);
+        if (conf.dynamic_cadence_recovery) {
+            conf.adaptive_auto_base_fps_cap = false;
+            conf.adaptive_fractional_real_frame_priority =
+                AdaptiveFractionalRealFramePriority::Auto;
+            conf.base_fps_cap = 0;
+            conf.gpu_headroom_percent = 0;
+        }
+        return conf;
+    }
+    toml::table gameConfTable(const GameConf& conf) {
+        toml::table profile;
+        profile.insert("name", conf.name);
+
+        if (!conf.active_in.empty()) {
+            if (conf.active_in.size() == 1) {
+                profile.insert("active_in", conf.active_in.front());
+            } else {
+                toml::array active_in;
+                for (const auto& entry : conf.active_in)
+                    active_in.push_back(entry);
+                profile.insert("active_in", active_in);
+            }
+        }
+        if (conf.gpu)
+            profile.insert("gpu", conf.gpu.value_or(""));
+        profile.insert("multiplier", static_cast<int64_t>(conf.multiplier));
+        profile.insert(
+            "frame_generation_provisioned",
+            conf.frame_generation_provisioned
+        );
+        profile.insert("frame_generation_enabled", conf.frame_generation_enabled);
+        profile.insert("scaling_enabled", conf.scaling_enabled);
+        profile.insert(
+            "swapchain_image_count_compatibility",
+            conf.swapchain_image_count_compatibility
+        );
+        profile.insert("scaling_method", scalingMethodName(conf.scaling_method));
+        profile.insert("scaling_factor", conf.scaling_factor);
+        profile.insert("scaling_supersampling", conf.scaling_supersampling);
+        profile.insert("scaling_sharpness", conf.scaling_sharpness);
+        profile.insert("hdr_quality", hdrQualityName(conf.hdr_quality));
+        profile.insert(
+            "frame_generation_refresh_threshold",
+            static_cast<int64_t>(conf.frame_generation_refresh_threshold)
+        );
+        profile.insert("base_fps_cap", static_cast<int64_t>(conf.base_fps_cap));
+        profile.insert("gpu_headroom_percent", static_cast<int64_t>(conf.gpu_headroom_percent));
+        profile.insert("adaptive", conf.adaptive);
+        profile.insert(
+            "adaptive_auto_base_fps_cap", conf.adaptive_auto_base_fps_cap
+        );
+        profile.insert(
+            "adaptive_fractional_real_frame_priority",
+            adaptiveFractionalRealFramePriorityName(
+                conf.adaptive_fractional_real_frame_priority
+            )
+        );
+        profile.insert("target_fps", static_cast<int64_t>(conf.target_fps));
+        profile.insert("adaptive_target_refresh_rate", conf.adaptive_target_refresh_rate);
+        profile.insert("adaptive_max_multiplier", static_cast<int64_t>(conf.adaptive_max_multiplier));
+        profile.insert("adaptive_stable_cadence", conf.adaptive_stable_cadence);
+        profile.insert("gamescope_vrr_mode", gamescopeVrrModeName(conf.gamescope_vrr_mode));
+        profile.insert("dynamic_cadence_recovery", conf.dynamic_cadence_recovery);
+        profile.insert(
+            "dynamic_cadence_probe_interval_seconds",
+            conf.dynamic_cadence_probe_interval_seconds
+        );
+        profile.insert("ultra_performance", conf.ultra_performance);
+        profile.insert("flow_scale", conf.flow_scale);
+        profile.insert("performance_mode", conf.performance_mode);
+        switch (conf.pacing) {
+            case Pacing::None:
+                profile.insert("pacing", "none");
+                break;
+        }
+
+        return profile;
+    }
+    /// parse the global configuration from the environment
+    GlobalConf parseGlobalConfFromEnv() {
+        GlobalConf conf{
+            .dll = std::nullopt,
+            .allow_fp16 = true
+        };
+
+        const char* dll = std::getenv("FGVK_DLL_PATH");
+        if (dll && *dll != '\0')
+            conf.dll = std::string(dll);
+        const char* no_fp16 = std::getenv("FGVK_NO_FP16");
+        if (no_fp16 && *no_fp16 != '\0')
+            conf.allow_fp16 = std::string(no_fp16) != "1";
+
+        return conf;
+    }
+    /// parse a game profile configuration from the environment
+    GameConf parseGameConfFromEnv() {
+        GameConf conf{
+            .name = "(environment)",
+            .active_in = {},
+            .gpu = std::nullopt,
+
+            .multiplier = GameConfDefaults::multiplier,
+            .frame_generation_provisioned =
+                GameConfDefaults::frameGenerationProvisioned,
+            .frame_generation_enabled = GameConfDefaults::frameGenerationEnabled,
+            .scaling_enabled = GameConfDefaults::scalingEnabled,
+            .swapchain_image_count_compatibility =
+                GameConfDefaults::swapchainImageCountCompatibility,
+            .scaling_method = GameConfDefaults::scalingMethod,
+            .scaling_factor = GameConfDefaults::scalingFactor,
+            .scaling_supersampling = GameConfDefaults::scalingSupersampling,
+            .scaling_sharpness = GameConfDefaults::scalingSharpness,
+            .frame_generation_refresh_threshold =
+                GameConfDefaults::frameGenerationRefreshThreshold,
+            .base_fps_cap = GameConfDefaults::baseFpsCap,
+            .gpu_headroom_percent = GameConfDefaults::gpuHeadroomPercent,
+            .adaptive = GameConfDefaults::adaptive,
+            .adaptive_auto_base_fps_cap =
+                GameConfDefaults::adaptiveAutoBaseFpsCap,
+            .adaptive_fractional_real_frame_priority =
+                GameConfDefaults::adaptiveFractionalRealFramePriority,
+            .target_fps = GameConfDefaults::targetFps,
+            .adaptive_max_multiplier = GameConfDefaults::adaptiveMaxMultiplier,
+            .adaptive_stable_cadence = GameConfDefaults::adaptiveStableCadence,
+            .gamescope_vrr_mode = GameConfDefaults::gamescopeVrrMode,
+            .dynamic_cadence_recovery = GameConfDefaults::dynamicCadenceRecovery,
+            .dynamic_cadence_probe_interval_seconds =
+                GameConfDefaults::dynamicCadenceProbeIntervalSeconds,
+            .ultra_performance = GameConfDefaults::ultraPerformance,
+            .flow_scale = GameConfDefaults::flowScale,
+            .performance_mode = GameConfDefaults::performanceMode,
+            .pacing = GameConfDefaults::pacing
+        };
+
+        const char* gpu = std::getenv("FGVK_GPU");
+        if (gpu) conf.gpu = std::string(gpu);
+        const char* multiplier = std::getenv("FGVK_MULTIPLIER");
+        if (multiplier) conf.multiplier = static_cast<size_t>(std::stoul(multiplier));
+        const char* frame_generation_provisioned =
+            std::getenv("FGVK_FRAME_GENERATION_PROVISIONED");
+        if (frame_generation_provisioned) {
+            conf.frame_generation_provisioned =
+                std::string(frame_generation_provisioned) != "0";
+        }
+        const char* frame_generation_enabled = std::getenv("FGVK_FRAME_GENERATION_ENABLED");
+        if (frame_generation_enabled)
+            conf.frame_generation_enabled = std::string(frame_generation_enabled) != "0";
+        const char* scaling_enabled = std::getenv("FGVK_SCALING_ENABLED");
+        if (scaling_enabled)
+            conf.scaling_enabled = std::string(scaling_enabled) != "0";
+        const char* swapchain_image_count_compatibility =
+            std::getenv("FGVK_SWAPCHAIN_IMAGE_COUNT_COMPATIBILITY");
+        if (swapchain_image_count_compatibility) {
+            conf.swapchain_image_count_compatibility =
+                std::string(swapchain_image_count_compatibility) != "0";
+        }
+        const char* scaling_method = std::getenv("FGVK_SCALING_METHOD");
+        if (scaling_method)
+            conf.scaling_method = scalingMethodFromString(scaling_method);
+        const char* scaling_factor = std::getenv("FGVK_SCALING_FACTOR");
+        if (scaling_factor) conf.scaling_factor = std::stof(scaling_factor);
+        const char* scaling_supersampling =
+            std::getenv("FGVK_SCALING_SUPERSAMPLING");
+        if (scaling_supersampling)
+            conf.scaling_supersampling =
+                std::string(scaling_supersampling) != "0";
+        const char* scaling_sharpness = std::getenv("FGVK_SCALING_SHARPNESS");
+        if (scaling_sharpness)
+            conf.scaling_sharpness = std::stof(scaling_sharpness);
+        const char* hdr_quality = std::getenv("FGVK_HDR_QUALITY");
+        if (hdr_quality)
+            conf.hdr_quality = hdrQualityFromString(hdr_quality);
+        const char* frame_generation_refresh_threshold =
+            std::getenv("FGVK_FRAME_GENERATION_REFRESH_THRESHOLD");
+        if (frame_generation_refresh_threshold) {
+            conf.frame_generation_refresh_threshold = static_cast<uint32_t>(
+                std::stoul(frame_generation_refresh_threshold)
+            );
+        }
+        if (const char* headroom = std::getenv("FGVK_GPU_HEADROOM_PERCENT")) {
+            const std::string_view input(headroom);
+            const auto parsed = std::from_chars(input.data(), input.data() + input.size(), conf.gpu_headroom_percent);
+            if (parsed.ec != std::errc{} || parsed.ptr != input.data() + input.size())
+                throw ls::error("FGVK_GPU_HEADROOM_PERCENT must be 0, 5, 10, 15 or 20");
+        }
+        const char* base_fps_cap = std::getenv("FGVK_BASE_FPS_CAP");
+        if (base_fps_cap)
+            conf.base_fps_cap = static_cast<uint32_t>(std::stoul(base_fps_cap));
+        const char* adaptive = std::getenv("FGVK_ADAPTIVE");
+        if (adaptive) conf.adaptive = std::string(adaptive) == "1";
+        const char* adaptive_auto_base_fps_cap =
+            std::getenv("FGVK_ADAPTIVE_AUTO_BASE_FPS_CAP");
+        if (adaptive_auto_base_fps_cap) {
+            conf.adaptive_auto_base_fps_cap =
+                std::string(adaptive_auto_base_fps_cap) != "0";
+        }
+        const char* adaptive_fractional_real_frame_priority =
+            std::getenv("FGVK_ADAPTIVE_FRACTIONAL_REAL_FRAME_PRIORITY");
+        if (adaptive_fractional_real_frame_priority) {
+            conf.adaptive_fractional_real_frame_priority =
+                adaptiveFractionalRealFramePriorityFromString(
+                    adaptive_fractional_real_frame_priority
+                );
+        }
+        const char* target_fps = std::getenv("FGVK_TARGET_FPS");
+        if (target_fps) conf.target_fps = static_cast<uint32_t>(std::stoul(target_fps));
+        const char* adaptive_target_refresh_rate =
+            std::getenv("FGVK_ADAPTIVE_TARGET_REFRESH_RATE");
+        if (adaptive_target_refresh_rate)
+            conf.adaptive_target_refresh_rate =
+                std::string(adaptive_target_refresh_rate) != "0";
+        const char* adaptive_max_multiplier = std::getenv("FGVK_ADAPTIVE_MAX_MULTIPLIER");
+        if (adaptive_max_multiplier)
+            conf.adaptive_max_multiplier = static_cast<size_t>(std::stoul(adaptive_max_multiplier));
+        const char* adaptive_stable_cadence = std::getenv("FGVK_ADAPTIVE_STABLE_CADENCE");
+        if (adaptive_stable_cadence)
+            conf.adaptive_stable_cadence = std::string(adaptive_stable_cadence) != "0";
+        const char* gamescope_vrr_mode = std::getenv("FGVK_GAMESCOPE_VRR_MODE");
+        if (gamescope_vrr_mode) {
+            const auto mode = gamescopeVrrModeFromName(gamescope_vrr_mode);
+            if (!mode) throw ls::error("unknown Gamescope VRR mode: " +
+                std::string(gamescope_vrr_mode));
+            conf.gamescope_vrr_mode = *mode;
+        }
+        const char* dynamic_cadence_recovery =
+            std::getenv("FGVK_DYNAMIC_CADENCE_RECOVERY");
+        if (dynamic_cadence_recovery) {
+            conf.dynamic_cadence_recovery =
+                std::string(dynamic_cadence_recovery) != "0";
+        }
+        const char* dynamic_cadence_probe_interval_seconds =
+            std::getenv("FGVK_DYNAMIC_CADENCE_PROBE_INTERVAL_SECONDS");
+        if (dynamic_cadence_probe_interval_seconds) {
+            conf.dynamic_cadence_probe_interval_seconds =
+                std::stof(dynamic_cadence_probe_interval_seconds);
+        }
+        const char* flow_scale = std::getenv("FGVK_FLOW_SCALE");
+        if (flow_scale) conf.flow_scale = std::stof(flow_scale);
+        const char* ultra_performance = std::getenv("FGVK_ULTRA_PERFORMANCE");
+        if (ultra_performance)
+            conf.ultra_performance = std::string(ultra_performance) == "1";
+        const char* performance = std::getenv("FGVK_PERFORMANCE_MODE");
+        if (performance) conf.performance_mode = std::string(performance) == "1";
+        const char* pacing = std::getenv("FGVK_PACING");
+        if (pacing) conf.pacing = parcingFromString(std::string(pacing));
+
+        validateGameConf(conf);
+        if (conf.dynamic_cadence_recovery) {
+            conf.adaptive_auto_base_fps_cap = false;
+            conf.adaptive_fractional_real_frame_priority =
+                AdaptiveFractionalRealFramePriority::Auto;
+            conf.base_fps_cap = 0;
+            conf.gpu_headroom_percent = 0;
+        }
+        return conf;
+    }
+}
+
+ConfigFile::ConfigFile(const std::filesystem::path& path) {
+    toml::table table;
+    try {
+        table = toml::parse_file(path.string());
+    } catch (const toml::parse_error& e) {
+        throw ls::error("unable to parse configuration", e);
+    }
+
+    auto version = table["version"];
+    if (!version || !version.is_integer() ||
+            *version.as_integer() != ConfigFile::formatVersion) {
+        throw ls::error("unsupported configuration version");
+    }
+
+    auto global = table["global"];
+    this->current_profile = table["current_profile"].value<std::string>();
+    if (global && global.is_table()) {
+        this->globalConf = parseGlobalConf(*global.as_table());
+    }
+
+    auto profiles = table["profile"];
+    if (profiles && profiles.is_array_of_tables()) {
+        for (const auto& profile : *profiles.as_array()) {
+            const auto& base = *profile.as_table();
+            auto conf = parseGameConf(base);
+            if (base.contains("handheld") || base.contains("docked")) {
+                for (const auto* mode : {"handheld", "docked"}) {
+                    const auto* settings = base[mode].as_table();
+                    if (!settings)
+                        throw ls::error("power profiles require handheld and docked tables");
+                    auto merged = base;
+                    merged.erase("handheld");
+                    merged.erase("docked");
+                    for (const auto& [key, value] : *settings) {
+                        if (key == "name" || key == "active_in" ||
+                                key == "handheld" || key == "docked")
+                            throw ls::error("power profile identity must remain shared");
+                        merged.insert_or_assign(key, value);
+                    }
+                    conf.power_profiles.push_back(parseGameConf(merged));
+                }
+            }
+            this->profileConfs.push_back(std::move(conf));
+        }
+    }
+}
+
+void ConfigFile::write(const std::filesystem::path& path) const {
+    toml::table table;
+    table.insert("version", ConfigFile::formatVersion);
+    if (this->current_profile)
+        table.insert("current_profile", *this->current_profile);
+
+    toml::table global;
+    if (this->globalConf.dll)
+        global.insert("dll", *this->globalConf.dll);
+    global.insert("allow_fp16", this->globalConf.allow_fp16);
+    table.insert("global", global);
+
+    toml::array profiles;
+    for (const auto& conf : this->profileConfs) {
+        auto profile = gameConfTable(conf);
+        if (conf.power_profiles.size() == 2) {
+            for (size_t index = 0; index < 2; ++index) {
+                auto settings = gameConfTable(conf.power_profiles[index]);
+                settings.erase("name");
+                settings.erase("active_in");
+                settings.insert_or_assign("gpu", conf.power_profiles[index].gpu.value_or(""));
+                profile.insert(index == 0 ? "handheld" : "docked", settings);
+            }
+        }
+
+        profiles.push_back(profile);
+    }
+    table.insert("profile", profiles);
+
+    try {
+        std::ostringstream ofs;
+
+        ofs << toml::toml_formatter {
+            table,
+            toml::v3::format_flags::relaxed_float_precision
+        } << '\n';
+        detail::writeConfigurationAtomically(path, ofs.str());
+    } catch (const std::exception& e) {
+        throw ls::error("unable to write configuration file", e);
+    }
+}
+
+WatchedConfig::WatchedConfig(std::filesystem::path powerRoot)
+    : powerSupplyRoot(std::move(powerRoot)), path(findConfigurationFile()) {
+    if (std::getenv("FGVK_ENV")) {
+        auto& config = this->configFile;
+        config.global() = parseGlobalConfFromEnv();
+        config.profiles() = { parseGameConfFromEnv() };
+
+        return;
+    }
+
+    if (!std::filesystem::exists(this->path))
+        ConfigFile::createDefaultConfigFile(this->path);
+
+    this->configFile = ConfigFile(this->path);
+    this->last_timestamp = std::filesystem::last_write_time(this->path);
+    this->configurePowerMonitoring(true);
+}
+
+WatchedConfig::~WatchedConfig() = default;
+WatchedConfig::WatchedConfig(WatchedConfig&&) noexcept = default;
+WatchedConfig& WatchedConfig::operator=(WatchedConfig&&) noexcept = default;
+
+void WatchedConfig::configurePowerMonitoring(const bool startup) {
+    const bool wasEnabled = this->powerProfilesEnabled;
+    this->powerProfilesEnabled = std::any_of(
+        this->configFile.profiles().begin(), this->configFile.profiles().end(),
+        [](const auto& profile) { return !profile.power_profiles.empty(); });
+    if (!this->powerProfilesEnabled) return;
+
+    if (!this->powerMonitor) {
+        try {
+            this->powerMonitor = std::make_unique<detail::PowerSourceMonitor>(
+                this->powerSupplyRoot);
+        } catch (const std::exception& error) {
+            std::cerr << "framegen-vulkan: power source monitor unavailable; "
+                         "retaining the last confirmed settings: "
+                      << error.what() << '\n';
+            return;
+        }
+        if (startup) this->powerMonitor->waitForInitialSample();
+    } else if (!wasEnabled) {
+        this->powerMonitor->requestSample();
+    }
+    if (!wasEnabled)
+        this->nextPowerPoll = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    const auto source = this->powerMonitor->sample();
+    if (source != PowerSource::Unknown) this->configFile.power_source = source;
+}
+
+bool WatchedConfig::updatePowerSource() {
+    if (!this->powerProfilesEnabled || !this->powerMonitor) return false;
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= this->nextPowerPoll) {
+        this->nextPowerPoll = now + std::chrono::seconds(2);
+        this->powerMonitor->requestSample();
+    }
+    const auto source = this->powerMonitor->sample();
+    if (source == PowerSource::Unknown || source == this->configFile.power_source)
+        return false;
+    this->configFile.power_source = source;
+    return true;
+}
+
+bool WatchedConfig::update() {
+    if (std::getenv("FGVK_ENV"))
+        return false;
+
+    const bool powerChanged = this->updatePowerSource();
+    const auto now = std::filesystem::last_write_time(this->path);
+    if (now == this->last_timestamp)
+        return powerChanged;
+
+    const auto retryNow = std::chrono::steady_clock::now();
+    if (this->failed_timestamp && *this->failed_timestamp == now &&
+            retryNow < this->next_parse_retry)
+        return powerChanged;
+
+    // Advance the observed timestamp only after parsing succeeds. An external
+    // editor may briefly expose a partially-written TOML file; retaining the old stamp
+    // makes the same version retryable instead of silently losing the update.
+    ConfigFile new_config;
+    try {
+        new_config = ConfigFile(this->path);
+    } catch (...) {
+        this->failed_timestamp = now;
+        this->next_parse_retry = retryNow + configurationParseRetryDelay;
+        if (powerChanged) return true;
+        throw;
+    }
+    new_config.power_source = this->configFile.power_source;
+    this->configFile = std::move(new_config);
+    this->last_timestamp = now;
+    this->failed_timestamp.reset();
+    this->configurePowerMonitoring(false);
+    return true;
+}
+
+std::filesystem::path ls::findConfigurationFile() {
+    // always honor FGVK_CONFIG if set
+    const char* envPath = std::getenv("FGVK_CONFIG");
+    if (envPath && *envPath != '\0')
+        return{envPath};
+
+    // then check the XDG overriden location
+    const char* xdgPath = std::getenv("XDG_CONFIG_HOME");
+    if (xdgPath && *xdgPath != '\0')
+        return std::filesystem::path(xdgPath)
+            / "framegen-vulkan" / "conf.toml";
+
+    // fallback to typical user home
+    const char* homePath = std::getenv("HOME");
+    if (homePath && *homePath != '\0')
+        return std::filesystem::path(homePath)
+            / ".config" / "framegen-vulkan" / "conf.toml";
+
+    // finally, use system-wide config
+    return "/etc/framegen-vulkan/conf.toml";
+}
+
+PowerSource ls::detectPowerSource(const std::filesystem::path& root) {
+    const auto read = [](const std::filesystem::path& path) {
+        std::ifstream stream(path);
+        std::string value;
+        std::getline(stream, value);
+        return value;
+    };
+    std::error_code error;
+    std::filesystem::directory_iterator entries(root, error);
+    if (error) return PowerSource::Unknown;
+    bool battery = false;
+    bool powered = false;
+    bool supply = false;
+    bool incomplete = false;
+    size_t count = 0;
+    for (auto end = std::filesystem::directory_iterator{}; entries != end;
+            entries.increment(error)) {
+        if (error || ++count > 64) return PowerSource::Unknown;
+        const auto path = entries->path();
+        if (read(path / "scope") == "Device") continue;
+        const auto type = read(path / "type");
+        if (type == "Battery") {
+            if (read(path / "present") != "0") battery = true;
+        } else if (type == "Mains" || type == "USB" || type == "USB_C" ||
+                type == "USB_PD" || type == "USB_DCP" || type == "USB_CDP" ||
+                type == "USB_ACA" || type == "Wireless") {
+            supply = true;
+            const auto online = read(path / "online");
+            if (online == "1") powered = true;
+            if (online != "0") incomplete = true;
+        } else if (type.empty()) {
+            incomplete = true;
+        }
+    }
+    if (error) return PowerSource::Unknown;
+    if (powered) return PowerSource::Docked;
+    return battery && supply && !incomplete
+        ? PowerSource::Handheld : PowerSource::Unknown;
+}
+
+GameConf ls::profileForPowerSource(const GameConf& profile, const PowerSource source) {
+    auto result = profile.power_profiles.size() == 2 && source != PowerSource::Unknown
+        ? profile.power_profiles[source == PowerSource::Handheld ? 0 : 1]
+        : profile;
+    result.name = profile.name;
+    result.active_in = profile.active_in;
+    result.power_profiles.clear();
+    return result;
+}

@@ -1,0 +1,391 @@
+#!/usr/bin/env bash
+# Install or remove the packaged framegen-vulkan without requiring a terminal.
+set -euo pipefail
+
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+install_prefix="${FGVK_INSTALL_PREFIX:-$HOME/.local}"
+state_dir="$install_prefix/share/framegen-vulkan/installer"
+state_manifest="$state_dir/installed-files.sha256"
+active_renderer_state="$install_prefix/share/framegen-vulkan/active-renderer.json"
+config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/framegen-vulkan"
+payload_manifest="$script_dir/framegen-vulkan-install-manifest.txt"
+version_file="$script_dir/framegen-vulkan-version.txt"
+dialog_title="framegen-vulkan"
+
+kdialog_fgvk() {
+    kdialog --title "$dialog_title" "$@"
+}
+
+zenity_fgvk() {
+    zenity --title="$dialog_title" "$@"
+}
+
+fail() {
+    local message="$1"
+    if [[ "${FGVK_INSTALLER_ASSUME_YES:-0}" != "1" ]] &&
+            { [[ -n "${DISPLAY:-}" ]] || [[ -n "${WAYLAND_DISPLAY:-}" ]]; }; then
+        if command -v kdialog >/dev/null 2>&1; then
+            kdialog_fgvk --error "$message" || true
+        elif command -v zenity >/dev/null 2>&1; then
+            zenity_fgvk --error --text="$message" || true
+        fi
+    fi
+    printf 'framegen-vulkan installer: %s\n' "$message" >&2
+    exit 1
+}
+
+notice() {
+    local message="$1"
+    if [[ "${FGVK_INSTALLER_ASSUME_YES:-0}" != "1" ]] &&
+            { [[ -n "${DISPLAY:-}" ]] || [[ -n "${WAYLAND_DISPLAY:-}" ]]; }; then
+        if command -v kdialog >/dev/null 2>&1; then
+            kdialog_fgvk --msgbox "$message" || true
+            return
+        fi
+        if command -v zenity >/dev/null 2>&1; then
+            zenity_fgvk --info --text="$message" || true
+            return
+        fi
+    fi
+    printf '%s\n' "$message"
+}
+
+confirm() {
+    local message="$1"
+    if [[ "${FGVK_INSTALLER_ASSUME_YES:-0}" == "1" ]]; then
+        return 0
+    fi
+    if [[ -n "${DISPLAY:-}" || -n "${WAYLAND_DISPLAY:-}" ]]; then
+        if command -v kdialog >/dev/null 2>&1; then
+            kdialog_fgvk --yesno "$message"
+            return
+        fi
+        if command -v zenity >/dev/null 2>&1; then
+            zenity_fgvk --question --text="$message"
+            return
+        fi
+    fi
+    local answer
+    printf '%s [y/N] ' "$message" >&2
+    read -r answer
+    [[ "$answer" =~ ^[Yy]([Ee][Ss])?$ ]]
+}
+
+validate_relative_path() {
+    local path="$1"
+    case "$path" in
+        ""|/*|.|..|../*|*/../*|*/..)
+            return 1
+            ;;
+    esac
+    return 0
+}
+
+parse_manifest_line() {
+    local line="$1"
+    manifest_hash="${line%% *}"
+    manifest_path="${line#"$manifest_hash"}"
+    manifest_path="${manifest_path#  }"
+    [[ "$manifest_hash" =~ ^[a-fA-F0-9]{64}$ ]] &&
+        validate_relative_path "$manifest_path" ||
+        fail "The framegen-vulkan installation manifest is invalid."
+}
+
+validate_manifest() {
+    local manifest="$1"
+    local line
+    local entries=0
+    [[ -f "$manifest" ]] || fail "Missing framegen-vulkan installation manifest: $manifest"
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        parse_manifest_line "$line"
+        entries=$((entries + 1))
+    done < "$manifest"
+    ((entries > 0)) || fail "The framegen-vulkan installation manifest is empty."
+}
+
+manifest_contains_path() {
+    local manifest="$1"
+    local wanted_path="$2"
+    local line
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        parse_manifest_line "$line"
+        [[ "$manifest_path" == "$wanted_path" ]] && return 0
+    done < "$manifest"
+    return 1
+}
+
+hash_file() {
+    sha256sum -- "$1" | awk '{print $1}'
+}
+
+write_installed_state_manifest() {
+    local payload_root="$1"
+    local output_manifest="$2"
+    local temporary_path="$output_manifest.fgvk-install.$$"
+    local line installed_path installed_hash
+    : > "$temporary_path"
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        parse_manifest_line "$line"
+        installed_path="$payload_root/$manifest_path"
+        [[ -f "$installed_path" ]] || fail "The installed payload is missing $manifest_path."
+        installed_hash="$(hash_file "$installed_path")"
+        printf '%s  %s\n' "$installed_hash" "$manifest_path" >> "$temporary_path"
+    done < "$payload_manifest"
+    mv -fT -- "$temporary_path" "$output_manifest"
+}
+
+write_active_renderer_state() {
+    local version="$1"
+    local output_state="$2"
+    local temporary_path="$output_state.fgvk-install.$$"
+    printf '{\n  "schema_version": 1,\n  "owner": "standalone",\n  "version": "%s"\n}\n' \
+        "$version" > "$temporary_path"
+    chmod 0644 "$temporary_path"
+    mv -fT -- "$temporary_path" "$output_state"
+}
+
+remove_if_managed() {
+    local path="$1"
+    local expected_hash="$2"
+    [[ -f "$path" ]] || return 0
+    if [[ "$(hash_file "$path")" == "$expected_hash" ]]; then
+        rm -f -- "$path"
+    else
+        printf 'framegen-vulkan installer: preserving modified file: %s\n' "$path" >&2
+    fi
+}
+
+remove_empty_parent_directories() {
+    local path="$1"
+    local root="$2"
+    local directory relative_path top_level boundary
+    directory="$(dirname -- "$path")"
+    relative_path="${directory#"$root"/}"
+    [[ "$relative_path" != "$directory" && "$relative_path" == */* ]] ||
+        return 0
+    top_level="${relative_path%%/*}"
+    boundary="$root/$top_level"
+    while [[ "$directory" != "$boundary" ]]; do
+        rmdir -- "$directory" 2>/dev/null || break
+        directory="$(dirname -- "$directory")"
+    done
+}
+
+# These backups exist only during an explicit install, never in a game path.
+install_staging=
+install_replacing=0
+install_committed=0
+install_destinations=()
+install_backups=()
+
+finish_install() {
+    local status=$? index directory destination restore_failed=0
+    trap - EXIT HUP INT TERM
+    if [[ "$install_replacing" == 1 && "$install_committed" != 1 ]]; then
+        for ((index=${#install_destinations[@]}-1; index>=0; index--)); do
+            destination="${install_destinations[index]}"
+            directory="${install_backups[index]}"
+            if [[ -e "$directory/previous" || -L "$directory/previous" ]]; then
+                if ! mv -fT -- "$directory/previous" "$destination"; then
+                    printf 'framegen-vulkan: recovery backup retained at %s\n' "$directory" >&2
+                    install_backups[index]=
+                    restore_failed=1
+                fi
+            elif ! rm -f -- "$destination"; then
+                restore_failed=1
+            fi
+        done
+    fi
+    for directory in "${install_backups[@]}" "$install_staging"; do
+        [[ -n "$directory" ]] || continue
+        rm -rf -- "$directory" || printf 'framegen-vulkan: could not remove staging directory %s\n' "$directory" >&2
+    done
+    if ((status != 0)); then
+        if ((restore_failed)); then
+            fail "The Renderer update failed and some files could not be restored. Recovery backups were retained beside the affected files. Check destination permissions and free space before retrying."
+        fi
+        fail "The Renderer update failed. The previous installation was preserved. Check the package, destination permissions, and free space before retrying."
+    fi
+}
+
+prepare_install_destination() {
+    local destination="$1" source="${2:-}" directory
+    if [[ -e "$destination" && ! -f "$destination" && ! -L "$destination" ]]; then
+        fail "The installation destination is not a file: $destination"
+    fi
+    mkdir -p -- "$(dirname -- "$destination")"
+    directory="$(mktemp -d "$(dirname -- "$destination")/.fgvk-install-XXXXXX")"
+    install_backups+=("$directory")
+    install_destinations+=("$destination")
+    if [[ -e "$destination" || -L "$destination" ]]; then
+        cp -Pp -- "$destination" "$directory/previous"
+    fi
+    if [[ -n "$source" ]]; then
+        cp -p -- "$source" "$directory/replacement"
+    fi
+}
+
+install_payload() {
+    [[ -f "$payload_manifest" && -f "$version_file" ]] ||
+        fail "Open ‘Install framegen-vulkan’ from the extracted framegen-vulkan archive."
+
+    local version
+    version="$(tr -d '[:space:]' < "$version_file")"
+    [[ -n "$version" ]] || fail "The framegen-vulkan version file is empty."
+    [[ "$version" =~ ^[0-9A-Za-z][0-9A-Za-z._+-]*$ ]] ||
+        fail "The framegen-vulkan version file is invalid."
+
+    validate_manifest "$payload_manifest"
+    if [[ -f "$state_manifest" ]]; then
+        validate_manifest "$state_manifest"
+    fi
+
+    if ! confirm "Install framegen-vulkan $version to $install_prefix? Existing framegen-vulkan files in that location will be safely updated. Your profiles will be kept."; then
+        exit 0
+    fi
+
+    trap finish_install EXIT
+    trap 'exit 129' HUP
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    mkdir -p -- "$install_prefix"
+    install_staging="$(mktemp -d "$install_prefix/.fgvk-install-XXXXXX")"
+
+    local source_path staged_path line old_path old_hash index
+    # Validate and rewrite every payload before touching the selected Renderer.
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        parse_manifest_line "$line"
+        source_path="$script_dir/$manifest_path"
+        [[ -f "$source_path" ]] || fail "The package is missing $manifest_path."
+        staged_path="$install_staging/payload/$manifest_path"
+        mkdir -p -- "$(dirname -- "$staged_path")"
+        cp -p -- "$source_path" "$staged_path"
+        [[ "$(hash_file "$staged_path")" == "$manifest_hash" ]] ||
+            fail "The package file $manifest_path does not match its recorded checksum."
+    done < "$payload_manifest"
+
+    write_installed_state_manifest "$install_staging/payload" "$install_staging/installed-files.sha256"
+    write_active_renderer_state "$version" "$install_staging/active-renderer.json"
+
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        parse_manifest_line "$line"
+        prepare_install_destination "$install_prefix/$manifest_path" "$install_staging/payload/$manifest_path"
+    done < "$payload_manifest"
+    if [[ -f "$state_manifest" ]]; then
+        while IFS= read -r line || [[ -n "$line" ]]; do
+            parse_manifest_line "$line"
+            old_path="$manifest_path"
+            old_hash="$manifest_hash"
+            if ! manifest_contains_path "$payload_manifest" "$old_path"; then
+                if [[ -f "$install_prefix/$old_path" && "$(hash_file "$install_prefix/$old_path")" == "$old_hash" ]]; then
+                    prepare_install_destination "$install_prefix/$old_path"
+                fi
+            fi
+        done < "$state_manifest"
+    fi
+    prepare_install_destination "$state_manifest" "$install_staging/installed-files.sha256"
+    prepare_install_destination "$active_renderer_state" "$install_staging/active-renderer.json"
+
+    install_replacing=1
+    for ((index=0; index<${#install_destinations[@]}; index++)); do
+        if [[ -f "${install_backups[index]}/replacement" ]]; then
+            mv -fT -- "${install_backups[index]}/replacement" "${install_destinations[index]}"
+        else
+            rm -f -- "${install_destinations[index]}"
+        fi
+    done
+    install_committed=1
+    finish_install
+
+    notice "framegen-vulkan $version is installed. Configure profiles in $config_dir/conf.toml, then use this Steam launch option for a native Steam or Proton game:
+
+\"$install_prefix/bin/fgvk-launch\" %command%"
+}
+
+uninstall_payload() {
+    local purge_configuration="${1:-0}"
+    [[ -f "$state_manifest" ]] ||
+        fail "No framegen-vulkan installation managed by this installer was found at $install_prefix."
+
+    validate_manifest "$state_manifest"
+    if ! confirm "Remove the managed native framegen-vulkan? Modified files and your profiles will be kept."; then
+        exit 0
+    fi
+
+    # Restore the shared native Remote Play override before deleting its launcher.
+    local remote_helper="$install_prefix/bin/fgvk-remote-play"
+    if [[ -x "$remote_helper" ]]; then
+        "$remote_helper" restore-before-uninstall || fail "Remote Play restoration failed; Renderer files were kept."
+    elif [[ -e "$config_dir/native-remote-play.json" || -L "$config_dir/native-remote-play.json" ||
+            -e "$HOME/.config/framegen-vulkan/native-remote-play.json" || -L "$HOME/.config/framegen-vulkan/native-remote-play.json" ||
+            -e "$HOME/.local/share/Steam/ubuntu12_64/streaming_client.fgvk-original" ||
+            -L "$HOME/.local/share/Steam/ubuntu12_64/streaming_client.fgvk-original" ||
+            -e "$HOME/.local/share/Steam/ubuntu12_64/streaming_client.fgvk-original.sha256" ||
+            -L "$HOME/.local/share/Steam/ubuntu12_64/streaming_client.fgvk-original.sha256" ]]; then
+        fail "Remove the Remote Play override before uninstalling this older Renderer."
+    fi
+
+    local line
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        parse_manifest_line "$line"
+        remove_if_managed "$install_prefix/$manifest_path" "$manifest_hash"
+        remove_empty_parent_directories \
+            "$install_prefix/$manifest_path" "$install_prefix"
+    done < "$state_manifest"
+
+    rm -f -- "$active_renderer_state"
+    remove_empty_parent_directories \
+        "$active_renderer_state" "$install_prefix"
+    rm -f -- "$state_manifest"
+    remove_empty_parent_directories "$state_manifest" "$install_prefix"
+    rmdir -- "$install_prefix/bin" 2>/dev/null || true
+
+    if [[ "$purge_configuration" == "1" ]] ||
+            { [[ "${FGVK_INSTALLER_ASSUME_YES:-0}" != "1" ]] &&
+                confirm "Also remove your framegen-vulkan profiles, settings, and diagnostics from $config_dir? This cannot be undone."; }; then
+        rm -rf -- "$config_dir"
+        notice "framegen-vulkan, its configuration, and its diagnostics have been removed."
+    else
+        notice "framegen-vulkan has been removed. Your profiles remain in $config_dir."
+    fi
+}
+
+usage() {
+    cat <<'EOF'
+Usage: fgvk-installer [--install] [--uninstall [--purge-configuration]]
+
+Run ‘Install framegen-vulkan’ from an extracted framegen-vulkan archive to install
+or update the user-local Renderer. Run fgvk-installer --uninstall to remove the
+managed Renderer files; profiles are kept unless --purge-configuration is given.
+EOF
+}
+
+mode="install"
+purge_configuration=0
+while (($#)); do
+    case "$1" in
+        --install)
+            mode="install"
+            ;;
+        --uninstall)
+            mode="uninstall"
+            ;;
+        --purge-configuration)
+            purge_configuration=1
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            usage >&2
+            exit 2
+            ;;
+    esac
+    shift
+done
+
+case "$mode" in
+    install) install_payload ;;
+    uninstall) uninstall_payload "$purge_configuration" ;;
+esac

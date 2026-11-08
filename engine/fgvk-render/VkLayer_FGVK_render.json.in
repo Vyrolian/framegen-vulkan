@@ -1,0 +1,21 @@
+{
+  "file_format_version": "1.2.1",
+  "layer": {
+    "name": "VK_LAYER_FGVK_render",
+    "description": "framegen-vulkan graphics layer",
+    "implementation_version": "2",
+    "library_path": "@FGVK_LAYER_LIBRARY_PATH@",
+    "library_arch": "@FGVK_LAYER_LIBRARY_ARCH@",
+    "type": "GLOBAL",
+    "api_version": "1.4.365",
+    "instance_extensions": [
+      { "name": "VK_EXT_swapchain_colorspace", "spec_version": "4" }
+    ],
+    "enable_environment": {
+      "ENABLE_FGVK": "1"
+    },
+    "disable_environment": {
+      "DISABLE_FGVK": "1"
+    }
+  }
+}

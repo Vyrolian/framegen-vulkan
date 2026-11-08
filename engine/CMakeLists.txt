@@ -1,37 +1,37 @@
 cmake_minimum_required(VERSION 3.10)
-project(mako-render LANGUAGES CXX)
+project(fgvk-render LANGUAGES CXX)
 include(GNUInstallDirs)
 include(CTest)
 
-set(MAKO_REPOSITORY_LICENSE "${CMAKE_CURRENT_SOURCE_DIR}/../LICENSE.md")
-set(MAKO_THIRD_PARTY_NOTICES "${CMAKE_CURRENT_SOURCE_DIR}/../THIRD_PARTY_NOTICES.md")
-set(MAKO_ASSET_PROVENANCE "${CMAKE_CURRENT_SOURCE_DIR}/../ASSET_PROVENANCE.md")
-if(NOT EXISTS "${MAKO_REPOSITORY_LICENSE}")
-    message(FATAL_ERROR "The monorepo license is missing: ${MAKO_REPOSITORY_LICENSE}")
+set(FGVK_REPOSITORY_LICENSE "${CMAKE_CURRENT_SOURCE_DIR}/../LICENSE.md")
+set(FGVK_THIRD_PARTY_NOTICES "${CMAKE_CURRENT_SOURCE_DIR}/../THIRD_PARTY_NOTICES.md")
+set(FGVK_ASSET_PROVENANCE "${CMAKE_CURRENT_SOURCE_DIR}/../ASSET_PROVENANCE.md")
+if(NOT EXISTS "${FGVK_REPOSITORY_LICENSE}")
+    message(FATAL_ERROR "The monorepo license is missing: ${FGVK_REPOSITORY_LICENSE}")
 endif()
-if(NOT EXISTS "${MAKO_THIRD_PARTY_NOTICES}")
-    message(FATAL_ERROR "The monorepo third-party notices are missing: ${MAKO_THIRD_PARTY_NOTICES}")
+if(NOT EXISTS "${FGVK_THIRD_PARTY_NOTICES}")
+    message(FATAL_ERROR "The monorepo third-party notices are missing: ${FGVK_THIRD_PARTY_NOTICES}")
 endif()
-if(NOT EXISTS "${MAKO_ASSET_PROVENANCE}")
-    message(FATAL_ERROR "The monorepo asset provenance record is missing: ${MAKO_ASSET_PROVENANCE}")
+if(NOT EXISTS "${FGVK_ASSET_PROVENANCE}")
+    message(FATAL_ERROR "The monorepo asset provenance record is missing: ${FGVK_ASSET_PROVENANCE}")
 endif()
-install(FILES "${MAKO_REPOSITORY_LICENSE}" "${MAKO_THIRD_PARTY_NOTICES}" "${MAKO_ASSET_PROVENANCE}"
-    DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/doc/mako-render")
-install(PROGRAMS "${CMAKE_CURRENT_SOURCE_DIR}/../scripts/mako-diagnostics"
+install(FILES "${FGVK_REPOSITORY_LICENSE}" "${FGVK_THIRD_PARTY_NOTICES}" "${FGVK_ASSET_PROVENANCE}"
+    DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/doc/framegen-vulkan")
+install(PROGRAMS "${CMAKE_CURRENT_SOURCE_DIR}/../scripts/fgvk-diagnostics"
     DESTINATION "${CMAKE_INSTALL_BINDIR}")
-install(PROGRAMS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/mako-installer"
+install(PROGRAMS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/fgvk-installer"
     DESTINATION "${CMAKE_INSTALL_BINDIR}")
 install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/vkbasalt-shaders/"
-    DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/mako-render/vkbasalt-shaders")
-install(PROGRAMS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/mako-remote-play"
+    DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/framegen-vulkan/vkbasalt-shaders")
+install(PROGRAMS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/fgvk-remote-play"
     DESTINATION "${CMAKE_INSTALL_BINDIR}")
-install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/scripts/mako_remote_play/"
-    DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/mako-render/mako_remote_play"
+install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/scripts/fgvk_remote_play/"
+    DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/framegen-vulkan/fgvk_remote_play"
     FILES_MATCHING PATTERN "*.py" PATTERN "__pycache__" EXCLUDE)
 
-file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION" MAKO_VERSION LIMIT_COUNT 1)
-string(STRIP "${MAKO_VERSION}" MAKO_VERSION)
-if(MAKO_VERSION STREQUAL "")
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION" FGVK_VERSION LIMIT_COUNT 1)
+string(STRIP "${FGVK_VERSION}" FGVK_VERSION)
+if(FGVK_VERSION STREQUAL "")
     message(FATAL_ERROR "VERSION must contain a build identity")
 endif()
 
@@ -40,157 +40,157 @@ endif()
 # untracked paths so two local binaries from the same release line cannot
 # produce indistinguishable diagnostics. Keep this configure-time only: the
 # Vulkan presentation path must never inspect Git or hash files at runtime.
-set(MAKO_BUILD_FINGERPRINT "${MAKO_VERSION}")
-find_program(MAKO_GIT_EXECUTABLE NAMES git)
-if(MAKO_GIT_EXECUTABLE)
+set(FGVK_BUILD_FINGERPRINT "${FGVK_VERSION}")
+find_program(FGVK_GIT_EXECUTABLE NAMES git)
+if(FGVK_GIT_EXECUTABLE)
     execute_process(
-        COMMAND "${MAKO_GIT_EXECUTABLE}" log -1 --format=%H -- .
+        COMMAND "${FGVK_GIT_EXECUTABLE}" log -1 --format=%H -- .
         WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
-        RESULT_VARIABLE MAKO_GIT_COMMIT_RESULT
-        OUTPUT_VARIABLE MAKO_GIT_COMMIT
+        RESULT_VARIABLE FGVK_GIT_COMMIT_RESULT
+        OUTPUT_VARIABLE FGVK_GIT_COMMIT
         OUTPUT_STRIP_TRAILING_WHITESPACE
         ERROR_QUIET)
-    if(MAKO_GIT_COMMIT_RESULT EQUAL 0 AND NOT MAKO_GIT_COMMIT STREQUAL "")
-        string(SUBSTRING "${MAKO_GIT_COMMIT}" 0 12 MAKO_GIT_SHORT_COMMIT)
+    if(FGVK_GIT_COMMIT_RESULT EQUAL 0 AND NOT FGVK_GIT_COMMIT STREQUAL "")
+        string(SUBSTRING "${FGVK_GIT_COMMIT}" 0 12 FGVK_GIT_SHORT_COMMIT)
         execute_process(
-            COMMAND "${MAKO_GIT_EXECUTABLE}" diff --binary HEAD -- .
+            COMMAND "${FGVK_GIT_EXECUTABLE}" diff --binary HEAD -- .
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
-            OUTPUT_VARIABLE MAKO_GIT_DIFF
+            OUTPUT_VARIABLE FGVK_GIT_DIFF
             ERROR_QUIET)
         execute_process(
-            COMMAND "${MAKO_GIT_EXECUTABLE}" status --porcelain
+            COMMAND "${FGVK_GIT_EXECUTABLE}" status --porcelain
                 --untracked-files=normal -- .
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
-            OUTPUT_VARIABLE MAKO_GIT_STATUS
+            OUTPUT_VARIABLE FGVK_GIT_STATUS
             ERROR_QUIET)
-        set(MAKO_BUILD_FINGERPRINT "${MAKO_GIT_SHORT_COMMIT}")
-        if(NOT MAKO_GIT_STATUS STREQUAL "")
-            string(SHA256 MAKO_GIT_DIRTY_DIGEST
-                "${MAKO_GIT_DIFF}\n${MAKO_GIT_STATUS}")
-            string(SUBSTRING "${MAKO_GIT_DIRTY_DIGEST}" 0 8
-                MAKO_GIT_DIRTY_SHORT_DIGEST)
-            string(APPEND MAKO_BUILD_FINGERPRINT
-                ".dirty.${MAKO_GIT_DIRTY_SHORT_DIGEST}")
+        set(FGVK_BUILD_FINGERPRINT "${FGVK_GIT_SHORT_COMMIT}")
+        if(NOT FGVK_GIT_STATUS STREQUAL "")
+            string(SHA256 FGVK_GIT_DIRTY_DIGEST
+                "${FGVK_GIT_DIFF}\n${FGVK_GIT_STATUS}")
+            string(SUBSTRING "${FGVK_GIT_DIRTY_DIGEST}" 0 8
+                FGVK_GIT_DIRTY_SHORT_DIGEST)
+            string(APPEND FGVK_BUILD_FINGERPRINT
+                ".dirty.${FGVK_GIT_DIRTY_SHORT_DIGEST}")
         endif()
     endif()
 endif()
 
 # === READ HERE FOR BUILD OPTIONS ===
-option(MAKO_BUILD_VK_LAYER     "Build the Vulkan layer"            ON)
-option(MAKO_BUILD_CLI          "Build the command line interface"  ON)
-option(MAKO_INSTALL_DEVELOP    "Install development libraries and headers"      OFF)
-option(MAKO_ENABLE_SANITIZERS  "Enable AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
-option(MAKO_EXPERIMENTAL_LSFG_FP16 "Convert FP32-only LSFG models when the existing FP16 setting is enabled (quality unqualified)" OFF)
-set(MAKO_LSFG_FP16_TOOLS_SOURCE "" CACHE PATH "Pinned SPIRV-Tools source prepared by scripts/prepare-lsfg-fp16-tools.sh")
-if(MAKO_EXPERIMENTAL_LSFG_FP16)
-    string(APPEND MAKO_BUILD_FINGERPRINT ".experimental-lsfg-fp16")
+option(FGVK_BUILD_VK_LAYER     "Build the Vulkan layer"            ON)
+option(FGVK_BUILD_CLI          "Build the command line interface"  ON)
+option(FGVK_INSTALL_DEVELOP    "Install development libraries and headers"      OFF)
+option(FGVK_ENABLE_SANITIZERS  "Enable AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
+option(FGVK_EXPERIMENTAL_LSFG_FP16 "Convert FP32-only LSFG models when the existing FP16 setting is enabled (quality unqualified)" OFF)
+set(FGVK_LSFG_FP16_TOOLS_SOURCE "" CACHE PATH "Pinned SPIRV-Tools source prepared by scripts/prepare-lsfg-fp16-tools.sh")
+if(FGVK_EXPERIMENTAL_LSFG_FP16)
+    string(APPEND FGVK_BUILD_FINGERPRINT ".experimental-lsfg-fp16")
 endif()
-option(MAKO_REQUIRE_NATIVE_PACKAGE_HEADERS "Require the shared package Vulkan header baseline" OFF)
-set(MAKO_VULKAN_HEADERS_INCLUDE_DIR "" CACHE PATH "Optional Vulkan-Headers include directory for direct builds")
-if(MAKO_VULKAN_HEADERS_INCLUDE_DIR)
-    if(NOT EXISTS "${MAKO_VULKAN_HEADERS_INCLUDE_DIR}/vulkan/vulkan_core.h")
+option(FGVK_REQUIRE_NATIVE_PACKAGE_HEADERS "Require the shared package Vulkan header baseline" OFF)
+set(FGVK_VULKAN_HEADERS_INCLUDE_DIR "" CACHE PATH "Optional Vulkan-Headers include directory for direct builds")
+if(FGVK_VULKAN_HEADERS_INCLUDE_DIR)
+    if(NOT EXISTS "${FGVK_VULKAN_HEADERS_INCLUDE_DIR}/vulkan/vulkan_core.h")
         message(FATAL_ERROR
-            "MAKO_VULKAN_HEADERS_INCLUDE_DIR does not contain Vulkan-Headers: "
-            "${MAKO_VULKAN_HEADERS_INCLUDE_DIR}")
+            "FGVK_VULKAN_HEADERS_INCLUDE_DIR does not contain Vulkan-Headers: "
+            "${FGVK_VULKAN_HEADERS_INCLUDE_DIR}")
     endif()
-    include_directories(BEFORE SYSTEM "${MAKO_VULKAN_HEADERS_INCLUDE_DIR}")
+    include_directories(BEFORE SYSTEM "${FGVK_VULKAN_HEADERS_INCLUDE_DIR}")
 endif()
-set(MAKO_LAYER_LIBRARY_PATH libmako-render.so CACHE STRING "Change where Vulkan searches for the layer library")
-set(MAKO_SCALING_LAYER_LIBRARY_PATH libmako-render-scaling.so CACHE STRING "Change where Vulkan searches for the isolated spatial-scaling layer library")
-set(MAKO_LAYER_MANIFEST_SUFFIX "" CACHE STRING "Suffix for the installed Vulkan layer manifest filename")
-option(MAKO_TESTING_RENDERDOC  "Enable RenderDoc integration for testing purposes" OFF)
+set(FGVK_LAYER_LIBRARY_PATH libfgvk-render.so CACHE STRING "Change where Vulkan searches for the layer library")
+set(FGVK_SCALING_LAYER_LIBRARY_PATH libfgvk-render-scaling.so CACHE STRING "Change where Vulkan searches for the isolated spatial-scaling layer library")
+set(FGVK_LAYER_MANIFEST_SUFFIX "" CACHE STRING "Suffix for the installed Vulkan layer manifest filename")
+option(FGVK_TESTING_RENDERDOC  "Enable RenderDoc integration for testing purposes" OFF)
 # === READ HERE FOR BUILD OPTIONS ===
 
-if(MAKO_BUILD_VK_LAYER)
+if(FGVK_BUILD_VK_LAYER)
     install(PROGRAMS
-        "${CMAKE_CURRENT_SOURCE_DIR}/scripts/mako-launch"
-        "${CMAKE_CURRENT_SOURCE_DIR}/scripts/mako-vrr-lease"
+        "${CMAKE_CURRENT_SOURCE_DIR}/scripts/fgvk-launch"
+        "${CMAKE_CURRENT_SOURCE_DIR}/scripts/fgvk-vrr-lease"
         DESTINATION "${CMAKE_INSTALL_BINDIR}")
 endif()
 
 if(BUILD_TESTING AND UNIX)
-    find_program(MAKO_PYTHON3_EXECUTABLE NAMES python3)
-    if(NOT MAKO_PYTHON3_EXECUTABLE)
+    find_program(FGVK_PYTHON3_EXECUTABLE NAMES python3)
+    if(NOT FGVK_PYTHON3_EXECUTABLE)
         message(FATAL_ERROR "Python 3 is required for Renderer source-contract tests")
     endif()
 
     add_test(NAME standalone-launcher
         COMMAND bash
-            "${CMAKE_CURRENT_SOURCE_DIR}/scripts/test-mako-launch.sh"
-            "${CMAKE_CURRENT_SOURCE_DIR}/scripts/mako-launch")
+            "${CMAKE_CURRENT_SOURCE_DIR}/scripts/test-fgvk-launch.sh"
+            "${CMAKE_CURRENT_SOURCE_DIR}/scripts/fgvk-launch")
     add_test(NAME standalone-mangohud
-        COMMAND "${MAKO_PYTHON3_EXECUTABLE}"
-            "${CMAKE_CURRENT_SOURCE_DIR}/scripts/test-mako-launch-mangohud.py")
+        COMMAND "${FGVK_PYTHON3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/scripts/test-fgvk-launch-mangohud.py")
     set_tests_properties(standalone-mangohud PROPERTIES LABELS "portable-policy")
     add_test(NAME remote-play-command
-        COMMAND "${MAKO_PYTHON3_EXECUTABLE}"
-            "${CMAKE_CURRENT_SOURCE_DIR}/scripts/test-mako-remote-play.py")
+        COMMAND "${FGVK_PYTHON3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/scripts/test-fgvk-remote-play.py")
     set_tests_properties(standalone-launcher PROPERTIES
         LABELS "portable-policy")
 
     add_test(NAME gamescope-vrr-lease
-        COMMAND "${MAKO_PYTHON3_EXECUTABLE}"
-            "${CMAKE_CURRENT_SOURCE_DIR}/scripts/test-mako-vrr-lease.py")
+        COMMAND "${FGVK_PYTHON3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/scripts/test-fgvk-vrr-lease.py")
     set_tests_properties(gamescope-vrr-lease PROPERTIES
         LABELS "portable-policy")
 
     add_test(NAME gamescope-compatibility-record
-        COMMAND "${MAKO_PYTHON3_EXECUTABLE}"
+        COMMAND "${FGVK_PYTHON3_EXECUTABLE}"
             "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check-gamescope-compatibility.py")
     set_tests_properties(gamescope-compatibility-record PROPERTIES
         LABELS "portable-policy")
 
     add_test(NAME steamos-build-tools
-        COMMAND "${MAKO_PYTHON3_EXECUTABLE}"
+        COMMAND "${FGVK_PYTHON3_EXECUTABLE}"
             "${CMAKE_CURRENT_SOURCE_DIR}/scripts/test-install-steamos-build-tools.py")
     set_tests_properties(steamos-build-tools PROPERTIES
         LABELS "portable-policy")
 
-    add_test(NAME mako-gym-bridge-contract
+    add_test(NAME fgvk-gym-bridge-contract
         COMMAND bash
-            "${CMAKE_CURRENT_SOURCE_DIR}/scripts/test-run-mako-gym.sh"
-            "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run-mako-gym.sh")
-    set_tests_properties(mako-gym-bridge-contract PROPERTIES
+            "${CMAKE_CURRENT_SOURCE_DIR}/scripts/test-run-fgvk-gym.sh"
+            "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run-fgvk-gym.sh")
+    set_tests_properties(fgvk-gym-bridge-contract PROPERTIES
         LABELS "portable-policy")
 
     add_test(NAME standalone-installer
         COMMAND bash
-            "${CMAKE_CURRENT_SOURCE_DIR}/scripts/test-mako-installer.sh"
-            "${CMAKE_CURRENT_SOURCE_DIR}/scripts/mako-installer")
+            "${CMAKE_CURRENT_SOURCE_DIR}/scripts/test-fgvk-installer.sh"
+            "${CMAKE_CURRENT_SOURCE_DIR}/scripts/fgvk-installer")
     set_tests_properties(standalone-installer PROPERTIES
         LABELS "portable-policy")
 
     add_test(NAME standalone-flatpak-installer
         COMMAND bash
-            "${CMAKE_CURRENT_SOURCE_DIR}/scripts/test-mako-flatpak-installer.sh"
-            "${CMAKE_CURRENT_SOURCE_DIR}/scripts/mako-install-flatpaks")
+            "${CMAKE_CURRENT_SOURCE_DIR}/scripts/test-fgvk-flatpak-installer.sh"
+            "${CMAKE_CURRENT_SOURCE_DIR}/scripts/fgvk-install-flatpaks")
     set_tests_properties(standalone-flatpak-installer PROPERTIES
         LABELS "portable-policy")
 
     add_test(NAME flatpak-runtime-freshness
-        COMMAND "${MAKO_PYTHON3_EXECUTABLE}"
+        COMMAND "${FGVK_PYTHON3_EXECUTABLE}"
             "${CMAKE_CURRENT_SOURCE_DIR}/../scripts/generate-flatpak-runtimes.py"
             --check)
     set_tests_properties(flatpak-runtime-freshness PROPERTIES LABELS "portable-policy")
 
     add_test(NAME flatpak-vulkan-headers-freshness
-        COMMAND "${MAKO_PYTHON3_EXECUTABLE}"
+        COMMAND "${FGVK_PYTHON3_EXECUTABLE}"
             "${CMAKE_CURRENT_SOURCE_DIR}/scripts/generate-flatpak-vulkan-headers.py"
             --check)
     add_test(NAME flatpak-vulkan-headers-contract
-        COMMAND "${MAKO_PYTHON3_EXECUTABLE}"
+        COMMAND "${FGVK_PYTHON3_EXECUTABLE}"
             "${CMAKE_CURRENT_SOURCE_DIR}/scripts/test-flatpak-vulkan-headers.py")
     set_tests_properties(flatpak-vulkan-headers-freshness
         flatpak-vulkan-headers-contract PROPERTIES LABELS "portable-policy")
 
     add_test(NAME vkbasalt-release-contract
-        COMMAND "${MAKO_PYTHON3_EXECUTABLE}"
+        COMMAND "${FGVK_PYTHON3_EXECUTABLE}"
             "${CMAKE_CURRENT_SOURCE_DIR}/scripts/manage-vkbasalt-release.py"
             --check
             --check-flatpak-module
-            "${CMAKE_CURRENT_SOURCE_DIR}/dist/flatpak/mako-render/vkbasalt-module.json")
+            "${CMAKE_CURRENT_SOURCE_DIR}/dist/flatpak/fgvk-render/vkbasalt-module.json")
     add_test(NAME vkbasalt-release-validator
-        COMMAND "${MAKO_PYTHON3_EXECUTABLE}"
+        COMMAND "${FGVK_PYTHON3_EXECUTABLE}"
             "${CMAKE_CURRENT_SOURCE_DIR}/scripts/test-vkbasalt-release.py")
     set_tests_properties(vkbasalt-release-contract
         vkbasalt-release-validator PROPERTIES LABELS "portable-policy")
@@ -205,14 +205,14 @@ if(BUILD_TESTING AND UNIX)
     endif()
 
     add_test(NAME embedded-color-conversion-spirv-freshness
-        COMMAND "${MAKO_PYTHON3_EXECUTABLE}"
+        COMMAND "${FGVK_PYTHON3_EXECUTABLE}"
             "${CMAKE_CURRENT_SOURCE_DIR}/scripts/generate-color-conversion-spirv.py"
             --check)
     set_tests_properties(embedded-color-conversion-spirv-freshness PROPERTIES
         LABELS "portable-policy")
 
     add_test(NAME embedded-spatial-scaling-spirv-freshness
-        COMMAND "${MAKO_PYTHON3_EXECUTABLE}"
+        COMMAND "${FGVK_PYTHON3_EXECUTABLE}"
             "${CMAKE_CURRENT_SOURCE_DIR}/scripts/generate-spatial-scaling-spirv.py"
             --check)
     set_tests_properties(embedded-spatial-scaling-spirv-freshness PROPERTIES
@@ -225,10 +225,10 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 set(CMAKE_SKIP_RPATH ON)
 
-if(MAKO_ENABLE_SANITIZERS)
+if(FGVK_ENABLE_SANITIZERS)
     if(NOT CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
         message(FATAL_ERROR
-            "MAKO_ENABLE_SANITIZERS requires GCC, Clang, or AppleClang")
+            "FGVK_ENABLE_SANITIZERS requires GCC, Clang, or AppleClang")
     endif()
     add_compile_options(
         -fsanitize=address,undefined
@@ -265,34 +265,34 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     endif()
 endif()
 
-if(MAKO_TESTING_RENDERDOC)
-    add_compile_definitions(MAKO_TESTING_RENDERDOC)
+if(FGVK_TESTING_RENDERDOC)
+    add_compile_definitions(FGVK_TESTING_RENDERDOC)
 endif()
 
-if(MAKO_BUILD_VK_LAYER OR MAKO_BUILD_CLI OR
-        MAKO_INSTALL_DEVELOP OR BUILD_TESTING)
-    add_subdirectory(mako-common)
+if(FGVK_BUILD_VK_LAYER OR FGVK_BUILD_CLI OR
+        FGVK_INSTALL_DEVELOP OR BUILD_TESTING)
+    add_subdirectory(fgvk-common)
 endif()
-if(MAKO_BUILD_VK_LAYER OR MAKO_BUILD_CLI OR MAKO_INSTALL_DEVELOP)
-    add_subdirectory(mako-backend)
+if(FGVK_BUILD_VK_LAYER OR FGVK_BUILD_CLI OR FGVK_INSTALL_DEVELOP)
+    add_subdirectory(fgvk-backend)
 endif()
-if(MAKO_BUILD_VK_LAYER OR MAKO_BUILD_CLI OR BUILD_TESTING)
-    add_subdirectory(mako-render)
+if(FGVK_BUILD_VK_LAYER OR FGVK_BUILD_CLI OR BUILD_TESTING)
+    add_subdirectory(fgvk-render)
 endif()
-if(MAKO_BUILD_CLI)
-    add_subdirectory(mako-cli)
+if(FGVK_BUILD_CLI)
+    add_subdirectory(fgvk-cli)
 endif()
-add_subdirectory(scripts/mako_remote_play)
-if(BUILD_TESTING AND TARGET mako-remote-play-sdr)
-    set(remote_play_test_environment "MAKO_TEST_SDR_NATIVE_HELPER=$<TARGET_FILE:mako-remote-play-sdr>;MAKO_TEST_SDR_CLIENT=$<TARGET_FILE:mako-remote-play-sdr-tests>;MAKO_TEST_SDL_FIXTURE_DIR=$<TARGET_FILE_DIR:mako-remote-play-sdl-fixture>")
-    if(MAKO_ENABLE_SANITIZERS)
+add_subdirectory(scripts/fgvk_remote_play)
+if(BUILD_TESTING AND TARGET fgvk-remote-play-sdr)
+    set(remote_play_test_environment "FGVK_TEST_SDR_NATIVE_HELPER=$<TARGET_FILE:fgvk-remote-play-sdr>;FGVK_TEST_SDR_CLIENT=$<TARGET_FILE:fgvk-remote-play-sdr-tests>;FGVK_TEST_SDL_FIXTURE_DIR=$<TARGET_FILE_DIR:fgvk-remote-play-sdl-fixture>")
+    if(FGVK_ENABLE_SANITIZERS)
         # Match the SDL helper tests: the real launcher preloads the instrumented
         # helper ahead of DT_NEEDED entries using the same sanitizer runtime.
         list(APPEND remote_play_test_environment "ASAN_OPTIONS=verify_asan_link_order=0")
     else()
         # Instrumented Clang DSOs need the executable's ASan runtime. The
         # SDL client below supplies it; /usr/bin/env environment fixtures do not.
-        list(APPEND remote_play_test_environment "MAKO_TEST_SDR_HELPER=$<TARGET_FILE:mako-remote-play-sdr>")
+        list(APPEND remote_play_test_environment "FGVK_TEST_SDR_HELPER=$<TARGET_FILE:fgvk-remote-play-sdr>")
     endif()
     set_tests_properties(remote-play-command PROPERTIES LABELS "portable-policy"
         ENVIRONMENT "${remote_play_test_environment}")

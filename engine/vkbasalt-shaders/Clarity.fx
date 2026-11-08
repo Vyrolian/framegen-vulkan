@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 MAKO contributors
-// MAKO's lightweight local-contrast effect; independently implemented.
+// framegen-vulkan's lightweight local-contrast effect; independently implemented.
 
 uniform float Strength <
     ui_type = "slider";

@@ -1,4 +1,4 @@
-name: Deploy MAKO website to GitHub Pages
+name: Deploy framegen-vulkan website to GitHub Pages
 
 on:
   push:

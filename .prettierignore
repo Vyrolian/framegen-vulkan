@@ -1,5 +1,5 @@
 .git/
 .agents/
 engine/build/
-engine/mako-common/thirdparty/
+engine/fgvk-common/thirdparty/
 engine/out/

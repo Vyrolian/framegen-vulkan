@@ -1,6 +1,6 @@
-# AI use in MAKO
+# AI use in framegen-vulkan
 
-MAKO uses AI-assisted development openly. AI can accelerate engineering work, but it does not replace technical ownership, review, or release accountability.
+framegen-vulkan uses AI-assisted development openly. AI can accelerate engineering work, but it does not replace technical ownership, review, or release accountability.
 
 ## What AI is used for
 
@@ -29,7 +29,7 @@ Agent output is a proposed contribution, not proof of correctness. The maintaine
 
 ## Validation
 
-MAKO validates changes according to their risk and scope. Evidence can include review, automated tests, native and Flatpak builds, instrumentation, performance measurements, regression checks, and real SteamOS hardware.
+framegen-vulkan validates changes according to their risk and scope. Evidence can include review, automated tests, native and Flatpak builds, instrumentation, performance measurements, regression checks, and real SteamOS hardware.
 
 Graphics and frame-timing work must also account for changing frame rates, GPU pressure, overlays, hitches, swapchain recreation, compositor behavior, and recovery. Evidence rather than agent confidence determines acceptance.
 
@@ -41,8 +41,8 @@ Local implementation, testing, or packaging does not authorize a branch change, 
 
 ## Further reading
 
-- [MAKO repository guide for coding agents](AGENTS.md)
-- [Testing MAKO](TESTING.md)
-- [How to release MAKO](HOW_TO_RELEASE.md)
+- [framegen-vulkan repository guide for coding agents](AGENTS.md)
+- [Testing framegen-vulkan](TESTING.md)
+- [How to release framegen-vulkan](HOW_TO_RELEASE.md)
 - [Event-Driven Development for AI Agents](https://eugeniosegala.dev/event-driven-development-for-ai-agents/)
 - [Bare-Metal Development for AI Agents](https://eugeniosegala.dev/bare-metal-development-for-ai-agents/)

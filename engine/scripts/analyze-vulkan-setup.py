@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Inspect or compare creation requests from MAKO's opt-in full frame trace.
+"""Inspect or compare creation requests from framegen-vulkan's opt-in full frame trace.
 
-This compares enabled setup at a MAKO layer boundary, not extension use, pixels,
+This compares enabled setup at a framegen-vulkan layer boundary, not extension use, pixels,
 driver capability, frame cadence, or successful reproduction of a game fault.
 """
 
@@ -12,7 +12,7 @@ from pathlib import Path
 import re
 
 
-PREFIX = "MAKO Renderer: present diagnostics: operation=pacing-profile-vulkan-setup "
+PREFIX = "framegen-vulkan: present diagnostics: operation=pacing-profile-vulkan-setup "
 FEATURES = ("presentId", "presentWait", "presentId2", "presentWait2",
             "swapchainMaintenance1", "descriptorHeap", "presentMetering")
 

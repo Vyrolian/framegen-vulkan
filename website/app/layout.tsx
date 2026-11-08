@@ -12,12 +12,12 @@ import {
 export const metadata: Metadata = {
   title: siteTitle,
   description: siteDescription,
-  applicationName: 'MAKO',
+  applicationName: 'framegen-vulkan',
   authors: [
-    { name: 'MAKO contributors', url: 'https://github.com/eugeniosegala/MAKO' },
+    { name: 'framegen-vulkan contributors', url: 'https://github.com/eugeniosegala/MAKO' },
   ],
-  creator: 'MAKO contributors',
-  publisher: 'MAKO',
+  creator: 'framegen-vulkan contributors',
+  publisher: 'framegen-vulkan',
   keywords: siteKeywords,
   category: 'technology',
   metadataBase: new URL(siteUrl),
@@ -36,13 +36,13 @@ export const metadata: Metadata = {
     },
   },
   icons: {
-    icon: 'assets/mako-discord-icon.webp',
+    icon: 'assets/fgvk-discord-icon.webp',
   },
   openGraph: {
     title: siteTitle,
     description: siteDescription,
     url: siteUrl,
-    siteName: 'MAKO',
+    siteName: 'framegen-vulkan',
     type: 'website',
     locale: 'en_US',
     images: [
@@ -50,7 +50,7 @@ export const metadata: Metadata = {
         url: socialImageUrl,
         width: 1200,
         height: 630,
-        alt: 'MAKO frame generation, spatial scaling, and shaders for SteamOS and Linux',
+        alt: 'framegen-vulkan frame generation, spatial scaling, and shaders for SteamOS and Linux',
       },
     ],
   },
@@ -61,7 +61,7 @@ export const metadata: Metadata = {
     images: [
       {
         url: socialImageUrl,
-        alt: 'MAKO frame generation, spatial scaling, and shaders for SteamOS and Linux',
+        alt: 'framegen-vulkan frame generation, spatial scaling, and shaders for SteamOS and Linux',
       },
     ],
   },

@@ -4,9 +4,9 @@ Complete the steps below for each app. Installing the native Renderer or creatin
 
 ## Prepare a Renderer profile
 
-In `~/.config/mako-render/conf.toml`, set `active_in` to the game's executable, such as `Game.exe` or `dolphin-emu`, and enable the features you want. Match the executable, not the Flatpak application ID.
+In `~/.config/framegen-vulkan/conf.toml`, set `active_in` to the game's executable, such as `Game.exe` or `dolphin-emu`, and enable the features you want. Match the executable, not the Flatpak application ID.
 
-Frame Generation and LS1 require Lossless Scaling's default Steam version: set `dll` to its absolute `Lossless.dll` path. Without it, turn Frame Generation off and choose the MAKO Scaler and/or Shaders.
+Frame Generation and LS1 require Lossless Scaling's default Steam version: set `dll` to its absolute `Lossless.dll` path. Without it, turn Frame Generation off and choose the framegen-vulkan Scaler and/or Shaders.
 
 ## Identify the application and runtime
 
@@ -28,75 +28,75 @@ Use the reported Freedesktop branch. Supported x86_64 branches are **23.08, 24.0
 For KDE/GNOME runtimes, inspect the metadata:
 
 ```bash
-mako_app_runtime=$(flatpak info --show-runtime "$appid")
-flatpak info --show-metadata "$mako_app_runtime"
+fgvk_app_runtime=$(flatpak info --show-runtime "$appid")
+flatpak info --show-metadata "$fgvk_app_runtime"
 ```
 
 Find `[Extension org.freedesktop.Platform.VulkanLayer]` and use a supported `version=` or `versions=` entry. If no supported branch appears, stop; do not guess.
 
 ## Packaged extensions
 
-Download and extract `MAKO-Renderer-v<version>-flatpaks.tar.xz` from [Renderer downloads](../README.md#downloads), matching your native release. In the extracted folder, install your runtime branch; replace `24.08` as needed:
+Download and extract `framegen-vulkan-v<version>-flatpaks.tar.xz` from [Renderer downloads](../README.md#downloads), matching your native release. In the extracted folder, install your runtime branch; replace `24.08` as needed:
 
 ```bash
-mako_runtime=24.08
-flatpak install --user "./org.freedesktop.Platform.VulkanLayer.makorender-$mako_runtime.flatpak"
+fgvk_runtime=24.08
+flatpak install --user "./org.freedesktop.Platform.VulkanLayer.fgvkrender-$fgvk_runtime.flatpak"
 ```
 
 ### Graphical extension installation
 
-Alternatively, open **Install MAKO Flatpak Extensions** and select the matching branch. Install each required branch once, then prepare each app below.
+Alternatively, open **Install framegen-vulkan Flatpak Extensions** and select the matching branch. Install each required branch once, then prepare each app below.
 
 ## Manual application override
 
 Fully close the app and its games. Grant configuration access:
 
 ```bash
-flatpak override --user --filesystem="$HOME/.config/mako-render:rw" "$appid"
-flatpak override --user --env=MAKO_CONFIG="$HOME/.config/mako-render/conf.toml" "$appid"
+flatpak override --user --filesystem="$HOME/.config/framegen-vulkan:rw" "$appid"
+flatpak override --user --env=FGVK_CONFIG="$HOME/.config/framegen-vulkan/conf.toml" "$appid"
 ```
 
 For Frame Generation or LS1, replace the example with the folder containing your configured `Lossless.dll`. Otherwise, skip this block:
 
 ```bash
-mako_dll_directory="/absolute/path/to/steamapps/common/Lossless Scaling"
-flatpak override --user --filesystem="$mako_dll_directory:ro" "$appid"
+fgvk_dll_directory="/absolute/path/to/steamapps/common/Lossless Scaling"
+flatpak override --user --filesystem="$fgvk_dll_directory:ro" "$appid"
 ```
 
 Apply the activation settings:
 
 ```bash
-flatpak override --user --env=ENABLE_MAKO=1 "$appid"
+flatpak override --user --env=ENABLE_FGVK=1 "$appid"
 flatpak override --user --env=DISABLE_LSFG=1 "$appid"
 flatpak override --user --env=DISABLE_LSFGVK=1 "$appid"
 flatpak override --user --env=DISABLE_GAMESCOPE_WSI=1 "$appid"
 flatpak override --user --env=DISABLE_VKBASALT=1 "$appid"
 flatpak override --user --unset-env=ENABLE_GAMESCOPE_WSI "$appid"
 flatpak override --user --unset-env=ENABLE_VKBASALT "$appid"
-flatpak override --user --env=MAKO_DISABLE_HDR_EXPOSURE=1 "$appid"
+flatpak override --user --env=FGVK_DISABLE_HDR_EXPOSURE=1 "$appid"
 flatpak override --user --unset-env=DXVK_HDR "$appid"
-flatpak override --user --env=VK_IMPLICIT_LAYER_PATH=/usr/lib/extensions/vulkan/makorender/share/vulkan/implicit_layer.d "$appid"
+flatpak override --user --env=VK_IMPLICIT_LAYER_PATH=/usr/lib/extensions/vulkan/fgvkrender/share/vulkan/implicit_layer.d "$appid"
 flatpak override --user --unset-env=VK_ADD_IMPLICIT_LAYER_PATH "$appid"
 ```
 
 These settings persist for this app. Repeat with another `appid` for each additional app.
 
-- **Heroic/Lutris:** prepare the launcher and match each game's executable. Avoid an app-wide `MAKO_PROFILE`; no host wrapper is needed.
+- **Heroic/Lutris:** prepare the launcher and match each game's executable. Avoid an app-wide `FGVK_PROFILE`; no host wrapper is needed.
 - **EmuDeck:** prepare each Flatpak emulator, select Vulkan, and keep its Steam shortcut and ROM arguments. Native/AppImage emulators use [native launch setup](../README.md#usage).
 
 ## Optional HDR
 
-The manual setup above defaults to SDR. To enable experimental HDR, close the app and replace its HDR overrides. These sandbox settings control exposure; `launcher.conf` applies to `mako-launch` and does not configure Flatpak apps.
+The manual setup above defaults to SDR. To enable experimental HDR, close the app and replace its HDR overrides. These sandbox settings control exposure; `launcher.conf` applies to `fgvk-launch` and does not configure Flatpak apps.
 
 ```bash
-flatpak override --user --env=MAKO_DISABLE_HDR_EXPOSURE=0 "$appid"
+flatpak override --user --env=FGVK_DISABLE_HDR_EXPOSURE=0 "$appid"
 flatpak override --user --env=DXVK_HDR=1 "$appid"
 ```
 
 Restart the app, then enable HDR inside the game. This requires an HDR-capable display in a Gamescope session. See [HDR setup](CONFIGURATION.md#hdr) for the supported path. To return to SDR, close the app and restore the overrides:
 
 ```bash
-flatpak override --user --env=MAKO_DISABLE_HDR_EXPOSURE=1 "$appid"
+flatpak override --user --env=FGVK_DISABLE_HDR_EXPOSURE=1 "$appid"
 flatpak override --user --unset-env=DXVK_HDR "$appid"
 ```
 
@@ -107,21 +107,21 @@ These app-wide overrides affect every game launched by that Flatpak.
 To add bundled Shaders after the setup above:
 
 ```bash
-flatpak override --user --unset-env=ENABLE_MAKO "$appid"
-flatpak override --user --unset-env=DISABLE_MAKO "$appid"
+flatpak override --user --unset-env=ENABLE_FGVK "$appid"
+flatpak override --user --unset-env=DISABLE_FGVK "$appid"
 flatpak override --user --unset-env=ENABLE_VKBASALT "$appid"
 flatpak override --user --unset-env=DISABLE_VKBASALT "$appid"
-flatpak override --user --env=VK_INSTANCE_LAYERS=VK_LAYER_MAKO_render:VK_LAYER_VKBASALT_post_processing "$appid"
+flatpak override --user --env=VK_INSTANCE_LAYERS=VK_LAYER_FGVK_render:VK_LAYER_VKBASALT_post_processing "$appid"
 ```
 
 Create a vkBasalt configuration at the path below, then enable live reload:
 
 ```bash
-flatpak override --user --env=VKBASALT_CONFIG_FILE="$HOME/.config/mako-render/vkBasalt.conf" "$appid"
+flatpak override --user --env=VKBASALT_CONFIG_FILE="$HOME/.config/framegen-vulkan/vkBasalt.conf" "$appid"
 flatpak override --user --env=VKBASALT_CONFIG_RELOAD=1 "$appid"
 ```
 
-Shader files, includes, and textures must be accessible inside the sandbox. Restart after changing activation. To return to MAKO without Shaders:
+Shader files, includes, and textures must be accessible inside the sandbox. Restart after changing activation. To return to framegen-vulkan without Shaders:
 
 ```bash
 flatpak override --user --unset-env=VK_INSTANCE_LAYERS "$appid"
@@ -129,8 +129,8 @@ flatpak override --user --unset-env=VKBASALT_CONFIG_FILE "$appid"
 flatpak override --user --unset-env=VKBASALT_CONFIG_RELOAD "$appid"
 flatpak override --user --unset-env=ENABLE_VKBASALT "$appid"
 flatpak override --user --env=DISABLE_VKBASALT=1 "$appid"
-flatpak override --user --unset-env=DISABLE_MAKO "$appid"
-flatpak override --user --env=ENABLE_MAKO=1 "$appid"
+flatpak override --user --unset-env=DISABLE_FGVK "$appid"
+flatpak override --user --env=ENABLE_FGVK=1 "$appid"
 ```
 
 ## Launch and verify
@@ -143,7 +143,7 @@ flatpak run "$appid"
 
 Use Vulkan, including DXVK/VKD3D for compatible Windows games.
 
-If MAKO does not activate, inspect the overrides and sandbox access:
+If framegen-vulkan does not activate, inspect the overrides and sandbox access:
 
 ```bash
 flatpak override --user --show "$appid"
@@ -151,33 +151,33 @@ flatpak override --user --show "$appid"
 
 ```bash
 flatpak run --command=sh "$appid" -c '
-    ls /usr/lib/extensions/vulkan/makorender/share/vulkan/implicit_layer.d &&
-    test -r "$MAKO_CONFIG" && echo "MAKO configuration is readable"
+    ls /usr/lib/extensions/vulkan/fgvkrender/share/vulkan/implicit_layer.d &&
+    test -r "$FGVK_CONFIG" && echo "framegen-vulkan configuration is readable"
 '
 ```
 
 Missing manifests usually mean the extension or runtime branch is wrong. An unreadable configuration needs its path or access grant corrected. Also check executable matching, enabled features, and DLL access. For a game report, [collect diagnostics](COLLECT_DIAGNOSTICS.md).
 
-## Updates and disabling MAKO
+## Updates and disabling framegen-vulkan
 
 Native Renderer updates do not update Flatpak extensions. Close apps and rerun the newer Flatpak archive's installer for each branch you use. Recheck the branch if an app changes runtime.
 
-Bypass MAKO for one launch of a closed app:
+Bypass framegen-vulkan for one launch of a closed app:
 
 ```bash
-flatpak run --env=DISABLE_MAKO=1 "$appid"
+flatpak run --env=DISABLE_FGVK=1 "$appid"
 ```
 
-Keep MAKO disabled:
+Keep framegen-vulkan disabled:
 
 ```bash
-flatpak override --user --env=DISABLE_MAKO=1 "$appid"
+flatpak override --user --env=DISABLE_FGVK=1 "$appid"
 ```
 
 Re-enable and restart:
 
 ```bash
-flatpak override --user --unset-env=DISABLE_MAKO "$appid"
+flatpak override --user --unset-env=DISABLE_FGVK "$appid"
 ```
 
 Avoid `flatpak override --reset`: it also removes unrelated app settings.
@@ -187,7 +187,7 @@ Avoid `flatpak override --reset`: it also removes unrelated app settings.
 For On/Off VRR requests, run this on the host as the game's user while playing:
 
 ```bash
-~/.local/bin/mako-vrr-lease --watch-flatpak
+~/.local/bin/fgvk-vrr-lease --watch-flatpak
 ```
 
 Requires Gamescope and a VRR-capable display. **Follow Steam** needs no helper. Do not grant extra host-execution permissions to the sandbox.

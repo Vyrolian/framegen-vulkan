@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-if [[ -n "${MAKO_VKBASALT_LOCAL_ARCHIVE:-}" ]]; then
+if [[ -n "${FGVK_VKBASALT_LOCAL_ARCHIVE:-}" ]]; then
     echo "Local vkBasalt candidates cannot be published; verify and pin a public dependency first." >&2
     exit 1
 fi
@@ -9,7 +9,7 @@ repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repository_root"
 
 ci_skip_suffix=""
-if [[ "${MAKO_RELEASE_SKIP_TESTS:-0}" == "1" ]]; then
+if [[ "${FGVK_RELEASE_SKIP_TESTS:-0}" == "1" ]]; then
   ci_skip_suffix=" [skip ci]"
   echo "Maintainer-requested hotfix: automated tests and push CI are skipped; package verification remains enabled."
 fi
@@ -18,7 +18,7 @@ usage() {
   cat <<'EOF'
 Usage: ./scripts/publish-release.sh X.Y.Z
 
-Publishes the matching MAKO Renderer release. The workflow is resumable: it
+Publishes the matching framegen-vulkan release. The workflow is resumable: it
 checksum-verifies complete Renderer state before skipping any step. The
 engine/RELEASE_NOTES.md file must be prepared and committed for X.Y.Z first.
 EOF
@@ -48,7 +48,7 @@ for command in gh git node; do
 done
 
 node scripts/read-release-notes.mjs \
-  engine/RELEASE_NOTES.md "MAKO Renderer" "$version" >/dev/null
+  engine/RELEASE_NOTES.md "framegen-vulkan" "$version" >/dev/null
 
 if command -v sha256sum >/dev/null 2>&1; then
   checksum_command=(sha256sum)
@@ -96,8 +96,8 @@ if [[ "$(git rev-parse HEAD)" != "$(git rev-parse refs/remotes/origin/main)" ]];
 fi
 
 renderer_tag="render-v$version"
-renderer_archive="MAKO-Renderer-v$version-linux.tar.xz"
-flatpak_archive="MAKO-Renderer-v$version-flatpaks.tar.xz"
+renderer_archive="framegen-vulkan-v$version-linux.tar.xz"
+flatpak_archive="framegen-vulkan-v$version-flatpaks.tar.xz"
 
 refresh_arch_package_name() {
   local arch_pkgver
@@ -111,7 +111,7 @@ refresh_arch_package_name() {
   if [[ "$arch_pkgver" != "$version" ]]; then
     arch_pkgrel=1
   fi
-  arch_package="mako-renderer-bin-${version}-${arch_pkgrel}-x86_64.pkg.tar.zst"
+  arch_package="framegen-vulkan-bin-${version}-${arch_pkgrel}-x86_64.pkg.tar.zst"
 }
 
 refresh_arch_package_name
@@ -147,7 +147,7 @@ release_asset_checksum_matches() {
 
   local verification_dir
   local downloaded_checksum
-  verification_dir="$(mktemp -d "${TMPDIR:-/tmp}/mako-release-verify.XXXXXX")"
+  verification_dir="$(mktemp -d "${TMPDIR:-/tmp}/fgvk-release-verify.XXXXXX")"
   if ! gh release download "$tag" --repo "$github_repository" \
     --pattern "$asset" --dir "$verification_dir"; then
     rm -rf -- "$verification_dir"
@@ -169,8 +169,8 @@ renderer_pin_matches() {
     const archName = process.argv[5];
     const binary = manifest.remote_binary?.[0];
     const tag = `render-v${version}`;
-    const nativeName = `MAKO-Renderer-v${version}-linux.tar.xz`;
-    const flatpakName = `MAKO-Renderer-v${version}-flatpaks.tar.xz`;
+    const nativeName = `framegen-vulkan-v${version}-linux.tar.xz`;
+    const flatpakName = `framegen-vulkan-v${version}-flatpaks.tar.xz`;
     const base = `https://github.com/${repository}/releases/download/${tag}`;
     const sha256 = /^[0-9a-f]{64}$/;
     const valid = binary?.version === version &&
@@ -215,7 +215,7 @@ renderer_is_complete() {
 
 renderer_verified=false
 if renderer_is_complete; then
-  echo "MAKO Renderer v$version is already complete; skipping its build and upload."
+  echo "framegen-vulkan v$version is already complete; skipping its build and upload."
   renderer_verified=true
 else
   "$repository_root/engine/scripts/publish-package.sh" --version "$version"
@@ -226,7 +226,7 @@ else
 fi
 
 if [[ "$renderer_verified" != true ]]; then
-  echo "MAKO Renderer v$version did not pass the final release-state verification." >&2
+  echo "framegen-vulkan v$version did not pass the final release-state verification." >&2
   exit 1
 fi
 
@@ -234,7 +234,7 @@ node scripts/update-release-links.mjs renderer "$version" "$github_repository"
 release_link_readmes=(README.md engine/README.md)
 if ! git diff --quiet -- "${release_link_readmes[@]}"; then
   git add "${release_link_readmes[@]}"
-  git commit -m "docs: sync MAKO v$version release links$ci_skip_suffix"
+  git commit -m "docs: sync framegen-vulkan v$version release links$ci_skip_suffix"
 fi
 
 latest_tag="$(gh api "repos/$github_repository/releases/latest" --jq '.tag_name')"
@@ -267,5 +267,5 @@ rm "${cleanup_rm_args[@]}" -- \
   "$repository_root/engine/build/work"
 echo "Removed rebuildable release outputs and staging; reusable build caches were preserved."
 
-echo "Published and verified MAKO Renderer v$version:"
+echo "Published and verified framegen-vulkan v$version:"
 echo "  Renderer: https://github.com/$github_repository/releases/tag/$renderer_tag"

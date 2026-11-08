@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build the complete release-shaped MAKO Renderer artifact set without publishing.
+# Build the complete release-shaped framegen-vulkan artifact set without publishing.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -11,7 +11,7 @@ usage() {
     cat <<'EOF'
 Usage: scripts/package-local-release.sh [output-directory]
 
-Builds the release-shaped MAKO Renderer host, Flatpak, and Arch Linux artifacts
+Builds the release-shaped framegen-vulkan host, Flatpak, and Arch Linux artifacts
 from the current checkout without changing release pins, tagging, or publishing.
 The output directory must be inside engine/ so portable container builds can
 write the artifacts.
@@ -59,14 +59,14 @@ else
     exit 1
 fi
 
-host_archive="$output_dir/MAKO-Renderer-v$version-linux.tar.xz"
-flatpak_archive="$output_dir/MAKO-Renderer-v$version-flatpaks.tar.xz"
+host_archive="$output_dir/framegen-vulkan-v$version-linux.tar.xz"
+flatpak_archive="$output_dir/framegen-vulkan-v$version-flatpaks.tar.xz"
 
-echo "Building portable MAKO Renderer host archive..."
-MAKO_PORTABLE_PACKAGE=1 "$repo_root/scripts/package-local.sh" "$host_archive"
+echo "Building portable framegen-vulkan host archive..."
+FGVK_PORTABLE_PACKAGE=1 "$repo_root/scripts/package-local.sh" "$host_archive"
 
-echo "Building portable MAKO Renderer Flatpak archive..."
-MAKO_PORTABLE_PACKAGE=1 "$repo_root/scripts/package-flatpaks.sh" "$flatpak_archive"
+echo "Building portable framegen-vulkan Flatpak archive..."
+FGVK_PORTABLE_PACKAGE=1 "$repo_root/scripts/package-flatpaks.sh" "$flatpak_archive"
 
 host_checksum="$("${checksum_command[@]}" "$host_archive" | awk '{print $1}')"
 tracked_pkgver="$(sed -n 's/^pkgver=\(.*\)$/\1/p' "$repo_root/dist/arch/PKGBUILD" | head -n 1)"
@@ -79,24 +79,24 @@ arch_pkgrel=1
 if [[ "$tracked_pkgver" == "$version" ]]; then
     arch_pkgrel="$tracked_pkgrel"
 fi
-arch_package="$output_dir/mako-renderer-bin-${version}-${arch_pkgrel}-x86_64.pkg.tar.zst"
+arch_package="$output_dir/framegen-vulkan-bin-${version}-${arch_pkgrel}-x86_64.pkg.tar.zst"
 
 # The tracked recipe remains pinned to the last public host archive. Build the
 # local package from a disposable copy synchronized to this checkout's newly
 # built archive, matching the publication flow without mutating release state.
-work_root="${MAKO_BUILD_WORK_ROOT:-$repo_root/build/work}"
+work_root="${FGVK_BUILD_WORK_ROOT:-$repo_root/build/work}"
 if [[ "$work_root" != /* ]]; then
     work_root="$repo_root/$work_root"
 fi
 mkdir -p "$work_root"
-recipe_dir="$(mktemp -d "$work_root/mako-local-release-arch.XXXXXX")"
+recipe_dir="$(mktemp -d "$work_root/fgvk-local-release-arch.XXXXXX")"
 cleanup() {
     rm -rf -- "$recipe_dir"
 }
 trap cleanup EXIT
 cp -- \
     "$repo_root/dist/arch/PKGBUILD" \
-    "$repo_root/dist/arch/mako-renderer-bin.install" \
+    "$repo_root/dist/arch/framegen-vulkan-bin.install" \
     "$repo_root/dist/arch/verify-release-package.sh" \
     "$recipe_dir/"
 python3 - "$recipe_dir/PKGBUILD" "$version" "$arch_pkgrel" "$host_checksum" <<'PY'
@@ -145,7 +145,7 @@ trap 'rm -rf -- "$recipe_dir"; rm -f -- "$checksums_tmp"' EXIT
 ) > "$checksums_tmp"
 mv -f -- "$checksums_tmp" "$checksums_path"
 
-echo "Complete local MAKO Renderer artifact set:"
+echo "Complete local framegen-vulkan artifact set:"
 echo "  $host_archive"
 echo "  $flatpak_archive"
 echo "  $arch_package"

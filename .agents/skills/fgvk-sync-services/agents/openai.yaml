@@ -1,0 +1,4 @@
+interface:
+  display_name: "framegen-vulkan Sync Services"
+  short_description: "Commit and push all coordinated framegen-vulkan repositories"
+  default_prompt: "Use $fgvk-sync-services to validate, commit, and push all coordinated framegen-vulkan repositories."

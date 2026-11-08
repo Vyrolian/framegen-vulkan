@@ -1,3 +1,3 @@
-# Collect MAKO Diagnostics
+# Collect framegen-vulkan Diagnostics
 
-For a standalone MAKO Renderer installation, follow the [collect logs guide](engine/docs/COLLECT_DIAGNOSTICS.md).
+For a standalone framegen-vulkan installation, follow the [collect logs guide](engine/docs/COLLECT_DIAGNOSTICS.md).

@@ -10,10 +10,10 @@ from typing import TypedDict
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
-MATRIX_DIRECTORY = Path("engine/dist/flatpak/mako-render")
+MATRIX_DIRECTORY = Path("engine/dist/flatpak/fgvk-render")
 CATALOGUE = MATRIX_DIRECTORY / "runtime-versions.json"
-TEMPLATE = MATRIX_DIRECTORY / "org.freedesktop.Platform.VulkanLayer.makorender.yml.in"
-MANIFEST_PREFIX = "org.freedesktop.Platform.VulkanLayer.makorender_"
+TEMPLATE = MATRIX_DIRECTORY / "org.freedesktop.Platform.VulkanLayer.fgvkrender.yml.in"
+MANIFEST_PREFIX = "org.freedesktop.Platform.VulkanLayer.fgvkrender_"
 GENERATED_HEADER = f"# Generated from {CATALOGUE} and {TEMPLATE}; do not edit.\n"
 
 

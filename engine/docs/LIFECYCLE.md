@@ -1,15 +1,15 @@
-# MAKO Renderer lifecycle
+# framegen-vulkan lifecycle
 
-This guide explains how MAKO Renderer discovers its environment, creates and replaces resources, applies settings, paces frames, recovers from pressure, and shuts down. It is a conceptual inventory of lifecycle-affecting probes and policies rather than a source-file map. The exact setting contract remains in the [configuration reference](CONFIGURATION-REFERENCE.md), [Runtime configuration transitions](RUNTIME-TRANSITIONS.md), [Spatial scaling architecture](SCALING.md), [Adaptive validation](ADAPTIVE-VALIDATION.md), [HDR pipeline](HDR-PIPELINE.md), and [WSI isolation](WSI-ISOLATION.md). [Memory management](MEMORY-MANAGEMENT.md) covers allocation, pooling, accounting, and cleanup ownership.
+This guide explains how framegen-vulkan discovers its environment, creates and replaces resources, applies settings, paces frames, recovers from pressure, and shuts down. It is a conceptual inventory of lifecycle-affecting probes and policies rather than a source-file map. The exact setting contract remains in the [configuration reference](CONFIGURATION-REFERENCE.md), [Runtime configuration transitions](RUNTIME-TRANSITIONS.md), [Spatial scaling architecture](SCALING.md), [Adaptive validation](ADAPTIVE-VALIDATION.md), [HDR pipeline](HDR-PIPELINE.md), and [WSI isolation](WSI-ISOLATION.md). [Memory management](MEMORY-MANAGEMENT.md) covers allocation, pooling, accounting, and cleanup ownership.
 
 ## Safety model
 
-MAKO separates proof from policy:
+framegen-vulkan separates proof from policy:
 
 - Vulkan ownership, format support, queue support, image counts, external-memory support, and completion are established through Vulkan capabilities, return values, and fences. A timing or performance heuristic must never substitute for one of those proofs.
 - Missing evidence fails closed when proceeding could corrupt presentation or violate ownership. Scaling is disabled when surface provenance, output geometry, queue support, format support, or memory admission cannot be established.
 - Missing performance feedback normally fails open to native or less-managed presentation. It may reduce smoothness or efficiency, but it must not invent support.
-- The application owns swapchain creation, recreation, and destruction. MAKO may request one spec-defined recreation signal when the active presentation boundary can support it, but it does not destroy an active application swapchain merely to apply a setting.
+- The application owns swapchain creation, recreation, and destruction. framegen-vulkan may request one spec-defined recreation signal when the active presentation boundary can support it, but it does not destroy an active application swapchain merely to apply a setting.
 - The original application frame has priority. Frame Generation, scaling, or recovery failure falls back to the real frame wherever the negotiated swapchain geometry still makes that safe.
 
 ## Lifetime map
@@ -48,14 +48,14 @@ Costs are qualitative: **negligible** is cached state, arithmetic, or a nonblock
 
 | Probe | Trigger or cadence | Rough work and cost | Effect and safety behavior |
 | --- | --- | --- | --- |
-| Configuration freshness | At most once every 250 ms while application presents are reaching MAKO; forced at every application swapchain creation | One filesystem metadata check, **low**. A changed file causes a full parse and process-identity rematch, **low to moderate** | The last valid configuration remains active after read or parse failure. A failed parse can be retried after 50 ms, although the outer 250 ms poll usually sets the effective retry cadence |
-| Process identity | Once at startup and again only after a changed configuration parses successfully | Executable/name reads and, for Wine or Proton, a process-map scan, **low to moderate** | An unmatched profile leaves MAKO dormant and presentation native |
+| Configuration freshness | At most once every 250 ms while application presents are reaching framegen-vulkan; forced at every application swapchain creation | One filesystem metadata check, **low**. A changed file causes a full parse and process-identity rematch, **low to moderate** | The last valid configuration remains active after read or parse failure. A failed parse can be retried after 50 ms, although the outer 250 ms poll usually sets the effective retry cadence |
+| Process identity | Once at startup and again only after a changed configuration parses successfully | Executable/name reads and, for Wine or Proton, a process-map scan, **low to moderate** | An unmatched profile leaves framegen-vulkan dormant and presentation native |
 | Gamescope and display feedback | One synchronous startup sample, then every 250 ms when Gamescope is hinted or detected, otherwise every 1 second on ordinary X11; absent when there is no X display | Several X11 root-property round trips on a background thread, **low**, with no X11 work on the present thread | Publishes cached Gamescope identity, output size, refresh, VRR and game-versus-Steam focus. Only the legacy full-WSI path periodically reads HDR properties; the isolated bridge queries HDR capability on demand at surface creation. Unknown data does not manufacture support |
 | Isolated Gamescope bridge feedback | Socket readiness on an admitted bridge connection, including while the game is idle | One event-driven reader drains the private Wayland queue, **low**, without a periodic timer or per-swapchain worker | Supplies completion and retirement feedback independently of Mesa; retries backpressured writes and joins before connection teardown. [WSI isolation](WSI-ISOLATION.md#guarded-gamescope-wsi-paths) owns synchronization and failure handling |
 | Gamescope root discovery | Event-driven when the connection is stale, the observed display is not the required root, or Gamescope was hinted but not identified; retry no faster than once per second | Opening candidate X displays and reading identity properties, **moderate burst** | Only a server-zero display belonging to the same Gamescope process is accepted. Failed discovery retains no unsafe root claim |
 | Cached display-feedback consumption | At most once every 250 ms on the presentation path | Lock and copy of cached state, **negligible** | Refresh and output geometry can update policy. HDR active state requires separate stability evidence |
 | Legacy WSI HDR stability | Evaluated from feedback changes; 750 ms of uninterrupted agreement | Clock comparisons only, **negligible** | Prevents color-pipeline rebuilds from transient HDR evidence. Unknown evidence cancels the candidate and retains the last confirmed state |
-| Runtime status publication | Only when requested/applied/pending state changes | Atomic small-file replacement, **low but not steady-state work** | Status is observational and cannot block rendering on cleanup errors. The first publisher performs one bounded cleanup of unlocked MAKO-owned stale entries |
+| Runtime status publication | Only when requested/applied/pending state changes | Atomic small-file replacement, **low but not steady-state work** | Status is observational and cannot block rendering on cleanup errors. The first publisher performs one bounded cleanup of unlocked framegen-vulkan-owned stale entries |
 | Diagnostic runtime health | Every five seconds only with presentation diagnostics enabled; slow collection/output backs off to 30 seconds | Bounded proc/sysfs reads and atomic memory snapshots on a worker, **low to moderate** | No Vulkan calls or policy changes; unavailable fields remain unknown. An outstanding driver read may delay teardown. [Memory evidence](MEMORY-MANAGEMENT.md#reading-memory-evidence) owns the details |
 | GPU Headroom utilization | Only when enabled for provisioned Frame Generation; approximately five samples per second, with a five-second retry after missing or slow reads | One exact-device sysfs read on a shared background worker, **low**, with atomic consumption on presentation | Ten fresh samples form the average. Off invalidates readings and parks the worker; a game that leaves it Off creates no monitor. Missing or stale readings release the extra cap. [Renderer architecture](RENDERER-ARCHITECTURE.md#gpu-headroom-control) owns monitor lifetime and limits |
 
@@ -70,8 +70,8 @@ Diagnostic health sampling is opt-in and observational; it cannot change schedul
 | Device support | First application device creation | Queue-family, extension, feature, and optional maintenance capability enumeration, **moderate once per device** | Unsupported queues or synchronization features constrain later presentation rather than being guessed |
 | Surface scaling eligibility | First relevant surface-capability observation, cached for the surface lifetime | Surface shape, queue support, format enumeration with at most three incomplete retries, and format-feature queries, **moderate once per physical-device/surface pair** | Any missing provenance, incompatible shape, unsupported queue, unsupported format, or stale relay fails scaling closed |
 | Current swapchain capabilities | Every swapchain creation | Surface capabilities plus selected queue/format checks, **moderate** | The current maximum image count and extents are authoritative even when earlier observations were favorable |
-| Memory admission | Every scaling-capable swapchain creation and relevant private-resource admission | Heap properties and memory budget/usage when available, followed by conservative allocation estimates, **moderate** | MAKO may reduce the effective scale or disable the feature. The estimate can reject a viable configuration, but it must not overrule an explicit Vulkan limit |
-| Direct generated output | Frame Generation context construction | External-image format and usage capability queries, **moderate** | Supported devices can write directly to the presentation-compatible output; otherwise MAKO uses a private image and copy path |
+| Memory admission | Every scaling-capable swapchain creation and relevant private-resource admission | Heap properties and memory budget/usage when available, followed by conservative allocation estimates, **moderate** | framegen-vulkan may reduce the effective scale or disable the feature. The estimate can reject a viable configuration, but it must not overrule an explicit Vulkan limit |
+| Direct generated output | Frame Generation context construction | External-image format and usage capability queries, **moderate** | Supported devices can write directly to the presentation-compatible output; otherwise framegen-vulkan uses a private image and copy path |
 | Private resource construction | Initial context creation or an accepted live transition | Image allocation, exported/imported synchronization, pipelines, model translation, and backend context creation, **high** | The old context stays active until a complete candidate is ready. Failure retains the old context and schedules a bounded retry |
 | Frame Generation backend creation | Once, lazily, on the first swapchain that actually needs Frame Generation | DLL discovery and validation, GPU matching, a private Vulkan instance/device, resource extraction/translation, and pipelines, **high one-time cost** | Failure disables Frame Generation without changing the user-owned input. Licensed scaling resources are owned by the private scaling context instead; neither path performs periodic backend work |
 
@@ -88,9 +88,9 @@ Diagnostic health sampling is opt-in and observational; it cannot change schedul
 | Retired-image completion | When a protected image is reacquired and while retirement can progress | Zero-time maintenance-fence checks, **negligible** | Recreation is not signalled and destruction is not completed until ownership evidence is available |
 | Generated-path recovery | Only after an explicit acquire, fence, or backend failure | Zero-time checks in normal recovery; after acquire backoff, one image uses the configured acquire budget or one confirmed display period, and is nonblocking if neither exists, **low to bounded high** | Failure returns to native drain and increases backoff. Success resumes after fresh history without inventing a performance classification |
 | Render completion | Before reusing generated work in the normal ordered path | Fence wait capped at 150 ms, **bounded high** | A miss abandons generated output for the present and enters backend recovery; it does not sacrifice the real frame |
-| Lower presentation | Every delivered image | Driver/compositor queue-present call, **potentially unbounded outside MAKO's control** | Returned duration is diagnostic only. MAKO cannot cancel a currently blocked driver call and does not infer recovery authority after it returns |
+| Lower presentation | Every delivered image | Driver/compositor queue-present call, **potentially unbounded outside framegen-vulkan's control** | Returned duration is diagnostic only. framegen-vulkan cannot cancel a currently blocked driver call and does not infer recovery authority after it returns |
 | Renderer-owned Vulkan presentation timing | First eligible non-bridge FIFO present initializes support; one history query per source batch, with clock calibration at startup, on domain changes and after one second during use | Bounded Vulkan timing/history calls, **low to moderate** | Calibrated queue completion trains preparation lead; unsupported capabilities or failed feedback retain existing pacing. Application-owned timing keeps its namespace. [WSI isolation](WSI-ISOLATION.md#gamescope-timing-capabilities-across-the-stack) owns negotiation, clock validation and fallback |
-| Renderer-owned Google timing fallback | Every 32 scheduled outputs on the eligible optional WSI path | Count query and at most 128 timing records, **low** | Drains only MAKO-owned history; query failure disables the timing path. Application-owned timing and enabled presentation waits exclude this fallback |
+| Renderer-owned Google timing fallback | Every 32 scheduled outputs on the eligible optional WSI path | Count query and at most 128 timing records, **low** | Drains only framegen-vulkan-owned history; query failure disables the timing path. Application-owned timing and enabled presentation waits exclude this fallback |
 | Optional diagnostics | Only when explicitly enabled | Clock reads around selected operations and conditional stderr writes; slow-operation default threshold 20 ms, plus one-second summaries for active scheduler diagnostics, **negligible until logging, potentially visible when verbose** | Diagnostics are observational. Logging overhead means performance measurements should compare equivalent diagnostic settings |
 
 ## Timing ledger
@@ -127,7 +127,7 @@ This table centralizes lifecycle timers. Frame-count gates are included because 
 
 ## Configuration lifecycle
 
-Process-static settings wait for restart; swapchain geometry and transport wait for application recreation; private-resource edits prepare and atomically replace MAKO-owned contexts; live policy applies on the next successful present. Inactive values remain dormant.
+Process-static settings wait for restart; swapchain geometry and transport wait for application recreation; private-resource edits prepare and atomically replace framegen-vulkan-owned contexts; live policy applies on the next successful present. Inactive values remain dormant.
 
 Requested, applied, pending, and effective state remain distinct. Independent live edits continue while other changes wait, the latest request wins, and reverting to the applied value cancels pending work. [Runtime transitions](RUNTIME-TRANSITIONS.md#transition-matrix) owns the field-by-field matrix, mixed-write behavior, and reset rules.
 
@@ -135,7 +135,7 @@ Requested, applied, pending, and effective state remain distinct. Independent li
 
 ### Creation
 
-For every application swapchain creation, MAKO:
+For every application swapchain creation, framegen-vulkan:
 
 1. Forces a fresh configuration check so multiple presentation roles use the same revision.
 2. Resolves the surface provenance, Gamescope role, current output target, source and presentation extents, queue support, format support, surface limits, and memory admission.
@@ -149,19 +149,19 @@ Scaling factor is clamped to 1–2, dimensions greater than one are rounded down
 
 For presentation extents up to 2,304,000 pixels, scaling normally reconstructs the real frame before Frame Generation so reconstruction runs once. Above that threshold, Frame Generation runs at source resolution and each delivered image is reconstructed afterward. The threshold is a performance-placement heuristic; both orders use capability and synchronization proofs, and the selected order stays fixed for that swapchain.
 
-LS1 creation failure falls back to the open MAKO Scaler for the affected context. Direct generated output is used only when external-image capabilities prove it safe; otherwise a private output plus copy is used.
+LS1 creation failure falls back to the open framegen-vulkan Scaler for the affected context. Direct generated output is used only when external-image capabilities prove it safe; otherwise a private output plus copy is used.
 
 ### Warm-up and steady presentation
 
 A cold context begins with real history before generated delivery. A known replacement additionally holds real-only presentation for 250 ms and then gathers three real history frames. A null-old scaled replacement is primed by presenting one application image directly before private scaler work, which avoids first-use compositor deadlocks.
 
-On each present, MAKO updates cached policy, filters unsupported presentation extensions, applies an optional base-frame deadline, records cadence, advances private transitions, chooses a Fixed or Adaptive frame plan, performs admission, schedules backend work, delivers generated images, and finally presents the original real image. When scaling is active, “native” recovery still means the real frame passes through the required scaler; it does not expose an incomplete source rectangle.
+On each present, framegen-vulkan updates cached policy, filters unsupported presentation extensions, applies an optional base-frame deadline, records cadence, advances private transitions, chooses a Fixed or Adaptive frame plan, performs admission, schedules backend work, delivers generated images, and finally presents the original real image. When scaling is active, “native” recovery still means the real frame passes through the required scaler; it does not expose an incomplete source rectangle.
 
-Any exception or failed generated path returns to the real frame. If a failure occurs after generated images were acquired, MAKO still initializes and retires those images before the real present so image ownership remains valid.
+Any exception or failed generated path returns to the real frame. If a failure occurs after generated images were acquired, framegen-vulkan still initializes and retires those images before the real present so image ownership remains valid.
 
 ### Recreation
 
-Applications naturally recreate swapchains for resize, mode changes, out-of-date results, and other WSI events. For a configuration-driven change, MAKO can request recreation only when all of the following are true:
+Applications naturally recreate swapchains for resize, mode changes, out-of-date results, and other WSI events. For a configuration-driven change, framegen-vulkan can request recreation only when all of the following are true:
 
 - the requested setting genuinely changes swapchain-owned resources;
 - the presentation role is allowed to own that change;
@@ -171,13 +171,13 @@ Applications naturally recreate swapchains for resize, mode changes, out-of-date
 
 Managed Gamescope geometry changes are requested only by the upper spatial owner. A compatible non-Gamescope boundary may also request recreation when generated capacity exceeds current WSI headroom. The request is one `OUT_OF_DATE` result; the application remains responsible for creating the replacement. Repeated polls do not loop the signal, while a distinct request can arm a new one. Transport-failure and transition-scoped recovery requests follow the separate rules under [Pressure and recovery policies](#pressure-and-recovery-policies).
 
-Explicit old-swapchain linkage is preferred. When an application omits it, MAKO recognizes a replacement only from a unique exact same-device/surface live or retained context. This constrained inference prevents unrelated swapchains from donating temporal history or retirement state.
+Explicit old-swapchain linkage is preferred. When an application omits it, framegen-vulkan recognizes a replacement only from a unique exact same-device/surface live or retained context. This constrained inference prevents unrelated swapchains from donating temporal history or retirement state.
 
 ### Destruction and retirement
 
-Application destruction immediately removes a context from live updates, but lower WSI destruction may be deferred. When maintenance fences and the default allocator permit it, MAKO retains the lower swapchain for at least 50 ms and until its image fences prove retirement. Later presents on the same surface advance this work through zero-time completion polls, including when the replacement fell back to native presentation. Collection skips a busy retirement mutex and retains the context while its backend, render, or spatial work is still in flight, so presentation does not enter the backend's 250 ms close wait. An idle context still incurs its normal resource-destruction cost when collected.
+Application destruction immediately removes a context from live updates, but lower WSI destruction may be deferred. When maintenance fences and the default allocator permit it, framegen-vulkan retains the lower swapchain for at least 50 ms and until its image fences prove retirement. Later presents on the same surface advance this work through zero-time completion polls, including when the replacement fell back to native presentation. Collection skips a busy retirement mutex and retains the context while its backend, render, or spatial work is still in flight, so presentation does not enter the backend's 250 ms close wait. An idle context still incurs its normal resource-destruction cost when collected.
 
-If a matching null-old replacement arrives while an exact retained swapchain remains, MAKO completes and destroys the retained object before creating the replacement, but does not pass that retained handle back through Gamescope. Surface destruction is terminal and waits for same-surface retirement. Custom allocation callbacks require synchronous destruction because their callback data cannot safely outlive the application call.
+If a matching null-old replacement arrives while an exact retained swapchain remains, framegen-vulkan completes and destroys the retained object before creating the replacement, but does not pass that retained handle back through Gamescope. Surface destruction is terminal and waits for same-surface retirement. Custom allocation callbacks require synchronous destruction because their callback data cannot safely outlive the application call.
 
 Device destruction waits up to 250 ms across deferred retirements and then force-finalizes remaining lower swapchains because the parent device is itself going away. Instance destruction joins the display-feedback monitor before unload. The private backend Vulkan device is intentionally retained for process lifetime to avoid loader-destruction hazards in mixed layer stacks; the operating system reclaims it at process exit. This is retained memory, not periodic work.
 
@@ -205,7 +205,7 @@ GPU Headroom optionally adds a real-frame cap driven by smoothed whole-device ut
 
 ## Pressure and recovery policies
 
-MAKO separates explicit transitions, direct transport failure, and feature policy. Confirmed Steam UI focus suspends generated work and scheduler observations while preserving real/scaled presentation. Return refreshes three history frames, retains the proven generated level, and arms one recreation permission that is consumed by the first generated-image acquire batch completed within its configured budget. Unknown focus, an unproven policy after a live reset, and unsupported transports retain conservative settling but cannot authorize recreation. A second interruption restarts the full history warm-up in both Fixed and Adaptive modes. Focus changes require 250 ms agreement; samples expire after one second without monitor updates.
+framegen-vulkan separates explicit transitions, direct transport failure, and feature policy. Confirmed Steam UI focus suspends generated work and scheduler observations while preserving real/scaled presentation. Return refreshes three history frames, retains the proven generated level, and arms one recreation permission that is consumed by the first generated-image acquire batch completed within its configured budget. Unknown focus, an unproven policy after a live reset, and unsupported transports retain conservative settling but cannot authorize recreation. A second interruption restarts the full history warm-up in both Fixed and Adaptive modes. Focus changes require 250 ms agreement; samples expire after one second without monitor updates.
 
 1. **Pre-admission:** remove synthetic outputs before backend work when headroom, policy, or nonblocking image acquisition says they cannot be delivered.
 2. **Acquire-budget failure:** `VK_TIMEOUT`, `VK_NOT_READY`, exhaustion of the configured cumulative application-present budget, or completing the batch after that cumulative wall-clock budget is reached stops the affected generated delivery. Fixed and fixed-refresh Adaptive enter native backoff. Adaptive VRR preserves the real frame and arms zero-wait admission on later frames. The budget is explicit; FPS, cadence, resolution, scaling, and shader cost do not derive or change it.
@@ -213,14 +213,14 @@ MAKO separates explicit transitions, direct transport failure, and feature polic
 4. **Transition-scoped recreation:** a confirmed menu return or explicit live generation-policy change arms one permission. An acquire batch completed within its configured budget consumes it. An acquire-budget failure may consume it by requesting one retirement-protected game-owned recreation; there are no separate event windows, FPS qualifiers, or failure-count thresholds.
 5. **Backend recovery:** a render-fence miss or backend failure switches to real frames while readiness is polled with zero-time waits. This is direct synchronization safety and cannot select a multiplier or request recreation. Recovery resets temporal history before generation resumes.
 
-Normal ordered generated-image acquisition can be unbounded when no compatibility timeout is configured and relief headroom is available. Adaptive VRR and Fixed batches without an additional relief image also enforce at most 50 ms, with shorter configured limits taking precedence. Headroom-tight paths use nonblocking admission. The shared deadline covers the complete application-present batch, so higher multipliers do not multiply the wait. See [WSI acquisition policy](WSI-ISOLATION.md#presentation-and-swapchain-policy) for the mode-specific rules. An unbounded driver/compositor acquire remains MAKO’s largest controlled blocking exposure. The lower queue-present call itself is always driver-controlled and cannot be bounded by MAKO, and its returned duration is diagnostic only.
+Normal ordered generated-image acquisition can be unbounded when no compatibility timeout is configured and relief headroom is available. Adaptive VRR and Fixed batches without an additional relief image also enforce at most 50 ms, with shorter configured limits taking precedence. Headroom-tight paths use nonblocking admission. The shared deadline covers the complete application-present batch, so higher multipliers do not multiply the wait. See [WSI acquisition policy](WSI-ISOLATION.md#presentation-and-swapchain-policy) for the mode-specific rules. An unbounded driver/compositor acquire remains framegen-vulkan’s largest controlled blocking exposure. The lower queue-present call itself is always driver-controlled and cannot be bounded by framegen-vulkan, and its returned duration is diagnostic only.
 
 ## Heuristic audit
 
 | Heuristic or inference | Why it exists | Guardrails and failure mode |
 | --- | --- | --- |
 | 2,304,000-pixel scaling placement threshold | Balance reconstruction cost against Frame Generation resolution | Immutable per swapchain; both paths retain full capability and synchronization checks |
-| Conservative memory admission | Avoid committing source, presentation, and model resources into already pressured heaps | Uses live budget when available, reserves non-MAKO headroom, reduces scale or fails closed |
+| Conservative memory admission | Avoid committing source, presentation, and model resources into already pressured heaps | Uses live budget when available, reserves non-framegen-vulkan headroom, reduces scale or fails closed |
 | 750 ms HDR stability | Prevent transient compositor properties from rebuilding color resources | Unknown cancels the candidate; old confirmed pipeline remains active; construction is atomic |
 | Exact same-device/surface null-old replacement inference | Recover lifecycle continuity from applications that omit explicit old-swapchain linkage | Requires a unique exact match and never reuses an unrelated context |
 | 50 ms retirement grace | Cover compositor observation beyond the application's destroy call | Grace is not the proof: image retirement fences and terminal waits remain authoritative |
@@ -233,13 +233,13 @@ Normal ordered generated-image acquisition can be unbounded when no compatibilit
 
 The first five rows affect placement, admission, state confirmation, or lifecycle association. Dynamic Cadence, Adaptive promotion and GPU Headroom affect their explicitly selected pacing behavior. None is allowed to assert Vulkan capability, completion, image ownership, transport failure, or recreation authority.
 
-## What MAKO does not probe
+## What framegen-vulkan does not probe
 
-- With diagnostics disabled, MAKO creates no diagnostic health worker. GPU Headroom has a separate opt-in utilization monitor that can drive its source cap; leaving Headroom Off creates no such monitor. Vulkan memory budget is queried only for resource admission.
-- MAKO does not observe physical scanout timestamps. It consumes Gamescope's explicit VRR preference, capability, and active-state properties for pacing ownership, but present/acquire duration and application cadence remain proxies and cannot prove scanout.
-- MAKO does not continuously rescan Vulkan capabilities. Device and surface facts are cached for their owning lifetime and current swapchain limits are rechecked at creation.
-- MAKO does not infer safety from average frame rate. Capability, return-code, queue, fence, and ownership checks remain separate from performance decisions.
-- MAKO does not support managed multi-swapchain present batches by guessing semaphore ownership; those shapes fail closed before synchronization is consumed.
-- MAKO cannot preempt a blocking Vulkan driver call. Recovery begins after control returns.
+- With diagnostics disabled, framegen-vulkan creates no diagnostic health worker. GPU Headroom has a separate opt-in utilization monitor that can drive its source cap; leaving Headroom Off creates no such monitor. Vulkan memory budget is queried only for resource admission.
+- framegen-vulkan does not observe physical scanout timestamps. It consumes Gamescope's explicit VRR preference, capability, and active-state properties for pacing ownership, but present/acquire duration and application cadence remain proxies and cannot prove scanout.
+- framegen-vulkan does not continuously rescan Vulkan capabilities. Device and surface facts are cached for their owning lifetime and current swapchain limits are rechecked at creation.
+- framegen-vulkan does not infer safety from average frame rate. Capability, return-code, queue, fence, and ownership checks remain separate from performance decisions.
+- framegen-vulkan does not support managed multi-swapchain present batches by guessing semaphore ownership; those shapes fail closed before synchronization is consumed.
+- framegen-vulkan cannot preempt a blocking Vulkan driver call. Recovery begins after control returns.
 
 These limits are deliberate, but they define where diagnostics and real-hardware evidence matter most. Any new probe should document its owner lifetime, trigger, worst-case foreground cost, cache invalidation, failure behavior, and whether it supplies safety evidence or only policy evidence.

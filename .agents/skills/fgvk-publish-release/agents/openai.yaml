@@ -1,0 +1,4 @@
+interface:
+  display_name: "Publish framegen-vulkan Release"
+  short_description: "Publish the matched Renderer release"
+  default_prompt: "Use $fgvk-publish-release to publish and verify the next framegen-vulkan release using its prepared release materials."

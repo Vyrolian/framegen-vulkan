@@ -1,0 +1,4 @@
+interface:
+  display_name: "Build framegen-vulkan Local Release"
+  short_description: "Build every local Renderer release artifact"
+  default_prompt: "Use $fgvk-build-renderer-local-release to build and verify the complete local framegen-vulkan release artifact set."

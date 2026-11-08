@@ -10,9 +10,9 @@ from typing import TypedDict
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
-SOURCE = REPOSITORY_ROOT / "engine/mako-common/launcher_exclusions.json"
+SOURCE = REPOSITORY_ROOT / "engine/fgvk-common/launcher_exclusions.json"
 RENDERER_OUTPUT = REPOSITORY_ROOT / (
-    "engine/mako-common/src/configuration/launcher_exclusions_generated.hpp"
+    "engine/fgvk-common/src/configuration/launcher_exclusions_generated.hpp"
 )
 
 

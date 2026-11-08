@@ -10,7 +10,7 @@ for command in cmake; do
     fi
 done
 
-build_root="$(mktemp -d "${TMPDIR:-/tmp}/mako-adaptive-benchmark.XXXXXX")"
+build_root="$(mktemp -d "${TMPDIR:-/tmp}/fgvk-adaptive-benchmark.XXXXXX")"
 cleanup() {
     rm -rf "$build_root"
 }
@@ -23,8 +23,8 @@ fi
 
 cmake -S "$repo_root" -B "$build_root" -G "$generator" \
     -DCMAKE_BUILD_TYPE=Release \
-    -DMAKO_BUILD_VK_LAYER=OFF \
-    -DMAKO_BUILD_CLI=OFF \
+    -DFGVK_BUILD_VK_LAYER=OFF \
+    -DFGVK_BUILD_CLI=OFF \
     -DBUILD_TESTING=ON
-cmake --build "$build_root" --target mako-adaptive-benchmark
-"$build_root/mako-render/mako-adaptive-benchmark"
+cmake --build "$build_root" --target fgvk-adaptive-benchmark
+"$build_root/fgvk-render/fgvk-adaptive-benchmark"

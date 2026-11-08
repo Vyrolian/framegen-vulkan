@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Portable contract tests for MAKO's pinned vkBasalt payload."""
+"""Portable contract tests for framegen-vulkan's pinned vkBasalt payload."""
 
 from __future__ import annotations
 
@@ -84,7 +84,7 @@ class VkBasaltReleaseTests(unittest.TestCase):
             ).encode("utf-8"),
         }
         if shader_tool:
-            members["bin/mako-shader-tool"] = b"\x7fELF\x02shader-tool"
+            members["bin/fgvk-shader-tool"] = b"\x7fELF\x02shader-tool"
             members[MODULE.SOURCE_PATHS["lib64"]] += b" makoShader_"
             members[MODULE.SOURCE_PATHS["lib32"]] += b" makoShader_"
         members[MODULE.SOURCE_PATHS["checksums"]] = "".join(
@@ -108,8 +108,8 @@ class VkBasaltReleaseTests(unittest.TestCase):
             archive = self._archive(root, shader_tool=True)
             members = MODULE._validate_archive(self.pin, archive)
             MODULE._stage_native(self.pin, members, root / "native", False)
-            tool = root / "native/bin/mako-shader-tool"
-            self.assertEqual(tool.read_bytes(), members["bin/mako-shader-tool"])
+            tool = root / "native/bin/fgvk-shader-tool"
+            self.assertEqual(tool.read_bytes(), members["bin/fgvk-shader-tool"])
             self.assertEqual(tool.stat().st_mode & 0o777, 0o755)
 
     def test_validates_and_stages_both_architectures(self) -> None:
@@ -130,7 +130,7 @@ class VkBasaltReleaseTests(unittest.TestCase):
             )
             manifest = json.loads((
                 target /
-                "share/mako-render/vulkan/vkbasalt.d/vkBasalt.json"
+                "share/framegen-vulkan/vulkan/vkbasalt.d/vkBasalt.json"
             ).read_text(encoding="utf-8"))
             self.assertEqual(
                 manifest["layer"]["library_path"],
@@ -243,7 +243,7 @@ class VkBasaltReleaseTests(unittest.TestCase):
 
             with self.assertRaisesRegex(
                 ValueError,
-                "lib64 library is missing MAKO live reload markers: makoHDRLook",
+                "lib64 library is missing framegen-vulkan live reload markers: makoHDRLook",
             ):
                 MODULE._validate_live_reload_markers(
                     "lib64",

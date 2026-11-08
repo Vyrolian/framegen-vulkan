@@ -1,16 +1,16 @@
-# Contributing to MAKO
+# Contributing to framegen-vulkan
 
-Thank you for contributing to MAKO. Contributions should preserve MAKO's open-source licensing, upstream lineage, protected-input boundary, and evidence-driven engineering workflow.
+Thank you for contributing to framegen-vulkan. Contributions should preserve framegen-vulkan's open-source licensing, upstream lineage, protected-input boundary, and evidence-driven engineering workflow.
 
 ## Contribution license
 
-Unless a contribution explicitly identifies compatible third-party material and its license, submitting a contribution to MAKO means that you license it under GPL-3.0-or-later, the same outbound license used by the project. You represent that you have the right to submit the contribution under those terms and that it does not knowingly include material you are not permitted to distribute.
+Unless a contribution explicitly identifies compatible third-party material and its license, submitting a contribution to framegen-vulkan means that you license it under GPL-3.0-or-later, the same outbound license used by the project. You represent that you have the right to submit the contribution under those terms and that it does not knowingly include material you are not permitted to distribute.
 
 Existing third-party notices remain applicable to inherited code. Do not remove or replace copyright, license, authorship, or attribution records. Identify newly incorporated third-party material in `THIRD_PARTY_NOTICES.md` and include its required license text in the relevant package.
 
 ## Protected and proprietary inputs
 
-Never commit or attach `Lossless.dll`, extracted Lossless Scaling models or shaders, licensed application files, credentials, game assets, ROMs, crash dumps containing private data, or other protected binary payloads. MAKO's tests use synthetic unlicensed fixtures. Run `./scripts/test-protected-inputs.sh` before submitting changes that affect packaging, model inspection, shaders, or test data.
+Never commit or attach `Lossless.dll`, extracted Lossless Scaling models or shaders, licensed application files, credentials, game assets, ROMs, crash dumps containing private data, or other protected binary payloads. framegen-vulkan's tests use synthetic unlicensed fixtures. Run `./scripts/test-protected-inputs.sh` before submitting changes that affect packaging, model inspection, shaders, or test data.
 
 ## Visual and generated material
 
@@ -30,4 +30,4 @@ Follow [AGENTS.md](AGENTS.md) and [TESTING.md](TESTING.md) for architecture, for
 
 ## Inactive bug reports
 
-The [MAKO Cleaner workflow](.github/workflows/close-inactive-issues.yml) closes open issues labeled `bug` after more than seven days without activity. It leaves unlabeled issues, other issue categories, and pull requests untouched. Issues labeled `enhancement` or `question` are exempt even when they also carry `bug`; labels and activity are checked again before closure.
+The [framegen-vulkan Cleaner workflow](.github/workflows/close-inactive-issues.yml) closes open issues labeled `bug` after more than seven days without activity. It leaves unlabeled issues, other issue categories, and pull requests untouched. Issues labeled `enhancement` or `question` are exempt even when they also carry `bug`; labels and activity are checked again before closure.

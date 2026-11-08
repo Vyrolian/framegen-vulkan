@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Synchronize the Arch recipe with the verified MAKO Renderer release pin."""
+"""Synchronize the Arch recipe with the verified framegen-vulkan release pin."""
 
 from __future__ import annotations
 
@@ -89,10 +89,10 @@ def main() -> int:
     )
 
     if updated == original:
-        print(f"Arch package already pins MAKO Renderer {version}.")
+        print(f"Arch package already pins framegen-vulkan {version}.")
     else:
         pkgbuild_path.write_text(updated, encoding="utf-8")
-        print(f"Pinned Arch package to MAKO Renderer {version}.")
+        print(f"Pinned Arch package to framegen-vulkan {version}.")
     return 0
 
 

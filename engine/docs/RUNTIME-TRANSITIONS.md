@@ -6,20 +6,20 @@ This guide defines how a saved profile becomes running Renderer state. The [conf
 
 A setting belongs to the earliest boundary that can safely establish all state it affects.
 
-Native Remote Play follows the ordinary saved `current_profile` selection through the existing configuration watcher when its launcher sets `MAKO_FOLLOW_CURRENT_PROFILE=1`. Saving a clone under a new name changes the runtime profile identity without resetting unchanged live policy. Subsequent edits and power-source changes use the same projection and live-update planner as local games; selecting a new profile does not bypass startup resources, private handoffs, or restart requirements. Ordinary local matching remains unchanged.
+Native Remote Play follows the ordinary saved `current_profile` selection through the existing configuration watcher when its launcher sets `FGVK_FOLLOW_CURRENT_PROFILE=1`. Saving a clone under a new name changes the runtime profile identity without resetting unchanged live policy. Subsequent edits and power-source changes use the same projection and live-update planner as local games; selecting a new profile does not bypass startup resources, private handoffs, or restart requirements. Ordinary local matching remains unchanged.
 
 | Boundary | State | Completion |
 | --- | --- | --- |
 | Process start | Frame Generation provisioning, Scaling enablement, Game Swapchain Images compatibility, layer membership and order, Gamescope WSI isolation, HDR exposure, Zink, audio compatibility, and the shared FP16 precision choice | Start a new game process |
 | Process-wide backend | DLL, GPU, and Ultra Performance policy | Construct a new backend, normally by restarting the process |
 | Game-owned swapchain | Spatial extents and pacing shape | Natural recreation, or one eligible maintenance1-backed extent request |
-| Private spatial context | Scaling method, sharpness and HDR10 input precision | Prepare, drain MAKO-owned work, and atomically replace |
-| Private FG context | Flow Scale, lighter model, and generated-output capacity | Prepare, drain MAKO-owned work, and atomically replace |
+| Private spatial context | Scaling method, sharpness and HDR10 input precision | Prepare, drain framegen-vulkan-owned work, and atomically replace |
+| Private FG context | Flow Scale, lighter model, and generated-output capacity | Prepare, drain framegen-vulkan-owned work, and atomically replace |
 | Live policy | Frame Generation `0x`/active execution state, refresh guard, Fixed/Adaptive policy, target, caps, and cadence controls | Next successful reload and application present; policy edits received during confirmed Steam UI focus coalesce until gameplay returns |
 | Compositor feedback | Confirmed refresh, explicit VRR/tearing state, and application HDR state | Background sample, independent of profile reload |
 | Dormant value | A setting for an inactive mode or unavailable private resource | Save now; apply when its owning mode or resource becomes active |
 
-The process-wide backend is created lazily when the first active swapchain needs it. FP16 is captured at process start even when the backend is still dormant, so MAKO Scaler and a later FG backend cannot disagree after a config reload. LS1 always uses FP32 independently of that baseline. Once built, pending DLL, GPU, and Ultra changes are compared with the actual construction baseline, not merely the previous file.
+The process-wide backend is created lazily when the first active swapchain needs it. FP16 is captured at process start even when the backend is still dormant, so framegen-vulkan Scaler and a later FG backend cannot disagree after a config reload. LS1 always uses FP32 independently of that baseline. Once built, pending DLL, GPU, and Ultra changes are compared with the actual construction baseline, not merely the previous file.
 
 ## Update flow
 
@@ -63,7 +63,7 @@ For example, a write that changes Base FPS Cap and Flow Scale applies the cap wh
 | Frame Generation `2x`–`5x` or Adaptive | Live when startup provisioning succeeded; otherwise restart | Reuses retained interop and private resources, then warms temporal history where required. |
 | Refresh threshold and Gamescope refresh | Live | Re-evaluates effective enablement and refresh-targeted scheduling. A refresh pause releases Steady and target-derived Fractional caps while retaining the saved manual Base FPS Cap; resuming restores Adaptive cap ownership. Explicit `0x` still makes all caps dormant. |
 | Gamescope VRR and Allow Tearing feedback | Live | Explicit requested/capable/active VRR can change Steady Adaptive's higher-multiplier cap eligibility, enable full-batch FIFO for a validated higher Steady rung, or hand an already accepted constant Fractional rung to FIFO. Fixed Smooth Cadence and qualified Adaptive handoffs retain ordered FIFO pacing. Only affected pacing helpers reset; Allow Tearing is diagnostic only. |
-| Per-profile Gamescope VRR choice | Live during a matched MAKO launch | A separate launch helper temporarily changes Gamescope's live VRR value for On or Off and restores the prior value when the game ends. Follow Steam does nothing. MAKO Renderer observes the resulting feedback on its normal sampling cycle. |
+| Per-profile Gamescope VRR choice | Live during a matched framegen-vulkan launch | A separate launch helper temporarily changes Gamescope's live VRR value for On or Off and restores the prior value when the game ends. Follow Steam does nothing. framegen-vulkan observes the resulting feedback on its normal sampling cycle. |
 | Fixed/Adaptive mode or multiplier | Live within current capacity; otherwise private FG replacement or recreation | Dormant mode values are saved without resetting the active mode. |
 | Adaptive target, display-refresh matching, ceiling, Smooth Cadence, Fractional Real Frame Priority, and Dynamic Cadence Recovery | Live within capacity | Rebuilds only the scheduler and real-frame pacing state whose assumptions changed. Automatic adds no priority cap; qualified native presentation follows the [Fractional policy](ADAPTIVE-VALIDATION.md#fractional-real-frame-priority). |
 | Dynamic Cadence probe interval | Live | Reschedules an inactive probe without discarding validated cadence or an active confirmation. |
@@ -76,12 +76,12 @@ For example, a write that changes Base FPS Cap and Flow Scale applies the cap wh
 | HDR Quality | Private FG and spatial replacements for HDR10; live shader graph replacement | Defaults to Performance. Quality/Balanced retain full HDR10 motion analysis and linear-light generation; Balanced/Performance share compact buffers. Only affected owners rebuild, tracking committed precision independently. Reverting cancels its candidate; failed preparation retains old resources. SDR, scRGB FG and WSI formats are unchanged. See [HDR precision](HDR-PIPELINE.md#hdr-quality). |
 | Scale Factor | Extent no-op or game-owned recreation | Applies immediately when effective extents stay identical. Otherwise, an eligible spatial owner may request one recreation after a retirement-fenced present; other paths wait for natural recreation. |
 | Quality Supersampling | Extent no-op or game-owned recreation | Uses the same extent boundary as Scale Factor on a variable managed Gamescope surface; fixed and direct geometry are unaffected. |
-| Flow Scale and Lighter FG Model | Private FG replacement | Coalesces for 500 ms, prepares a complete candidate, drains MAKO-owned work, switches atomically, and warms history. |
+| Flow Scale and Lighter FG Model | Private FG replacement | Coalesces for 500 ms, prepares a complete candidate, drains framegen-vulkan-owned work, switches atomically, and warms history. |
 | Generated-output capacity | Private FG replacement when the current WSI pool fits; otherwise recreation | Keeps the old active policy until enough resources and WSI headroom exist. Managed Gamescope waits for natural recreation; a compatible non-Gamescope maintenance1 context may request one. |
 | Pacing | Natural recreation | Does not change a live swapchain or its transport. |
 | DLL, FP16, GPU, and Ultra Performance | Restart | Existing contexts retain the actual backend baseline. |
 | Steam overlay removal, WSI compatibility, external layer, HDR exposure, Zink, and ALSA | Restart | These affect discovery or application initialization. |
-| Stable HDR application feedback | Private colour transition | May rebuild MAKO-owned colour and backend resources, never the game-owned transport. |
+| Stable HDR application feedback | Private colour transition | May rebuild framegen-vulkan-owned colour and backend resources, never the game-owned transport. |
 | Active profile match | Live for compatible fields | Losing the match disables generation immediately; static differences remain pending. |
 
 Normal profiles reserve capacity for the larger configured Fixed or Adaptive ceiling. Ultra Performance reserves only its startup-active policy. A later capacity increase can still use private replacement when the lower WSI pool has `application minimum + generated capacity` images; otherwise it remains pending for recreation.
@@ -94,7 +94,7 @@ Private spatial, FG, and colour changes use one last-value-wins coordinator:
 
 1. Coalesce the request when required.
 2. Construct a complete candidate while the old resources remain usable.
-3. Poll only MAKO-owned work; never call `vkDeviceWaitIdle`.
+3. Poll only framegen-vulkan-owned work; never call `vkDeviceWaitIdle`.
 4. Commit atomically after drain proof.
 5. Warm temporal history when the replacement affects Frame Generation.
 6. Retain the old resources and retry later if construction or drain fails.
@@ -103,11 +103,11 @@ Private transitions never destroy the application swapchain or replace its WSI-f
 
 ## Recreation and retirement
 
-On the managed Gamescope split, a Scale Factor or Quality Supersampling extent change may request application-visible recreation only from the upper spatial-resource owner. A compatible non-Gamescope maintenance1 context may request recreation for private-resource growth that cannot fit the current WSI pool. Recovery requests use the same successful, retirement-protected lower-present boundary; MAKO never destroys the active game-owned swapchain itself. Repeated cadence stalls or low FPS alone do not authorize performance-driven recreation.
+On the managed Gamescope split, a Scale Factor or Quality Supersampling extent change may request application-visible recreation only from the upper spatial-resource owner. A compatible non-Gamescope maintenance1 context may request recreation for private-resource growth that cannot fit the current WSI pool. Recovery requests use the same successful, retirement-protected lower-present boundary; framegen-vulkan never destroys the active game-owned swapchain itself. Repeated cadence stalls or low FPS alone do not authorize performance-driven recreation.
 
 The surface owner accepts recovery authority only from explicit Gamescope focus transitions, live generation-policy transitions, and generated-image acquire outcomes measured against the configured transport budget. Entering confirmed Steam UI focus clears incomplete ordered-acquire retry state across exact Fixed, Fixed + Dynamic Cadence Recovery, Fractional Adaptive, and Smooth/Steady Adaptive. A confirmed return or live mode, multiplier, cap, target, Smooth Cadence, or Dynamic Cadence Recovery change starts fresh history and arms one recreation permission. Policy edits received while confirmed Steam UI focus already suspends generation are last-value-wins: they do not repeatedly rebuild the scheduler or arm parallel permissions, and the final scheduler policy is constructed once when gameplay returns. The return event supplies the single transport permission. The first generated-image acquire batch completed within its configured budget consumes that permission without action; `VK_TIMEOUT`, `VK_NOT_READY`, budget exhaustion, or a cumulative acquire-deadline overrun may instead consume it by requesting one retirement-protected recreation. There is no seconds-long event window, failure-count qualifier, output-FPS comparison, or surface cooldown. Replacement contexts initialize from the current Gamescope return sequence, preventing the same old event from rearming a recreation loop. Ordinary gameplay FPS, cadence loss, scaling cost, post-processing cost, target deficit, and slow successful lower presents cannot obtain transport-recovery authority or request recreation; exact Fixed never launches a cadence-collapse probe. Backend/fence and acquire safety remain independent. [Adaptive validation](ADAPTIVE-VALIDATION.md) owns the direct-outcome state machines and negative cases.
 
-Presentation retirement is provisioned for Frame Generation, scaling, and the isolated bridge, including HDR with Scaling disabled and shader-only bridge use. It follows owned resources and transport rather than the Scaling toggle. Supported maintenance1 devices supply per-image fences; unsupported devices retain natural recreation and cannot use guarded retries. Natural and requested recreation remove the old context from live updates immediately. Lower WSI destruction waits for same-surface replacement progress, a 50 ms compositor grace, and retirement fences. When an application or upper layer passes a null `oldSwapchain` after destroying its predecessor, MAKO completes the exact retained same-device, same-surface retirement before querying the replacement memory budget or selecting scaling extents, then forwards replacement creation. The memory query must follow completed cleanup rather than charge old WSI/private buffers against their replacement; the compositor grace and retirement fences remain mandatory. Non-null `oldSwapchain` contexts retain their application-owned lifetime. Surface destruction is the terminal same-surface boundary.
+Presentation retirement is provisioned for Frame Generation, scaling, and the isolated bridge, including HDR with Scaling disabled and shader-only bridge use. It follows owned resources and transport rather than the Scaling toggle. Supported maintenance1 devices supply per-image fences; unsupported devices retain natural recreation and cannot use guarded retries. Natural and requested recreation remove the old context from live updates immediately. Lower WSI destruction waits for same-surface replacement progress, a 50 ms compositor grace, and retirement fences. When an application or upper layer passes a null `oldSwapchain` after destroying its predecessor, framegen-vulkan completes the exact retained same-device, same-surface retirement before querying the replacement memory budget or selecting scaling extents, then forwards replacement creation. The memory query must follow completed cleanup rather than charge old WSI/private buffers against their replacement; the compositor grace and retirement fences remain mandatory. Non-null `oldSwapchain` contexts retain their application-owned lifetime. Surface destruction is the terminal same-surface boundary.
 
 A scaled null-old replacement presents its first acquired application image directly before private spatial work. On the isolated Gamescope scaling surface, every replacement also creates a fresh compositor protocol object and publishes the replacement's actual image count and format before its first present; the old compositor pacing lifetime is not reused. A known replacement with Frame Generation active then presents real frames for 250 ms and warms three new history frames inside scheduler stabilization. A replacement created while Frame Generation is Off does not arm that FG-only interval.
 
@@ -146,9 +146,9 @@ Each context also publishes an atomic schema-5 requested-versus-applied record u
 
 `spatial_scaling.active` requires both private spatial work and Scaling enabled in the applied profile. HDR's internal display-size resize does not activate the user-facing Scaling feature, including across window-mode replacements. A requested toggle waiting for restart does not change the applied state. Extents and pipeline details retain the actual transport geometry even when the Scaling feature is off.
 
-Before the first primary context publishes, one process-wide pass removes only unlocked stale MAKO runtime files from that exact directory. It is non-recursive and best-effort; held locks, unrelated names, symlinks, ownership uncertainty, and failures are preserved and never block startup. Status I/O is observational and cannot change presentation.
+Before the first primary context publishes, one process-wide pass removes only unlocked stale framegen-vulkan runtime files from that exact directory. It is non-recursive and best-effort; held locks, unrelated names, symlinks, ownership uncertainty, and failures are preserved and never block startup. Status I/O is observational and cannot change presentation.
 
-Follow [Collect diagnostics](COLLECT_DIAGNOSTICS.md) to capture a session; use `mako-diagnostics --list` to select a narrower `config`, `startup`, `recovery`, or `performance` report.
+Follow [Collect diagnostics](COLLECT_DIAGNOSTICS.md) to capture a session; use `fgvk-diagnostics --list` to select a narrower `config`, `startup`, `recovery`, or `performance` report.
 
 ## Adding a setting
 
@@ -171,24 +171,24 @@ Run portable and sanitizer coverage from `engine/`:
 
 ```bash
 scripts/test-adaptive-scheduler.sh
-MAKO_ENABLE_SANITIZERS=ON scripts/test-adaptive-scheduler.sh
+FGVK_ENABLE_SANITIZERS=ON scripts/test-adaptive-scheduler.sh
 ```
 
-`profile_update_tests.cpp` must cover a field alone, mixed with live and deferred fields, superseded or reverted requests, insufficient resources, inactive modes, and process-static baselines as applicable. Vulkan-facing changes also need the MAKO Gym suites selected by [Testing MAKO](../../TESTING.md). Mark unavailable hardware rows **not tested**.
+`profile_update_tests.cpp` must cover a field alone, mixed with live and deferred fields, superseded or reverted requests, insufficient resources, inactive modes, and process-static baselines as applicable. Vulkan-facing changes also need the fgvk Gym suites selected by [Testing framegen-vulkan](../../TESTING.md). Mark unavailable hardware rows **not tested**.
 
 ### External descriptor ownership during resource construction
 
-Exported image-memory and timeline-semaphore descriptors are scoped until the backend context call. The backend consumes the complete batch on entry, including early rejection, and closes every descriptor it has not yet handed to an importing Vulkan wrapper when construction fails. Each wrapper closes its current descriptor on failure before import succeeds; successful Vulkan import transfers ownership to the driver, so later bind/view failures must not close the descriptor number again. Image export happens after image-view construction succeeds. This covers initial provisioning, failed live private replacements, and CLI setup without changing present-loop work, retirement limits, or synchronization policy. Portable fault tests exercise partial export/import and descriptor-number reuse; MAKO Gym owns the repeated real-resource plateau evidence.
+Exported image-memory and timeline-semaphore descriptors are scoped until the backend context call. The backend consumes the complete batch on entry, including early rejection, and closes every descriptor it has not yet handed to an importing Vulkan wrapper when construction fails. Each wrapper closes its current descriptor on failure before import succeeds; successful Vulkan import transfers ownership to the driver, so later bind/view failures must not close the descriptor number again. Image export happens after image-view construction succeeds. This covers initial provisioning, failed live private replacements, and CLI setup without changing present-loop work, retirement limits, or synchronization policy. Portable fault tests exercise partial export/import and descriptor-number reuse; fgvk Gym owns the repeated real-resource plateau evidence.
 
 ## Code and test ownership
 
 | Responsibility | Source of truth |
 | --- | --- |
-| Parsing, watched configuration, and background power sampling | `mako-common/src/configuration/config.cpp`, `mako-common/src/configuration/power_source.*`, `mako-common/include/mako-common/configuration/config.hpp` |
-| Polling, profile selection, and backend baselines | `mako-render/src/instance.*` |
-| Merge and transition classification | `mako-render/src/profile_update.hpp` |
-| Private transitions and live application | `mako-render/src/runtime_transition.hpp`, `mako-render/src/swapchain/resources.cpp`, `mako-render/src/swapchain/profile.cpp` |
-| Real-frame and generated presentation | `mako-render/src/swapchain/present.cpp`, `mako-render/src/swapchain/present/` |
-| Process-start transport policy | `mako-render/src/presentation_policy.hpp`, `scripts/mako-launch` |
-| Status and diagnostics | `mako-render/src/runtime_status.*`, `mako-render/src/present_diagnostics.*` |
-| Deterministic tests | `mako-render/tests/profile_update_tests.cpp`, `runtime_transition_tests.cpp`, `runtime_status_tests.cpp` |
+| Parsing, watched configuration, and background power sampling | `fgvk-common/src/configuration/config.cpp`, `fgvk-common/src/configuration/power_source.*`, `fgvk-common/include/fgvk-common/configuration/config.hpp` |
+| Polling, profile selection, and backend baselines | `fgvk-render/src/instance.*` |
+| Merge and transition classification | `fgvk-render/src/profile_update.hpp` |
+| Private transitions and live application | `fgvk-render/src/runtime_transition.hpp`, `fgvk-render/src/swapchain/resources.cpp`, `fgvk-render/src/swapchain/profile.cpp` |
+| Real-frame and generated presentation | `fgvk-render/src/swapchain/present.cpp`, `fgvk-render/src/swapchain/present/` |
+| Process-start transport policy | `fgvk-render/src/presentation_policy.hpp`, `scripts/fgvk-launch` |
+| Status and diagnostics | `fgvk-render/src/runtime_status.*`, `fgvk-render/src/present_diagnostics.*` |
+| Deterministic tests | `fgvk-render/tests/profile_update_tests.cpp`, `runtime_transition_tests.cpp`, `runtime_status_tests.cpp` |

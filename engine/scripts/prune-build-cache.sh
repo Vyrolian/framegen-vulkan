@@ -11,7 +11,7 @@ usage() {
     cat <<'EOF'
 Usage: scripts/prune-build-cache.sh [--confirm]
 
-Reports MAKO's repository-local reusable cache and disposable work storage.
+Reports framegen-vulkan's repository-local reusable cache and disposable work storage.
 With no arguments this is a dry run: nothing is removed.
 
 Options:
@@ -74,4 +74,4 @@ for path in "$cache_dir" "$work_dir"; do
     fi
 done
 
-echo "Repository-local build storage pruned; installed MAKO data was preserved."
+echo "Repository-local build storage pruned; installed framegen-vulkan data was preserved."

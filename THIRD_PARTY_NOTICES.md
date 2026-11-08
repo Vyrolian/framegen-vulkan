@@ -1,16 +1,16 @@
-# MAKO third-party notices
+# framegen-vulkan third-party notices
 
 This document supplements [LICENSE.md](LICENSE.md). It identifies third-party material distributed with MAKO and proprietary software that MAKO can use but does not distribute. Each third-party copyright, license, and trademark remains with its owner.
 
-## Lossless Scaling is not distributed by MAKO
+## Lossless Scaling is not distributed by framegen-vulkan
 
-MAKO is an independent open-source project. MAKO source archives, MAKO Renderer packages, Flatpak extensions, and the MAKO website do not contain or distribute Lossless Scaling, `Lossless.dll`, or extracted LS1 or LSFG model and shader payloads.
+framegen-vulkan is an independent open-source project. framegen-vulkan source archives, framegen-vulkan packages, Flatpak extensions, and the framegen-vulkan website do not contain or distribute Lossless Scaling, `Lossless.dll`, or extracted LS1 or LSFG model and shader payloads.
 
-The open MAKO Scaler works without Lossless Scaling. A user who chooses LSFG frame generation or LS1 scaling must independently obtain a lawful copy of Lossless Scaling and select or permit discovery of its locally installed `Lossless.dll`. The user is responsible for complying with the terms and law applicable to that copy. MAKO grants no license or other rights in Lossless Scaling or its proprietary resources.
+The open framegen-vulkan Scaler works without Lossless Scaling. A user who chooses LSFG frame generation or LS1 scaling must independently obtain a lawful copy of Lossless Scaling and select or permit discovery of its locally installed `Lossless.dll`. The user is responsible for complying with the terms and law applicable to that copy. framegen-vulkan grants no license or other rights in Lossless Scaling or its proprietary resources.
 
-MAKO Renderer reads the user-supplied local DLL at runtime for LSFG or LS1. It may translate shaders for Vulkan or, in experimental builds, convert eligible LSFG shader arithmetic from FP32 to FP16. Extracted and transformed resources stay in process memory. MAKO does not install, upload, package, or alter the DLL, or save those resources as standalone files.
+framegen-vulkan reads the user-supplied local DLL at runtime for LSFG or LS1. It may translate shaders for Vulkan or, in experimental builds, convert eligible LSFG shader arithmetic from FP32 to FP16. Extracted and transformed resources stay in process memory. framegen-vulkan does not install, upload, package, or alter the DLL, or save those resources as standalone files.
 
-Lossless Scaling, LS1, and LSFG are used descriptively and remain the property of their respective owner. MAKO is not affiliated with or endorsed by Lossless Scaling.
+Lossless Scaling, LS1, and LSFG are used descriptively and remain the property of their respective owner. framegen-vulkan is not affiliated with or endorsed by Lossless Scaling.
 
 ## Incorporated Renderer source
 
@@ -66,7 +66,7 @@ MAKO Renderer includes `Vibrance.fx`, `Curves.fx`, `Technicolor.fx`, `Sepia.fx`,
 
 MAKO also includes `ReShade.fxh` from [crosire/reshade-shaders `slim` commit `6db142b4b1a05c764222e5b0bd9a644b7ccfe1dc`](https://github.com/crosire/reshade-shaders/commit/6db142b4b1a05c764222e5b0bd9a644b7ccfe1dc), which declares [CC0-1.0](https://creativecommons.org/publicdomain/zero/1.0/legalcode). MAKO's Clarity and Levels Plus are original GPL-3.0-or-later effects with comparable purposes to third-party effects, not redistributed copies. Exact provenance and complete SweetFX and Colourfulness license texts are kept with the canonical sources under `engine/vkbasalt-shaders/` and installed with MAKO Renderer under `share/mako-render/vkbasalt-shaders/`.
 
-## MAKO website
+## framegen-vulkan website
 
 The deployed website includes notices for its shipped frontend dependencies in `third-party-notices.txt`. These include React, React DOM, Scheduler, React Server DOM Webpack, Next.js, Vinext, and Tailwind CSS under their respective MIT licenses. Build-only tools are not part of the deployed website unless their code is emitted into the production artifact.
 
@@ -74,4 +74,4 @@ GitHub and Discord names and glyphs on the website identify links to the corresp
 
 ## Project artwork
 
-MAKO's project artwork and the provenance limits recorded for it are documented in [ASSET_PROVENANCE.md](ASSET_PROVENANCE.md). Third-party brand assets are not relicensed by MAKO.
+framegen-vulkan's project artwork and the provenance limits recorded for it are documented in [ASSET_PROVENANCE.md](ASSET_PROVENANCE.md). Third-party brand assets are not relicensed by framegen-vulkan.

@@ -1,26 +1,26 @@
 #!/usr/bin/env bash
-# Build self-contained Flatpak bundles for MAKO Renderer.
+# Build self-contained Flatpak bundles for framegen-vulkan.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 monorepo_root="$(cd "$repo_root/.." && pwd)"
-build_cache_root="${MAKO_BUILD_CACHE_ROOT:-$repo_root/build/cache}"
-build_work_root="${MAKO_BUILD_WORK_ROOT:-$repo_root/build/work}"
+build_cache_root="${FGVK_BUILD_CACHE_ROOT:-$repo_root/build/cache}"
+build_work_root="${FGVK_BUILD_WORK_ROOT:-$repo_root/build/work}"
 if [[ "$build_cache_root" != /* ]]; then
     build_cache_root="$repo_root/$build_cache_root"
 fi
 if [[ "$build_work_root" != /* ]]; then
     build_work_root="$repo_root/$build_work_root"
 fi
-local_vkbasalt_archive="${MAKO_VKBASALT_LOCAL_ARCHIVE:-}"
+local_vkbasalt_archive="${FGVK_VKBASALT_LOCAL_ARCHIVE:-}"
 if [[ -n "$local_vkbasalt_archive" ]]; then
     if [[ "$local_vkbasalt_archive" == /* || "$local_vkbasalt_archive" == *..* || ! -f "$monorepo_root/$local_vkbasalt_archive" ]]; then
-        echo "MAKO_VKBASALT_LOCAL_ARCHIVE must be an existing repository-relative archive." >&2
+        echo "FGVK_VKBASALT_LOCAL_ARCHIVE must be an existing repository-relative archive." >&2
         exit 1
     fi
 fi
 version="$(tr -d '[:space:]' < "$repo_root/VERSION")"
-default_output="$repo_root/out/MAKO-Renderer-v$version-flatpaks.tar.xz"
+default_output="$repo_root/out/framegen-vulkan-v$version-flatpaks.tar.xz"
 output_path="${1:-$default_output}"
 
 if [[ "$output_path" != /* ]]; then
@@ -32,8 +32,8 @@ if [[ -z "$version" ]]; then
     exit 1
 fi
 
-portable_container="${MAKO_PORTABLE_PACKAGE:-0}"
-containerized_build="${MAKO_FLATPAK_CONTAINERIZED:-0}"
+portable_container="${FGVK_PORTABLE_PACKAGE:-0}"
+containerized_build="${FGVK_FLATPAK_CONTAINERIZED:-0}"
 needs_container=false
 if [[ "$(uname -s)" != "Linux" || "$portable_container" == "1" ]] ||
         ! command -v flatpak >/dev/null 2>&1 ||
@@ -65,12 +65,12 @@ if [[ "$containerized_build" != "1" && "$needs_container" == true ]]; then
     # flatpak-builder starts a nested Bubblewrap sandbox. Container runtimes'
     # default seccomp profiles can block the filter setup needed by that sandbox.
     exec "$container_runtime" run --rm --privileged --security-opt seccomp=unconfined --platform linux/amd64 \
-        -v "mako-flatpak-cache:/cache" \
-        -e MAKO_DISABLE_BWRAP_SECCOMP=1 \
-        -e MAKO_FLATPAK_CONTAINERIZED=1 \
-        -e MAKO_FLATPAK_CACHE_ROOT=/cache \
-        -e MAKO_FLATPAK_WORK_ROOT=/cache \
-        -e MAKO_VKBASALT_LOCAL_ARCHIVE="$local_vkbasalt_archive" \
+        -v "fgvk-flatpak-cache:/cache" \
+        -e FGVK_DISABLE_BWRAP_SECCOMP=1 \
+        -e FGVK_FLATPAK_CONTAINERIZED=1 \
+        -e FGVK_FLATPAK_CACHE_ROOT=/cache \
+        -e FGVK_FLATPAK_WORK_ROOT=/cache \
+        -e FGVK_VKBASALT_LOCAL_ARCHIVE="$local_vkbasalt_archive" \
         -v "$monorepo_root:/workspace" \
         -w /workspace/engine \
         ubuntu:24.04 \
@@ -103,7 +103,7 @@ python3 "$repo_root/scripts/generate-flatpak-vulkan-headers.py" --check
 python3 "$repo_root/scripts/manage-vkbasalt-release.py" \
     --check \
     --check-flatpak-module \
-    "$repo_root/dist/flatpak/mako-render/vkbasalt-module.json"
+    "$repo_root/dist/flatpak/fgvk-render/vkbasalt-module.json"
 
 verify_elf_class() {
     local path="$1"
@@ -118,10 +118,10 @@ verify_elf_class() {
 
 verify_relay_contract() {
     local layer_binary="$1"
-    local relay_contract_symbol="makoSpatialScalingLookupFixedContract"
+    local relay_contract_symbol="fgvkSpatialScalingLookupFixedContract"
     local exported_symbols
     exported_symbols="$(nm -D --defined-only "$layer_binary" | awk '{print $3}')"
-    if [[ "$layer_binary" == *libmako-render-scaling.so ]]; then
+    if [[ "$layer_binary" == *libfgvk-render-scaling.so ]]; then
         if ! grep -Fxq "$relay_contract_symbol" <<< "$exported_symbols"; then
             echo "Flatpak packaging failed: spatial capability relay entrypoint is missing from $layer_binary" >&2
             exit 1
@@ -135,16 +135,16 @@ verify_relay_contract() {
 # Docker Desktop's Linux VM may not expose CONFIG_SECCOMP_FILTER to nested
 # Bubblewrap instances. This is only set by the privileged local Docker build
 # above; normal Linux builds retain Flatpak's default sandboxing.
-if [[ "${MAKO_DISABLE_BWRAP_SECCOMP:-0}" == "1" ]]; then
+if [[ "${FGVK_DISABLE_BWRAP_SECCOMP:-0}" == "1" ]]; then
     export FLATPAK_BWRAP="$repo_root/scripts/bwrap-no-seccomp.sh"
 fi
 
-work_root="${MAKO_FLATPAK_WORK_ROOT:-${MAKO_FLATPAK_TMP_ROOT:-$build_work_root/flatpak}}"
+work_root="${FGVK_FLATPAK_WORK_ROOT:-${FGVK_FLATPAK_TMP_ROOT:-$build_work_root/flatpak}}"
 if [[ "$work_root" != /* ]]; then
     work_root="$repo_root/$work_root"
 fi
 mkdir -p "$work_root"
-build_root="$(mktemp -d "$work_root/mako-flatpak-package.XXXXXX")"
+build_root="$(mktemp -d "$work_root/fgvk-flatpak-package.XXXXXX")"
 cleanup() {
     rm -rf "$build_root"
 }
@@ -153,7 +153,7 @@ trap cleanup EXIT
 # Keep downloaded SDKs outside the disposable staging tree.  This directory is
 # ignored by Git and makes repeated native Linux release builds incremental;
 # Docker builds continue to use the explicitly configured /cache volume.
-cache_root="${MAKO_FLATPAK_CACHE_ROOT:-$build_cache_root/flatpak}"
+cache_root="${FGVK_FLATPAK_CACHE_ROOT:-$build_cache_root/flatpak}"
 if [[ "$cache_root" != /* ]]; then
     cache_root="$repo_root/$cache_root"
 fi
@@ -169,15 +169,15 @@ bundle_dir="$build_root/bundles"
 repo_dir="$build_root/repo"
 mkdir -p "$bundle_dir" "$repo_dir"
 
-manifest_root="$repo_root/dist/flatpak/mako-render"
+manifest_root="$repo_root/dist/flatpak/fgvk-render"
 if [[ -n "$local_vkbasalt_archive" ]]; then
     manifest_root="$build_root/local-manifests"
     python3 "$repo_root/scripts/manage-vkbasalt-release.py" \
         --local-archive "$monorepo_root/$local_vkbasalt_archive" \
         --prepare-local-flatpak "$manifest_root"
 fi
-extension_id="org.freedesktop.Platform.VulkanLayer.makorender"
-runtime_versions_file="$repo_root/dist/flatpak/mako-render/runtime-versions.txt"
+extension_id="org.freedesktop.Platform.VulkanLayer.fgvkrender"
+runtime_versions_file="$repo_root/dist/flatpak/fgvk-render/runtime-versions.txt"
 runtime_count=0
 while IFS= read -r runtime_version || [[ -n "$runtime_version" ]]; do
     if [[ -z "$runtime_version" || "$runtime_version" == \#* ]]; then
@@ -193,7 +193,7 @@ while IFS= read -r runtime_version || [[ -n "$runtime_version" ]]; do
         exit 1
     fi
 
-    echo "Building MAKO Renderer Flatpak runtime extension $runtime_version..."
+    echo "Building framegen-vulkan Flatpak runtime extension $runtime_version..."
     flatpak-builder --force-clean --user --install-deps-from=flathub \
         --state-dir="$build_root/state-$runtime_version" \
         --repo="$repo_dir" "$build_dir" "$manifest"
@@ -202,28 +202,28 @@ while IFS= read -r runtime_version || [[ -n "$runtime_version" ]]; do
     # launch either a 64-bit or genuine 32-bit Vulkan process, and each process
     # must find a manifest and library with matching bitness.
     for required_path in \
-        "files/share/vulkan/implicit_layer.d/VkLayer_MAKO_render.json" \
-        "files/share/vulkan/implicit_layer.d/VkLayer_MAKO_render.x86.json" \
-        "files/share/vulkan/implicit_layer.d/VkLayer_MAKO_spatial_scaling.json" \
-        "files/share/vulkan/implicit_layer.d/VkLayer_MAKO_spatial_scaling.x86.json" \
-        "files/share/mako-render/vulkan/implicit_layer.d/VkLayer_MAKO_render.json" \
-        "files/share/mako-render/vulkan/implicit_layer.d/VkLayer_MAKO_render.x86.json" \
-        "files/share/mako-render/vulkan/spatial_scaling.d/VkLayer_MAKO_spatial_scaling.json" \
-        "files/share/mako-render/vulkan/spatial_scaling.d/VkLayer_MAKO_spatial_scaling.x86.json" \
+        "files/share/vulkan/implicit_layer.d/VkLayer_FGVK_render.json" \
+        "files/share/vulkan/implicit_layer.d/VkLayer_FGVK_render.x86.json" \
+        "files/share/vulkan/implicit_layer.d/VkLayer_FGVK_spatial_scaling.json" \
+        "files/share/vulkan/implicit_layer.d/VkLayer_FGVK_spatial_scaling.x86.json" \
+        "files/share/framegen-vulkan/vulkan/implicit_layer.d/VkLayer_FGVK_render.json" \
+        "files/share/framegen-vulkan/vulkan/implicit_layer.d/VkLayer_FGVK_render.x86.json" \
+        "files/share/framegen-vulkan/vulkan/spatial_scaling.d/VkLayer_FGVK_spatial_scaling.json" \
+        "files/share/framegen-vulkan/vulkan/spatial_scaling.d/VkLayer_FGVK_spatial_scaling.x86.json" \
         "files/share/vulkan/implicit_layer.d/vkBasalt.json" \
         "files/share/vulkan/implicit_layer.d/vkBasalt.x86.json" \
-        "files/share/doc/mako-render/ASSET_PROVENANCE.md" \
-        "files/share/doc/mako-render/LICENSE.md" \
-        "files/share/doc/mako-render/THIRD_PARTY_NOTICES.md" \
-        "files/share/doc/mako-render/vkbasalt/LICENSE" \
-        "files/share/doc/mako-render/vkbasalt/RESHade-LICENSE.md" \
-        "files/share/doc/mako-render/vkbasalt/SOURCE" \
-        "files/share/doc/mako-render/vkbasalt/MAKO-PIN.json" \
-        "files/lib64/libmako-render.so" \
-        "files/lib64/libmako-render-scaling.so" \
+        "files/share/doc/framegen-vulkan/ASSET_PROVENANCE.md" \
+        "files/share/doc/framegen-vulkan/LICENSE.md" \
+        "files/share/doc/framegen-vulkan/THIRD_PARTY_NOTICES.md" \
+        "files/share/doc/framegen-vulkan/vkbasalt/LICENSE" \
+        "files/share/doc/framegen-vulkan/vkbasalt/RESHade-LICENSE.md" \
+        "files/share/doc/framegen-vulkan/vkbasalt/SOURCE" \
+        "files/share/doc/framegen-vulkan/vkbasalt/framegen-vulkan-PIN.json" \
+        "files/lib64/libfgvk-render.so" \
+        "files/lib64/libfgvk-render-scaling.so" \
         "files/lib64/vkbasalt/libvkbasalt.so" \
-        "files/lib/i386-linux-gnu/libmako-render.so" \
-        "files/lib/i386-linux-gnu/libmako-render-scaling.so" \
+        "files/lib/i386-linux-gnu/libfgvk-render.so" \
+        "files/lib/i386-linux-gnu/libfgvk-render-scaling.so" \
         "files/lib/i386-linux-gnu/vkbasalt/libvkbasalt.so"; do
         if [[ ! -f "$build_dir/$required_path" ]]; then
             echo "Flatpak packaging failed: missing $required_path for $runtime_version" >&2
@@ -231,11 +231,11 @@ while IFS= read -r runtime_version || [[ -n "$runtime_version" ]]; do
         fi
     done
 
-    verify_elf_class "$build_dir/files/lib64/libmako-render.so" 2
-    verify_elf_class "$build_dir/files/lib64/libmako-render-scaling.so" 2
+    verify_elf_class "$build_dir/files/lib64/libfgvk-render.so" 2
+    verify_elf_class "$build_dir/files/lib64/libfgvk-render-scaling.so" 2
     verify_elf_class "$build_dir/files/lib64/vkbasalt/libvkbasalt.so" 2
-    verify_elf_class "$build_dir/files/lib/i386-linux-gnu/libmako-render.so" 1
-    verify_elf_class "$build_dir/files/lib/i386-linux-gnu/libmako-render-scaling.so" 1
+    verify_elf_class "$build_dir/files/lib/i386-linux-gnu/libfgvk-render.so" 1
+    verify_elf_class "$build_dir/files/lib/i386-linux-gnu/libfgvk-render-scaling.so" 1
     verify_elf_class "$build_dir/files/lib/i386-linux-gnu/vkbasalt/libvkbasalt.so" 1
     for vkbasalt_library in \
             "$build_dir/files/lib64/vkbasalt/libvkbasalt.so" \
@@ -250,34 +250,34 @@ while IFS= read -r runtime_version || [[ -n "$runtime_version" ]]; do
     done
 
     for layer_binary in \
-            "$build_dir/files/lib64/libmako-render.so" \
-            "$build_dir/files/lib64/libmako-render-scaling.so" \
-            "$build_dir/files/lib/i386-linux-gnu/libmako-render.so" \
-            "$build_dir/files/lib/i386-linux-gnu/libmako-render-scaling.so"; do
+            "$build_dir/files/lib64/libfgvk-render.so" \
+            "$build_dir/files/lib64/libfgvk-render-scaling.so" \
+            "$build_dir/files/lib/i386-linux-gnu/libfgvk-render.so" \
+            "$build_dir/files/lib/i386-linux-gnu/libfgvk-render-scaling.so"; do
         verify_relay_contract "$layer_binary"
-        expected_identity="VK_LAYER_MAKO_render"
-        if [[ "$layer_binary" == *libmako-render-scaling.so ]]; then
-            expected_identity="VK_LAYER_MAKO_spatial_scaling"
+        expected_identity="VK_LAYER_FGVK_render"
+        if [[ "$layer_binary" == *libfgvk-render-scaling.so ]]; then
+            expected_identity="VK_LAYER_FGVK_spatial_scaling"
         fi
         if ! strings "$layer_binary" |
-                grep -F "MAKO Renderer: render layer active; identity=$expected_identity; build=$version" >/dev/null; then
+                grep -F "framegen-vulkan: render layer active; identity=$expected_identity; build=$version" >/dev/null; then
             echo "Flatpak packaging failed: layer build identity is missing for $runtime_version" >&2
             exit 1
         fi
-        if ! strings "$layer_binary" | grep -F "MAKO_PROFILE_FALLBACK" >/dev/null; then
+        if ! strings "$layer_binary" | grep -F "FGVK_PROFILE_FALLBACK" >/dev/null; then
             echo "Flatpak packaging failed: profile-fallback wrapper protocol is missing for $runtime_version" >&2
             exit 1
         fi
     done
 
-    manifest64="$build_dir/files/share/vulkan/implicit_layer.d/VkLayer_MAKO_render.json"
-    manifest32="$build_dir/files/share/vulkan/implicit_layer.d/VkLayer_MAKO_render.x86.json"
-    scaling_manifest64="$build_dir/files/share/vulkan/implicit_layer.d/VkLayer_MAKO_spatial_scaling.json"
-    scaling_manifest32="$build_dir/files/share/vulkan/implicit_layer.d/VkLayer_MAKO_spatial_scaling.x86.json"
+    manifest64="$build_dir/files/share/vulkan/implicit_layer.d/VkLayer_FGVK_render.json"
+    manifest32="$build_dir/files/share/vulkan/implicit_layer.d/VkLayer_FGVK_render.x86.json"
+    scaling_manifest64="$build_dir/files/share/vulkan/implicit_layer.d/VkLayer_FGVK_spatial_scaling.json"
+    scaling_manifest32="$build_dir/files/share/vulkan/implicit_layer.d/VkLayer_FGVK_spatial_scaling.x86.json"
     vkbasalt_manifest64="$build_dir/files/share/vulkan/implicit_layer.d/vkBasalt.json"
     vkbasalt_manifest32="$build_dir/files/share/vulkan/implicit_layer.d/vkBasalt.x86.json"
 
-    if ! grep -Fq "/usr/lib/extensions/vulkan/makorender/lib64/libmako-render.so" \
+    if ! grep -Fq "/usr/lib/extensions/vulkan/fgvkrender/lib64/libfgvk-render.so" \
         "$manifest64"; then
         echo "Flatpak packaging failed: 64-bit manifest path is incorrect for $runtime_version" >&2
         exit 1
@@ -287,7 +287,7 @@ while IFS= read -r runtime_version || [[ -n "$runtime_version" ]]; do
         echo "Flatpak packaging failed: 64-bit manifest architecture is incorrect for $runtime_version" >&2
         exit 1
     fi
-    if ! grep -Fq "/usr/lib/extensions/vulkan/makorender/lib/i386-linux-gnu/libmako-render.so" \
+    if ! grep -Fq "/usr/lib/extensions/vulkan/fgvkrender/lib/i386-linux-gnu/libfgvk-render.so" \
         "$manifest32"; then
         echo "Flatpak packaging failed: 32-bit manifest path is incorrect for $runtime_version" >&2
         exit 1
@@ -298,40 +298,40 @@ while IFS= read -r runtime_version || [[ -n "$runtime_version" ]]; do
         exit 1
     fi
     for manifest in "$manifest64" "$manifest32"; do
-        if ! grep -Fq '"name": "VK_LAYER_MAKO_render"' "$manifest" ||
-                ! grep -Fq '"ENABLE_MAKO": "1"' "$manifest" ||
-                ! grep -Fq '"DISABLE_MAKO": "1"' "$manifest"; then
-            echo "Flatpak packaging failed: MAKO Renderer layer gating is incorrect for $runtime_version" >&2
+        if ! grep -Fq '"name": "VK_LAYER_FGVK_render"' "$manifest" ||
+                ! grep -Fq '"ENABLE_FGVK": "1"' "$manifest" ||
+                ! grep -Fq '"DISABLE_FGVK": "1"' "$manifest"; then
+            echo "Flatpak packaging failed: framegen-vulkan layer gating is incorrect for $runtime_version" >&2
             exit 1
         fi
     done
-    if ! grep -Fq "/usr/lib/extensions/vulkan/makorender/lib64/libmako-render-scaling.so" \
+    if ! grep -Fq "/usr/lib/extensions/vulkan/fgvkrender/lib64/libfgvk-render-scaling.so" \
             "$scaling_manifest64" ||
             ! grep -Fq '"library_arch": "64"' "$scaling_manifest64"; then
         echo "Flatpak packaging failed: 64-bit spatial manifest is incorrect for $runtime_version" >&2
         exit 1
     fi
-    if ! grep -Fq "/usr/lib/extensions/vulkan/makorender/lib/i386-linux-gnu/libmako-render-scaling.so" \
+    if ! grep -Fq "/usr/lib/extensions/vulkan/fgvkrender/lib/i386-linux-gnu/libfgvk-render-scaling.so" \
             "$scaling_manifest32" ||
             ! grep -Fq '"library_arch": "32"' "$scaling_manifest32"; then
         echo "Flatpak packaging failed: 32-bit spatial manifest is incorrect for $runtime_version" >&2
         exit 1
     fi
     for manifest in "$scaling_manifest64" "$scaling_manifest32"; do
-        if ! grep -Fq '"name": "VK_LAYER_MAKO_spatial_scaling"' "$manifest" ||
-                ! grep -Fq '"ENABLE_MAKO_SPATIAL_SCALING": "1"' "$manifest" ||
-                ! grep -Fq '"DISABLE_MAKO_SPATIAL_SCALING": "1"' "$manifest"; then
+        if ! grep -Fq '"name": "VK_LAYER_FGVK_spatial_scaling"' "$manifest" ||
+                ! grep -Fq '"ENABLE_FGVK_SPATIAL_SCALING": "1"' "$manifest" ||
+                ! grep -Fq '"DISABLE_FGVK_SPATIAL_SCALING": "1"' "$manifest"; then
             echo "Flatpak packaging failed: spatial-layer gating is incorrect for $runtime_version" >&2
             exit 1
         fi
     done
-    if ! grep -Fq "/usr/lib/extensions/vulkan/makorender/lib64/vkbasalt/libvkbasalt.so" \
+    if ! grep -Fq "/usr/lib/extensions/vulkan/fgvkrender/lib64/vkbasalt/libvkbasalt.so" \
             "$vkbasalt_manifest64" ||
             ! grep -Fq '"library_arch": "64"' "$vkbasalt_manifest64"; then
         echo "Flatpak packaging failed: 64-bit vkBasalt manifest is incorrect for $runtime_version" >&2
         exit 1
     fi
-    if ! grep -Fq "/usr/lib/extensions/vulkan/makorender/lib/i386-linux-gnu/vkbasalt/libvkbasalt.so" \
+    if ! grep -Fq "/usr/lib/extensions/vulkan/fgvkrender/lib/i386-linux-gnu/vkbasalt/libvkbasalt.so" \
             "$vkbasalt_manifest32" ||
             ! grep -Fq '"library_arch": "32"' "$vkbasalt_manifest32"; then
         echo "Flatpak packaging failed: 32-bit vkBasalt manifest is incorrect for $runtime_version" >&2
@@ -359,21 +359,21 @@ while IFS= read -r runtime_version || [[ -n "$runtime_version" ]]; do
     # time.
     flatpak install --user --noninteractive "$bundle" >/dev/null
     deployed_dir="$(flatpak info --user --show-location "$extension_id//$runtime_version")"
-    deployed_manifest64="$deployed_dir/files/share/vulkan/implicit_layer.d/VkLayer_MAKO_render.json"
-    deployed_manifest32="$deployed_dir/files/share/vulkan/implicit_layer.d/VkLayer_MAKO_render.x86.json"
-    deployed_scaling_manifest64="$deployed_dir/files/share/vulkan/implicit_layer.d/VkLayer_MAKO_spatial_scaling.json"
-    deployed_scaling_manifest32="$deployed_dir/files/share/vulkan/implicit_layer.d/VkLayer_MAKO_spatial_scaling.x86.json"
+    deployed_manifest64="$deployed_dir/files/share/vulkan/implicit_layer.d/VkLayer_FGVK_render.json"
+    deployed_manifest32="$deployed_dir/files/share/vulkan/implicit_layer.d/VkLayer_FGVK_render.x86.json"
+    deployed_scaling_manifest64="$deployed_dir/files/share/vulkan/implicit_layer.d/VkLayer_FGVK_spatial_scaling.json"
+    deployed_scaling_manifest32="$deployed_dir/files/share/vulkan/implicit_layer.d/VkLayer_FGVK_spatial_scaling.x86.json"
 
-    if [[ ! -f "$deployed_dir/files/lib64/libmako-render.so" ]]; then
+    if [[ ! -f "$deployed_dir/files/lib64/libfgvk-render.so" ]]; then
         echo "Flatpak packaging failed: deployed 64-bit library is missing for $runtime_version" >&2
         exit 1
     fi
-    if [[ ! -f "$deployed_dir/files/lib/i386-linux-gnu/libmako-render.so" ]]; then
+    if [[ ! -f "$deployed_dir/files/lib/i386-linux-gnu/libfgvk-render.so" ]]; then
         echo "Flatpak packaging failed: deployed 32-bit library is missing for $runtime_version" >&2
         exit 1
     fi
-    if [[ ! -f "$deployed_dir/files/lib64/libmako-render-scaling.so" ||
-          ! -f "$deployed_dir/files/lib/i386-linux-gnu/libmako-render-scaling.so" ]]; then
+    if [[ ! -f "$deployed_dir/files/lib64/libfgvk-render-scaling.so" ||
+          ! -f "$deployed_dir/files/lib/i386-linux-gnu/libfgvk-render-scaling.so" ]]; then
         echo "Flatpak packaging failed: deployed spatial-layer library is missing for $runtime_version" >&2
         exit 1
     fi
@@ -385,27 +385,27 @@ while IFS= read -r runtime_version || [[ -n "$runtime_version" ]]; do
     for deployed_vkbasalt_file in \
             "share/vulkan/implicit_layer.d/vkBasalt.json" \
             "share/vulkan/implicit_layer.d/vkBasalt.x86.json" \
-            "share/doc/mako-render/vkbasalt/LICENSE" \
-            "share/doc/mako-render/vkbasalt/RESHade-LICENSE.md" \
-            "share/doc/mako-render/vkbasalt/SOURCE" \
-            "share/doc/mako-render/vkbasalt/MAKO-PIN.json"; do
+            "share/doc/framegen-vulkan/vkbasalt/LICENSE" \
+            "share/doc/framegen-vulkan/vkbasalt/RESHade-LICENSE.md" \
+            "share/doc/framegen-vulkan/vkbasalt/SOURCE" \
+            "share/doc/framegen-vulkan/vkbasalt/framegen-vulkan-PIN.json"; do
         if [[ ! -f "$deployed_dir/files/$deployed_vkbasalt_file" ]]; then
             echo "Flatpak packaging failed: deployed vkBasalt file is missing: $deployed_vkbasalt_file" >&2
             exit 1
         fi
     done
     for legal_file in ASSET_PROVENANCE.md LICENSE.md THIRD_PARTY_NOTICES.md; do
-        if [[ ! -f "$deployed_dir/files/share/doc/mako-render/$legal_file" ]]; then
+        if [[ ! -f "$deployed_dir/files/share/doc/framegen-vulkan/$legal_file" ]]; then
             echo "Flatpak packaging failed: deployed legal file $legal_file is missing for $runtime_version" >&2
             exit 1
         fi
     done
 
-    verify_elf_class "$deployed_dir/files/lib64/libmako-render.so" 2
-    verify_elf_class "$deployed_dir/files/lib64/libmako-render-scaling.so" 2
+    verify_elf_class "$deployed_dir/files/lib64/libfgvk-render.so" 2
+    verify_elf_class "$deployed_dir/files/lib64/libfgvk-render-scaling.so" 2
     verify_elf_class "$deployed_dir/files/lib64/vkbasalt/libvkbasalt.so" 2
-    verify_elf_class "$deployed_dir/files/lib/i386-linux-gnu/libmako-render.so" 1
-    verify_elf_class "$deployed_dir/files/lib/i386-linux-gnu/libmako-render-scaling.so" 1
+    verify_elf_class "$deployed_dir/files/lib/i386-linux-gnu/libfgvk-render.so" 1
+    verify_elf_class "$deployed_dir/files/lib/i386-linux-gnu/libfgvk-render-scaling.so" 1
     verify_elf_class "$deployed_dir/files/lib/i386-linux-gnu/vkbasalt/libvkbasalt.so" 1
     for vkbasalt_library in \
             "$deployed_dir/files/lib64/vkbasalt/libvkbasalt.so" \
@@ -420,27 +420,27 @@ while IFS= read -r runtime_version || [[ -n "$runtime_version" ]]; do
     done
 
     for layer_binary in \
-            "$deployed_dir/files/lib64/libmako-render.so" \
-            "$deployed_dir/files/lib64/libmako-render-scaling.so" \
-            "$deployed_dir/files/lib/i386-linux-gnu/libmako-render.so" \
-            "$deployed_dir/files/lib/i386-linux-gnu/libmako-render-scaling.so"; do
+            "$deployed_dir/files/lib64/libfgvk-render.so" \
+            "$deployed_dir/files/lib64/libfgvk-render-scaling.so" \
+            "$deployed_dir/files/lib/i386-linux-gnu/libfgvk-render.so" \
+            "$deployed_dir/files/lib/i386-linux-gnu/libfgvk-render-scaling.so"; do
         verify_relay_contract "$layer_binary"
-        expected_identity="VK_LAYER_MAKO_render"
-        if [[ "$layer_binary" == *libmako-render-scaling.so ]]; then
-            expected_identity="VK_LAYER_MAKO_spatial_scaling"
+        expected_identity="VK_LAYER_FGVK_render"
+        if [[ "$layer_binary" == *libfgvk-render-scaling.so ]]; then
+            expected_identity="VK_LAYER_FGVK_spatial_scaling"
         fi
         if ! strings "$layer_binary" |
-                grep -F "MAKO Renderer: render layer active; identity=$expected_identity; build=$version" >/dev/null; then
+                grep -F "framegen-vulkan: render layer active; identity=$expected_identity; build=$version" >/dev/null; then
             echo "Flatpak packaging failed: deployed layer build identity is missing for $runtime_version" >&2
             exit 1
         fi
-        if ! strings "$layer_binary" | grep -F "MAKO_PROFILE_FALLBACK" >/dev/null; then
+        if ! strings "$layer_binary" | grep -F "FGVK_PROFILE_FALLBACK" >/dev/null; then
             echo "Flatpak packaging failed: deployed profile-fallback wrapper protocol is missing for $runtime_version" >&2
             exit 1
         fi
     done
 
-    if ! grep -Fq "/usr/lib/extensions/vulkan/makorender/lib64/libmako-render.so" \
+    if ! grep -Fq "/usr/lib/extensions/vulkan/fgvkrender/lib64/libfgvk-render.so" \
         "$deployed_manifest64"; then
         echo "Flatpak packaging failed: deployed 64-bit manifest path is incorrect for $runtime_version" >&2
         exit 1
@@ -449,7 +449,7 @@ while IFS= read -r runtime_version || [[ -n "$runtime_version" ]]; do
         echo "Flatpak packaging failed: deployed 64-bit manifest architecture is incorrect for $runtime_version" >&2
         exit 1
     fi
-    if ! grep -Fq "/usr/lib/extensions/vulkan/makorender/lib/i386-linux-gnu/libmako-render.so" \
+    if ! grep -Fq "/usr/lib/extensions/vulkan/fgvkrender/lib/i386-linux-gnu/libfgvk-render.so" \
         "$deployed_manifest32"; then
         echo "Flatpak packaging failed: deployed 32-bit manifest path is incorrect for $runtime_version" >&2
         exit 1
@@ -458,17 +458,17 @@ while IFS= read -r runtime_version || [[ -n "$runtime_version" ]]; do
         echo "Flatpak packaging failed: deployed 32-bit manifest architecture is incorrect for $runtime_version" >&2
         exit 1
     fi
-    if ! grep -Fq "/usr/lib/extensions/vulkan/makorender/lib64/libmako-render-scaling.so" \
+    if ! grep -Fq "/usr/lib/extensions/vulkan/fgvkrender/lib64/libfgvk-render-scaling.so" \
             "$deployed_scaling_manifest64" ||
             ! grep -Fq '"library_arch": "64"' "$deployed_scaling_manifest64" ||
-            ! grep -Fq '"name": "VK_LAYER_MAKO_spatial_scaling"' "$deployed_scaling_manifest64"; then
+            ! grep -Fq '"name": "VK_LAYER_FGVK_spatial_scaling"' "$deployed_scaling_manifest64"; then
         echo "Flatpak packaging failed: deployed 64-bit spatial manifest is incorrect for $runtime_version" >&2
         exit 1
     fi
-    if ! grep -Fq "/usr/lib/extensions/vulkan/makorender/lib/i386-linux-gnu/libmako-render-scaling.so" \
+    if ! grep -Fq "/usr/lib/extensions/vulkan/fgvkrender/lib/i386-linux-gnu/libfgvk-render-scaling.so" \
             "$deployed_scaling_manifest32" ||
             ! grep -Fq '"library_arch": "32"' "$deployed_scaling_manifest32" ||
-            ! grep -Fq '"name": "VK_LAYER_MAKO_spatial_scaling"' "$deployed_scaling_manifest32"; then
+            ! grep -Fq '"name": "VK_LAYER_FGVK_spatial_scaling"' "$deployed_scaling_manifest32"; then
         echo "Flatpak packaging failed: deployed 32-bit spatial manifest is incorrect for $runtime_version" >&2
         exit 1
     fi
@@ -483,9 +483,9 @@ fi
 # installation. The script selects one matching runtime and performs the
 # normal user-scoped Flatpak installation; per-application access remains a
 # separate explicit configuration step.
-cp "$repo_root/scripts/mako-install-flatpaks" "$bundle_dir/Install MAKO Flatpak Extensions"
-chmod 0755 "$bundle_dir/Install MAKO Flatpak Extensions"
-if ! bash -n "$bundle_dir/Install MAKO Flatpak Extensions"; then
+cp "$repo_root/scripts/fgvk-install-flatpaks" "$bundle_dir/Install framegen-vulkan Flatpak Extensions"
+chmod 0755 "$bundle_dir/Install framegen-vulkan Flatpak Extensions"
+if ! bash -n "$bundle_dir/Install framegen-vulkan Flatpak Extensions"; then
     echo "Flatpak packaging failed: graphical installer has invalid shell syntax" >&2
     exit 1
 fi

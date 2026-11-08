@@ -1,4 +1,4 @@
-name: MAKO Cleaner
+name: framegen-vulkan Cleaner
 
 on:
   schedule:
@@ -8,11 +8,11 @@ permissions:
   issues: write
 
 concurrency:
-  group: mako-cleaner
+  group: fgvk-cleaner
   cancel-in-progress: false
 
 jobs:
-  mako-cleaner:
+  fgvk-cleaner:
     runs-on: ubuntu-latest
     steps:
       - name: Close bug reports inactive for more than seven days
@@ -29,8 +29,8 @@ jobs:
               return labels.includes('bug') &&
                 !labels.includes('enhancement') && !labels.includes('question');
             };
-            const mascotUrl = `https://raw.githubusercontent.com/${context.repo.owner}/${context.repo.repo}/${context.payload.repository.default_branch}/assets/mako-cleaner.webp`;
-            const mascot = `<p align="center"><img src="${mascotUrl}" alt="MAKO Cleaner, a cyberpunk shark wearing a green police-style cap" width="160" /></p>`;
+            const mascotUrl = `https://raw.githubusercontent.com/${context.repo.owner}/${context.repo.repo}/${context.payload.repository.default_branch}/assets/fgvk-cleaner.webp`;
+            const mascot = `<p align="center"><img src="${mascotUrl}" alt="framegen-vulkan Cleaner, a cyberpunk shark wearing a green police-style cap" width="160" /></p>`;
             const issues = await github.paginate(github.rest.issues.listForRepo, {
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -68,11 +68,11 @@ jobs:
                 repo: context.repo.repo,
                 issue_number: currentIssue.number,
                 body: [
-                  '<!-- mako-cleaner-inactive-issue -->',
+                  '<!-- fgvk-cleaner-inactive-issue -->',
                   mascot,
-                  '🧹 **MAKO Cleaner** here.',
+                  '🧹 **framegen-vulkan Cleaner** here.',
                   'This bug report was automatically closed because it has had no activity for more than seven days. Reply with new information if it should be reopened.',
-                  '_This is an automated reply from MAKO Cleaner._',
+                  '_This is an automated reply from framegen-vulkan Cleaner._',
                 ].join('\n\n'),
               });
 

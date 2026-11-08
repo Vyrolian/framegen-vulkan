@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Summarize MAKO CPU/GPU pacing and opt-in native Wayland presentation feedback."""
+"""Summarize framegen-vulkan CPU/GPU pacing and opt-in native Wayland presentation feedback."""
 
 import argparse
 import json
@@ -23,7 +23,7 @@ class Window(NamedTuple):
 def read_windows(path: Path) -> tuple[list[Window], int]:
     windows = []
     invalid = 0
-    marker = "MAKO Renderer: present diagnostics: operation=pacing-profile "
+    marker = "framegen-vulkan: present diagnostics: operation=pacing-profile "
     required = ("window_ms", "sources", "output_attempts", "source_interval_samples",
                 "source_interval_mean_ms", "source_interval_max_ms")
     with path.open(encoding="utf-8", errors="replace") as stream:
@@ -53,7 +53,7 @@ def read_windows(path: Path) -> tuple[list[Window], int]:
 def read_observations(path: Path) -> tuple[dict[str, list[dict]], int]:
     observations = {"outputs": [], "waits": [], "presents": [], "wayland": [], "wayland_gaps": [], "limits": [], "wraps": [], "sources": [], "gpu_frames": [], "application_calls": [], "wait_calls": [], "capture_gaps": [], "sessions": [], "acquire_driver": [], "copies": [], "copy_gpu": []}
     invalid = 0
-    prefix = "MAKO Renderer: present diagnostics: operation="
+    prefix = "framegen-vulkan: present diagnostics: operation="
     with path.open(encoding="utf-8", errors="replace") as stream:
         for line in stream:
             if prefix not in line:
@@ -445,17 +445,17 @@ def frame_trace_report(observations: dict, pid: int, context: int, top: int) -> 
     timeline = frame_timeline(observations)
     rows = [r for r in timeline["frames"] if r["source"]["pid"] == pid and r["source"]["context"] == context]
     if not rows:
-        return ["  Per-source causal trace unavailable in this capture; enable MAKO_PACING_PROFILE_TRACE=1."]
+        return ["  Per-source causal trace unavailable in this capture; enable FGVK_PACING_PROFILE_TRACE=1."]
     lines = [f"  Per-source trace: {len(rows)} sources, {sum(r['application'] is not None for r in rows)} exact application joins, {sum(r['gpu'] is not None for r in rows)} exact completed GPU joins."]
     acquired = [r for r in rows if r["acquisition"]]
     if acquired:
-        lines.append(f"  Image ownership: {len(acquired)} exact acquisition-to-present joins; driver-call attempts are separate from MAKO/observer time.")
+        lines.append(f"  Image ownership: {len(acquired)} exact acquisition-to-present joins; driver-call attempts are separate from framegen-vulkan/observer time.")
         for row in sorted(acquired, key=lambda r: r["acquisition"]["finished_ns"] - r["acquisition"]["started_ns"], reverse=True)[:top]:
             acquire = row["acquisition"]
             total = acquire["finished_ns"] - acquire["started_ns"]
             lower = acquire.get("lower_ns") if len(row["acquire_driver"]) == acquire.get("lower_calls") else None
             lines.append(f"    Source {row['source']['source']}: acquire {total/1e6:.3f} ms; " +
-                         (f"driver {lower/1e6:.3f} ms, MAKO/observer {(total-lower)/1e6:.3f} ms; " if lower is not None else "driver partition unavailable; ") +
+                         (f"driver {lower/1e6:.3f} ms, framegen-vulkan/observer {(total-lower)/1e6:.3f} ms; " if lower is not None else "driver partition unavailable; ") +
                          f"acquire return -> outer present {row['acquire_to_present_ns']/1e6:.3f} ms.")
     else:
         lines.append("  Acquisition-to-present ownership unavailable (requires recorded matching image/context lifetimes).")
@@ -848,7 +848,7 @@ def report(windows: list[Window], top: int = 5, skip_seconds: float = 0,
             if samples:
                 mean = sum(value["present_target_interval_mean_ms"] * value["present_target_interval_samples"]
                            for value in targets) / samples
-                lines.append(f"  Requested MAKO Vulkan target interval: mean {mean:.3f} ms, samples {samples:g} (not display timing).")
+                lines.append(f"  Requested framegen-vulkan Vulkan target interval: mean {mean:.3f} ms, samples {samples:g} (not display timing).")
             discontinuities = sum(value.get("present_target_discontinuities", 0) for value in timing)
             lines.append(f"  Repeated/backwards requested targets: {discontinuities:g}")
             if len(timing) != len(group):
@@ -860,7 +860,7 @@ def report(windows: list[Window], top: int = 5, skip_seconds: float = 0,
             if not gpu_samples:
                 lines.append("  GPU timing unavailable: no completed backend batch samples (not zero GPU cost).")
             else:
-                lines.append("  MAKO backend GPU spans: excludes game rendering, scaling/copies and scanout.")
+                lines.append("  framegen-vulkan backend GPU spans: excludes game rendering, scaling/copies and scanout.")
                 for label, metric in (("GPU prepass", "gpu_prepass"),
                                       ("GPU generated batch", "gpu_generation"),
                                       ("GPU per output", "gpu_output"),
@@ -894,7 +894,7 @@ def report(windows: list[Window], top: int = 5, skip_seconds: float = 0,
                 return v.get(f"worst_source_{name}_ms", 0)
             time = (v.get("sample_end_monotonic_ms", first) - first) / 1000
             lines.append(f"  Worst source interval in window ending +{time:.2f}s: {metric('interval'):.3f} ms")
-            lines.append(f"    Previous MAKO present: {metric('layer'):.3f} ms; outside that present: {metric('outside'):.3f} ms")
+            lines.append(f"    Previous framegen-vulkan present: {metric('layer'):.3f} ms; outside that present: {metric('outside'):.3f} ms")
             lines.append(f"    Cap wait: {metric('cap_wait'):.3f}; readiness wait: {metric('readiness_wait'):.3f}; output sleeps: {metric('output_wait'):.3f} ms")
             lines.append(f"    Profiler publication after that present: {metric('profiler_publish'):.3f} ms (included in outside time)")
             lines.append("    Private CPU phases (ms): " + ", ".join(

@@ -3,7 +3,7 @@ set -euo pipefail
 
 repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 scanner="$repository_root/scripts/check-protected-inputs.sh"
-test_root="$(mktemp -d "${TMPDIR:-/tmp}/mako-protected-input-test.XXXXXX")"
+test_root="$(mktemp -d "${TMPDIR:-/tmp}/fgvk-protected-input-test.XXXXXX")"
 cleanup() {
     rm -rf "$test_root"
 }

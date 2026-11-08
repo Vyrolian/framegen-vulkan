@@ -11,8 +11,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 README = ROOT / "README.md"
 CONFIG = ROOT / "scripts/contributors.json"
-START = "<!-- mako-contributors:start -->"
-END = "<!-- mako-contributors:end -->"
+START = "<!-- fgvk-contributors:start -->"
+END = "<!-- fgvk-contributors:end -->"
 COAUTHOR = re.compile(r"^Co-authored-by:\s*([^\n<>]+?)\s*<[^\n<>]+>\s*$", re.IGNORECASE | re.MULTILINE)
 LOGIN = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?")
 

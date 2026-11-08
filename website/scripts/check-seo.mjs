@@ -20,7 +20,7 @@ const requiredIndexFragments = [
   '<meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1">',
   '<link rel="canonical" href="https://eugeniosegala.github.io/MAKO/">',
   '<link rel="sitemap" type="application/xml" href="https://eugeniosegala.github.io/MAKO/sitemap.xml">',
-  '<meta property="og:site_name" content="MAKO">',
+  '<meta property="og:site_name" content="framegen-vulkan">',
   '<meta property="og:image:alt"',
   '<meta name="twitter:image:alt"',
   '<script type="application/ld+json">',
@@ -29,7 +29,7 @@ const requiredIndexFragments = [
   '<main>',
   '<h1>',
   'Steam Deck',
-  'MAKO Renderer',
+  'framegen-vulkan',
 ];
 
 for (const fragment of requiredIndexFragments) {
@@ -59,7 +59,7 @@ if (
   );
 }
 if (!sitemap.includes(`<loc>${siteUrl}</loc>`)) {
-  throw new Error('sitemap.xml must include the canonical MAKO homepage');
+  throw new Error('sitemap.xml must include the canonical framegen-vulkan homepage');
 }
 
 console.log(

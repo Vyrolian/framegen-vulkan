@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 MAKO contributors
-// MAKO's lightweight levels effect; independently implemented.
+// framegen-vulkan's lightweight levels effect; independently implemented.
 
 uniform float BlackPoint <
     ui_type = "slider";

@@ -1,4 +1,4 @@
-# Building MAKO Renderer from source
+# Building framegen-vulkan from source
 
 This guide covers local development, source installation, and distributable Renderer packages.
 
@@ -6,14 +6,14 @@ Once cloned, run build and packaging commands from `engine/` unless a section sa
 
 <!-- prettier-ignore -->
 > [!IMPORTANT]
-> If you are planning on compiling MAKO Renderer on SteamOS, check the direct-build prerequisites from the repository root, then run the installer if anything is missing:
+> If you are planning on compiling framegen-vulkan on SteamOS, check the direct-build prerequisites from the repository root, then run the installer if anything is missing:
 >
 > ```bash
 > ./engine/scripts/install-steamos-build-tools.sh --check
 > ./engine/scripts/install-steamos-build-tools.sh --install
 > ```
 >
-> The installer restores the original SteamOS read-only state, initializes the official Arch and Holo keyrings, and reinstalls the native build packages without `--needed`. Some SteamOS images preserve Pacman's installed-package records while removing development files or the local keyring. The script prompts before the Pacman transaction and does not build or deploy MAKO.
+> The installer restores the original SteamOS read-only state, initializes the official Arch and Holo keyrings, and reinstalls the native build packages without `--needed`. Some SteamOS images preserve Pacman's installed-package records while removing development files or the local keyring. The script prompts before the Pacman transaction and does not build or deploy framegen-vulkan.
 
 SteamOS image updates can also leave X11, XCB, Wayland, and Vulkan loader packages registered with Pacman while their development headers or metadata are absent. The installer restores these alongside the compiler, 32-bit headers, shader tools, and Flatpak development tools; its `--check` mode reports missing commands and headers without changing the host.
 
@@ -61,19 +61,19 @@ The release packager builds the 64-bit CLI, launcher, and both Renderer roles, t
 | Standalone Renderer archive | `engine/scripts/package-local.sh` | Tests and packages the host Renderer payload; does not publish |
 | Complete local Renderer release-shaped set | `engine/scripts/package-local-release.sh` | Builds the portable host archive, Flatpak archive, verified Arch package, and `SHA256SUMS` without changing release pins or publishing |
 | Complete local release candidate | `engine/scripts/package-local-release.sh`, then `scripts/check-release-candidate.sh` with the host and Flatpak archives from `engine/out/` | Builds once from a clean pushed commit and checks the existing complete archives without a CI rebuild or installation |
-| Public release | `scripts/publish-release.sh X.Y.Z` from the repository root | Publishes MAKO Renderer, records its checksums in `engine/renderer-release.json`, and updates release links |
+| Public release | `scripts/publish-release.sh X.Y.Z` from the repository root | Publishes framegen-vulkan, records its checksums in `engine/renderer-release.json`, and updates release links |
 
-`package-local-release.sh` writes under `engine/out/` and synchronizes a disposable Arch recipe. The complete local archives serve as release candidates; publication separately applies version and pin commits and rebuilds public assets. [How to release MAKO](../../HOW_TO_RELEASE.md) owns qualification, build alignment, and publication.
+`package-local-release.sh` writes under `engine/out/` and synchronizes a disposable Arch recipe. The complete local archives serve as release candidates; publication separately applies version and pin commits and rebuilds public assets. [How to release framegen-vulkan](../../HOW_TO_RELEASE.md) owns qualification, build alignment, and publication.
 
-Local native Linux packaging uses the host SDK when it passes the Vulkan header check. If that check fails, set `MAKO_PORTABLE_PACKAGE=1` to use the portable baseline with Docker or Podman. Non-Linux packaging and all public native releases require one of those runtimes.
+Local native Linux packaging uses the host SDK when it passes the Vulkan header check. If that check fails, set `FGVK_PORTABLE_PACKAGE=1` to use the portable baseline with Docker or Podman. Non-Linux packaging and all public native releases require one of those runtimes.
 
-For an explicitly requested maintainer exception, `MAKO_RELEASE_SKIP_TESTS=1` omits test compilation, CTest, and launcher tests while retaining build, ABI, archive, and checksum verification. See the [hotfix exception](../../HOW_TO_RELEASE.md#maintainer-directed-hotfix-without-automated-validation). Publication always uses the portable builders: Ubuntu 22.04, Clang 14, and the pinned Vulkan headers for the native archive, plus Ubuntu 24.04 driving each declared Flatpak runtime SDK. Use `MAKO_PORTABLE_PACKAGE=1` for complete tester packages too; the scripts select Docker or Podman automatically. Without that flag, Flatpak packaging uses host `flatpak-builder` when available and falls back to the container builder when it is absent. Follow the [build-alignment and evidence requirements](../../HOW_TO_RELEASE.md#keep-tester-and-release-builds-aligned) when comparing tester and release artifacts.
+For an explicitly requested maintainer exception, `FGVK_RELEASE_SKIP_TESTS=1` omits test compilation, CTest, and launcher tests while retaining build, ABI, archive, and checksum verification. See the [hotfix exception](../../HOW_TO_RELEASE.md#maintainer-directed-hotfix-without-automated-validation). Publication always uses the portable builders: Ubuntu 22.04, Clang 14, and the pinned Vulkan headers for the native archive, plus Ubuntu 24.04 driving each declared Flatpak runtime SDK. Use `FGVK_PORTABLE_PACKAGE=1` for complete tester packages too; the scripts select Docker or Podman automatically. Without that flag, Flatpak packaging uses host `flatpak-builder` when available and falls back to the container builder when it is absent. Follow the [build-alignment and evidence requirements](../../HOW_TO_RELEASE.md#keep-tester-and-release-builds-aligned) when comparing tester and release artifacts.
 
 ## Package dependency pins
 
 ### Vulkan-Headers
 
-Native and Flatpak archive builds and `scripts/build-steamos-dev.sh` enable `MAKO_REQUIRE_NATIVE_PACKAGE_HEADERS=ON` for both applicable architectures; the option retains its historical name for compatibility. CMake compiles the actual presentation-filter header and rejects headers older than the pinned revision or missing `VK_KHR_present_id2` or `VK_EXT_present_timing`, including when automated tests are disabled. The timing-node ABI checks therefore compile against the official `VkPresentTimingsInfoEXT` declaration. This prevents SDK selection from silently removing presentation compatibility. It is a build-time requirement, not a higher Vulkan driver/API requirement. Manual CMake builds retain their default host-header compatibility unless this option is enabled. Flatpak builds use the shared pinned headers with each runtime's existing compiler and libraries and still need runtime-specific evidence.
+Native and Flatpak archive builds and `scripts/build-steamos-dev.sh` enable `FGVK_REQUIRE_NATIVE_PACKAGE_HEADERS=ON` for both applicable architectures; the option retains its historical name for compatibility. CMake compiles the actual presentation-filter header and rejects headers older than the pinned revision or missing `VK_KHR_present_id2` or `VK_EXT_present_timing`, including when automated tests are disabled. The timing-node ABI checks therefore compile against the official `VkPresentTimingsInfoEXT` declaration. This prevents SDK selection from silently removing presentation compatibility. It is a build-time requirement, not a higher Vulkan driver/API requirement. Manual CMake builds retain their default host-header compatibility unless this option is enabled. Flatpak builds use the shared pinned headers with each runtime's existing compiler and libraries and still need runtime-specific evidence.
 
 [`engine/vulkan-headers-revision.txt`](../vulkan-headers-revision.txt) is the single owner of the native and Flatpak Vulkan-Headers build pin and minimum header version. It contains one upstream SDK branch (`vulkan-sdk-X.Y.Z`) or release tag (`vX.Y.Z`). The portable packager, fast SteamOS development builder, and main Renderer CI builds fetch that ref, and CMake derives its minimum version from the same file.
 
@@ -81,13 +81,13 @@ The fast builder caches a release tag under `engine/build/cache/vulkan-headers/`
 
 The sanitizer CI job also fetches this pin and compiles its policy tests against the same headers; manual portable-policy runs can still exercise distribution headers for compatibility coverage. To update the baseline, change this file and qualify the resulting packages under the tester/release build-alignment requirements above.
 
-The Vulkan layer manifests' `api_version` describes the layer's supported API and is maintained separately; it must not automatically follow header updates. MAKO’s pinned vkBasalt release records its Vulkan-Headers revision and resolved commit; its header revision must match the Renderer pin, and its reviewed API declaration must match both Renderer layer manifests. `manage-vkbasalt-release.py` rejects drift and verifies archive provenance. After downloading and verifying a new public vkBasalt asset, use `python3 engine/scripts/manage-vkbasalt-release.py --update-from-archive /path/to/asset.tar.xz` from the repository root, then `just generate-vkbasalt-release`; the latter generates the Flatpak dependency and both architecture manifests from the verified pin.
+The Vulkan layer manifests' `api_version` describes the layer's supported API and is maintained separately; it must not automatically follow header updates. framegen-vulkan’s pinned vkBasalt release records its Vulkan-Headers revision and resolved commit; its header revision must match the Renderer pin, and its reviewed API declaration must match both Renderer layer manifests. `manage-vkbasalt-release.py` rejects drift and verifies archive provenance. After downloading and verifying a new public vkBasalt asset, use `python3 engine/scripts/manage-vkbasalt-release.py --update-from-archive /path/to/asset.tar.xz` from the repository root, then `just generate-vkbasalt-release`; the latter generates the Flatpak dependency and both architecture manifests from the verified pin.
 
 ### vkBasalt
 
-[`engine/vkbasalt-release.json`](../vkbasalt-release.json) owns MAKO's runtime vkBasalt dependency. The pin identifies an immutable tag and source commit in MAKO's maintained fork, the exact dual-architecture release asset, its upstream baseline, and its SHA-256. `scripts/manage-vkbasalt-release.py` validates the pin, release provenance, internal checksums, both ELF classes, Vulkan layer entry points, manifests, and activation gates. Native packaging stages the verified libraries under `lib/vkbasalt` and `lib32/vkbasalt`; the generated Flatpak module stages the same release inside each runtime extension. Neither path installs vkBasalt system-wide. The cached download lives under `build/cache/vkbasalt` and can be relocated with `MAKO_BUILD_CACHE_ROOT` through the package scripts.
+[`engine/vkbasalt-release.json`](../vkbasalt-release.json) owns framegen-vulkan's runtime vkBasalt dependency. The pin identifies an immutable tag and source commit in framegen-vulkan's maintained fork, the exact dual-architecture release asset, its upstream baseline, and its SHA-256. `scripts/manage-vkbasalt-release.py` validates the pin, release provenance, internal checksums, both ELF classes, Vulkan layer entry points, manifests, and activation gates. Native packaging stages the verified libraries under `lib/vkbasalt` and `lib32/vkbasalt`; the generated Flatpak module stages the same release inside each runtime extension. Neither path installs vkBasalt system-wide. The cached download lives under `build/cache/vkbasalt` and can be relocated with `FGVK_BUILD_CACHE_ROOT` through the package scripts.
 
-To update vkBasalt, merge the intended upstream baseline into the maintained fork, increment the fork release revision, run its dual-architecture release workflow, and retain the successful workflow and artifact attestations. Then update `vkbasalt-release.json`, regenerate `dist/flatpak/mako-render/vkbasalt-module.json` with `just generate-vkbasalt-release`, and run `just check-vkbasalt-release`. Never retag or replace a pinned asset: publish a new fork tag and change the MAKO pin. A released MAKO Renderer archive contains the verified libraries, manifests, licenses, source record, and pin, so an installed or downloaded MAKO release does not depend on the upstream vkBasalt repository remaining available. Rebuilding the same MAKO source from an empty cache still requires the pinned fork release asset.
+To update vkBasalt, merge the intended upstream baseline into the maintained fork, increment the fork release revision, run its dual-architecture release workflow, and retain the successful workflow and artifact attestations. Then update `vkbasalt-release.json`, regenerate `dist/flatpak/fgvk-render/vkbasalt-module.json` with `just generate-vkbasalt-release`, and run `just check-vkbasalt-release`. Never retag or replace a pinned asset: publish a new fork tag and change the framegen-vulkan pin. A released framegen-vulkan archive contains the verified libraries, manifests, licenses, source record, and pin, so an installed or downloaded framegen-vulkan release does not depend on the upstream vkBasalt repository remaining available. Rebuilding the same framegen-vulkan source from an empty cache still requires the pinned fork release asset.
 
 Distributable archives and Flatpak extensions include the project license, third-party notices, and asset-provenance record. Packaging fails if those files or another required payload entry is missing.
 
@@ -101,7 +101,7 @@ For native Steam-game iteration, use the persistent incremental build instead of
 
 This native host build uses the shared Vulkan-Headers pin and package presentation check while retaining its incremental CMake tree. Its first run needs network access to cache the pinned headers; later runs reuse a pinned release tag offline. It still needs the host C++ toolchain and X11/XCB development headers. Use the portable package builder when the output itself must match the release toolchain and packaging checks.
 
-It builds both 64-bit Renderer roles and the CLI, retaining `build/steamos-dev` between runs. For real AMD validation with a sibling MAKO Gym checkout, run `./scripts/run-mako-gym.sh --suite quality --cli build/steamos-dev/mako-cli/mako-cli`. To retain a second tree for genuine 32-bit games, run:
+It builds both 64-bit Renderer roles and the CLI, retaining `build/steamos-dev` between runs. For real AMD validation with a sibling fgvk Gym checkout, run `./scripts/run-fgvk-gym.sh --suite quality --cli build/steamos-dev/fgvk-cli/fgvk-cli`. To retain a second tree for genuine 32-bit games, run:
 
 ```bash
 ./scripts/build-steamos-dev.sh --with-32-bit
@@ -119,7 +119,7 @@ For visual testing of an FP32-only LSFG model, build a separate native candidate
     --build-32-dir build/lsfg-fp16-experimental-32 --jobs 4
 ```
 
-This build requires CMake 3.22.1 or newer. `scripts/prepare-lsfg-fp16-tools.sh` downloads checksum-pinned official SPIRV-Tools `33e02568181e3312f49a3cf33df470bf96ef293a` and its matching SPIRV-Headers `2a611a970fdbc41ac2e3e328802aed9985352dca` into `build/cache/lsfg-fp16-tools/`. The optimizer is linked statically for each architecture, with no additional runtime library or executable requirement. Direct CMake builds can use `-DMAKO_EXPERIMENTAL_LSFG_FP16=ON -DMAKO_LSFG_FP16_TOOLS_SOURCE=PATH` with the prepared source directory. Ordinary development and release builds leave conversion disabled by default; the build fingerprint identifies experimental binaries explicitly.
+This build requires CMake 3.22.1 or newer. `scripts/prepare-lsfg-fp16-tools.sh` downloads checksum-pinned official SPIRV-Tools `33e02568181e3312f49a3cf33df470bf96ef293a` and its matching SPIRV-Headers `2a611a970fdbc41ac2e3e328802aed9985352dca` into `build/cache/lsfg-fp16-tools/`. The optimizer is linked statically for each architecture, with no additional runtime library or executable requirement. Direct CMake builds can use `-DFGVK_EXPERIMENTAL_LSFG_FP16=ON -DFGVK_LSFG_FP16_TOOLS_SOURCE=PATH` with the prepared source directory. Ordinary development and release builds leave conversion disabled by default; the build fingerprint identifies experimental binaries explicitly.
 
 There is no additional runtime toggle. With FP16 on, native FP16 takes priority; otherwise a supported native FP32 or translated DirectX graph is converted once and cached in memory. With FP16 off, the ordinary FP32 path remains selected. Conversion requires valid SPIR-V, preserved descriptor contracts, and actual half arithmetic. It cannot manufacture support for an unknown model layout or an unsupported GPU. Shader inputs, converted modules, and model resources never leave process memory.
 
@@ -138,7 +138,7 @@ cd engine
 
 The script verifies both Renderer roles for 64-bit and 32-bit processes on every supported runtime and writes the archive under `engine/out/`.
 
-[`runtime-versions.json`](../dist/flatpak/mako-render/runtime-versions.json) owns the ordered Freedesktop branches and LLVM SDK versions; the adjacent `org.freedesktop.Platform.VulkanLayer.makorender.yml.in` owns the common manifest. After adding or retiring a branch, run from the monorepo root:
+[`runtime-versions.json`](../dist/flatpak/fgvk-render/runtime-versions.json) owns the ordered Freedesktop branches and LLVM SDK versions; the adjacent `org.freedesktop.Platform.VulkanLayer.fgvkrender.yml.in` owns the common manifest. After adding or retiring a branch, run from the monorepo root:
 
 ```bash
 just generate-flatpak-runtimes
@@ -159,7 +159,7 @@ Reusable package data lives under `build/cache`; disposable staging lives under 
 ./scripts/prune-build-cache.sh
 ```
 
-Add `--confirm` to remove those two trees. Native incremental builds, release artifacts, installed MAKO files, and profiles are not removed.
+Add `--confirm` to remove those two trees. Native incremental builds, release artifacts, installed framegen-vulkan files, and profiles are not removed.
 
 To inspect only the Flatpak cache and staging area, run:
 
@@ -175,17 +175,17 @@ Add `--confirm` to remove only those Flatpak directories:
 
 Both pruners target only the default repository-local paths. They do not remove custom locations selected through environment overrides.
 
-Set `MAKO_BUILD_JOBS=4` to limit parallelism on a memory-constrained Deck, or `MAKO_BUILD_DIR=/path/to/build` to relocate the incremental development tree.
+Set `FGVK_BUILD_JOBS=4` to limit parallelism on a memory-constrained Deck, or `FGVK_BUILD_DIR=/path/to/build` to relocate the incremental development tree.
 
-## Build and install MAKO Renderer
+## Build and install framegen-vulkan
 
 1. **Clone the repository**
 
-Clone the MAKO monorepo and enter the engine package:
+Clone the framegen-vulkan monorepo and enter the engine package:
 
 ```bash
 git clone https://github.com/eugeniosegala/MAKO.git
-cd MAKO/engine
+cd framegen-vulkan/engine
 ```
 
 To build a specific Renderer release, check out its tag:
@@ -207,16 +207,16 @@ Useful CMake options:
 
 - `CMAKE_BUILD_TYPE`: Set to `Release` for optimized builds or `Debug` for debugging builds.
 - `CMAKE_INSTALL_PREFIX`: Specify the installation directory (default is `/usr/local`).
-- `MAKO_BUILD_VK_LAYER`: Set to `On` to build the Vulkan layer (default is `On`).
-- `MAKO_BUILD_CLI`: Set to `On` to build the command-line interface (default is `On`).
-- `MAKO_INSTALL_DEVELOP`: Set to `On` to install development files like headers and libraries (default is `Off`).
-- `MAKO_REQUIRE_NATIVE_PACKAGE_HEADERS`: Require the shared native/Flatpak Vulkan header baseline (default is `Off` for direct CMake builds; all package builds set it to `On`).
-- `MAKO_VULKAN_HEADERS_INCLUDE_DIR`: Prefer an explicit Vulkan-Headers `include/` directory for compilation and the required-header check; the fast SteamOS builder sets this to its cache of the shared pin.
-- `MAKO_LAYER_LIBRARY_PATH`: Override the frame-generation role library path stored in its manifest.
-- `MAKO_SCALING_LAYER_LIBRARY_PATH`: Override the spatial role library path stored in its manifest.
-- `MAKO_LAYER_MANIFEST_SUFFIX`: Add a suffix to the installed manifest filename when packaging multiple architectures.
+- `FGVK_BUILD_VK_LAYER`: Set to `On` to build the Vulkan layer (default is `On`).
+- `FGVK_BUILD_CLI`: Set to `On` to build the command-line interface (default is `On`).
+- `FGVK_INSTALL_DEVELOP`: Set to `On` to install development files like headers and libraries (default is `Off`).
+- `FGVK_REQUIRE_NATIVE_PACKAGE_HEADERS`: Require the shared native/Flatpak Vulkan header baseline (default is `Off` for direct CMake builds; all package builds set it to `On`).
+- `FGVK_VULKAN_HEADERS_INCLUDE_DIR`: Prefer an explicit Vulkan-Headers `include/` directory for compilation and the required-header check; the fast SteamOS builder sets this to its cache of the shared pin.
+- `FGVK_LAYER_LIBRARY_PATH`: Override the frame-generation role library path stored in its manifest.
+- `FGVK_SCALING_LAYER_LIBRARY_PATH`: Override the spatial role library path stored in its manifest.
+- `FGVK_LAYER_MANIFEST_SUFFIX`: Add a suffix to the installed manifest filename when packaging multiple architectures.
 
-For a non-system prefix, set both paths relative to their installed manifests, for example `../../../lib/libmako-render.so` and `../../../lib/libmako-render-scaling.so`.
+For a non-system prefix, set both paths relative to their installed manifests, for example `../../../lib/libfgvk-render.so` and `../../../lib/libfgvk-render-scaling.so`.
 
 3. **Build**
 
@@ -224,9 +224,9 @@ For a non-system prefix, set both paths relative to their installed manifests, f
 cmake --build build
 ```
 
-The default build produces both split-chain Vulkan DSOs. A targeted `--target mako-render` build also refreshes `mako-render-scaling`, because the upper and lower roles share one versioned runtime contract and must never be staged from different source generations.
+The default build produces both split-chain Vulkan DSOs. A targeted `--target fgvk-render` build also refreshes `fgvk-render-scaling`, because the upper and lower roles share one versioned runtime contract and must never be staged from different source generations.
 
-The default and Vulkan-layer builds check `mako-render/src/**/*.cpp` against the explicit production source lists in `mako-render/CMakeLists.txt`. When adding or moving an implementation file, assign it to its owning target there. The inventory check runs on incremental builds too, so an unlisted new file fails the build instead of silently disappearing from the host, 32-bit, Flatpak, and Arch artifacts. CTest runs the same check as `renderer-source-inventory` in the portable policy set.
+The default and Vulkan-layer builds check `fgvk-render/src/**/*.cpp` against the explicit production source lists in `fgvk-render/CMakeLists.txt`. When adding or moving an implementation file, assign it to its owning target there. The inventory check runs on incremental builds too, so an unlisted new file fails the build instead of silently disappearing from the host, 32-bit, Flatpak, and Arch artifacts. CTest runs the same check as `renderer-source-inventory` in the portable policy set.
 
 4. **Install**
 
@@ -234,34 +234,34 @@ The default and Vulkan-layer builds check `mako-render/src/**/*.cpp` against the
 sudo cmake --install build
 ```
 
-Start a native game with `mako-launch <command>`. The helper selects the install prefix's private manifests, activates MAKO for that child, excludes competing frame generation and Gamescope WSI, and defaults to SDR. Enable HDR through the [HDR setup](CONFIGURATION.md#hdr) when needed. A directly installed CMake build does not fetch the optional vkBasalt payload; use `scripts/package-local.sh` for the complete archive that supports `ENABLE_VKBASALT=1 mako-launch <command>`. Read [WSI isolation](WSI-ISOLATION.md) and [Optional graphics integrations](LAYER-CHAINING.md#standalone-mako-renderer-with-vkbasalt) before changing manifests or launch variables.
+Start a native game with `fgvk-launch <command>`. The helper selects the install prefix's private manifests, activates framegen-vulkan for that child, excludes competing frame generation and Gamescope WSI, and defaults to SDR. Enable HDR through the [HDR setup](CONFIGURATION.md#hdr) when needed. A directly installed CMake build does not fetch the optional vkBasalt payload; use `scripts/package-local.sh` for the complete archive that supports `ENABLE_VKBASALT=1 fgvk-launch <command>`. Read [WSI isolation](WSI-ISOLATION.md) and [Optional graphics integrations](LAYER-CHAINING.md#standalone-fgvk-renderer-with-vkbasalt) before changing manifests or launch variables.
 
 ### Local vkBasalt candidates
 
-Build and verify both architectures with the sibling vkBasalt fork’s `scripts/package-mako-release.sh`, then place the archive under ignored `engine/out/`. Set `MAKO_VKBASALT_LOCAL_ARCHIVE=engine/out/vkBasalt-hdr-local.tar.xz` for tester builds or native development deployment. Paths must be repository-relative without `..`. Native and Flatpak builds validate checksums, architecture, provenance, headers and layer entrypoints; cache identity includes the archive checksum. Local manifests and metadata identify the candidate without changing tracked pins. Publication rejects the override; unset it to use the public dependency.
+Build and verify both architectures with the sibling vkBasalt fork’s `scripts/package-fgvk-release.sh`, then place the archive under ignored `engine/out/`. Set `FGVK_VKBASALT_LOCAL_ARCHIVE=engine/out/vkBasalt-hdr-local.tar.xz` for tester builds or native development deployment. Paths must be repository-relative without `..`. Native and Flatpak builds validate checksums, architecture, provenance, headers and layer entrypoints; cache identity includes the archive checksum. Local manifests and metadata identify the candidate without changing tracked pins. Publication rejects the override; unset it to use the public dependency.
 
 ## Arch package maintenance
 
-User installation, updates and removal are in the [Arch guide](../dist/arch/README.md). `engine/dist/arch/PKGBUILD` repackages the verified host archive; it provides and conflicts with `mako-renderer`, the identity reserved for a source-built alternative. Run recipe scripts from `engine/dist/arch/` unless a command specifies the repository root.
+User installation, updates and removal are in the [Arch guide](../dist/arch/README.md). `engine/dist/arch/PKGBUILD` repackages the verified host archive; it provides and conflicts with `fgvk-renderer`, the identity reserved for a source-built alternative. Run recipe scripts from `engine/dist/arch/` unless a command specifies the repository root.
 
 ### Payload layout
 
 The package installs:
 
-- `mako-cli`, `mako-launch`, and `mako-diagnostics` into `/usr/bin`.
+- `fgvk-cli`, `fgvk-launch`, and `fgvk-diagnostics` into `/usr/bin`.
 - the 64-bit Vulkan layers into `/usr/lib` and the 32-bit layers into `/usr/lib32`.
-- the public implicit-layer manifests into `/usr/share/vulkan/implicit_layer.d`, gated by `ENABLE_MAKO` and `ENABLE_MAKO_SPATIAL_SCALING`.
-- the private manifests used by `mako-launch` into `/usr/share/mako-render/vulkan/implicit_layer.d` and `/usr/share/mako-render/vulkan/spatial_scaling.d`.
-- any checksum-manifested private integration shipped by the pinned archive, including MAKO's private 64-bit and 32-bit vkBasalt libraries, manifests, licences, and provenance when present in that Renderer release.
-- license texts into `/usr/share/licenses/mako-renderer-bin`.
-- `ASSET_PROVENANCE.md`, the version file, and the upstream checksum manifest into `/usr/share/doc/mako-renderer-bin`.
+- the public implicit-layer manifests into `/usr/share/vulkan/implicit_layer.d`, gated by `ENABLE_FGVK` and `ENABLE_FGVK_SPATIAL_SCALING`.
+- the private manifests used by `fgvk-launch` into `/usr/share/framegen-vulkan/vulkan/implicit_layer.d` and `/usr/share/framegen-vulkan/vulkan/spatial_scaling.d`.
+- any checksum-manifested private integration shipped by the pinned archive, including framegen-vulkan's private 64-bit and 32-bit vkBasalt libraries, manifests, licences, and provenance when present in that Renderer release.
+- license texts into `/usr/share/licenses/framegen-vulkan-bin`.
+- `ASSET_PROVENANCE.md`, the version file, and the upstream checksum manifest into `/usr/share/doc/framegen-vulkan-bin`.
 
 The package deliberately excludes:
 
-- `bin/mako-installer` and the `Install MAKO Renderer` launcher, which form the user-local installer and target `~/.local`.
+- `bin/fgvk-installer` and the `Install framegen-vulkan` launcher, which form the user-local installer and target `~/.local`.
 - the archive's `README.txt`, which documents the user-local installer flow that this package does not provide.
 
-Two details differ from the archive layout: the archived `share/doc/mako-render/*` files are installed under `/usr/share/licenses/mako-renderer-bin/` and `/usr/share/doc/mako-renderer-bin/`, and shared libraries are installed as mode `0755` instead of the archive's `0644`, following Arch convention. Content hashes are unaffected, so the checksum manifest still matches.
+Two details differ from the archive layout: the archived `share/doc/framegen-vulkan/*` files are installed under `/usr/share/licenses/framegen-vulkan-bin/` and `/usr/share/doc/framegen-vulkan-bin/`, and shared libraries are installed as mode `0755` instead of the archive's `0644`, following Arch convention. Content hashes are unaffected, so the checksum manifest still matches.
 
 ### Release pins
 
@@ -279,8 +279,8 @@ This repository owns the reviewed `PKGBUILD` and publishes its verified binary p
 
 - `makepkg` verifies the release archive against `sha256sums` before packaging.
 - Renderer publication runs `verify-release-package.sh` after synchronizing the recipe, uploads that exact verified package, records its checksum in release metadata, and refuses to consider the release complete if the asset is missing or differs from the recorded checksum.
-- The build wrapper rejects a stale or renamed package unless its filename, `.PKGINFO` name/version/architecture, embedded `MAKO-Renderer-version.txt`, synchronized recipe, and source archive checksum all agree.
+- The build wrapper rejects a stale or renamed package unless its filename, `.PKGINFO` name/version/architecture, embedded `framegen-vulkan-version.txt`, synchronized recipe, and source archive checksum all agree.
 - The build wrapper rejects a new or undeclared ELF dependency in the CLI, either Renderer role, or the private 64-bit and 32-bit vkBasalt libraries. It also rejects an ELF with the wrong 32-bit or 64-bit class for its package path.
-- Every payload file this package installs has the same SHA-256 as its entry in `MAKO-Renderer-install-manifest.txt`. The recipe verifies the complete archive manifest, packages every supported entry instead of maintaining a second payload allowlist, and fails on unsafe or unsupported paths. The manifest is installed unchanged at `/usr/share/doc/mako-renderer-bin/MAKO-Renderer-install-manifest.txt` so the claim can be re-checked. The only manifest entries without a matching installed file are `bin/mako-installer` and desktop entries, both excluded by design.
-- A Vulkan loader run with `VK_IMPLICIT_LAYER_PATH` pointed at each packaged manifest directory discovers and activates `VK_LAYER_MAKO_render` and `VK_LAYER_MAKO_spatial_scaling` for the public set, and the matching layer for each private directory, with the relative `library_path` values resolving to `/usr/lib` and `/usr/lib32`.
-- `bash -n PKGBUILD`, `sh -n mako-renderer-bin.install`, and `./check-release-pin.sh` all pass.
+- Every payload file this package installs has the same SHA-256 as its entry in `framegen-vulkan-install-manifest.txt`. The recipe verifies the complete archive manifest, packages every supported entry instead of maintaining a second payload allowlist, and fails on unsafe or unsupported paths. The manifest is installed unchanged at `/usr/share/doc/framegen-vulkan-bin/framegen-vulkan-install-manifest.txt` so the claim can be re-checked. The only manifest entries without a matching installed file are `bin/fgvk-installer` and desktop entries, both excluded by design.
+- A Vulkan loader run with `VK_IMPLICIT_LAYER_PATH` pointed at each packaged manifest directory discovers and activates `VK_LAYER_FGVK_render` and `VK_LAYER_FGVK_spatial_scaling` for the public set, and the matching layer for each private directory, with the relative `library_path` values resolving to `/usr/lib` and `/usr/lib32`.
+- `bash -n PKGBUILD`, `sh -n framegen-vulkan-bin.install`, and `./check-release-pin.sh` all pass.

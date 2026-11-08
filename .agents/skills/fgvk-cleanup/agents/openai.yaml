@@ -1,0 +1,4 @@
+interface:
+  display_name: "framegen-vulkan cleanup"
+  short_description: "Review framegen-vulkan disk use and clean after confirmation"
+  default_prompt: "Use $fgvk-cleanup to report reclaimable framegen-vulkan storage, preserve build caches and tooling, and ask me before deleting anything."

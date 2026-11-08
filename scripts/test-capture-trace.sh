@@ -67,9 +67,9 @@ set_validator pass
 diagnostics="$temporary/present-diagnostics.log"
 config="$temporary/conf.toml"
 cat >"$diagnostics" <<'EOF'
-MAKO Renderer: render layer active; build=2.1.0
-MAKO Renderer: backend GPU selection: following game device=Example GPU (0x1002:0x0001)
-MAKO Renderer: presentation refresh_hz=90
+framegen-vulkan: render layer active; build=2.1.0
+framegen-vulkan: backend GPU selection: following game device=Example GPU (0x1002:0x0001)
+framegen-vulkan: presentation refresh_hz=90
 {"password": "secret-value"}
 {"cookie": "secret-cookie-value"}
 Authorization: Bearer secret-header-value
@@ -90,7 +90,7 @@ invoke_capture() {
     --session-end "2026-08-21T13:01:00+01:00" \
     --diagnostics "$diagnostics" \
     --config "$config" \
-    --mako-repo "$repo_root" \
+    --fgvk-repo "$repo_root" \
     --trace-repo "$trace_repo" \
     "$@"
 }
@@ -158,7 +158,7 @@ home_boundary_destination=$(
     --game 'Home Boundary' \
     --version '2.1.0-dev-home-boundary' \
     --diagnostics "$home_boundary_diagnostics" \
-    --mako-repo "$safe_source_repo"
+    --fgvk-repo "$safe_source_repo"
 )
 grep -Fx 'home_exact=$HOME' "$home_boundary_destination/present-diagnostics.log" >/dev/null
 grep -Fx 'home_descendant=$HOME/Documents/session.log' "$home_boundary_destination/present-diagnostics.log" >/dev/null
@@ -175,7 +175,7 @@ if (
     --game 'Home Collision' \
     --version '2.1.0-dev-home-collision' \
     --diagnostics "$home_collision_diagnostics" \
-    --mako-repo "$safe_source_repo"
+    --fgvk-repo "$safe_source_repo"
 ) >"$home_collision_stdout" 2>"$home_collision_stderr"; then
   printf 'Expected a sibling HOME-prefix path to remain intact and fail privacy validation\n' >&2
   exit 1
@@ -198,7 +198,7 @@ if (
   invoke_capture \
     --game 'Source Boundary' \
     --version '2.1.0-dev-source-boundary' \
-    --mako-repo "$synthetic_source_sibling"
+    --fgvk-repo "$synthetic_source_sibling"
 ) >"$source_boundary_stdout" 2>"$source_boundary_stderr"; then
   printf 'Expected a sibling HOME-prefix source path to remain intact and fail privacy validation\n' >&2
   exit 1
@@ -297,7 +297,7 @@ grep -F 'archive_authorization=maintainer-private-diagnostic-use' "$destination/
 for heading in '## Test conditions' '## Route and mode sequence' '## Tester observations' '## Evidence summary'; do
   grep -F "$heading" "$destination/notes.md" >/dev/null
 done
-for field in 'Renderer-reported build:' 'Source:' 'Runtime:' 'GPU/display:' 'Game settings:' 'MAKO profile:'; do
+for field in 'Renderer-reported build:' 'Source:' 'Runtime:' 'GPU/display:' 'Game settings:' 'framegen-vulkan profile:'; do
   grep -F "$field" "$destination/notes.md" >/dev/null
 done
 
@@ -455,7 +455,7 @@ for signum in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
             str(diagnostics),
             "--config",
             str(config),
-            "--mako-repo",
+            "--fgvk-repo",
             str(repo_root),
             "--trace-repo",
             str(trace_repo),
@@ -507,4 +507,4 @@ for signum in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
         marker.unlink(missing_ok=True)
 PY
 
-printf 'MAKO trace producer contract tests passed.\n'
+printf 'framegen-vulkan trace producer contract tests passed.\n'

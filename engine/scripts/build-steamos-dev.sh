@@ -3,14 +3,14 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-build_cache_root="${MAKO_BUILD_CACHE_ROOT:-$repo_root/build/cache}"
+build_cache_root="${FGVK_BUILD_CACHE_ROOT:-$repo_root/build/cache}"
 if [[ "$build_cache_root" != /* ]]; then
     build_cache_root="$repo_root/$build_cache_root"
 fi
-build_dir="${MAKO_BUILD_DIR:-$repo_root/build/steamos-dev}"
-build_32_dir="${MAKO_BUILD_32_DIR:-}"
+build_dir="${FGVK_BUILD_DIR:-$repo_root/build/steamos-dev}"
+build_32_dir="${FGVK_BUILD_32_DIR:-}"
 compiler="${CXX:-clang++}"
-jobs="${MAKO_BUILD_JOBS:-}"
+jobs="${FGVK_BUILD_JOBS:-}"
 build_64_bit=true
 build_32_bit=false
 experimental_lsfg_fp16=OFF
@@ -23,7 +23,7 @@ Incrementally builds host Vulkan layers needed for native Steam-game testing.
 The default builds the 64-bit layer and CLI. The build directories are retained
 between runs; this does not build Flatpak extensions, the general test suite, or
 archives. Real-hardware licensed-model validation is
-owned by the sibling MAKO Gym repository. Set CXX to choose a compiler. ccache
+owned by the sibling fgvk Gym repository. Set CXX to choose a compiler. ccache
 is used automatically when present. The shared Vulkan-Headers revision is
 cached under build/cache and checked against the package presentation baseline.
 
@@ -36,9 +36,9 @@ Options:
   --experimental-lsfg-fp16  Build the unqualified FP32-to-FP16 LSFG fallback.
                             Uses the existing FP16 setting; adds no user toggle.
 Environment:
-  MAKO_BUILD_DIR     Persistent CMake build directory (default: build/steamos-dev)
-  MAKO_BUILD_32_DIR  Persistent 32-bit build directory (default: build/steamos-dev-32)
-  MAKO_BUILD_JOBS    Parallel compile jobs (default: available CPUs)
+  FGVK_BUILD_DIR     Persistent CMake build directory (default: build/steamos-dev)
+  FGVK_BUILD_32_DIR  Persistent 32-bit build directory (default: build/steamos-dev-32)
+  FGVK_BUILD_JOBS    Parallel compile jobs (default: available CPUs)
   CXX                C++ compiler (default: clang++)
 EOF
 }
@@ -182,8 +182,8 @@ lsfg_fp16_tools_source=""
 if [[ "$experimental_lsfg_fp16" == ON ]]; then
     lsfg_fp16_tools_source="$("$repo_root/scripts/prepare-lsfg-fp16-tools.sh")"
     # Source archives lack .git; prevent the optimizer's version generator
-    # from reporting this enclosing MAKO repository's commit as its own.
-    read -r optimizer_project optimizer_commit < "$lsfg_fp16_tools_source/.mako-source-pin"
+    # from reporting this enclosing framegen-vulkan repository's commit as its own.
+    read -r optimizer_project optimizer_commit < "$lsfg_fp16_tools_source/.fgvk-source-pin"
     export FORCED_BUILD_VERSION_DESCRIPTION="$optimizer_commit"
     echo "Experimental LSFG FP16 conversion enabled; image quality is unqualified."
 fi
@@ -202,11 +202,11 @@ build_layer() {
     shift 2
     local build_cli=OFF
     local install_libdir=lib
-    local build_targets=(mako-render mako-render-scaling)
+    local build_targets=(fgvk-render fgvk-render-scaling)
 
     if [[ "$architecture" == "64-bit" ]]; then
         build_cli=ON
-        build_targets+=(mako-cli mako-remote-play-sdr)
+        build_targets+=(fgvk-cli fgvk-remote-play-sdr)
     else
         install_libdir=lib32
     fi
@@ -219,14 +219,14 @@ build_layer() {
         -DCMAKE_CXX_COMPILER_LAUNCHER="$compiler_launcher" \
         -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
         -DBUILD_TESTING=OFF \
-        -DMAKO_REQUIRE_NATIVE_PACKAGE_HEADERS=ON \
-        -DMAKO_VULKAN_HEADERS_INCLUDE_DIR="$vulkan_headers_include_dir" \
-        -DMAKO_BUILD_VK_LAYER=ON \
-        -DMAKO_BUILD_CLI="$build_cli" \
-        -DMAKO_EXPERIMENTAL_LSFG_FP16="$experimental_lsfg_fp16" \
-        -DMAKO_LSFG_FP16_TOOLS_SOURCE="$lsfg_fp16_tools_source" \
-        -DMAKO_LAYER_LIBRARY_PATH="../$install_libdir/libmako-render.so" \
-        -DMAKO_SCALING_LAYER_LIBRARY_PATH="../$install_libdir/libmako-render-scaling.so" \
+        -DFGVK_REQUIRE_NATIVE_PACKAGE_HEADERS=ON \
+        -DFGVK_VULKAN_HEADERS_INCLUDE_DIR="$vulkan_headers_include_dir" \
+        -DFGVK_BUILD_VK_LAYER=ON \
+        -DFGVK_BUILD_CLI="$build_cli" \
+        -DFGVK_EXPERIMENTAL_LSFG_FP16="$experimental_lsfg_fp16" \
+        -DFGVK_LSFG_FP16_TOOLS_SOURCE="$lsfg_fp16_tools_source" \
+        -DFGVK_LAYER_LIBRARY_PATH="../$install_libdir/libfgvk-render.so" \
+        -DFGVK_SCALING_LAYER_LIBRARY_PATH="../$install_libdir/libfgvk-render-scaling.so" \
         "$@"
 
     if [[ "$experimental_lsfg_fp16" == ON ]]; then
@@ -234,13 +234,13 @@ build_layer() {
         # Ninja cache retained a version generated before the pin was supplied.
         python3 "$lsfg_fp16_tools_source/utils/update_build_version.py" \
             "$lsfg_fp16_tools_source/CHANGES" \
-            "$target_build_dir/mako-backend/spirv-tools/build-version.inc"
+            "$target_build_dir/fgvk-backend/spirv-tools/build-version.inc"
     fi
 
     cmake --build "$target_build_dir" --parallel "$jobs" --target "${build_targets[@]}"
 
-    local layer_path="$target_build_dir/mako-render/libmako-render.so"
-    local scaling_layer_path="$target_build_dir/mako-render/libmako-render-scaling.so"
+    local layer_path="$target_build_dir/fgvk-render/libfgvk-render.so"
+    local scaling_layer_path="$target_build_dir/fgvk-render/libfgvk-render-scaling.so"
     if [[ ! -f "$layer_path" ]]; then
         echo "Expected $architecture layer output is missing: $layer_path" >&2
         exit 1
@@ -262,5 +262,5 @@ if [[ "$build_32_bit" == true ]]; then
         -DCMAKE_C_FLAGS=-m32 \
         -DCMAKE_SHARED_LINKER_FLAGS=-m32 \
         -DCMAKE_INSTALL_LIBDIR=lib32 \
-        -DMAKO_LAYER_MANIFEST_SUFFIX=.x86
+        -DFGVK_LAYER_MANIFEST_SUFFIX=.x86
 fi

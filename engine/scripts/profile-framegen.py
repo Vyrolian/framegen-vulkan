@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Local, Nsight-free comparison capture for MAKO and NVIDIA Smooth Motion."""
+"""Local, Nsight-free comparison capture for framegen-vulkan and NVIDIA Smooth Motion."""
 
 import argparse
 import csv
@@ -166,9 +166,9 @@ def write_json(path, value):
 def environment(original, mode, folder, warmup, duration, interval, control=None):
     """Only the launched child receives mode/logging overrides."""
     env = original.copy()
-    for key in ("MAKO_PACING_PROFILE", "MAKO_PACING_PROFILE_GPU",
-                "MAKO_PACING_PROFILE_TRACE", "MAKO_PACING_PROFILE_CONTENT",
-                "MAKO_PACING_PROFILE_WAYLAND"):
+    for key in ("FGVK_PACING_PROFILE", "FGVK_PACING_PROFILE_GPU",
+                "FGVK_PACING_PROFILE_TRACE", "FGVK_PACING_PROFILE_CONTENT",
+                "FGVK_PACING_PROFILE_WAYLAND"):
         env[key] = "0"
     env["NVPRESENT_ENABLE_SMOOTH_MOTION"] = "1" if mode == "smooth-motion" else "0"
     if mode == "smooth-motion":
@@ -176,16 +176,16 @@ def environment(original, mode, folder, warmup, duration, interval, control=None
     else:
         # NVIDIA's disable gate tests presence, not the string's numeric value.
         env["DISABLE_LAYER_NV_PRESENT_1"] = "1"
-    env["DISABLE_MAKO"] = "0" if mode == "mako" else "1"
-    if mode == "mako":
-        env["ENABLE_MAKO"] = "1"
+    env["DISABLE_FGVK"] = "0" if mode == "fgvk" else "1"
+    if mode == "fgvk":
+        env["ENABLE_FGVK"] = "1"
     else:
-        env.pop("ENABLE_MAKO", None)
-        env.pop("ENABLE_MAKO_SPATIAL_SCALING", None)
-        env["DISABLE_MAKO_SPATIAL_SCALING"] = "1"
+        env.pop("ENABLE_FGVK", None)
+        env.pop("ENABLE_FGVK_SPATIAL_SCALING", None)
+        env["DISABLE_FGVK_SPATIAL_SCALING"] = "1"
         layers = env.get("VK_INSTANCE_LAYERS", "").split(":")
         layers = [name for name in layers if name and name not in
-                  ("VK_LAYER_MAKO_render", "VK_LAYER_MAKO_spatial_scaling")]
+                  ("VK_LAYER_FGVK_render", "VK_LAYER_FGVK_spatial_scaling")]
         if layers:
             env["VK_INSTANCE_LAYERS"] = ":".join(layers)
         else:
@@ -311,7 +311,7 @@ class RecordingButtons:
     def __init__(self, control):
         import tkinter as tk
         self.root = tk.Tk()
-        self.root.title("MAKO recording")
+        self.root.title("framegen-vulkan recording")
         self.control = control
         self.status = tk.StringVar(value=control.message)
         tk.Label(self.root, textvariable=self.status, padx=18, pady=14).pack()
@@ -480,12 +480,12 @@ def save_report(folder, metadata):
 
 
 def capture(args):
-    if args.mode != "mako" and any(Path(word).name == "mako-launch" for word in args.command):
+    if args.mode != "fgvk" and any(Path(word).name == "fgvk-launch" for word in args.command):
         raise ValueError("baseline/Smooth Motion need the game command with MangoHud directly; "
-                         "MAKO launchers isolate layers and can suppress MangoHud/NVIDIA Smooth Motion")
+                         "framegen-vulkan launchers isolate layers and can suppress MangoHud/NVIDIA Smooth Motion")
     if args.mode == "smooth-motion" and os.environ.get("VK_IMPLICIT_LAYER_PATH"):
         raise ValueError("VK_IMPLICIT_LAYER_PATH overrides system layer discovery; launch this capture "
-                         "outside the MAKO launcher so NVIDIA Smooth Motion remains discoverable")
+                         "outside the framegen-vulkan launcher so NVIDIA Smooth Motion remains discoverable")
     folder = args.output.expanduser().absolute()
     if any(character in str(folder) for character in (",", "\n", "\r", ":")):
         raise ValueError("output path cannot contain MangoHud option separators")
@@ -506,7 +506,7 @@ def capture(args):
                     gpu=None, telemetry_status="not started", capture_elapsed_seconds=None,
                     child_exit_code=None, sampler_exit_code=None, manual=args.manual,
                     stop_confirmed=False, recorded_csv=None)
-    control = RecordingControl(folder / "mangohud", f"mako-fg-{os.getpid()}-{time.monotonic_ns()}") if args.manual else None
+    control = RecordingControl(folder / "mangohud", f"fgvk-fg-{os.getpid()}-{time.monotonic_ns()}") if args.manual else None
     env = environment(os.environ, args.mode, folder / "mangohud", args.warmup,
                       args.duration, args.frame_log_interval, control.name if control else None)
     started = time.monotonic()
@@ -520,10 +520,10 @@ def capture(args):
         try:
             buttons = RecordingButtons(control)
         except Exception as error:
-            print(f"MAKO Renderer: recording window unavailable ({error}); use Left Shift + F2 in game.", file=sys.stderr)
-    print(f"MAKO Renderer: comparison capture: {folder}", file=sys.stderr, flush=True)
-    print("MAKO Renderer: Left Shift + F2 starts/stops recording. No countdown." if control else
-          "MAKO Renderer: GPU sampling stops after warmup + duration; the game is not stopped.", file=sys.stderr)
+            print(f"framegen-vulkan: recording window unavailable ({error}); use Left Shift + F2 in game.", file=sys.stderr)
+    print(f"framegen-vulkan: comparison capture: {folder}", file=sys.stderr, flush=True)
+    print("framegen-vulkan: Left Shift + F2 starts/stops recording. No countdown." if control else
+          "framegen-vulkan: GPU sampling stops after warmup + duration; the game is not stopped.", file=sys.stderr)
     try:
         with (folder / "telemetry.jsonl").open("x") as raw, (folder / "sampler-errors.log").open("x") as errors:
             os.chmod(raw.name, 0o600)
@@ -573,7 +573,7 @@ def capture(args):
                     if buttons:
                         buttons.poll()
                     if control.message != previous_message:
-                        print(f"MAKO Renderer: {control.message}", file=sys.stderr, flush=True)
+                        print(f"framegen-vulkan: {control.message}", file=sys.stderr, flush=True)
                         previous_message = control.message
                     if control.stopped is not None:
                         break
@@ -643,8 +643,8 @@ def capture(args):
                 raw.flush()
                 save_report(folder, metadata)
                 report_saved = True
-            print("MAKO Renderer: recording report saved; game stays open." if control else
-                  "MAKO Renderer: GPU capture finished; exit the game to finalize its CSV/report.", file=sys.stderr, flush=True)
+            print("framegen-vulkan: recording report saved; game stays open." if control else
+                  "framegen-vulkan: GPU capture finished; exit the game to finalize its CSV/report.", file=sys.stderr, flush=True)
             metadata["child_exit_code"] = child.wait()
     finally:
         if control:
@@ -734,7 +734,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="action", required=True)
     record = commands.add_parser("capture", help="prefix your existing game launch command")
-    record.add_argument("--mode", choices=("baseline", "mako", "smooth-motion"), required=True)
+    record.add_argument("--mode", choices=("baseline", "fgvk", "smooth-motion"), required=True)
     record.add_argument("--output", type=Path, required=True, help="private output directory; --manual adds a new session beneath it")
     record.add_argument("--manual", action="store_true", help="Left Shift + F2 starts/stops recording; no countdown")
     record.add_argument("--buttons", action="store_true", help="also show a Start/Stop window (requires --manual and tkinter)")
@@ -766,7 +766,7 @@ def main():
             parser.error("warmup/duration: 1–600 s; GPU interval: 100–5000 ms; frame interval: 0–1000 ms")
         return capture(args)
     except (OSError, ValueError, KeyError) as error:
-        print(f"MAKO Renderer: comparison profiler: {error}", file=sys.stderr)
+        print(f"framegen-vulkan: comparison profiler: {error}", file=sys.stderr)
         return 2
 
 

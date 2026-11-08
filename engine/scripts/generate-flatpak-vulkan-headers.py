@@ -20,12 +20,12 @@ def module_text(revision: str) -> str:
         "tag" if revision.startswith("v") and not revision.startswith("vulkan-sdk-") else "branch": revision,
     }
     module = {
-        "name": "mako-vulkan-headers",
+        "name": "fgvk-vulkan-headers",
         "buildsystem": "simple",
         "build-commands": [
             'install -d "${FLATPAK_DEST}/include"',
             'cp -a include/vulkan include/vk_video "${FLATPAK_DEST}/include/"',
-            f'printf "MAKO Renderer: Vulkan-Headers revision={revision} commit=%s\\n" "$(git rev-parse HEAD)"',
+            f'printf "framegen-vulkan: Vulkan-Headers revision={revision} commit=%s\\n" "$(git rev-parse HEAD)"',
         ],
         "cleanup": ["/include/vulkan", "/include/vk_video"],
         "sources": [source],
@@ -37,7 +37,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check", action="store_true", help="Check freshness without writing files")
     parser.add_argument("--revision-file", type=Path, default=ENGINE_ROOT / "vulkan-headers-revision.txt")
-    parser.add_argument("--output", type=Path, default=ENGINE_ROOT / "dist/flatpak/mako-render/vulkan-headers.json")
+    parser.add_argument("--output", type=Path, default=ENGINE_ROOT / "dist/flatpak/fgvk-render/vulkan-headers.json")
     args = parser.parse_args()
     try:
         expected = module_text(args.revision_file.read_text(encoding="utf-8").strip())

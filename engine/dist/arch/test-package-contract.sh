@@ -3,7 +3,7 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$script_dir/../../.." && pwd)"
-work_dir="$(mktemp -d "${TMPDIR:-/tmp}/mako-arch-package-test.XXXXXX")"
+work_dir="$(mktemp -d "${TMPDIR:-/tmp}/fgvk-arch-package-test.XXXXXX")"
 cleanup() {
     rm -rf -- "$work_dir"
 }
@@ -30,7 +30,7 @@ PY
 "$script_dir/check-release-pin.sh" >/dev/null
 grep -Fq "'libx11'" "$script_dir/PKGBUILD"
 grep -Fq "'lib32-libx11'" "$script_dir/PKGBUILD"
-grep -Fq 'done < MAKO-Renderer-install-manifest.txt' "$script_dir/PKGBUILD"
+grep -Fq 'done < framegen-vulkan-install-manifest.txt' "$script_dir/PKGBUILD"
 grep -Fq 'pacman -Syu --noconfirm --needed fakeroot' \
     "$script_dir/verify-release-package.sh"
 grep -Fq 'command -v makepkg >/dev/null 2>&1 || ! command -v fakeroot' \
@@ -46,8 +46,8 @@ cat > "$fake_tools/makepkg" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 [[ "$*" == "--nodeps --cleanbuild --noconfirm" ]]
-[[ -f "MAKO-Renderer-v${MAKO_TEST_PKGVER}-linux.tar.xz" ]]
-package_root="$(mktemp -d "${TMPDIR:-/tmp}/mako-arch-fake-package.XXXXXX")"
+[[ -f "framegen-vulkan-v${FGVK_TEST_PKGVER}-linux.tar.xz" ]]
+package_root="$(mktemp -d "${TMPDIR:-/tmp}/fgvk-arch-fake-package.XXXXXX")"
 trap 'rm -rf -- "$package_root"' EXIT
 mkdir -p \
     "$package_root/usr/bin" \
@@ -55,50 +55,50 @@ mkdir -p \
     "$package_root/usr/lib/vkbasalt" \
     "$package_root/usr/lib32" \
     "$package_root/usr/lib32/vkbasalt" \
-    "$package_root/usr/share/mako-render/mako_remote_play" \
-    "$package_root/usr/share/doc/mako-renderer-bin"
+    "$package_root/usr/share/framegen-vulkan/fgvk_remote_play" \
+    "$package_root/usr/share/doc/framegen-vulkan-bin"
 touch \
-    "$package_root/usr/bin/mako-cli" \
-    "$package_root/usr/bin/mako-diagnostics" \
-    "$package_root/usr/bin/mako-launch" \
-    "$package_root/usr/lib/libmako-render.so" \
-    "$package_root/usr/lib/libmako-render-scaling.so" \
+    "$package_root/usr/bin/fgvk-cli" \
+    "$package_root/usr/bin/fgvk-diagnostics" \
+    "$package_root/usr/bin/fgvk-launch" \
+    "$package_root/usr/lib/libfgvk-render.so" \
+    "$package_root/usr/lib/libfgvk-render-scaling.so" \
     "$package_root/usr/lib/vkbasalt/libvkbasalt.so" \
-    "$package_root/usr/lib32/libmako-render.so" \
-    "$package_root/usr/lib32/libmako-render-scaling.so" \
+    "$package_root/usr/lib32/libfgvk-render.so" \
+    "$package_root/usr/lib32/libfgvk-render-scaling.so" \
     "$package_root/usr/lib32/vkbasalt/libvkbasalt.so"
 for binary_path in \
-    usr/bin/mako-cli \
-    usr/lib/libmako-render.so \
-    usr/lib/libmako-render-scaling.so \
+    usr/bin/fgvk-cli \
+    usr/lib/libfgvk-render.so \
+    usr/lib/libfgvk-render-scaling.so \
     usr/lib/vkbasalt/libvkbasalt.so \
-    usr/lib32/libmako-render.so \
-    usr/lib32/libmako-render-scaling.so \
+    usr/lib32/libfgvk-render.so \
+    usr/lib32/libfgvk-render-scaling.so \
     usr/lib32/vkbasalt/libvkbasalt.so \
-    usr/share/mako-render/mako_remote_play/libmako-remote-play-sdr.so; do
+    usr/share/framegen-vulkan/fgvk_remote_play/libfgvk-remote-play-sdr.so; do
     printf '\177ELF' > "$package_root/$binary_path"
 done
-if [[ "${MAKO_TEST_ADD_NEW_ELF:-0}" == 1 ]]; then
+if [[ "${FGVK_TEST_ADD_NEW_ELF:-0}" == 1 ]]; then
     printf '\177ELF' > "$package_root/usr/lib/libfuture.so"
 fi
-if [[ "${MAKO_TEST_ADD_UNREVIEWED_SHARED_ELF:-0}" == 1 ]]; then
-    printf '\177ELF' > "$package_root/usr/share/mako-render/mako_remote_play/libfuture.so"
+if [[ "${FGVK_TEST_ADD_UNREVIEWED_SHARED_ELF:-0}" == 1 ]]; then
+    printf '\177ELF' > "$package_root/usr/share/framegen-vulkan/fgvk_remote_play/libfuture.so"
 fi
 printf '%s\n' install-script > "$package_root/.INSTALL"
 printf '%s\n' \
-    'pkgname = mako-renderer-bin' \
-    "pkgver = ${MAKO_TEST_PACKAGE_VERSION_OVERRIDE:-${MAKO_TEST_PKGVER}-${MAKO_TEST_PKGREL}}" \
+    'pkgname = framegen-vulkan-bin' \
+    "pkgver = ${FGVK_TEST_PACKAGE_VERSION_OVERRIDE:-${FGVK_TEST_PKGVER}-${FGVK_TEST_PKGREL}}" \
     'arch = x86_64' \
     'depend = glibc' \
     'depend = gcc-libs' \
     'depend = lib32-gcc-libs' \
     > "$package_root/.PKGINFO"
-if [[ "${MAKO_TEST_OMIT_LIB32_GLIBC:-0}" != 1 ]]; then
+if [[ "${FGVK_TEST_OMIT_LIB32_GLIBC:-0}" != 1 ]]; then
     printf '%s\n' 'depend = lib32-glibc' >> "$package_root/.PKGINFO"
 fi
-printf '%s\n' "${MAKO_TEST_RENDERER_VERSION_OVERRIDE:-$MAKO_TEST_PKGVER}" \
-    > "$package_root/usr/share/doc/mako-renderer-bin/MAKO-Renderer-version.txt"
-tar -cf "mako-renderer-bin-${MAKO_TEST_PKGVER}-${MAKO_TEST_PKGREL}-x86_64.pkg.tar.zst" \
+printf '%s\n' "${FGVK_TEST_RENDERER_VERSION_OVERRIDE:-$FGVK_TEST_PKGVER}" \
+    > "$package_root/usr/share/doc/framegen-vulkan-bin/framegen-vulkan-version.txt"
+tar -cf "framegen-vulkan-bin-${FGVK_TEST_PKGVER}-${FGVK_TEST_PKGREL}-x86_64.pkg.tar.zst" \
     -C "$package_root" .INSTALL .PKGINFO usr
 EOF
 cat > "$fake_tools/bsdtar" <<'EOF'
@@ -110,8 +110,8 @@ cat > "$fake_tools/readelf" <<'EOF'
 set -eu
 case "$1" in
     -h)
-        if [ "${MAKO_TEST_WRONG_HELPER_CLASS:-0}" = 1 ] &&
-                [ "${2##*/}" = libmako-remote-play-sdr.so ]; then
+        if [ "${FGVK_TEST_WRONG_HELPER_CLASS:-0}" = 1 ] &&
+                [ "${2##*/}" = libfgvk-remote-play-sdr.so ]; then
             printf '  Class:                             ELF32\n'
             exit 0
         fi
@@ -125,13 +125,13 @@ case "$1" in
             */lib32/*) printf ' 0x00000001 (NEEDED)             Shared library: [libgcc_s.so.1]\n' ;;
             *) printf ' 0x00000001 (NEEDED)             Shared library: [libstdc++.so.6]\n' ;;
         esac
-        if [ -n "${MAKO_TEST_EXTRA_NEEDED:-}" ]; then
-            printf ' 0x00000001 (NEEDED)             Shared library: [%s]\n' "$MAKO_TEST_EXTRA_NEEDED"
+        if [ -n "${FGVK_TEST_EXTRA_NEEDED:-}" ]; then
+            printf ' 0x00000001 (NEEDED)             Shared library: [%s]\n' "$FGVK_TEST_EXTRA_NEEDED"
         fi
         case "$2" in
             */libfuture.so) printf ' 0x00000001 (NEEDED)             Shared library: [libunexpected.so.1]\n' ;;
-            */bin/mako-cli)
-                if [ "${MAKO_TEST_TOOLKIT_NEEDED:-0}" = 1 ]; then
+            */bin/fgvk-cli)
+                if [ "${FGVK_TEST_TOOLKIT_NEEDED:-0}" = 1 ]; then
                     printf ' 0x00000001 (NEEDED)             Shared library: [libsimulated-toolkit.so.1]\n'
                 fi ;;
         esac ;;
@@ -145,46 +145,46 @@ EOF
 chmod +x "$fake_tools/makepkg" "$fake_tools/bsdtar" "$fake_tools/readelf" "$fake_tools/fakeroot"
 current_pkgver="$(sed -n 's/^pkgver=\(.*\)$/\1/p' "$script_dir/PKGBUILD")"
 current_pkgrel="$(sed -n 's/^pkgrel=\(.*\)$/\1/p' "$script_dir/PKGBUILD")"
-fake_archive="$work_dir/MAKO-Renderer-v${current_pkgver}-linux.tar.xz"
+fake_archive="$work_dir/framegen-vulkan-v${current_pkgver}-linux.tar.xz"
 touch "$fake_archive"
-retained_package="$work_dir/mako-renderer-bin-${current_pkgver}-${current_pkgrel}-x86_64.pkg.tar.zst"
-MAKO_TEST_PKGVER="$current_pkgver" \
-    MAKO_TEST_PKGREL="$current_pkgrel" \
+retained_package="$work_dir/framegen-vulkan-bin-${current_pkgver}-${current_pkgrel}-x86_64.pkg.tar.zst"
+FGVK_TEST_PKGVER="$current_pkgver" \
+    FGVK_TEST_PKGREL="$current_pkgrel" \
     PATH="$fake_tools:/usr/bin:/bin" \
     "$script_dir/verify-release-package.sh" \
         "$fake_archive" "$retained_package" >/dev/null
 [[ -f "$retained_package" ]]
-tar -tf "$retained_package" | grep -Fqx usr/bin/mako-launch
-if MAKO_TEST_PKGVER="$current_pkgver" \
-        MAKO_TEST_PKGREL="$current_pkgrel" \
-        MAKO_TEST_TOOLKIT_NEEDED=1 \
+tar -tf "$retained_package" | grep -Fqx usr/bin/fgvk-launch
+if FGVK_TEST_PKGVER="$current_pkgver" \
+        FGVK_TEST_PKGREL="$current_pkgrel" \
+        FGVK_TEST_TOOLKIT_NEEDED=1 \
         PATH="$fake_tools:/usr/bin:/bin" \
         "$script_dir/verify-release-package.sh" "$fake_archive" \
         >/dev/null 2>&1; then
     echo "Arch release package accepted an unreviewed toolkit dependency" >&2
     exit 1
 fi
-if MAKO_TEST_PKGVER="$current_pkgver" \
-        MAKO_TEST_PKGREL="$current_pkgrel" \
-        MAKO_TEST_EXTRA_NEEDED=libunexpected.so.1 \
+if FGVK_TEST_PKGVER="$current_pkgver" \
+        FGVK_TEST_PKGREL="$current_pkgrel" \
+        FGVK_TEST_EXTRA_NEEDED=libunexpected.so.1 \
         PATH="$fake_tools:/usr/bin:/bin" \
         "$script_dir/verify-release-package.sh" "$fake_archive" \
         >/dev/null 2>&1; then
     echo "Arch release package accepted an unreviewed ELF dependency" >&2
     exit 1
 fi
-if MAKO_TEST_PKGVER="$current_pkgver" \
-        MAKO_TEST_PKGREL="$current_pkgrel" \
-        MAKO_TEST_ADD_NEW_ELF=1 \
+if FGVK_TEST_PKGVER="$current_pkgver" \
+        FGVK_TEST_PKGREL="$current_pkgrel" \
+        FGVK_TEST_ADD_NEW_ELF=1 \
         PATH="$fake_tools:/usr/bin:/bin" \
         "$script_dir/verify-release-package.sh" "$fake_archive" \
         >/dev/null 2>&1; then
     echo "Arch release package skipped an added ELF file" >&2
     exit 1
 fi
-for rejected_case in MAKO_TEST_ADD_UNREVIEWED_SHARED_ELF MAKO_TEST_WRONG_HELPER_CLASS; do
-    if env MAKO_TEST_PKGVER="$current_pkgver" \
-            MAKO_TEST_PKGREL="$current_pkgrel" \
+for rejected_case in FGVK_TEST_ADD_UNREVIEWED_SHARED_ELF FGVK_TEST_WRONG_HELPER_CLASS; do
+    if env FGVK_TEST_PKGVER="$current_pkgver" \
+            FGVK_TEST_PKGREL="$current_pkgrel" \
             "$rejected_case=1" PATH="$fake_tools:/usr/bin:/bin" \
             "$script_dir/verify-release-package.sh" "$fake_archive" \
             >/dev/null 2>&1; then
@@ -192,17 +192,17 @@ for rejected_case in MAKO_TEST_ADD_UNREVIEWED_SHARED_ELF MAKO_TEST_WRONG_HELPER_
         exit 1
     fi
 done
-if MAKO_TEST_PKGVER="$current_pkgver" \
-        MAKO_TEST_PKGREL="$current_pkgrel" \
-        MAKO_TEST_OMIT_LIB32_GLIBC=1 \
+if FGVK_TEST_PKGVER="$current_pkgver" \
+        FGVK_TEST_PKGREL="$current_pkgrel" \
+        FGVK_TEST_OMIT_LIB32_GLIBC=1 \
         PATH="$fake_tools:/usr/bin:/bin" \
         "$script_dir/verify-release-package.sh" "$fake_archive" \
         >/dev/null 2>&1; then
     echo "Arch release package accepted a missing declared dependency" >&2
     exit 1
 fi
-if MAKO_TEST_PKGVER="$current_pkgver" \
-        MAKO_TEST_PKGREL="$current_pkgrel" \
+if FGVK_TEST_PKGVER="$current_pkgver" \
+        FGVK_TEST_PKGREL="$current_pkgrel" \
         PATH="$fake_tools:/usr/bin:/bin" \
         "$script_dir/verify-release-package.sh" \
         "$fake_archive" "$work_dir/wrong-package-name.pkg.tar.zst" \
@@ -210,18 +210,18 @@ if MAKO_TEST_PKGVER="$current_pkgver" \
     echo "Arch release package verification accepted the wrong output name" >&2
     exit 1
 fi
-if MAKO_TEST_PKGVER="$current_pkgver" \
-        MAKO_TEST_PKGREL="$current_pkgrel" \
-        MAKO_TEST_PACKAGE_VERSION_OVERRIDE="${current_pkgver}-99" \
+if FGVK_TEST_PKGVER="$current_pkgver" \
+        FGVK_TEST_PKGREL="$current_pkgrel" \
+        FGVK_TEST_PACKAGE_VERSION_OVERRIDE="${current_pkgver}-99" \
         PATH="$fake_tools:/usr/bin:/bin" \
         "$script_dir/verify-release-package.sh" "$fake_archive" \
         >/dev/null 2>&1; then
     echo "Arch release package verification accepted a stale internal package version" >&2
     exit 1
 fi
-if MAKO_TEST_PKGVER="$current_pkgver" \
-        MAKO_TEST_PKGREL="$current_pkgrel" \
-        MAKO_TEST_RENDERER_VERSION_OVERRIDE=0.0.0 \
+if FGVK_TEST_PKGVER="$current_pkgver" \
+        FGVK_TEST_PKGREL="$current_pkgrel" \
+        FGVK_TEST_RENDERER_VERSION_OVERRIDE=0.0.0 \
         PATH="$fake_tools:/usr/bin:/bin" \
         "$script_dir/verify-release-package.sh" "$fake_archive" \
         >/dev/null 2>&1; then
@@ -243,30 +243,30 @@ mkdir -p \
     "$mapping_root/lib/vkbasalt" \
     "$mapping_root/lib32/vkbasalt" \
     "$mapping_root/share/applications" \
-    "$mapping_root/share/doc/mako-render/vkbasalt" \
-    "$mapping_root/share/mako-render/future"
+    "$mapping_root/share/doc/framegen-vulkan/vkbasalt" \
+    "$mapping_root/share/framegen-vulkan/future"
 printf '%s\n' tool > "$mapping_root/bin/future-tool"
-printf '%s\n' installer > "$mapping_root/bin/mako-installer"
+printf '%s\n' installer > "$mapping_root/bin/fgvk-installer"
 printf '%s\n' library > "$mapping_root/lib/vkbasalt/libvkbasalt.so"
 printf '%s\n' library32 > "$mapping_root/lib32/vkbasalt/libvkbasalt.so"
 printf '%s\n' entry > "$mapping_root/share/applications/legacy-entry"
-printf '%s\n' license > "$mapping_root/share/doc/mako-render/vkbasalt/LICENSE"
-printf '%s\n' provenance > "$mapping_root/share/doc/mako-render/vkbasalt/SOURCE"
-printf '%s\n' future > "$mapping_root/share/mako-render/future/payload.dat"
+printf '%s\n' license > "$mapping_root/share/doc/framegen-vulkan/vkbasalt/LICENSE"
+printf '%s\n' provenance > "$mapping_root/share/doc/framegen-vulkan/vkbasalt/SOURCE"
+printf '%s\n' future > "$mapping_root/share/framegen-vulkan/future/payload.dat"
 (
     # shellcheck disable=SC1091
     . "$script_dir/PKGBUILD"
     pkgdir="$mapping_pkgdir"
     cd "$mapping_root"
-    _mako_install_payload_file bin/future-tool
-    _mako_install_payload_file bin/mako-installer
-    _mako_install_payload_file lib/vkbasalt/libvkbasalt.so
-    _mako_install_payload_file lib32/vkbasalt/libvkbasalt.so
-    _mako_install_payload_file share/applications/legacy-entry
-    _mako_install_payload_file share/doc/mako-render/vkbasalt/LICENSE
-    _mako_install_payload_file share/doc/mako-render/vkbasalt/SOURCE
-    _mako_install_payload_file share/mako-render/future/payload.dat
-    if _mako_install_payload_file ../escape 2>/dev/null; then
+    _fgvk_install_payload_file bin/future-tool
+    _fgvk_install_payload_file bin/fgvk-installer
+    _fgvk_install_payload_file lib/vkbasalt/libvkbasalt.so
+    _fgvk_install_payload_file lib32/vkbasalt/libvkbasalt.so
+    _fgvk_install_payload_file share/applications/legacy-entry
+    _fgvk_install_payload_file share/doc/framegen-vulkan/vkbasalt/LICENSE
+    _fgvk_install_payload_file share/doc/framegen-vulkan/vkbasalt/SOURCE
+    _fgvk_install_payload_file share/framegen-vulkan/future/payload.dat
+    if _fgvk_install_payload_file ../escape 2>/dev/null; then
         echo "Arch package accepted an unsafe manifest path" >&2
         exit 1
     fi
@@ -274,20 +274,20 @@ printf '%s\n' future > "$mapping_root/share/mako-render/future/payload.dat"
 [[ -x "$mapping_pkgdir/usr/bin/future-tool" ]]
 [[ -x "$mapping_pkgdir/usr/lib/vkbasalt/libvkbasalt.so" ]]
 [[ -x "$mapping_pkgdir/usr/lib32/vkbasalt/libvkbasalt.so" ]]
-[[ -f "$mapping_pkgdir/usr/share/licenses/mako-renderer-bin/vkbasalt/LICENSE" ]]
-[[ -f "$mapping_pkgdir/usr/share/doc/mako-renderer-bin/vkbasalt/SOURCE" ]]
-[[ -f "$mapping_pkgdir/usr/share/mako-render/future/payload.dat" ]]
-[[ ! -e "$mapping_pkgdir/usr/bin/mako-installer" ]]
+[[ -f "$mapping_pkgdir/usr/share/licenses/framegen-vulkan-bin/vkbasalt/LICENSE" ]]
+[[ -f "$mapping_pkgdir/usr/share/doc/framegen-vulkan-bin/vkbasalt/SOURCE" ]]
+[[ -f "$mapping_pkgdir/usr/share/framegen-vulkan/future/payload.dat" ]]
+[[ ! -e "$mapping_pkgdir/usr/bin/fgvk-installer" ]]
 [[ ! -e "$mapping_pkgdir/usr/share/applications/legacy-entry" ]]
 
 standalone_marker_home="$work_dir/standalone-marker-home"
 mkdir -p "$standalone_marker_home/.local/lib"
 printf '%s\n' standalone > \
-    "$standalone_marker_home/.local/lib/libmako-render.so"
+    "$standalone_marker_home/.local/lib/libfgvk-render.so"
 (
     # shellcheck disable=SC1091
-    . "$script_dir/mako-renderer-bin.install"
-    [[ "$(mako_renderer_bin_user_local_owner "$standalone_marker_home")" == unknown ]]
+    . "$script_dir/framegen-vulkan-bin.install"
+    [[ "$(fgvk_renderer_bin_user_local_owner "$standalone_marker_home")" == unknown ]]
 )
 
 cp "$script_dir/PKGBUILD" "$work_dir/PKGBUILD"
@@ -354,9 +354,9 @@ if (Object.prototype.hasOwnProperty.call(binary, "arch_package")) process.exit(1
 ' "$work_dir/package.json"
 
 test_home="$work_dir/home with spaces"
-mkdir -p "$test_home/.local/share/mako-render"
+mkdir -p "$test_home/.local/share/framegen-vulkan"
 printf '%s\n' '{"owner":"\033[31mhostile"}' \
-    > "$test_home/.local/share/mako-render/active-renderer.json"
+    > "$test_home/.local/share/framegen-vulkan/active-renderer.json"
 tree_hash() {
     python3 - "$1" <<'PY'
 import hashlib
@@ -377,8 +377,8 @@ before_hash="$(tree_hash "$test_home")"
 hook_output="$work_dir/hooks.out"
 (
     # shellcheck disable=SC1091
-    . "$script_dir/mako-renderer-bin.install"
-    mako_renderer_bin_user_homes() {
+    . "$script_dir/framegen-vulkan-bin.install"
+    fgvk_renderer_bin_user_homes() {
         printf '%s\n' "$test_home"
     }
     pre_install
@@ -403,8 +403,8 @@ mkdir -p "$local_release_fixture/scripts" "$local_release_fixture/dist/arch"
 cp "$repo_root/engine/scripts/package-local-release.sh" \
     "$local_release_fixture/scripts/package-local-release.sh"
 cp "$script_dir/PKGBUILD" "$local_release_fixture/dist/arch/PKGBUILD"
-cp "$script_dir/mako-renderer-bin.install" \
-    "$local_release_fixture/dist/arch/mako-renderer-bin.install"
+cp "$script_dir/framegen-vulkan-bin.install" \
+    "$local_release_fixture/dist/arch/framegen-vulkan-bin.install"
 cp "$local_release_fixture/dist/arch/PKGBUILD" \
     "$work_dir/local-release-original-PKGBUILD"
 printf '%s\n' 9.8.7 > "$local_release_fixture/VERSION"
@@ -412,14 +412,14 @@ printf '%s\n' 9.8.7 > "$local_release_fixture/VERSION"
 cat > "$local_release_fixture/scripts/package-local.sh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-[[ "${MAKO_PORTABLE_PACKAGE:-0}" == "1" ]]
+[[ "${FGVK_PORTABLE_PACKAGE:-0}" == "1" ]]
 mkdir -p "$(dirname "$1")"
 printf '%s\n' local-host-archive > "$1"
 EOF
 cat > "$local_release_fixture/scripts/package-flatpaks.sh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-[[ "${MAKO_PORTABLE_PACKAGE:-0}" == "1" ]]
+[[ "${FGVK_PORTABLE_PACKAGE:-0}" == "1" ]]
 mkdir -p "$(dirname "$1")"
 printf '%s\n' local-flatpak-archive > "$1"
 EOF
@@ -429,8 +429,8 @@ set -euo pipefail
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 archive="$1"
 output="$2"
-[[ "$(basename "$archive")" == "MAKO-Renderer-v9.8.7-linux.tar.xz" ]]
-[[ "$(basename "$output")" == "mako-renderer-bin-9.8.7-1-x86_64.pkg.tar.zst" ]]
+[[ "$(basename "$archive")" == "framegen-vulkan-v9.8.7-linux.tar.xz" ]]
+[[ "$(basename "$output")" == "framegen-vulkan-bin-9.8.7-1-x86_64.pkg.tar.zst" ]]
 grep -Fqx 'pkgver=9.8.7' "$script_dir/PKGBUILD"
 grep -Fqx 'pkgrel=1' "$script_dir/PKGBUILD"
 checksum="$(sha256sum "$archive" | awk '{print $1}')"
@@ -445,9 +445,9 @@ chmod +x \
 
 "$local_release_fixture/scripts/package-local-release.sh" \
     "$local_release_output" >/dev/null
-[[ -f "$local_release_output/MAKO-Renderer-v9.8.7-linux.tar.xz" ]]
-[[ -f "$local_release_output/MAKO-Renderer-v9.8.7-flatpaks.tar.xz" ]]
-[[ -f "$local_release_output/mako-renderer-bin-9.8.7-1-x86_64.pkg.tar.zst" ]]
+[[ -f "$local_release_output/framegen-vulkan-v9.8.7-linux.tar.xz" ]]
+[[ -f "$local_release_output/framegen-vulkan-v9.8.7-flatpaks.tar.xz" ]]
+[[ -f "$local_release_output/framegen-vulkan-bin-9.8.7-1-x86_64.pkg.tar.zst" ]]
 [[ -f "$local_release_output/SHA256SUMS" ]]
 (
     cd "$local_release_output"

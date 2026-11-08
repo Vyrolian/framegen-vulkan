@@ -1,12 +1,12 @@
 name: Question
-description: Ask for clarification or advice about using MAKO.
+description: Ask for clarification or advice about using framegen-vulkan.
 title: "[Question]: "
 labels: [question]
 body:
   - type: markdown
     attributes:
       value: |
-        Ask anything about MAKO. Please include enough context for someone else to help.
+        Ask anything about framegen-vulkan. Please include enough context for someone else to help.
 
   - type: textarea
     id: question

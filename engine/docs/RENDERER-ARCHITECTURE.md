@@ -1,4 +1,4 @@
-# MAKO Renderer code map
+# framegen-vulkan code map
 
 This map identifies code owners and call boundaries. The behavior contracts remain in [Adaptive validation](ADAPTIVE-VALIDATION.md), [Runtime transitions](RUNTIME-TRANSITIONS.md), [Spatial scaling](SCALING.md), [WSI isolation](WSI-ISOLATION.md), and [Memory management](MEMORY-MANAGEMENT.md).
 
@@ -6,18 +6,18 @@ This map identifies code owners and call boundaries. The behavior contracts rema
 
 | Concern | Owner | Boundary |
 | --- | --- | --- |
-| Profile parsing and defaults | `mako-common/src/configuration/` | Converts saved settings into validated Renderer configuration. |
-| Process and Vulkan layer dispatch | `mako-render/src/entrypoint.cpp`, `instance.cpp` | Selects layer roles, devices, profiles, and application-owned Vulkan objects. |
-| Gamescope observations | `mako-render/src/gamescope_hdr_feedback.cpp` and `instance.cpp` | Samples compositor state; a feedback change cannot silently become a profile edit. |
-| Sustained runtime health | `mako-render/src/runtime_health.*`, registered by `instance.cpp` under the existing presentation-diagnostics flag | Samples bounded proc/sysfs fields and canonical atomic memory counters on a worker; no frame requests, Vulkan calls, or recovery transitions. |
-| Pacing capture | `mako-render/src/present_diagnostics.*`, observed by the existing entrypoint and swapchain presentation owners | Opt-in fixed-size source/output/wait/phase windows, bounded individual-output traces, actual application completion waits and correlated worst intervals, independent of broad diagnostics. Writes bounded, private MAKO-only captures; no game-output capture or worker. CPU-only mode adds no GPU queries; separate `MAKO_PACING_PROFILE_GPU=1` reuses backend-owned timestamps and the existing completion fence for consume-once GPU spans. `scripts/analyze-pacing-profile.py` explains the retained CPU boundaries without inventing JVM/GPU/display attribution. |
-| Native Wayland feedback capture | `mako-render/src/wayland_presentation_feedback.*`, with surface lifetime in `entrypoint.cpp` and immutable synchronous/worker observations in the lower-present owner | Separate opt-in `MAKO_PACING_PROFILE_WAYLAND=1` records compositor presentation/discard outcomes on the borrowed native surface. Owns bounded proxies and a private queue; consumes only already-queued events, with no display reader, game callbacks, commits or timing-policy changes. The report preserves clocks and ambiguous commit association. |
-| Fixed and Adaptive decisions | `mako-render/src/adaptive_scheduler.*`, `presentation_policy.hpp`, and `generated_frame_plan.hpp` | Chooses generated work, output timestamps, and pacing ownership before Vulkan submission. |
-| Swapchain state and transitions | `mako-render/src/swapchain/` | Owns the applied profile, private resources, recovery state, and game-owned swapchain boundary. |
-| Spatial reconstruction | `mako-render/src/spatial_scaler.*` and `spatial_scaling_policy.hpp` | Chooses geometry and records private scaling work without changing scheduler evidence. |
-| Model execution | `mako-backend/` | Owns LSFG and LS1 resources and compute work behind the Renderer context. |
-| Shader effects | The optional vkBasalt layer selected by `mako-launch` | Runs as a separate Vulkan layer; Renderer scaling and Frame Generation do not own its effect chain. |
-| Native Steam Remote Play | `scripts/mako_remote_play/` and `scripts/mako-remote-play` | One Python owner handles Steam file safety. The packaged command is the only entry point. Existing launchers and Renderer configuration owners retain feature and live-update policy. |
+| Profile parsing and defaults | `fgvk-common/src/configuration/` | Converts saved settings into validated Renderer configuration. |
+| Process and Vulkan layer dispatch | `fgvk-render/src/entrypoint.cpp`, `instance.cpp` | Selects layer roles, devices, profiles, and application-owned Vulkan objects. |
+| Gamescope observations | `fgvk-render/src/gamescope_hdr_feedback.cpp` and `instance.cpp` | Samples compositor state; a feedback change cannot silently become a profile edit. |
+| Sustained runtime health | `fgvk-render/src/runtime_health.*`, registered by `instance.cpp` under the existing presentation-diagnostics flag | Samples bounded proc/sysfs fields and canonical atomic memory counters on a worker; no frame requests, Vulkan calls, or recovery transitions. |
+| Pacing capture | `fgvk-render/src/present_diagnostics.*`, observed by the existing entrypoint and swapchain presentation owners | Opt-in fixed-size source/output/wait/phase windows, bounded individual-output traces, actual application completion waits and correlated worst intervals, independent of broad diagnostics. Writes bounded, private framegen-vulkan-only captures; no game-output capture or worker. CPU-only mode adds no GPU queries; separate `FGVK_PACING_PROFILE_GPU=1` reuses backend-owned timestamps and the existing completion fence for consume-once GPU spans. `scripts/analyze-pacing-profile.py` explains the retained CPU boundaries without inventing JVM/GPU/display attribution. |
+| Native Wayland feedback capture | `fgvk-render/src/wayland_presentation_feedback.*`, with surface lifetime in `entrypoint.cpp` and immutable synchronous/worker observations in the lower-present owner | Separate opt-in `FGVK_PACING_PROFILE_WAYLAND=1` records compositor presentation/discard outcomes on the borrowed native surface. Owns bounded proxies and a private queue; consumes only already-queued events, with no display reader, game callbacks, commits or timing-policy changes. The report preserves clocks and ambiguous commit association. |
+| Fixed and Adaptive decisions | `fgvk-render/src/adaptive_scheduler.*`, `presentation_policy.hpp`, and `generated_frame_plan.hpp` | Chooses generated work, output timestamps, and pacing ownership before Vulkan submission. |
+| Swapchain state and transitions | `fgvk-render/src/swapchain/` | Owns the applied profile, private resources, recovery state, and game-owned swapchain boundary. |
+| Spatial reconstruction | `fgvk-render/src/spatial_scaler.*` and `spatial_scaling_policy.hpp` | Chooses geometry and records private scaling work without changing scheduler evidence. |
+| Model execution | `fgvk-backend/` | Owns LSFG and LS1 resources and compute work behind the Renderer context. |
+| Shader effects | The optional vkBasalt layer selected by `fgvk-launch` | Runs as a separate Vulkan layer; Renderer scaling and Frame Generation do not own its effect chain. |
+| Native Steam Remote Play | `scripts/fgvk_remote_play/` and `scripts/fgvk-remote-play` | One Python owner handles Steam file safety. The packaged command is the only entry point. Existing launchers and Renderer configuration owners retain feature and live-update policy. |
 
 Full trace additionally observes instance/device/surface/swapchain setup in `present_diagnostics.*`, called from the existing creation entrypoints. It pairs incoming and forwarded requests without mutating them or making Vulkan queries. `scripts/analyze-vulkan-setup.py` owns offline inspection/comparison; enabled setup never feeds runtime policy or establishes actual extension use. The Wayland companion keeps strict commit adjacency and separately qualifies consecutive attachment pairs across commits without a new attachment.
 
@@ -27,17 +27,17 @@ Full trace additionally observes instance/device/surface/swapchain setup in `pre
 
 | File | Responsibility |
 | --- | --- |
-| `mako-render/src/swapchain/present.cpp` | Orchestrates one application present, including live feedback, pacing selection, and routing to real or generated delivery. |
-| `mako-render/src/swapchain/present/admission.cpp` | Prepares the Fixed or Adaptive frame plan, checks pipeline readiness, and handles generated-image admission and recovery. |
-| `mako-render/src/swapchain/present/generated_frames.cpp` | Submits and presents generated frames while preserving the requested, admitted, scheduled, and delivered counts. |
-| `mako-render/src/swapchain/present/real_frames.cpp` | Presents native, scaled, and history-only real frames and records source-copy work. |
-| `mako-render/src/swapchain/deferred_present.hpp`, `private_present_queue.hpp` | Own bounded native Fixed output-batch handoff and value snapshots, private queue reservation, one native presentation-queue owner for synchronous/retained outputs, worker-owned backend readiness within one source period (bounded at 50 ms), completion and joining, and bounded device/swapchain delivery records that hold application present waits until their real ID reaches the driver. The worker never owns or updates Swapchain state. |
-| `mako-render/src/swapchain/release_gate.hpp` | Owns release-point source-cap pacing: one thread-local arm per capped application present, the bounded process-wide token registry recorded from the signal-only `vkQueueSubmit2` that follows that present, the delay of the application's successful `vkWaitSemaphores` for that token until the cap deadline, and per-context activation after two observed waits. Entry points live in `entrypoint.cpp`; `present.cpp` decides whether a context holds its present or releases at the wait. |
-| `mako-render/src/swapchain/present/retirement.cpp` | Preserves upstream present fences and retires acquired images after a failed generation path. |
-| `mako-render/src/swapchain/present_timing.hpp` | Bounds Renderer-owned Vulkan timing feedback, calibrates supported clocks, and supplies observed queue readiness to the shared ordered timeline. |
-| `mako-render/src/swapchain/present/internal.hpp` | Shares only presentation-local diagnostics, timing, and image-barrier helpers. It owns no mutable state or policy. |
+| `fgvk-render/src/swapchain/present.cpp` | Orchestrates one application present, including live feedback, pacing selection, and routing to real or generated delivery. |
+| `fgvk-render/src/swapchain/present/admission.cpp` | Prepares the Fixed or Adaptive frame plan, checks pipeline readiness, and handles generated-image admission and recovery. |
+| `fgvk-render/src/swapchain/present/generated_frames.cpp` | Submits and presents generated frames while preserving the requested, admitted, scheduled, and delivered counts. |
+| `fgvk-render/src/swapchain/present/real_frames.cpp` | Presents native, scaled, and history-only real frames and records source-copy work. |
+| `fgvk-render/src/swapchain/deferred_present.hpp`, `private_present_queue.hpp` | Own bounded native Fixed output-batch handoff and value snapshots, private queue reservation, one native presentation-queue owner for synchronous/retained outputs, worker-owned backend readiness within one source period (bounded at 50 ms), completion and joining, and bounded device/swapchain delivery records that hold application present waits until their real ID reaches the driver. The worker never owns or updates Swapchain state. |
+| `fgvk-render/src/swapchain/release_gate.hpp` | Owns release-point source-cap pacing: one thread-local arm per capped application present, the bounded process-wide token registry recorded from the signal-only `vkQueueSubmit2` that follows that present, the delay of the application's successful `vkWaitSemaphores` for that token until the cap deadline, and per-context activation after two observed waits. Entry points live in `entrypoint.cpp`; `present.cpp` decides whether a context holds its present or releases at the wait. |
+| `fgvk-render/src/swapchain/present/retirement.cpp` | Preserves upstream present fences and retires acquired images after a failed generation path. |
+| `fgvk-render/src/swapchain/present_timing.hpp` | Bounds Renderer-owned Vulkan timing feedback, calibrates supported clocks, and supplies observed queue readiness to the shared ordered timeline. |
+| `fgvk-render/src/swapchain/present/internal.hpp` | Shares only presentation-local diagnostics, timing, and image-barrier helpers. It owns no mutable state or policy. |
 
-Keep new policy decisions in their existing policy or scheduler owner, and let `Swapchain::present()` consume the result. Keep live resource replacement in `swapchain/resources.cpp`, profile transitions in `swapchain/profile.cpp`, and runtime status in `swapchain/status.cpp`. A change that crosses those boundaries needs its corresponding contract test and the validation described in [Testing MAKO](../../TESTING.md).
+Keep new policy decisions in their existing policy or scheduler owner, and let `Swapchain::present()` consume the result. Keep live resource replacement in `swapchain/resources.cpp`, profile transitions in `swapchain/profile.cpp`, and runtime status in `swapchain/status.cpp`. A change that crosses those boundaries needs its corresponding contract test and the validation described in [Testing framegen-vulkan](../../TESTING.md).
 
 ## Deliberate large-file boundaries
 

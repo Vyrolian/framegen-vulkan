@@ -14,7 +14,7 @@ import {
 } from './app/site-metadata';
 
 const socialImageAlt =
-  'MAKO frame generation, spatial scaling, and shaders for SteamOS and Linux';
+  'framegen-vulkan frame generation, spatial scaling, and shaders for SteamOS and Linux';
 
 function metaTag(name: string, content: string): HtmlTagDescriptor {
   return { tag: 'meta', attrs: { name, content }, injectTo: 'head' };
@@ -26,14 +26,14 @@ function propertyTag(property: string, content: string): HtmlTagDescriptor {
 
 function staticPagesSeo(): Plugin {
   return {
-    name: 'mako-static-pages-seo',
+    name: 'fgvk-static-pages-seo',
     transformIndexHtml(html) {
       const renderedPage = renderToString(createElement(Home));
       const tags: HtmlTagDescriptor[] = [
         { tag: 'title', children: siteTitle, injectTo: 'head' },
         metaTag('description', siteDescription),
         metaTag('keywords', siteKeywords.join(', ')),
-        metaTag('author', 'MAKO contributors'),
+        metaTag('author', 'framegen-vulkan contributors'),
         metaTag(
           'robots',
           'index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1',
@@ -42,7 +42,7 @@ function staticPagesSeo(): Plugin {
         propertyTag('og:description', siteDescription),
         propertyTag('og:type', 'website'),
         propertyTag('og:url', siteUrl),
-        propertyTag('og:site_name', 'MAKO'),
+        propertyTag('og:site_name', 'framegen-vulkan'),
         propertyTag('og:locale', 'en_US'),
         propertyTag('og:image', socialImageUrl),
         propertyTag('og:image:secure_url', socialImageUrl),
@@ -89,7 +89,7 @@ function staticPagesSeo(): Plugin {
 }
 
 export default defineConfig({
-  base: process.env.GITHUB_ACTIONS ? '/MAKO/' : '/',
+  base: process.env.GITHUB_ACTIONS ? '/framegen-vulkan/' : '/',
   css: {
     postcss: {
       plugins: [tailwindcss()],

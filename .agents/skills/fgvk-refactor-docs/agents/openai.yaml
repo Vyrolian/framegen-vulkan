@@ -1,0 +1,4 @@
+interface:
+  display_name: "Refactor framegen-vulkan Docs"
+  short_description: "Review docs for clarity, duplication, and outdated information"
+  default_prompt: "Use $fgvk-refactor-docs to review framegen-vulkan Markdown files one by one, excluding skill Markdown, remove filler and duplicated detail, correct outdated information, and keep human-facing guides easy to follow."

@@ -2,13 +2,13 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-test_root="$(mktemp -d "${TMPDIR:-/tmp}/mako-release-candidate-test.XXXXXX")"
+test_root="$(mktemp -d "${TMPDIR:-/tmp}/fgvk-release-candidate-test.XXXXXX")"
 trap 'rm -rf -- "$test_root"' EXIT
 fixture_repo="$test_root/repo"
-mkdir -p "$fixture_repo/scripts" "$fixture_repo/engine/dist/flatpak/mako-render"
+mkdir -p "$fixture_repo/scripts" "$fixture_repo/engine/dist/flatpak/fgvk-render"
 cp "$repo_root/scripts/check-release-candidate.sh" "$fixture_repo/scripts/"
 printf '0.0.0\n' > "$fixture_repo/engine/VERSION"
-printf '%s\n' runtime-a runtime-b > "$fixture_repo/engine/dist/flatpak/mako-render/runtime-versions.txt"
+printf '%s\n' runtime-a runtime-b > "$fixture_repo/engine/dist/flatpak/fgvk-render/runtime-versions.txt"
 printf 'engine source\n' > "$fixture_repo/engine/source.txt"
 
 git -C "$fixture_repo" init -q -b main
@@ -30,19 +30,19 @@ make_host() {
   rm -rf -- "$directory"
   mkdir -p "$directory/bin" "$directory/lib" "$directory/lib32" \
     "$directory/share/vulkan/implicit_layer.d"
-  printf '0.0.0\n' > "$directory/MAKO-Renderer-version.txt"
-  printf '#!/bin/sh\n' > "$directory/bin/mako-launch"
-  printf '#!/bin/sh\n' > "$directory/bin/mako-cli"
-  printf 'layer %s\n' "$fingerprint" > "$directory/lib/libmako-render.so"
-  printf 'layer32 %s\n' "$fingerprint" > "$directory/lib32/libmako-render.so"
-  printf '{}\n' > "$directory/share/vulkan/implicit_layer.d/VkLayer_MAKO_render.json"
+  printf '0.0.0\n' > "$directory/framegen-vulkan-version.txt"
+  printf '#!/bin/sh\n' > "$directory/bin/fgvk-launch"
+  printf '#!/bin/sh\n' > "$directory/bin/fgvk-cli"
+  printf 'layer %s\n' "$fingerprint" > "$directory/lib/libfgvk-render.so"
+  printf 'layer32 %s\n' "$fingerprint" > "$directory/lib32/libfgvk-render.so"
+  printf '{}\n' > "$directory/share/vulkan/implicit_layer.d/VkLayer_FGVK_render.json"
   if [[ "$mode" == complete ]]; then
     (
       cd "$directory"
       find bin lib lib32 share -type f -print | LC_ALL=C sort | xargs sha256sum
-    ) > "$directory/MAKO-Renderer-install-manifest.txt"
+    ) > "$directory/framegen-vulkan-install-manifest.txt"
   else
-    : > "$directory/MAKO-Renderer-install-manifest.txt"
+    : > "$directory/framegen-vulkan-install-manifest.txt"
   fi
 }
 
@@ -63,14 +63,14 @@ make_flatpak_archive() {
   for runtime in runtime-a runtime-b; do
     if [[ "$runtime" != "$missing" ]]; then
       printf 'bundle %s\n' "$runtime" > \
-        "$directory/org.freedesktop.Platform.VulkanLayer.makorender-$runtime.flatpak"
+        "$directory/org.freedesktop.Platform.VulkanLayer.fgvkrender-$runtime.flatpak"
     fi
   done
   tar -cJf "$archive" -C "$directory" .
 }
 
-host_name="MAKO-Renderer-v0.0.0-linux.tar.xz"
-flatpak_name="MAKO-Renderer-v0.0.0-flatpaks.tar.xz"
+host_name="framegen-vulkan-v0.0.0-linux.tar.xz"
+flatpak_name="framegen-vulkan-v0.0.0-flatpaks.tar.xz"
 mkdir -p "$test_root/candidates"
 
 make_host_archive "$test_root/candidates/$host_name" "$engine_short"
@@ -109,8 +109,8 @@ make_host_archive "$test_root/candidates/unchecked/$host_name" "$engine_short" n
 expect_rejection "a host without an install manifest" "$test_root/candidates/unchecked/$host_name"
 
 mkdir -p "$test_root/candidates/renamed"
-make_host_archive "$test_root/candidates/renamed/MAKO-Renderer-v9.9.9-linux.tar.xz" "$engine_short"
-expect_rejection "a host with the wrong version name" "$test_root/candidates/renamed/MAKO-Renderer-v9.9.9-linux.tar.xz"
+make_host_archive "$test_root/candidates/renamed/framegen-vulkan-v9.9.9-linux.tar.xz" "$engine_short"
+expect_rejection "a host with the wrong version name" "$test_root/candidates/renamed/framegen-vulkan-v9.9.9-linux.tar.xz"
 
 mkdir -p "$test_root/candidates/incomplete-flatpak"
 make_flatpak_archive "$test_root/candidates/incomplete-flatpak/$flatpak_name" runtime-b

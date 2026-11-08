@@ -3,7 +3,7 @@ import rendererRelease from '../../engine/renderer-release.json';
 const renderer = rendererRelease.remote_binary[0];
 
 if (!renderer) {
-  throw new Error('engine/renderer-release.json must define one published MAKO Renderer payload');
+  throw new Error('engine/renderer-release.json must define one published framegen-vulkan payload');
 }
 
 const repository = renderer.source_repository.replace(/\/$/, '');

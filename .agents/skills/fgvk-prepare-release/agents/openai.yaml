@@ -1,0 +1,4 @@
+interface:
+  display_name: "Prepare Release"
+  short_description: "Draft framegen-vulkan release notes, artwork, and flavor quote"
+  default_prompt: "Use $fgvk-prepare-release to prepare framegen-vulkan release notes from the current branch, with a capitalized codename, optimized artwork, and a flavor quote, without publishing."

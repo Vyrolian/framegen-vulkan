@@ -16,7 +16,7 @@ if [[ -n "$package_epoch" ]]; then
 fi
 
 usage() {
-    echo "Usage: verify-release-package.sh <MAKO-Renderer-vX.Y.Z-linux.tar.xz> [output-package]" >&2
+    echo "Usage: verify-release-package.sh <framegen-vulkan-vX.Y.Z-linux.tar.xz> [output-package]" >&2
 }
 
 if (($# < 1 || $# > 2)); then
@@ -39,13 +39,13 @@ if [[ -z "$pkgver" || -z "$pkgrel" ]]; then
     exit 1
 fi
 
-expected_archive="MAKO-Renderer-v${pkgver}-linux.tar.xz"
+expected_archive="framegen-vulkan-v${pkgver}-linux.tar.xz"
 if [[ "$(basename "$archive_path")" != "$expected_archive" ]]; then
     echo "Arch package verification expected $expected_archive, received $(basename "$archive_path")" >&2
     exit 1
 fi
 
-expected_package="mako-renderer-bin-${pkgver}-${pkgrel}-x86_64.pkg.tar.zst"
+expected_package="framegen-vulkan-bin-${pkgver}-${pkgrel}-x86_64.pkg.tar.zst"
 output_path=""
 if (($# == 2)); then
     output_argument="$2"
@@ -94,28 +94,28 @@ if ! command -v makepkg >/dev/null 2>&1 || ! command -v fakeroot >/dev/null 2>&1
             if ! command -v fakeroot >/dev/null 2>&1; then
                 pacman -Syu --noconfirm --needed fakeroot
             fi
-            useradd --create-home mako-builder
-            install -d -o mako-builder -g mako-builder /tmp/mako-arch-package-source
+            useradd --create-home fgvk-builder
+            install -d -o fgvk-builder -g fgvk-builder /tmp/fgvk-arch-package-source
             cp \
                 /package-source/PKGBUILD \
-                /package-source/mako-renderer-bin.install \
+                /package-source/framegen-vulkan-bin.install \
                 /package-source/verify-release-package.sh \
                 "/release-archive/$1" \
-                /tmp/mako-arch-package-source/
-            chown -R mako-builder:mako-builder /tmp/mako-arch-package-source
+                /tmp/fgvk-arch-package-source/
+            chown -R fgvk-builder:fgvk-builder /tmp/fgvk-arch-package-source
             if [[ -n "${2:-}" ]]; then
-                runuser -u mako-builder -- \
-                    bash /tmp/mako-arch-package-source/verify-release-package.sh \
-                    "/tmp/mako-arch-package-source/$1" \
-                    "/tmp/mako-arch-package-source/$3"
+                runuser -u fgvk-builder -- \
+                    bash /tmp/fgvk-arch-package-source/verify-release-package.sh \
+                    "/tmp/fgvk-arch-package-source/$1" \
+                    "/tmp/fgvk-arch-package-source/$3"
                 output_tmp="$2.tmp.$$"
                 trap "rm -f -- \"$output_tmp\"" EXIT
-                install -Dm644 "/tmp/mako-arch-package-source/$3" "$output_tmp"
+                install -Dm644 "/tmp/fgvk-arch-package-source/$3" "$output_tmp"
                 mv -f -- "$output_tmp" "$2"
             else
-                exec runuser -u mako-builder -- \
-                    bash /tmp/mako-arch-package-source/verify-release-package.sh \
-                    "/tmp/mako-arch-package-source/$1"
+                exec runuser -u fgvk-builder -- \
+                    bash /tmp/fgvk-arch-package-source/verify-release-package.sh \
+                    "/tmp/fgvk-arch-package-source/$1"
             fi
         ' _ "$expected_archive" "$container_output_path" "$expected_package"
 fi
@@ -127,13 +127,13 @@ for command in bsdtar find od readelf; do
     fi
 done
 
-work_dir="$(mktemp -d "${TMPDIR:-/tmp}/mako-arch-release-package.XXXXXX")"
+work_dir="$(mktemp -d "${TMPDIR:-/tmp}/fgvk-arch-release-package.XXXXXX")"
 cleanup() {
     rm -rf -- "$work_dir"
 }
 trap cleanup EXIT
 
-cp -- "$script_dir/PKGBUILD" "$script_dir/mako-renderer-bin.install" "$work_dir/"
+cp -- "$script_dir/PKGBUILD" "$script_dir/framegen-vulkan-bin.install" "$work_dir/"
 cp -- "$archive_path" "$work_dir/$expected_archive"
 mkdir -p "$work_dir/home" "$work_dir/config"
 
@@ -148,7 +148,7 @@ mkdir -p "$work_dir/home" "$work_dir/config"
 
 mapfile -t package_files < <(
     find "$work_dir" -maxdepth 1 -type f \
-        -name "mako-renderer-bin-${pkgver}-${pkgrel}-*.pkg.tar.*" \
+        -name "framegen-vulkan-bin-${pkgver}-${pkgrel}-*.pkg.tar.*" \
         ! -name '*.sig' -print
 )
 if ((${#package_files[@]} != 1)); then
@@ -159,14 +159,14 @@ fi
 package_entries="$(bsdtar -tf "${package_files[0]}")"
 for required_entry in \
     .INSTALL \
-    usr/bin/mako-cli \
-    usr/bin/mako-diagnostics \
-    usr/bin/mako-launch \
-    usr/lib/libmako-render.so \
-    usr/lib/libmako-render-scaling.so \
+    usr/bin/fgvk-cli \
+    usr/bin/fgvk-diagnostics \
+    usr/bin/fgvk-launch \
+    usr/lib/libfgvk-render.so \
+    usr/lib/libfgvk-render-scaling.so \
     usr/lib/vkbasalt/libvkbasalt.so \
-    usr/lib32/libmako-render.so \
-    usr/lib32/libmako-render-scaling.so \
+    usr/lib32/libfgvk-render.so \
+    usr/lib32/libfgvk-render-scaling.so \
     usr/lib32/vkbasalt/libvkbasalt.so; do
     if ! grep -Fqx "$required_entry" <<< "$package_entries"; then
         echo "Built Arch package is missing $required_entry" >&2
@@ -174,7 +174,7 @@ for required_entry in \
     fi
 done
 
-if grep -Eq '(^|/)mako-installer$|(^|/)\.config/mako-render/' <<< "$package_entries"; then
+if grep -Eq '(^|/)fgvk-installer$|(^|/)\.config/framegen-vulkan/' <<< "$package_entries"; then
     echo "Built Arch package contains a user-local installer or profile path." >&2
     exit 1
 fi
@@ -185,7 +185,7 @@ fi
 
 package_info="$(bsdtar -xOf "${package_files[0]}" .PKGINFO)"
 for required_identity in \
-    "pkgname = mako-renderer-bin" \
+    "pkgname = framegen-vulkan-bin" \
     "pkgver = ${pkgver}-${pkgrel}" \
     "arch = x86_64"; do
     if ! grep -Fqx "$required_identity" <<< "$package_info"; then
@@ -196,7 +196,7 @@ done
 
 packaged_renderer_version="$(
     bsdtar -xOf "${package_files[0]}" \
-        usr/share/doc/mako-renderer-bin/MAKO-Renderer-version.txt |
+        usr/share/doc/framegen-vulkan-bin/framegen-vulkan-version.txt |
         tr -d '[:space:]'
 )"
 if [[ "$packaged_renderer_version" != "$pkgver" ]]; then
@@ -215,7 +215,7 @@ while IFS= read -r -d '' audited_binary; do
     binary_path="${audited_binary#"$work_dir/audit/"}"
     case "$binary_path" in
         usr/bin/* | usr/lib/* | usr/lib32/*) ;;
-        usr/share/mako-render/mako_remote_play/libmako-remote-play-sdr.so) ;;
+        usr/share/framegen-vulkan/fgvk_remote_play/libfgvk-remote-play-sdr.so) ;;
         *)
             echo "Built Arch package has an ELF in an unreviewed location: $binary_path." >&2
             exit 1 ;;
@@ -271,4 +271,4 @@ if [[ -n "$output_path" ]]; then
     echo "Verified Arch release package: $output_path"
 fi
 
-echo "Verified Arch package build for MAKO Renderer $pkgver ($expected_archive)."
+echo "Verified Arch package build for framegen-vulkan $pkgver ($expected_archive)."

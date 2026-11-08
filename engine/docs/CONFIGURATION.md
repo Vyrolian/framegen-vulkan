@@ -1,14 +1,14 @@
 # Configuration
 
-MAKO Renderer reads its profiles from `~/.config/mako-render/conf.toml`. Edit the file in any text editor. MAKO reads it when a game starts, so most changes apply to the next launch; settings marked live in [Applying changes](#applying-changes) can change while the game runs. Check each edit with `~/.local/bin/mako-cli validate`. The [configuration reference](CONFIGURATION-REFERENCE.md) lists every field, default, and environment variable.
+framegen-vulkan reads its profiles from `~/.config/framegen-vulkan/conf.toml`. Edit the file in any text editor. framegen-vulkan reads it when a game starts, so most changes apply to the next launch; settings marked live in [Applying changes](#applying-changes) can change while the game runs. Check each edit with `~/.local/bin/fgvk-cli validate`. The [configuration reference](CONFIGURATION-REFERENCE.md) lists every field, default, and environment variable.
 
 ## Quick start
 
-1. Create `~/.config/mako-render/conf.toml` from the example below.
+1. Create `~/.config/framegen-vulkan/conf.toml` from the example below.
 2. Set `active_in` to the game's executable name, such as `Game.exe`. Match the game's process, not its launcher, Steam title, or ROM filename.
 3. Enable Frame Generation and/or Scaling for that profile.
-4. Add `~/.local/bin/mako-launch %command%` to the game's Steam launch options, then start the game.
-5. Run `~/.local/bin/mako-cli validate` after each change.
+4. Add `~/.local/bin/fgvk-launch %command%` to the game's Steam launch options, then start the game.
+5. Run `~/.local/bin/fgvk-cli validate` after each change.
 
 ```toml
 version = 2
@@ -30,11 +30,11 @@ scaling_supersampling = false
 scaling_sharpness = 0.8
 ```
 
-MAKO activates on the next launch of a matched process. If nothing matches, MAKO stays inactive. `MAKO_PROFILE` selects an exact profile and overrides automatic matching.
+framegen-vulkan activates on the next launch of a matched process. If nothing matches, framegen-vulkan stays inactive. `FGVK_PROFILE` selects an exact profile and overrides automatic matching.
 
 ### Lossless Scaling availability
 
-**MAKO Scaler and Shaders work without Lossless Scaling.** Frame Generation and LS1 require it. If MAKO reports it missing, install Lossless Scaling or set `dll` to the correct `Lossless.dll` path, then restart the game.
+**framegen-vulkan Scaler and Shaders work without Lossless Scaling.** Frame Generation and LS1 require it. If framegen-vulkan reports it missing, install Lossless Scaling or set `dll` to the correct `Lossless.dll` path, then restart the game.
 
 ## Profiles
 
@@ -60,7 +60,7 @@ target_fps = 120
 
 ### Launcher exclusions
 
-Known launchers and helpers stay inactive while their child games can match. The [shared registry](../mako-common/launcher_exclusions.json) owns the exact exclusions; the generic `Launcher.exe` name is not excluded globally. If only a launcher is detected, wait for gameplay and try again.
+Known launchers and helpers stay inactive while their child games can match. The [shared registry](../fgvk-common/launcher_exclusions.json) owns the exact exclusions; the generic `Launcher.exe` name is not excluded globally. If only a launcher is detected, wait for gameplay and try again.
 
 ## Frame Generation
 
@@ -88,11 +88,11 @@ Enable `scaling_enabled` before launching. Set Steam's game resolution to the di
 | `scaling_method` | Use it for |
 | --- | --- |
 | `native` | Simple model-free reconstruction |
-| `mako` | Open MAKO Scaler with anti-ringing and sharpening |
+| `fgvk` | Open framegen-vulkan Scaler with anti-ringing and sharpening |
 | `ls1` | Highest-quality LS1 scaling; requires Lossless Scaling |
 | `ls1-performance` | Lower-cost LS1 scaling; requires Lossless Scaling |
 
-`scaling_factor` targets 1.0–2.0× output dimensions, within display limits; `scaling_sharpness` adjusts sharpening except with `native`. `scaling_supersampling` can improve quality on supported Gamescope surfaces, with higher GPU and memory use. LS1 failures fall back to the MAKO Scaler.
+`scaling_factor` targets 1.0–2.0× output dimensions, within display limits; `scaling_sharpness` adjusts sharpening except with `native`. `scaling_supersampling` can improve quality on supported Gamescope surfaces, with higher GPU and memory use. LS1 failures fall back to the framegen-vulkan Scaler.
 
 For 1920×1080 output at 1.5×, aim for a 1280×720 input. Raising the factor without lowering the in-game resolution increases GPU and memory cost. Check source and presentation sizes in [diagnostics](COLLECT_DIAGNOSTICS.md); see [Scaling](SCALING.md) for supported display setups.
 
@@ -104,7 +104,7 @@ For 1920×1080 output at 1.5×, aim for a 1280×720 input. Raising the factor wi
 | `flow_scale` | 25–100% motion-estimation resolution; lower saves GPU work at a quality cost. Ultra Performance fixes it at 70%. |
 | `gpu_headroom_percent` | Live, Frame Generation-only reserve that reduces real FPS to keep spare GPU capacity; see below. Off by default. |
 | `performance_mode = true` | Uses the lighter Frame Generation model, which reduces GPU work with potentially more artifacts. |
-| `allow_fp16` (restart, `[global]`) | FP16 for supported Frame Generation models and the MAKO Scaler; `false` uses FP32. LS1 always uses FP32. |
+| `allow_fp16` (restart, `[global]`) | FP16 for supported Frame Generation models and the framegen-vulkan Scaler; `false` uses FP32. LS1 always uses FP32. |
 | `dll` (restart) | Lossless.dll path override; leave unset for automatic detection. |
 | `gpu` (restart) | Optional GPU name, vendor/device ID, or PCI bus ID. Multi-GPU Frame Generation is unsupported. |
 
@@ -112,16 +112,16 @@ For 1920×1080 output at 1.5×, aim for a 1280×720 input. Raising the factor wi
 
 Set `gpu_headroom_percent` to 5, 10, 15, or 20 to reserve that share of GPU capacity. The reserve targets roughly 90% utilization at 10%, including the compositor and other applications. It applies live while Frame Generation is active. Setting it to 0 removes the additional cap and stops utilization sampling.
 
-MAKO smooths readings and gradually reduces real FPS when usage stays high. Adaptive can use more generated frames within its qualified multiplier ceiling; Fixed keeps its multiplier, so output FPS can fall too. Adaptive is preferable when you want to regain real FPS as scenes become lighter. Brief spikes can still reach 100%, and the reserve is not a power or temperature limit.
+framegen-vulkan smooths readings and gradually reduces real FPS when usage stays high. Adaptive can use more generated frames within its qualified multiplier ceiling; Fixed keeps its multiplier, so output FPS can fall too. Adaptive is preferable when you want to regain real FPS as scenes become lighter. Brief spikes can still reach 100%, and the reserve is not a power or temperature limit.
 
-Supported AMD telemetry must be readable for the game's GPU; Gamescope is optional. Missing readings restore ordinary pacing. Existing caps and a minimum real-frame rate limit how much load MAKO can remove. GPU Headroom does not independently control scaling or shaders, and it is mutually exclusive with `dynamic_cadence_recovery`. See the [setting reference](CONFIGURATION-REFERENCE.md#gpu-headroom) for floors and compatibility limits.
+Supported AMD telemetry must be readable for the game's GPU; Gamescope is optional. Missing readings restore ordinary pacing. Existing caps and a minimum real-frame rate limit how much load framegen-vulkan can remove. GPU Headroom does not independently control scaling or shaders, and it is mutually exclusive with `dynamic_cadence_recovery`. See the [setting reference](CONFIGURATION-REFERENCE.md#gpu-headroom) for floors and compatibility limits.
 
 ## Shaders
 
 Shaders use bundled vkBasalt. Add `ENABLE_VKBASALT=1` to the launch option, then select effects in a vkBasalt configuration file referenced by `VKBASALT_CONFIG_FILE`. Effects run in the order listed in `effects`, separated by colons; more effects cost more GPU time. The bundled effect sources are in `engine/vkbasalt-shaders/`, and their provenance is in [third-party notices](../../THIRD_PARTY_NOTICES.md).
 
 ```text
-ENABLE_VKBASALT=1 VKBASALT_CONFIG_FILE="$HOME/.config/vkBasalt/game-name.conf" ~/.local/bin/mako-launch %command%
+ENABLE_VKBASALT=1 VKBASALT_CONFIG_FILE="$HOME/.config/vkBasalt/game-name.conf" ~/.local/bin/fgvk-launch %command%
 ```
 
 ```ini
@@ -133,7 +133,7 @@ effects = makoClarity:smaa
 - **HDR Look (SDR):** `makoHDRLook` changes appearance without enabling HDR.
 - **Crop & Stretch:** `makoCropStretch` has four crop parameters, each limited to 49%, declared in [`CropStretch.fx`](../vkbasalt-shaders/CropStretch.fx). Cropping affects the whole game image, including HUD elements and subtitles. Place it before other effects when those effects should use the stretched image.
 
-Only MAKO's private bundled vkBasalt is used; a system installation is ignored. Adding a custom effect requires a vkBasalt-compatible ReShade `.fx` file and its includes and textures reachable by the game; see [optional graphics integrations](LAYER-CHAINING.md) for the supported setup and limits. Restart the game after changing shader activation or configuration.
+Only framegen-vulkan's private bundled vkBasalt is used; a system installation is ignored. Adding a custom effect requires a vkBasalt-compatible ReShade `.fx` file and its includes and textures reachable by the game; see [optional graphics integrations](LAYER-CHAINING.md) for the supported setup and limits. Restart the game after changing shader activation or configuration.
 
 ## Compatibility
 
@@ -158,13 +158,13 @@ Some live changes rebuild resources and may briefly hitch. See [Runtime transiti
 
 ## Launch settings
 
-For native Steam and Proton games, use the launch option below. Flatpak applications need [Flatpak preparation](FLATPAK-GUIDE.md). The Arch package uses `/usr/bin/mako-launch`. For a terminal launch, replace `%command%` with the executable and arguments.
+For native Steam and Proton games, use the launch option below. Flatpak applications need [Flatpak preparation](FLATPAK-GUIDE.md). The Arch package uses `/usr/bin/fgvk-launch`. For a terminal launch, replace `%command%` with the executable and arguments.
 
 ```text
-~/.local/bin/mako-launch %command%
+~/.local/bin/fgvk-launch %command%
 ```
 
-Standalone launch compatibility settings live in `~/.config/mako-render/launcher.conf`, and apply to every `mako-launch` game:
+Standalone launch compatibility settings live in `~/.config/framegen-vulkan/launcher.conf`, and apply to every `fgvk-launch` game:
 
 ```ini
 version = 1
@@ -178,7 +178,7 @@ force_alsa_audio = 0
 - `enable_zink`: runs OpenGL through Vulkan.
 - `force_alsa_audio`: changes the audio path for compatibility problems.
 
-To use a shared MangoHud layout, create `~/.config/mako-render/mangohud.conf` and enable MangoHud for a game with `MANGOHUD=1` in its launch option. Shaders and MangoHud are mutually exclusive; a manual command requesting both is rejected. Install host MangoHud and Python 3 first, and check availability with `mako-launch --check-mangohud`. Flatpak games are unsupported. See the [shared MangoHud layout](LAYER-CHAINING.md#shared-mangohud-layout).
+To use a shared MangoHud layout, create `~/.config/framegen-vulkan/mangohud.conf` and enable MangoHud for a game with `MANGOHUD=1` in its launch option. Shaders and MangoHud are mutually exclusive; a manual command requesting both is rejected. Install host MangoHud and Python 3 first, and check availability with `fgvk-launch --check-mangohud`. Flatpak games are unsupported. See the [shared MangoHud layout](LAYER-CHAINING.md#shared-mangohud-layout).
 
 ## HDR
 
@@ -190,7 +190,7 @@ Set `disable_hdr_exposure = 0` in `launcher.conf`, restart the game, then enable
 
 ## Native Steam Remote Play
 
-Native Remote Play is an opt-in override for the receiving device. Use `mako-remote-play status` to inspect it and `mako-remote-play restore-before-uninstall` before removing the Renderer. See [Renderer usage](../README.md#usage) for the complete command set and limits.
+Native Remote Play is an opt-in override for the receiving device. Use `fgvk-remote-play status` to inspect it and `fgvk-remote-play restore-before-uninstall` before removing the Renderer. See [Renderer usage](../README.md#usage) for the complete command set and limits.
 
 ## Advanced configuration
 

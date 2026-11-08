@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Inspect opt-in MAKO real/generated image sequences; requires NumPy."""
+"""Inspect opt-in framegen-vulkan real/generated image sequences; requires NumPy."""
 import argparse
 from collections import defaultdict
 import hashlib

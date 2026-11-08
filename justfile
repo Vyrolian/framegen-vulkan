@@ -56,13 +56,13 @@ generate-flatpak-headers:
 check-flatpak-headers:
     python3 engine/scripts/generate-flatpak-vulkan-headers.py --check
 
-# Generate Flatpak's runtime vkBasalt module from the pinned MAKO fork release.
+# Generate Flatpak's runtime vkBasalt module from the pinned framegen-vulkan fork release.
 generate-vkbasalt-release:
-    python3 engine/scripts/manage-vkbasalt-release.py --check --generate-flatpak-module engine/dist/flatpak/mako-render/vkbasalt-module.json
+    python3 engine/scripts/manage-vkbasalt-release.py --check --generate-flatpak-module engine/dist/flatpak/fgvk-render/vkbasalt-module.json
 
 # Reject an invalid vkBasalt pin or stale generated Flatpak module.
 check-vkbasalt-release:
-    python3 engine/scripts/manage-vkbasalt-release.py --check --check-flatpak-module engine/dist/flatpak/mako-render/vkbasalt-module.json
+    python3 engine/scripts/manage-vkbasalt-release.py --check --check-flatpak-module engine/dist/flatpak/fgvk-render/vkbasalt-module.json
 
 # Sync the Arch package recipe to the checksum-pinned Renderer release.
 sync-arch-package:
@@ -73,7 +73,7 @@ check-arch-package:
     engine/dist/arch/check-release-pin.sh
     engine/dist/arch/test-package-contract.sh
 
-# Build MAKO Renderer.
+# Build framegen-vulkan.
 build: build-engine
 
 # Run the protected-input, release-candidate, diagnostics, engine, and trace-producer tests.
@@ -95,7 +95,7 @@ test-diagnostics-helper:
 test-trace-producer:
     ./scripts/test-capture-trace.sh
 
-# Configure and build MAKO Renderer in release mode.
+# Configure and build framegen-vulkan in release mode.
 build-engine:
     cmake -S engine -B engine/build -DCMAKE_BUILD_TYPE=Release
     cmake --build engine/build
@@ -104,7 +104,7 @@ build-engine:
 latency-probe:
     cmake -S engine/tools/latency-probe -B engine/build/latency-probe -G Ninja -DCMAKE_BUILD_TYPE=Release && cmake --build engine/build/latency-probe -j2
 
-# Build and run the MAKO Renderer tests.
+# Build and run the framegen-vulkan tests.
 test-engine: build-engine
     ctest --test-dir engine/build --output-on-failure
 
@@ -114,85 +114,85 @@ test-engine-portable:
 
 # Run the portable Renderer policy tests under ASan and UBSan.
 test-engine-sanitized:
-    cd engine && MAKO_ENABLE_SANITIZERS=ON ./scripts/test-adaptive-scheduler.sh
+    cd engine && FGVK_ENABLE_SANITIZERS=ON ./scripts/test-adaptive-scheduler.sh
 
-# Run MAKO Gym's feature suite when its sibling checkout is available; pass --filter for focused development.
+# Run fgvk Gym's feature suite when its sibling checkout is available; pass --filter for focused development.
 test-engine-gym *args:
-    ./engine/scripts/run-mako-gym.sh {{args}}
+    ./engine/scripts/run-fgvk-gym.sh {{args}}
 
 # Explicit feature-suite alias for focused development commands.
 test-engine-gym-feature *args:
-    ./engine/scripts/run-mako-gym.sh --suite vulkan {{args}}
+    ./engine/scripts/run-fgvk-gym.sh --suite vulkan {{args}}
 
-# Run a selected MAKO Gym suite and fail when its sibling checkout is unavailable; vulkan remains the default.
+# Run a selected fgvk Gym suite and fail when its sibling checkout is unavailable; vulkan remains the default.
 test-engine-gym-required *args:
-    ./engine/scripts/run-mako-gym.sh --require {{args}}
+    ./engine/scripts/run-fgvk-gym.sh --require {{args}}
 
 # Run selected procedural render-quality rows; no --filter runs all 74 cases.
 test-engine-gym-quality *args:
-    ./engine/scripts/run-mako-gym.sh --suite quality {{args}}
+    ./engine/scripts/run-fgvk-gym.sh --suite quality {{args}}
 
 # Require byte-identical output across independent executions of curated quality sentinels.
 test-engine-gym-repeatability *args:
-    ./engine/scripts/run-mako-gym.sh --suite repeatability {{args}}
+    ./engine/scripts/run-fgvk-gym.sh --suite repeatability {{args}}
 
 # Run repeated warmed LSFG throughput samples with practical budgets and variance checks.
 test-engine-gym-performance *args:
-    ./engine/scripts/run-mako-gym.sh --suite performance {{args}}
+    ./engine/scripts/run-fgvk-gym.sh --suite performance {{args}}
 
 # Measure each production spatial scaler with Vulkan timestamp queries.
 test-engine-gym-spatial-performance *args:
-    ./engine/scripts/run-mako-gym.sh --suite spatial-performance {{args}}
+    ./engine/scripts/run-fgvk-gym.sh --suite spatial-performance {{args}}
 
-# Compare MAKO-idle and active live presentation overhead on the same workload.
+# Compare framegen-vulkan-idle and active live presentation overhead on the same workload.
 test-engine-gym-runtime-overhead *args:
-    ./engine/scripts/run-mako-gym.sh --suite runtime-overhead {{args}}
+    ./engine/scripts/run-fgvk-gym.sh --suite runtime-overhead {{args}}
 
 # Run selected production GPU paths under Khronos synchronization validation.
 test-engine-gym-sync-validation *args:
-    ./engine/scripts/run-mako-gym.sh --suite sync-validation {{args}}
+    ./engine/scripts/run-fgvk-gym.sh --suite sync-validation {{args}}
 
 # Exercise Fixed/Steady/Fractional pacing across synthetic Gamescope VRR feedback.
 test-engine-gym-pacing *args:
-    ./engine/scripts/run-mako-gym.sh --suite pacing {{args}}
+    ./engine/scripts/run-fgvk-gym.sh --suite pacing {{args}}
 
 # Run selected scripted runtime-recovery rows; omit --filter to run the default matrix.
 test-engine-gym-recovery *args:
-    ./engine/scripts/run-mako-gym.sh --suite recovery {{args}}
+    ./engine/scripts/run-fgvk-gym.sh --suite recovery {{args}}
 
 # Exercise full-cover overlay pause/throttle recovery after workload-proven source return.
 test-engine-gym-external-recovery *args:
-    ./engine/scripts/run-mako-gym.sh --suite external-recovery {{args}}
+    ./engine/scripts/run-fgvk-gym.sh --suite external-recovery {{args}}
 
-# Run the high-cost real Gamescope compositor + WSI + MAKO end-to-end lane.
+# Run the high-cost real Gamescope compositor + WSI + framegen-vulkan end-to-end lane.
 test-engine-gym-gamescope-e2e *args:
-    ./engine/scripts/run-mako-gym.sh --suite gamescope-e2e {{args}}
+    ./engine/scripts/run-fgvk-gym.sh --suite gamescope-e2e {{args}}
 
 # Run native Vulkan and Steam Runtime/Proton through the combined Renderer outside Gamescope.
 test-engine-gym-direct-desktop-e2e *args:
-    ./engine/scripts/run-mako-gym.sh --suite direct-desktop-e2e {{args}}
+    ./engine/scripts/run-fgvk-gym.sh --suite direct-desktop-e2e {{args}}
 
 # Run focused private-resource memory and sustained thermal/performance health soaks.
 test-engine-gym-sustained-health *args:
-    ./engine/scripts/run-mako-gym.sh --suite sustained-health {{args}}
+    ./engine/scripts/run-fgvk-gym.sh --suite sustained-health {{args}}
 
 # Run the high-cost D3D11/DXVK and D3D12/VKD3D-Proton end-to-end lane.
 test-engine-gym-proton-e2e *args:
-    ./engine/scripts/run-mako-gym.sh --suite proton-e2e {{args}}
+    ./engine/scripts/run-fgvk-gym.sh --suite proton-e2e {{args}}
 
 # Repeat curated translation sentinels across installed Proton runtime families.
 test-engine-gym-proton-compatibility *args:
-    ./engine/scripts/run-mako-gym.sh --suite proton-compatibility {{args}}
+    ./engine/scripts/run-fgvk-gym.sh --suite proton-compatibility {{args}}
 
 # Qualify a bounded set of Renderer cases under mandatory resource constraints.
 test-engine-gym-constraints *args:
-    ./engine/scripts/run-mako-gym.sh --suite constraints {{args}}
+    ./engine/scripts/run-fgvk-gym.sh --suite constraints {{args}}
 
-# Build the native MAKO Renderer release archive.
+# Build the native framegen-vulkan release archive.
 package-engine:
     ./engine/scripts/package-local.sh
 
-# Build the MAKO Renderer Flatpak extension archive.
+# Build the framegen-vulkan Flatpak extension archive.
 package-flatpaks:
     ./engine/scripts/package-flatpaks.sh
 

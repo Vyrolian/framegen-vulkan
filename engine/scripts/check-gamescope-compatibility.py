@@ -46,7 +46,7 @@ def check(engine: Path, upstream_protocol: Path | None) -> None:
             "source review needs its files, scope, and result")
     require(isinstance(record["hardware_validations"], list), "hardware_validations must be a list")
 
-    source = (engine / "mako-render/src/gamescope_scaling_surface.cpp").read_text()
+    source = (engine / "fgvk-render/src/gamescope_scaling_surface.cpp").read_text()
     for key in ("factory_interface", "swapchain_interface"):
         interface = re.escape(protocol[key])
         require(re.search(r'"' + interface + r'",\s*' + str(maximum) + r'\s*,', source) is not None,

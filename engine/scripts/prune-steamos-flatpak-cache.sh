@@ -11,7 +11,7 @@ usage() {
     cat <<'EOF'
 Usage: scripts/prune-steamos-flatpak-cache.sh [--confirm]
 
-Reports the persistent Flatpak development cache used by MAKO's SteamOS
+Reports the persistent Flatpak development cache used by framegen-vulkan's SteamOS
 development commands. With no arguments this is a dry run: nothing is removed.
 
 Options:
@@ -19,7 +19,7 @@ Options:
               staging directory.
   -h, --help  Show this help.
 
-This never removes native build trees, installed MAKO Renderer files, or your
+This never removes native build trees, installed framegen-vulkan files, or your
 normal user Flatpak installation. A later dev:flatpaks
 or dev:e2e run will download the Flatpak SDK/runtime dependencies again.
 EOF
@@ -78,4 +78,4 @@ for path in "$cache_dir" "$tmp_dir"; do
     fi
 done
 
-echo "Flatpak development cache pruned. Native builds and installed MAKO artifacts were preserved."
+echo "Flatpak development cache pruned. Native builds and installed framegen-vulkan artifacts were preserved."
