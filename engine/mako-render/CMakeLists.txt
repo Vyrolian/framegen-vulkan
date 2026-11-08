@@ -228,6 +228,9 @@ if(BUILD_TESTING)
     add_test(NAME framegen-comparison-profiler
         COMMAND "${MAKO_PYTHON3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_framegen_profiler.py")
     mako_register_portable_policy_test(mako-pacing-profile-tests framegen-comparison-profiler)
+    add_test(NAME latency-comparison
+        COMMAND "${MAKO_PYTHON3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_latency_compare.py")
+    mako_register_portable_policy_test(mako-pacing-profile-tests latency-comparison)
     add_executable(mako-pacing-profile-benchmark
         "tests/pacing_profile_benchmark.cpp" "src/present_diagnostics.cpp")
     target_include_directories(mako-pacing-profile-benchmark PRIVATE "src")

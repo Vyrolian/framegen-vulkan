@@ -100,6 +100,10 @@ build-engine:
     cmake -S engine -B engine/build -DCMAKE_BUILD_TYPE=Release
     cmake --build engine/build
 
+# Build the standalone unattended input-latency probe used by compare-latency.py.
+latency-probe:
+    cmake -S engine/tools/latency-probe -B engine/build/latency-probe -G Ninja -DCMAKE_BUILD_TYPE=Release && cmake --build engine/build/latency-probe -j2
+
 # Build and run the MAKO Renderer tests.
 test-engine: build-engine
     ctest --test-dir engine/build --output-on-failure
