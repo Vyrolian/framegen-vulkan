@@ -1144,7 +1144,11 @@ namespace {
                 // The emulated acquire's queue exists only when the family had room
                 // for both. Like the present queue, it is never registered in
                 // queueIdentities, so the application cannot see it.
-                if (privatePresentQueue.acquireIndex) {
+                // F9 switch for isolating the 2026-11-08 freeze: FGVK_INTERNAL_ACQUIRE_QUEUE=0
+                // keeps the emulated acquire on the present queue (F8 behaviour).
+                const char* acquireQueueSwitch = std::getenv("FGVK_INTERNAL_ACQUIRE_QUEUE");
+                const bool acquireQueueAllowed = !(acquireQueueSwitch && std::strcmp(acquireQueueSwitch, "0") == 0);
+                if (privatePresentQueue.acquireIndex && acquireQueueAllowed) {
                     wrapper->second.df().GetDeviceQueue(*device, *layerQueueFamily,
                         *privatePresentQueue.acquireIndex, &privateQueue->acquireQueue);
                     if (privateQueue->acquireQueue && wrapper->second.loaderdatafunc()) {
@@ -1155,7 +1159,9 @@ namespace {
                 const bool acquireQueueActive = privateQueue->queue != VK_NULL_HANDLE &&
                     privateQueue->acquireQueue != VK_NULL_HANDLE;
                 std::cerr << "framegen-vulkan: internal acquire queue: active="
-                          << (acquireQueueActive ? 1 : 0) << '\n';
+                          << (acquireQueueActive ? 1 : 0) << " internal_prepare="
+                          << (std::getenv("FGVK_INTERNAL_PREPARE") && std::strcmp(std::getenv("FGVK_INTERNAL_PREPARE"), "0") == 0 ? 0 : 1)
+                          << '\n';
                 if (privateQueue->queue)
                     instance_info->deferredPresentQueues.emplace(*device, std::move(privateQueue));
             }

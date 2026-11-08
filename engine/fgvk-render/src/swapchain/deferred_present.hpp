@@ -9,6 +9,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
+#include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <mutex>
@@ -821,6 +822,16 @@ private:
             std::chrono::duration_cast<std::chrono::nanoseconds>(duration).count()));
     }
 
+    // F9b switch for isolating the 2026-11-08 freeze: FGVK_INTERNAL_PREPARE=0 keeps
+    // every internal real on the at-deadline path (F8 behaviour). Read once per process.
+    static bool internalPrepareEnabled() noexcept {
+        static const bool enabled = [] {
+            const char* value = std::getenv("FGVK_INTERNAL_PREPARE");
+            return !(value && std::strcmp(value, "0") == 0);
+        }();
+        return enabled;
+    }
+
     // F9b: the outcome of one preparation attempt, kept by the worker until the deadline.
     struct InternalPreparation {
         // A lower image is acquired and its copy submitted: the deadline presents it.
@@ -1083,7 +1094,7 @@ private:
                     const std::lock_guard stopLock(mutex);
                     stopped = stopping;
                 }
-                if (!stopped) prep = prepareInternalReal(current, ready.profile);
+                if (!stopped && internalPrepareEnabled()) prep = prepareInternalReal(current, ready.profile);
             }
             if (!readinessMiss && !prep.settled) {
                 const auto waitStarted = Clock::now();
