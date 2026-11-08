@@ -6,6 +6,8 @@ use std::time::{Duration, Instant};
 use egui::{Button, Key, RichText, Stroke, StrokeKind, Ui};
 
 use crate::config::{self, Config, ConfigView, FpsMemory, Mode, Profile, ProfileKey, Settings};
+use crate::picker::Picker;
+use crate::processes;
 use crate::theme;
 
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
@@ -52,6 +54,8 @@ pub struct App {
     quality: Option<f64>,
     dll_text: Option<String>,
     new_game: String,
+    /// Exists only while the "Pick a running program" window is open for the selected profile.
+    picker: Option<Picker>,
     last_poll: Instant,
 }
 
@@ -70,6 +74,7 @@ impl App {
             quality: None,
             dll_text: None,
             new_game: String::new(),
+            picker: None,
             last_poll: Instant::now(),
         }
     }
@@ -96,6 +101,8 @@ impl App {
         self.fps_text = None;
         self.target_text = None;
         self.quality = None;
+        // The picker adds to the selected profile, so it closes when that profile goes away.
+        self.picker = None;
     }
 
     fn report(&mut self, result: Result<(), String>) {
@@ -324,21 +331,26 @@ impl App {
             });
         }
 
-        let add = ui
-            .horizontal(|ui| {
+        let (add, pick) = ui
+            .horizontal_wrapped(|ui| {
                 let response = ui.add(
                     egui::TextEdit::singleline(&mut self.new_game)
-                        .desired_width(300.0)
+                        .desired_width(220.0)
                         .hint_text("Game.exe"),
                 );
                 let enter =
                     response.lost_focus() && ui.input(|input| input.key_pressed(Key::Enter));
-                enter || ui.button("Add").clicked()
+                let add = enter || ui.button("Add").clicked();
+                let pick = ui.button("Pick running…").clicked();
+                (add, pick)
             })
             .inner;
 
         if add {
             self.add_game(profile);
+        }
+        if pick && self.picker.is_none() {
+            self.picker = Some(Picker::new());
         }
         if let Some(index) = remove {
             let mut entries = profile.active_in.clone();
@@ -346,6 +358,30 @@ impl App {
             let result = self.config.set_active_in(&profile.key, &entries);
             self.report(result);
         }
+        self.picker_window(ui.ctx(), profile);
+    }
+
+    /// Shows the picker for the selected profile and adds the entries the user clicked.
+    fn picker_window(&mut self, ctx: &egui::Context, profile: &Profile) {
+        let Some(picker) = self.picker.as_mut() else {
+            return;
+        };
+        let outcome = picker.show(ctx, &profile.active_in);
+        if outcome.closed {
+            self.picker = None;
+        }
+        self.add_picked(profile, &outcome.picked);
+    }
+
+    /// Adds picked entries in one write, skipping any already in the profile. Nothing is written
+    /// when every picked entry is already there.
+    fn add_picked(&mut self, profile: &Profile, picked: &[String]) {
+        let entries = processes::with_added(&profile.active_in, picked);
+        if entries.len() == profile.active_in.len() {
+            return;
+        }
+        let result = self.config.set_active_in(&profile.key, &entries);
+        self.report(result);
     }
 
     fn add_game(&mut self, profile: &Profile) {

@@ -2,6 +2,8 @@
 
 mod app;
 mod config;
+mod picker;
+mod processes;
 mod theme;
 
 fn main() -> eframe::Result {
