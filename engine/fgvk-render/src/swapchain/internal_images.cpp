@@ -12,12 +12,17 @@
 #include "fgvk-common/vulkan/vulkan.hpp"
 
 #include <array>
+#include <atomic>
 #include <bitset>
 #include <cstdlib>
 #include <exception>
 #include <iostream>
 #include <mutex>
 #include <optional>
+#include <sstream>
+#include <string>
+#include <system_error>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -72,6 +77,10 @@ namespace fgvk::layer {
         // submits under acquireTarget()'s mutex, never queue->mutex.
         uint64_t lastReleaseValue{0};
         std::vector<vk::Semaphore> copied;
+        // R1: one binary semaphore per application image. releaseNotHandedOff signals it on
+        // the application queue and the private release waits it, so the release timeline is
+        // only ever signalled on the private queue.
+        std::vector<vk::Semaphore> handoff;
         std::vector<vk::Semaphore> lowerAcquire;
         std::vector<VkFence> lowerFences;
         uint32_t lowerHead{0};
@@ -84,6 +93,11 @@ namespace fgvk::layer {
 
         std::atomic<VkResult> sticky{VK_SUCCESS};
         std::atomic<bool> lowerSuboptimal{false};
+        // D7, pacing profile only: the release wait value, application index and tail wait
+        // value of the latest emulated acquire submit. Stored before that submit.
+        std::atomic<uint64_t> probeAcquireWait{0};
+        std::atomic<uint64_t> probeAcquireIndex{0};
+        std::atomic<uint64_t> probeAcquireTail{0};
 
         Impl(const vk::Vulkan& vk, const VkSwapchainKHR lower, const uint32_t imageCount,
                 std::shared_ptr<DeferredPresentQueue> presentQueue)
@@ -102,7 +116,8 @@ namespace fgvk::layer {
         VkCommandBuffer copyCommandFor(const vk::Vulkan& vk, uint32_t applicationIndex,
                 uint32_t lowerIndex);
         // Caller holds queue->mutex. Submits one release-timeline signal on
-        // submitQueue, after waits, and frees applicationIndex at that value. On
+        // submitQueue, after waits, and frees applicationIndex at that value. Every
+        // caller passes the private queue, which also signals the F9c tail. On
         // failure the image is freed at the last submitted value and the error is sticky.
         VkResult releaseLocked(VkQueue submitQueue, uint32_t applicationIndex,
                 std::span<const VkSemaphore> waits);
@@ -124,6 +139,9 @@ namespace fgvk::layer {
         copied.reserve(lowerCount);
         for (size_t i = 0; i < lowerCount; ++i)
             copied.emplace_back(vk);
+        handoff.reserve(images.size());
+        for (size_t i = 0; i < images.size(); ++i)
+            handoff.emplace_back(vk);
 
         // Slots beyond the lower count let one lower image be acquired while
         // earlier copies still hold their own slots.
@@ -261,7 +279,10 @@ namespace fgvk::layer {
             .signalSemaphoreCount = 1,
             .pSignalSemaphores = &releaseHandle,
         };
-        const VkResult result = funcs.QueueSubmit(submitQueue, 1, &submit, VK_NULL_HANDLE);
+        // Every release now targets the private queue, so it also signals the F9c tail.
+        const VkResult result = submitQueue == queue->queue
+            ? submitPrivate(*queue, funcs.QueueSubmit, submit, VK_NULL_HANDLE)
+            : funcs.QueueSubmit(submitQueue, 1, &submit, VK_NULL_HANDLE);
         if (result == VK_SUCCESS) {
             lastReleaseValue = value;
             static_cast<void>(ring.complete(applicationIndex, value));
@@ -291,6 +312,7 @@ namespace fgvk::layer {
         copies.clear();
         lowerAcquire.clear();
         copied.clear();
+        handoff.clear();
         release.reset();
         for (const VkFence fence : lowerFences) {
             if (fence != VK_NULL_HANDLE)
@@ -331,14 +353,139 @@ namespace fgvk::layer {
                       << error.what() << '\n';
             return nullptr;
         }
-        return std::shared_ptr<InternalSwapchainImages>(
+        auto images = std::shared_ptr<InternalSwapchainImages>(
             new InternalSwapchainImages(std::move(state)));
+        if (present_diagnostics::pacingProfileEnabled())
+            registerStallProbe(images.get());
+        return images;
     }
 
     InternalSwapchainImages::InternalSwapchainImages(std::unique_ptr<Impl> state)
         : impl(std::move(state)) {}
 
-    InternalSwapchainImages::~InternalSwapchainImages() = default;
+    InternalSwapchainImages::~InternalSwapchainImages() {
+        // Removed before impl is destroyed, so the stall watchdog never dumps a destroyed owner.
+        if (present_diagnostics::pacingProfileEnabled())
+            unregisterStallProbe(this);
+    }
+
+    // D7 stall probe. The registry, its mutex and the watchdog flag are leaked on purpose:
+    // the detached watchdog may still run while the process exits.
+    namespace {
+        // A stall is 2 s without an application present. The watchdog polls every 500 ms.
+        constexpr int64_t stallNanoseconds = 2'000'000'000;
+        constexpr auto stallPollInterval = std::chrono::milliseconds{500};
+
+        std::mutex& stallRegistryMutex() {
+            static std::mutex& mutex = *new std::mutex;
+            return mutex;
+        }
+        std::vector<const InternalSwapchainImages*>& stallRegistry() {
+            static auto& registry = *new std::vector<const InternalSwapchainImages*>;
+            return registry;
+        }
+        bool& stallWatchdogStarted() {
+            static bool started = false;
+            return started;
+        }
+        int64_t steadyNanoseconds(const present_diagnostics::Clock::time_point time) {
+            return std::chrono::duration_cast<std::chrono::nanoseconds>(time.time_since_epoch()).count();
+        }
+    }
+
+    void InternalSwapchainImages::registerStallProbe(const InternalSwapchainImages* owner) {
+        const std::lock_guard lock(stallRegistryMutex());
+        try {
+            stallRegistry().push_back(owner);
+            if (!stallWatchdogStarted()) {
+                std::thread(&InternalSwapchainImages::stallWatchdogLoop).detach();
+                stallWatchdogStarted() = true;
+            }
+        } catch (const std::exception& error) {
+            std::cerr << "framegen-vulkan: d7 stall probe unavailable: " << error.what() << '\n';
+        }
+    }
+
+    void InternalSwapchainImages::unregisterStallProbe(const InternalSwapchainImages* owner) {
+        const std::lock_guard lock(stallRegistryMutex());
+        std::erase(stallRegistry(), owner);
+    }
+
+    void InternalSwapchainImages::stallWatchdogLoop() {
+        const int64_t started = steadyNanoseconds(present_diagnostics::Clock::now());
+        bool reported = false;
+        for (;;) {
+            std::this_thread::sleep_for(stallPollInterval);
+            // Before the first application present, the stall is measured from the watchdog's start.
+            const int64_t lastPresent = present_diagnostics::lastApplicationPresentNanoseconds();
+            const int64_t baseline = lastPresent != 0 ? lastPresent : started;
+            if (steadyNanoseconds(present_diagnostics::Clock::now()) - baseline < stallNanoseconds) {
+                // A present arrived: the next stall is reported as well.
+                reported = false;
+                continue;
+            }
+            if (reported)
+                continue;
+            reported = true;
+            // Holding the registry mutex keeps every listed owner alive until its dump ends.
+            const std::lock_guard lock(stallRegistryMutex());
+            for (const InternalSwapchainImages* owner : stallRegistry())
+                owner->writeStallProbe();
+        }
+    }
+
+    // Diagnostics only. It never blocks: the queue and ring mutexes are only try-locked,
+    // and the device queries (fence status, timeline counters) do not wait on the GPU.
+    void InternalSwapchainImages::writeStallProbe() const {
+        const VkDevice device = impl->device;
+        const auto& funcs = impl->funcs;
+        // A counter read; "unavailable" when the device does not expose the query.
+        const auto counter = [&funcs, device](const VkSemaphore semaphore) -> std::string {
+            if (!funcs.GetSemaphoreCounterValueKHR)
+                return "unavailable";
+            uint64_t value{};
+            const VkResult result = funcs.GetSemaphoreCounterValueKHR(device, semaphore, &value);
+            return result == VK_SUCCESS ? std::to_string(value)
+                : "error" + std::to_string(static_cast<int>(result));
+        };
+        std::ostringstream line;
+        line << "framegen-vulkan: d7 stall release_gpu="
+             << (impl->release ? counter(impl->release->handle()) : std::string{"none"});
+
+        // Held only while try-locked: the worker's submits and fence resets need it, so the
+        // fields read under it cannot change during the dump.
+        std::unique_lock queueLock(impl->queue->mutex, std::try_to_lock);
+        const bool locked = queueLock.owns_lock();
+        line << " last_release=" << (locked ? std::to_string(impl->lastReleaseValue) : std::string{"busy"});
+        line << " acq_wait=" << impl->probeAcquireWait.load(std::memory_order_relaxed)
+             << " acq_index=" << impl->probeAcquireIndex.load(std::memory_order_relaxed)
+             << " acq_tail=" << impl->probeAcquireTail.load(std::memory_order_relaxed);
+        line << " tail_gpu=" << (!locked ? std::string{"busy"}
+            : impl->queue->tail ? counter(impl->queue->tail) : std::string{"none"});
+        line << " tail_submitted=" << impl->queue->tailSubmitted.load(std::memory_order_acquire);
+
+        line << " ring=";
+        if (const auto states = impl->ring.tryDescribe()) {
+            for (size_t index = 0; index < states->size(); ++index) {
+                const auto& [letter, value] = (*states)[index];
+                line << (index ? " " : "") << index << ':' << letter << ':' << value;
+            }
+        } else {
+            line << "busy";
+        }
+
+        // VK_SUCCESS (0) is signalled, VK_NOT_READY (1) is pending, and a negative value is an error.
+        line << " fences=";
+        if (locked) {
+            for (size_t slot = 0; slot < impl->lowerFences.size(); ++slot)
+                line << (slot ? "," : "") << static_cast<int>(funcs.GetFenceStatus(device, impl->lowerFences[slot]));
+        } else {
+            line << "busy";
+        }
+        line << " lower_head=" << (locked ? std::to_string(impl->lowerHead) : std::string{"busy"});
+        line << " worker_slot=" << (locked ? std::to_string(impl->workerSlot) : std::string{"busy"});
+        std::cerr << line.str() << '\n';
+    }
 
     std::span<const VkImage> InternalSwapchainImages::images() const noexcept {
         return impl->images;
@@ -386,6 +533,11 @@ namespace fgvk::layer {
         // between the read and the submit. The application's semaphore and fence are
         // signalled on the acquire queue, which no other submit uses. Without a second
         // queue the submit runs on the present queue under its mutex, as before F9.
+        // F9c: with a second queue the submit also waits the private tail at
+        // tailSubmitted, the last value whose signal submit returned VK_SUCCESS, so the
+        // same VUID holds for that wait. A same-queue acquire needs no tail wait: queue
+        // order already runs it after every earlier private batch, and so does the
+        // tail wait on the acquire queue, which restores that ordering.
         // D5's internal_queue_lock_* fields keep their names. They now measure the wait
         // for submitMutex, the acquire queue's lock (or the present queue's lock).
         {
@@ -396,30 +548,51 @@ namespace fgvk::layer {
             const uint64_t waitValue = impl->ring.releaseValueOf(*index);
             const bool waitRelease = waitValue != 0;
             const bool signalSemaphore = semaphore != VK_NULL_HANDLE;
+            const bool tailWait = impl->queue->acquireQueue != VK_NULL_HANDLE &&
+                impl->queue->tail != VK_NULL_HANDLE;
+            const uint64_t tailValue = tailWait
+                ? impl->queue->tailSubmitted.load(std::memory_order_acquire) : 0;
             present_diagnostics::Clock::duration submitWait{};
             VkResult submitted = VK_SUCCESS;
             if (waitRelease || signalSemaphore || fence != VK_NULL_HANDLE) {
                 const VkSemaphore releaseHandle = impl->release->handle();
-                const VkPipelineStageFlags stage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+                std::array<VkSemaphore, 2> waitSemaphores{};
+                std::array<uint64_t, 2> waitValues{};
+                uint32_t waitCount = 0;
+                if (waitRelease) {
+                    waitSemaphores[waitCount] = releaseHandle;
+                    waitValues[waitCount++] = waitValue;
+                }
+                if (tailValue != 0) {
+                    waitSemaphores[waitCount] = impl->queue->tail;
+                    waitValues[waitCount++] = tailValue;
+                }
+                const std::array<VkPipelineStageFlags, 2> stages{
+                    VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT};
                 const uint64_t zero = 0;
                 const VkTimelineSemaphoreSubmitInfo timeline{
                     .sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
-                    .waitSemaphoreValueCount = waitRelease ? 1u : 0u,
-                    .pWaitSemaphoreValues = &waitValue,
+                    .waitSemaphoreValueCount = waitCount,
+                    .pWaitSemaphoreValues = waitValues.data(),
                     .signalSemaphoreValueCount = signalSemaphore ? 1u : 0u,
                     .pSignalSemaphoreValues = &zero,
                 };
                 const VkSubmitInfo submit{
                     .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
                     .pNext = &timeline,
-                    .waitSemaphoreCount = waitRelease ? 1u : 0u,
-                    .pWaitSemaphores = &releaseHandle,
-                    .pWaitDstStageMask = &stage,
+                    .waitSemaphoreCount = waitCount,
+                    .pWaitSemaphores = waitSemaphores.data(),
+                    .pWaitDstStageMask = stages.data(),
                     .commandBufferCount = 0,
                     .pCommandBuffers = nullptr,
                     .signalSemaphoreCount = signalSemaphore ? 1u : 0u,
                     .pSignalSemaphores = &semaphore,
                 };
+                if (measured) {
+                    impl->probeAcquireWait.store(waitValue, std::memory_order_relaxed);
+                    impl->probeAcquireIndex.store(*index, std::memory_order_relaxed);
+                    impl->probeAcquireTail.store(tailValue, std::memory_order_relaxed);
+                }
                 const auto submitStarted = measured ? present_diagnostics::Clock::now() : present_diagnostics::Clock::time_point{};
                 submitted = impl->funcs.QueueSubmit(submitQueue, 1, &submit, fence);
                 if (measured)
@@ -479,12 +652,31 @@ namespace fgvk::layer {
 
     void InternalSwapchainImages::releaseNotHandedOff(const VkQueue applicationQueue,
             const uint32_t applicationIndex) {
-        // The application's queue is the one this present call was made on, so
-        // the empty submit is ordered after any source copy already submitted there.
+        // R1: the release timeline is signalled only on the private queue. The
+        // application's queue is the one this present call was made on, so the empty
+        // submit here is ordered after any source copy already submitted there. It
+        // signals the handoff semaphore, and the private release waits it. The
+        // ordering argument is the same as before R1, with the wait moved to the
+        // private queue.
+        const VkSemaphore handoff = impl->handoff.at(applicationIndex).handle();
+        const VkSubmitInfo handoffSignal{
+            .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+            .signalSemaphoreCount = 1,
+            .pSignalSemaphores = &handoff,
+        };
+        const VkResult signalled = impl->funcs.QueueSubmit(applicationQueue, 1, &handoffSignal, VK_NULL_HANDLE);
         {
             const std::lock_guard lock(impl->queue->mutex);
-            static_cast<void>(impl->releaseLocked(applicationQueue, applicationIndex, {}));
+            if (signalled == VK_SUCCESS) {
+                const std::array waits{handoff};
+                static_cast<void>(impl->releaseLocked(impl->queue->queue, applicationIndex, waits));
+            } else {
+                // Nothing was signalled, so nothing waits. The error is kept as sticky below.
+                static_cast<void>(impl->releaseLocked(impl->queue->queue, applicationIndex, {}));
+            }
         }
+        if (signalled != VK_SUCCESS)
+            impl->sticky.store(signalled);
         VkResult expected = VK_SUCCESS;
         impl->sticky.compare_exchange_strong(expected, VK_ERROR_OUT_OF_DATE_KHR);
     }
@@ -538,7 +730,9 @@ namespace fgvk::layer {
                     .signalSemaphoreCount = static_cast<uint32_t>(signals.size()),
                     .pSignalSemaphores = signals.data(),
                 };
-                result = impl->funcs.QueueSubmit(queue, 1, &submit, impl->lowerFences.at(slot));
+                result = queue == impl->queue->queue
+                    ? submitPrivate(*impl->queue, impl->funcs.QueueSubmit, submit, impl->lowerFences.at(slot))
+                    : impl->funcs.QueueSubmit(queue, 1, &submit, impl->lowerFences.at(slot));
                 if (result == VK_SUCCESS) {
                     impl->lastReleaseValue = value;
                     static_cast<void>(impl->ring.complete(applicationIndex, value));

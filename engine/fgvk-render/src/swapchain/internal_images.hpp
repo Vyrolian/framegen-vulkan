@@ -16,6 +16,7 @@
 #include <span>
 #include <stdexcept>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include <vulkan/vulkan_core.h>
@@ -257,6 +258,23 @@ namespace fgvk::layer {
             return index < states.size() && states[index] == State::Acquired;
         }
 
+        /// Diagnostics only (D7). Each index's state letter (F free, A acquired,
+        /// P pending) with its stored release value. Reads only when the ring mutex
+        /// is free, so it never waits. Empty when the mutex is busy.
+        [[nodiscard]] std::optional<std::vector<std::pair<char, uint64_t>>> tryDescribe() const {
+            std::unique_lock lock(mutex, std::try_to_lock);
+            if (!lock.owns_lock())
+                return std::nullopt;
+            std::vector<std::pair<char, uint64_t>> described;
+            described.reserve(states.size());
+            for (size_t index = 0; index < states.size(); ++index) {
+                const char letter = states[index] == State::Free ? 'F'
+                    : states[index] == State::Acquired ? 'A' : 'P';
+                described.emplace_back(letter, values[index]);
+            }
+            return described;
+        }
+
     private:
         enum class State : uint8_t { Free, Acquired, Pending };
 
@@ -363,9 +381,11 @@ namespace fgvk::layer {
         /// Used only on the sticky-error path, which never reaches a lower acquire.
         [[nodiscard]] VkResult consumeWithoutCopy(uint32_t applicationIndex,
             std::span<const VkSemaphore> applicationWaits);
-        /// Image not handed off: queue order on the application queue covers any
-        /// source copy already submitted there. Signals the release timeline, frees
-        /// the image and makes the swapchain sticky OUT_OF_DATE. Waits no semaphores.
+        /// Image not handed off: an empty submit on the application queue signals a
+        /// handoff semaphore after any source copy already submitted there. The private
+        /// queue then waits it and signals the release timeline, freeing the image. The
+        /// swapchain becomes sticky OUT_OF_DATE. The release timeline is never signalled
+        /// on the application queue.
         void releaseNotHandedOff(VkQueue applicationQueue, uint32_t applicationIndex);
 
         /// Records the copies from one application image to every lower image.
@@ -400,6 +420,13 @@ namespace fgvk::layer {
         // the sticky error and frees p at the last submitted release value.
         [[nodiscard]] VkResult submitCopyLocked(VkQueue queue, uint32_t applicationIndex,
             uint32_t lowerIndex, uint32_t slot, std::span<const VkSemaphore> waits);
+        // D7 stall probe, pacing profile only. create registers each owner and the
+        // destructor removes it, under one registry mutex. A single detached watchdog
+        // dumps the registered owners after an application stall.
+        static void registerStallProbe(const InternalSwapchainImages* owner);
+        static void unregisterStallProbe(const InternalSwapchainImages* owner);
+        static void stallWatchdogLoop();
+        void writeStallProbe() const;
         std::unique_ptr<Impl> impl;
     };
 

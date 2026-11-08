@@ -156,6 +156,22 @@ namespace {
         expect(outOfRange, "releaseValueOf accepted an index outside the ring");
     }
 
+    void testRingDescribeReportsStatesAndValues() {
+        InternalImageRing ring(3);
+        expect(ring.acquire() == 0u && ring.present(0) && ring.complete(0, 7) && ring.acquire() == 1u,
+            "setup acquisitions and completion failed");
+        const auto described = ring.tryDescribe();
+        expect(described && described->size() == 3 &&
+                (*described)[0] == std::pair{'F', uint64_t{7}} &&
+                (*described)[1] == std::pair{'A', uint64_t{0}} &&
+                (*described)[2] == std::pair{'F', uint64_t{0}},
+            "the ring description did not report each index's state and release value");
+        expect(ring.present(1), "presenting the acquired image failed");
+        const auto pending = ring.tryDescribe();
+        expect(pending && (*pending)[1] == std::pair{'P', uint64_t{0}},
+            "a presented index was not described as pending");
+    }
+
     void testRingSizeBounds() {
         for (const uint32_t count : {2u, 8u}) {
             InternalImageRing ring(count);
@@ -410,6 +426,7 @@ int main() {
     testReleaseValuesPerIndex();
     testCompleteStoresReleaseValue();
     testReleaseValueOfReadsCompletedValue();
+    testRingDescribeReportsStatesAndValues();
     testRingSizeBounds();
     testAcquireWaitsForComplete();
     testAcquireWaitZeroNeverWaits();

@@ -129,6 +129,8 @@ namespace vk {
         // extension functions
         PFN_vkSignalSemaphoreKHR SignalSemaphoreKHR;
         PFN_vkWaitSemaphoresKHR WaitSemaphoresKHR;
+        // Diagnostics only (D7). Null when the device does not expose it.
+        PFN_vkGetSemaphoreCounterValueKHR GetSemaphoreCounterValueKHR;
         PFN_vkGetMemoryFdKHR GetMemoryFdKHR;
         PFN_vkImportSemaphoreFdKHR ImportSemaphoreFdKHR;
         PFN_vkGetSemaphoreFdKHR GetSemaphoreFdKHR;

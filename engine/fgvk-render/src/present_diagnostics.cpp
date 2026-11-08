@@ -214,6 +214,24 @@ void initializePacingProfileLog() noexcept {
     try { (void)pacingLog(); } catch (...) {}
 }
 
+namespace {
+// D7: the steady-clock time of the latest application present. Only the pacing profile writes it.
+std::atomic<int64_t>& lastApplicationPresent() {
+    static std::atomic<int64_t> value{0};
+    return value;
+}
+}
+
+void noteApplicationPresent() {
+    if (!pacingProfileEnabled()) return;
+    lastApplicationPresent().store(std::chrono::duration_cast<std::chrono::nanoseconds>(
+        Clock::now().time_since_epoch()).count(), std::memory_order_relaxed);
+}
+
+int64_t lastApplicationPresentNanoseconds() {
+    return lastApplicationPresent().load(std::memory_order_relaxed);
+}
+
 bool pacingCopyProfileEnabled() {
     static const bool value = [] {
         const char* environment = std::getenv("FGVK_PACING_PROFILE_COPY");

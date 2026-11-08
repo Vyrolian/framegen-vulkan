@@ -703,6 +703,8 @@ VulkanDeviceFuncs vk::initVulkanDeviceFuncs(const VulkanInstanceFuncs& f, VkDevi
             ? dpa<PFN_vkWaitSemaphoresKHR>(f, d, "vkWaitSemaphoresKHR")
             : reinterpret_cast<PFN_vkWaitSemaphoresKHR>(
                 optionalDeviceProc("vkWaitSemaphoresKHR")),
+        .GetSemaphoreCounterValueKHR = reinterpret_cast<PFN_vkGetSemaphoreCounterValueKHR>(
+            optionalDeviceProc("vkGetSemaphoreCounterValueKHR")),
         .GetMemoryFdKHR = frameGenerationInteropEnabled
             ? dpa<PFN_vkGetMemoryFdKHR>(f, d, "vkGetMemoryFdKHR")
             : reinterpret_cast<PFN_vkGetMemoryFdKHR>(

@@ -1141,6 +1141,23 @@ namespace {
                     const auto result = (*wrapper->second.loaderdatafunc())(*device, privateQueue->queue);
                     if (result != VK_SUCCESS) privateQueue->queue = VK_NULL_HANDLE;
                 }
+                // F9c: the private queue's tail timeline. Every submit on that queue signals
+                // it, and the emulated acquire waits it on the acquire queue. On failure it stays
+                // null and the acquire runs without the tail wait.
+                if (privateQueue->queue) {
+                    const VkSemaphoreTypeCreateInfo tailType{
+                        .sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
+                        .semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE,
+                        .initialValue = 0,
+                    };
+                    const VkSemaphoreCreateInfo tailInfo{
+                        .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+                        .pNext = &tailType,
+                    };
+                    VkSemaphore tail{VK_NULL_HANDLE};
+                    if (wrapper->second.df().CreateSemaphore(*device, &tailInfo, nullptr, &tail) == VK_SUCCESS)
+                        privateQueue->tail = tail;
+                }
                 // The emulated acquire's queue exists only when the family had room
                 // for both. Like the present queue, it is never registered in
                 // queueIdentities, so the application cannot see it.
@@ -1161,6 +1178,7 @@ namespace {
                 std::cerr << "framegen-vulkan: internal acquire queue: active="
                           << (acquireQueueActive ? 1 : 0) << " internal_prepare="
                           << (std::getenv("FGVK_INTERNAL_PREPARE") && std::strcmp(std::getenv("FGVK_INTERNAL_PREPARE"), "0") == 0 ? 0 : 1)
+                          << " acquire_tail=" << (privateQueue->tail != VK_NULL_HANDLE ? 1 : 0)
                           << '\n';
                 if (privateQueue->queue)
                     instance_info->deferredPresentQueues.emplace(*device, std::move(privateQueue));
@@ -1393,6 +1411,14 @@ namespace {
         );
         forceFinalizeRetiredSwapchains(device);
         drainDeferredDevice(device);
+        // F9c: the tail timeline goes with its queue. Device destruction requires the
+        // queues to be idle, so no wait is needed before it is destroyed.
+        if (const auto owned = instance_info->deferredPresentQueues.find(device);
+                owned != instance_info->deferredPresentQueues.end() && owned->second->tail != VK_NULL_HANDLE) {
+            if (const auto wrapper = instance_info->devices.find(device); wrapper != instance_info->devices.end())
+                wrapper->second.df().DestroySemaphore(device, owned->second->tail, nullptr);
+            owned->second->tail = VK_NULL_HANDLE;
+        }
         instance_info->deferredPresentQueues.erase(device);
 
         // destroy layer instance
@@ -3383,6 +3409,8 @@ namespace {
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wunknown-warning-option"
 #pragma clang diagnostic ignored "-Wunsafe-buffer-usage"
+        // D7: the stall probe's present clock. Only the pacing profile stores it.
+        present_diagnostics::noteApplicationPresent();
         present_diagnostics::ApplicationPresentScope timingScope(
             queue, info->swapchainCount == 1 ? info->pSwapchains[0] : VK_NULL_HANDLE,
             info->swapchainCount == 1 ? std::optional<uint32_t>{info->pImageIndices[0]} : std::nullopt

@@ -2301,8 +2301,245 @@ void internalRealLockSplitIsProfileOnly() {
     }
 }
 
+// F9c: submitPrivate and the private queue's tail timeline. The fake records what the
+// driver would receive for each submit, and returns the result the test scripts.
+namespace {
+struct PrivateSubmit {
+    const VkSubmitInfo* info{};
+    VkQueue queue{};
+    uint32_t commands{};
+    VkFence fence{};
+    bool chained{};
+    VkStructureType chain{};
+    std::vector<VkSemaphore> waits, signals;
+    std::vector<uint64_t> waitValues, signalValues;
+};
+std::vector<PrivateSubmit> privateSubmits;
+VkResult privateSubmitResult{VK_SUCCESS};
+VkResult VKAPI_CALL recordPrivateSubmit(VkQueue queue, uint32_t count, const VkSubmitInfo* info, VkFence fence) {
+    expect(count == 1, "a private submit did not submit exactly one batch");
+    PrivateSubmit record;
+    record.info = info; record.queue = queue; record.commands = info->commandBufferCount; record.fence = fence;
+    record.chained = info->pNext != nullptr;
+    if (info->pNext) {
+        std::memcpy(&record.chain, info->pNext, sizeof(record.chain));
+        if (record.chain == VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO) {
+            const auto* timeline = static_cast<const VkTimelineSemaphoreSubmitInfo*>(info->pNext);
+            record.waitValues.assign(timeline->pWaitSemaphoreValues,
+                timeline->pWaitSemaphoreValues + timeline->waitSemaphoreValueCount);
+            record.signalValues.assign(timeline->pSignalSemaphoreValues,
+                timeline->pSignalSemaphoreValues + timeline->signalSemaphoreValueCount);
+        }
+    }
+    record.waits.assign(info->pWaitSemaphores, info->pWaitSemaphores + info->waitSemaphoreCount);
+    record.signals.assign(info->pSignalSemaphores, info->pSignalSemaphores + info->signalSemaphoreCount);
+    privateSubmits.push_back(std::move(record));
+    return privateSubmitResult;
+}
+}
+
+void privateSubmitWithoutTailIsUnchanged() {
+    DeferredPresentQueue queue;
+    queue.queue = handle<VkQueue>(7);
+    privateSubmits.clear(); privateSubmitResult = VK_SUCCESS;
+    const std::array waits{handle<VkSemaphore>(21)};
+    const std::array signals{handle<VkSemaphore>(22)};
+    const VkSubmitInfo info{
+        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .waitSemaphoreCount = 1, .pWaitSemaphores = waits.data(),
+        .signalSemaphoreCount = 1, .pSignalSemaphores = signals.data(),
+    };
+    expect(submitPrivate(queue, recordPrivateSubmit, info, handle<VkFence>(31)) == VK_SUCCESS,
+        "a submit without a tail failed");
+    expect(privateSubmits.size() == 1 && privateSubmits[0].info == &info &&
+        privateSubmits[0].queue == handle<VkQueue>(7) && privateSubmits[0].fence == handle<VkFence>(31) &&
+        !privateSubmits[0].chained && privateSubmits[0].signals == std::vector{handle<VkSemaphore>(22)},
+        "a submit without a tail was not passed through unchanged");
+    expect(queue.tailNext == 0 && queue.tailSubmitted.load() == 0,
+        "a submit without a tail advanced a tail");
+}
+
+void privateSubmitAppendsTail() {
+    DeferredPresentQueue queue;
+    queue.queue = handle<VkQueue>(7);
+    queue.tail = handle<VkSemaphore>(90);
+    privateSubmits.clear(); privateSubmitResult = VK_SUCCESS;
+    // A timeline signal at 5 and a binary signal, with one binary wait.
+    const std::array waits{handle<VkSemaphore>(21)};
+    const std::array signals{handle<VkSemaphore>(40), handle<VkSemaphore>(41)};
+    const std::array signalValues{uint64_t{5}, uint64_t{0}};
+    const VkTimelineSemaphoreSubmitInfo timeline{
+        .sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
+        .signalSemaphoreValueCount = 2, .pSignalSemaphoreValues = signalValues.data(),
+    };
+    const VkSubmitInfo info{
+        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .pNext = &timeline,
+        .waitSemaphoreCount = 1, .pWaitSemaphores = waits.data(),
+        .signalSemaphoreCount = 2, .pSignalSemaphores = signals.data(),
+    };
+    expect(submitPrivate(queue, recordPrivateSubmit, info, VK_NULL_HANDLE) == VK_SUCCESS,
+        "a tailed submit failed");
+    expect(privateSubmits.size() == 1, "a tailed submit was not made exactly once");
+    const auto& record = privateSubmits.front();
+    expect(record.signals == std::vector{handle<VkSemaphore>(40), handle<VkSemaphore>(41), handle<VkSemaphore>(90)} &&
+        record.signalValues == std::vector<uint64_t>{5, 0, 1},
+        "the tail was not appended after the existing signals with the value tailNext + 1");
+    expect(record.waits == std::vector{handle<VkSemaphore>(21)} && record.waitValues.empty(),
+        "the wait list of a tailed submit changed");
+    expect(queue.tailNext == 1 && queue.tailSubmitted.load() == 1,
+        "a successful tailed submit did not advance the tail");
+
+    // Binary-only signals take value 0 and the tail takes the next value.
+    const std::array binary{handle<VkSemaphore>(42)};
+    const VkSubmitInfo second{
+        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .signalSemaphoreCount = 1, .pSignalSemaphores = binary.data(),
+    };
+    expect(submitPrivate(queue, recordPrivateSubmit, second, VK_NULL_HANDLE) == VK_SUCCESS,
+        "a binary tailed submit failed");
+    expect(privateSubmits.size() == 2 &&
+        privateSubmits[1].signals == std::vector{handle<VkSemaphore>(42), handle<VkSemaphore>(90)} &&
+        privateSubmits[1].signalValues == std::vector<uint64_t>{0, 2},
+        "a binary signal did not take value 0 with the tail at its next value");
+    expect(queue.tailNext == 2 && queue.tailSubmitted.load() == 2,
+        "the second tailed submit did not advance the tail");
+}
+
+void privateSubmitFailureLeavesTail() {
+    DeferredPresentQueue queue;
+    queue.queue = handle<VkQueue>(7);
+    queue.tail = handle<VkSemaphore>(90);
+    privateSubmits.clear();
+    const std::array signals{handle<VkSemaphore>(40)};
+    const VkSubmitInfo info{
+        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .signalSemaphoreCount = 1, .pSignalSemaphores = signals.data(),
+    };
+    privateSubmitResult = VK_ERROR_DEVICE_LOST;
+    expect(submitPrivate(queue, recordPrivateSubmit, info, VK_NULL_HANDLE) == VK_ERROR_DEVICE_LOST,
+        "a failed tailed submit reported success");
+    expect(queue.tailNext == 0 && queue.tailSubmitted.load() == 0,
+        "a failed tailed submit advanced the tail");
+    privateSubmitResult = VK_SUCCESS;
+    expect(submitPrivate(queue, recordPrivateSubmit, info, VK_NULL_HANDLE) == VK_SUCCESS &&
+        privateSubmits.size() == 2 && privateSubmits[1].signalValues == std::vector<uint64_t>{0, 1} &&
+        queue.tailNext == 1 && queue.tailSubmitted.load() == 1,
+        "the retry did not reuse the tail value that was never published");
+}
+
+void privateSubmitForeignChainBypassesTail() {
+    DeferredPresentQueue queue;
+    queue.queue = handle<VkQueue>(7);
+    queue.tail = handle<VkSemaphore>(90);
+    privateSubmits.clear(); privateSubmitResult = VK_SUCCESS;
+    const std::array signals{handle<VkSemaphore>(40)};
+    const VkSemaphoreSignalInfo foreign{.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO};
+    const VkSubmitInfo withForeign{
+        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .pNext = &foreign,
+        .signalSemaphoreCount = 1, .pSignalSemaphores = signals.data(),
+    };
+    expect(submitPrivate(queue, recordPrivateSubmit, withForeign, VK_NULL_HANDLE) == VK_SUCCESS &&
+        privateSubmits.size() == 1 && privateSubmits[0].info == &withForeign &&
+        privateSubmits[0].signals == std::vector{handle<VkSemaphore>(40)},
+        "a foreign pNext chain was not submitted unchanged");
+    // A timeline whose own pNext is set is not understood either.
+    const std::array nestedValues{uint64_t{3}};
+    const VkTimelineSemaphoreSubmitInfo nested{
+        .sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO, .pNext = &foreign,
+        .signalSemaphoreValueCount = 1, .pSignalSemaphoreValues = nestedValues.data(),
+    };
+    const VkSubmitInfo withNested{
+        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .pNext = &nested,
+        .signalSemaphoreCount = 1, .pSignalSemaphores = signals.data(),
+    };
+    expect(submitPrivate(queue, recordPrivateSubmit, withNested, VK_NULL_HANDLE) == VK_SUCCESS &&
+        privateSubmits.size() == 2 && privateSubmits[1].info == &withNested &&
+        privateSubmits[1].signals == std::vector{handle<VkSemaphore>(40)},
+        "a timeline with its own pNext was not submitted unchanged");
+    expect(queue.tailNext == 0 && queue.tailSubmitted.load() == 0,
+        "an unsupported chain advanced the tail");
+}
+
+void generatedCopyAddsPrivateTail() {
+    auto queue = std::make_shared<DeferredPresentQueue>();
+    queue->queue = handle<VkQueue>(7);
+    queue->tail = handle<VkSemaphore>(90);
+    DeferredPresent worker(queue, recordingPresent);
+    privateSubmits.clear(); copyPresents.clear(); copyAcquireCalls = 0;
+    copyAcquireResult = VK_SUCCESS; copyAcquireImage = 2; privateSubmitResult = VK_SUCCESS;
+    const auto swapchain = handle<VkSwapchainKHR>(11);
+    const auto realWait = handle<VkSemaphore>(12);
+    uint32_t realImage = 4;
+    const VkPresentInfoKHR realInfo{.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+        .waitSemaphoreCount = 1, .pWaitSemaphores = &realWait,
+        .swapchainCount = 1, .pSwapchains = &swapchain, .pImageIndices = &realImage};
+    auto copy = generatedCopy();
+    copy.submit = recordPrivateSubmit;
+    const auto deadline = DeferredPresent::Clock::now();
+    expect(worker.beginBatch(2), "tailed generated copy batch rejected");
+    expect(worker.enqueueGeneratedCopy(swapchain, nullptr, deadline, copy), "tailed generated copy rejected");
+    expect(worker.enqueue(realInfo, deadline + 1ms), "real output rejected after tailed generated copy");
+    worker.closeBatch();
+    const auto completion = worker.finish(UINT64_MAX);
+    expect(completion && completion->count == 2 && completion->result == VK_SUCCESS &&
+        !completion->calls[0].skipped && !completion->calls[1].skipped,
+        "tailed generated copy was skipped or changed the batch result");
+    expect(privateSubmits.size() == 1, "tailed generated copy was not submitted exactly once");
+    const auto& submit = privateSubmits.front();
+    expect(submit.queue == handle<VkQueue>(7) && submit.commands == 1 && submit.fence == handle<VkFence>(64) &&
+        submit.waits == std::vector{handle<VkSemaphore>(61), handle<VkSemaphore>(62)} &&
+        submit.signals == std::vector{handle<VkSemaphore>(72), handle<VkSemaphore>(63), handle<VkSemaphore>(90)} &&
+        submit.signalValues == std::vector<uint64_t>{0, 0, 1},
+        "tailed generated copy did not append the tail after its present and continuation signals");
+    expect(queue->tailNext == 1 && queue->tailSubmitted.load() == 1,
+        "tailed generated copy did not advance the tail");
+    expect(copyPresents.size() == 2 && copyPresents[0] == std::pair{2u, handle<VkSemaphore>(72)} &&
+        copyPresents[1] == std::pair{4u, realWait},
+        "tailed generated copy changed the presentation order");
+}
+
+void generatedSkipAddsPrivateTail() {
+    auto queue = std::make_shared<DeferredPresentQueue>();
+    queue->queue = handle<VkQueue>(7);
+    queue->tail = handle<VkSemaphore>(90);
+    DeferredPresent worker(queue, recordingPresent);
+    privateSubmits.clear(); copyPresents.clear(); copyAcquireCalls = 0;
+    copyAcquireResult = VK_NOT_READY; privateSubmitResult = VK_SUCCESS;
+    const auto swapchain = handle<VkSwapchainKHR>(11);
+    const auto realWait = handle<VkSemaphore>(12);
+    uint32_t realImage = 4;
+    const VkPresentInfoKHR realInfo{.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+        .waitSemaphoreCount = 1, .pWaitSemaphores = &realWait,
+        .swapchainCount = 1, .pSwapchains = &swapchain, .pImageIndices = &realImage};
+    auto copy = generatedCopy();
+    copy.submit = recordPrivateSubmit;
+    const auto deadline = DeferredPresent::Clock::now();
+    expect(worker.beginBatch(2), "tailed skip batch rejected");
+    expect(worker.enqueueGeneratedCopy(swapchain, nullptr, deadline, copy), "tailed skip copy rejected");
+    expect(worker.enqueue(realInfo, deadline + 1ms), "real output rejected after tailed skip");
+    worker.closeBatch();
+    const auto completion = worker.finish(UINT64_MAX);
+    expect(completion && completion->count == 2 && completion->calls[0].skipped &&
+        completion->calls[0].result == VK_SUCCESS && !completion->calls[1].skipped,
+        "tailed skip was not a successful skip ahead of the real output");
+    expect(privateSubmits.size() == 1, "tailed skip was not submitted exactly once");
+    const auto& submit = privateSubmits.front();
+    expect(submit.commands == 0 && submit.fence == handle<VkFence>(64) &&
+        submit.waits == std::vector{handle<VkSemaphore>(62)} &&
+        submit.signals == std::vector{handle<VkSemaphore>(63), handle<VkSemaphore>(90)} &&
+        submit.signalValues == std::vector<uint64_t>{0, 1},
+        "tailed skip did not signal the continuation with the tail");
+    expect(queue->tailNext == 1 && queue->tailSubmitted.load() == 1,
+        "tailed skip did not advance the tail");
+    expect(copyPresents.size() == 1 && copyPresents[0] == std::pair{4u, realWait},
+        "tailed skip presented the skipped image or lost the real output");
+    copyAcquireResult = VK_SUCCESS;
+}
+
 int main() {
     queueRequest(); acquireQueueRequest(); acquireTargetAvoidsPresentLock();
+    privateSubmitWithoutTailIsUnchanged(); privateSubmitAppendsTail();
+    privateSubmitFailureLeavesTail(); privateSubmitForeignChainBypassesTail();
     lifecycle(); boundedBatch(); completePresentationOrder(); readinessDoesNotBlockProducer();
     waitForRetainedId(); observeCopiesWithoutChangingDelivery(); observerLifetimeAndForwarding();
     releasedBatchBoundsAndExpedites(); overlappingBatchRetainsOlder(); nonOverlappableDoesNotRetain();
@@ -2310,7 +2547,7 @@ int main() {
     overlapRingOfThree(); overlapRejectsPresentId(); overlapAcceptsOwnedPresentId(); crossBatchChaining();
     overlappedChainShiftsLaterOutputs(); expeditedOutputAnchorsNextBatch();
     generatedCopyPresentsAcquiredImage(); generatedCopySkipsWithoutImage(); generatedCopySkipsOutOfRangeImage();
-    generatedCopyNeedsOpenBatch();
+    generatedCopyNeedsOpenBatch(); generatedCopyAddsPrivateTail(); generatedSkipAddsPrivateTail();
     generatedCopyUnsafeSpacingModes(); generatedCopyTailSurvivesAJoin();
     lateGeneratedCopyPresentsBeforeLimit(); lateGeneratedCopyPastQuarterSkips();
     generatedCopyTailKeepsSpacingWithoutLimit();

@@ -37,6 +37,10 @@ namespace fgvk::layer::present_diagnostics {
     void writePacingProfileRecords(std::string_view records) noexcept;
     /// Prepare the private capture outside presentation; never capture game stdout.
     void initializePacingProfileLog() noexcept;
+    /// D7: records the steady-clock time of an application present. Only with the pacing profile.
+    void noteApplicationPresent();
+    /// D7: nanoseconds of the last noted present on the steady clock, or zero before the first.
+    [[nodiscard]] int64_t lastApplicationPresentNanoseconds();
     /// Full-trace setup at this layer boundary, before/after framegen-vulkan negotiation.
     /// These are enabled requests, never enumerated capabilities or proof of use.
     void traceVulkanSetup(std::string_view role, const VkInstanceCreateInfo& incoming,

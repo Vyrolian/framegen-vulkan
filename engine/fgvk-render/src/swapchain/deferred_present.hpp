@@ -17,6 +17,7 @@
 #include <thread>
 #include <unordered_map>
 #include <utility>
+#include <vector>
 #include <vulkan/vulkan_core.h>
 
 namespace fgvk::layer {
@@ -35,6 +36,15 @@ struct DeferredPresentQueue {
     std::mutex mutex;
     VkQueue acquireQueue{};
     std::mutex acquireMutex;
+    // F9c: a timeline that every submit on `queue` signals with its next value (see
+    // submitPrivate). The emulated acquire waits tailSubmitted on its own queue, which
+    // restores the order a same-queue acquire had. Null when the timeline could not be
+    // created: then nothing is signalled or waited for it.
+    VkSemaphore tail{};
+    // Last tail value submitted with VK_SUCCESS. Only read and written under mutex.
+    uint64_t tailNext{0};
+    // The same value, published after VK_SUCCESS so the acquire can wait it without mutex.
+    std::atomic<uint64_t> tailSubmitted{0};
 
     // The queue and lock the emulated acquire must use. Without acquireQueue,
     // this is the present queue and its mutex, as before the second queue existed.
@@ -50,6 +60,58 @@ struct DeferredPresentQueue {
         return present(queue, &info);
     }
 };
+
+// F9c: submits on the private queue and, when the tail timeline exists, also signals
+// it with the next value. The caller holds q.mutex, which keeps the tail values in
+// submission order. tailSubmitted advances only after VK_SUCCESS, so an acquire that
+// waits it waits a value whose signal was already submitted. The pNext chain must be
+// empty or one VkTimelineSemaphoreSubmitInfo with no pNext. Any other chain is
+// submitted unchanged, without the tail.
+inline VkResult submitPrivate(DeferredPresentQueue& q, const PFN_vkQueueSubmit submit,
+        const VkSubmitInfo& info, const VkFence fence) {
+    if (q.tail == VK_NULL_HANDLE) return submit(q.queue, 1, &info, fence);
+    const VkTimelineSemaphoreSubmitInfo* original = nullptr;
+    if (info.pNext) {
+        if (static_cast<const VkBaseInStructure*>(info.pNext)->sType !=
+                VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO)
+            return submit(q.queue, 1, &info, fence);
+        original = static_cast<const VkTimelineSemaphoreSubmitInfo*>(info.pNext);
+        // A signal value count must be zero or equal the signal count (VUID-03245).
+        if (original->pNext || (original->signalSemaphoreValueCount != 0 &&
+                original->signalSemaphoreValueCount != info.signalSemaphoreCount))
+            return submit(q.queue, 1, &info, fence);
+    }
+    std::vector<VkSemaphore> signals;
+    std::vector<uint64_t> values(info.signalSemaphoreCount, 0);
+    signals.reserve(info.signalSemaphoreCount + 1u);
+    for (uint32_t i = 0; i < info.signalSemaphoreCount; ++i)
+        signals.push_back(info.pSignalSemaphores[i]);
+    if (original && original->signalSemaphoreValueCount != 0)
+        std::copy_n(original->pSignalSemaphoreValues, info.signalSemaphoreCount, values.begin());
+    const uint64_t next = q.tailNext + 1;
+    signals.push_back(q.tail);
+    values.push_back(next);
+    // Wait values are kept as they were. Binary waits have no value, so a chain
+    // that had none uses an empty wait value list.
+    const VkTimelineSemaphoreSubmitInfo timeline{
+        .sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
+        .pNext = nullptr,
+        .waitSemaphoreValueCount = original ? original->waitSemaphoreValueCount : 0u,
+        .pWaitSemaphoreValues = original ? original->pWaitSemaphoreValues : nullptr,
+        .signalSemaphoreValueCount = static_cast<uint32_t>(values.size()),
+        .pSignalSemaphoreValues = values.data(),
+    };
+    VkSubmitInfo tailed = info;
+    tailed.pNext = &timeline;
+    tailed.signalSemaphoreCount = static_cast<uint32_t>(signals.size());
+    tailed.pSignalSemaphores = signals.data();
+    const VkResult result = submit(q.queue, 1, &tailed, fence);
+    if (result == VK_SUCCESS) {
+        q.tailNext = next;
+        q.tailSubmitted.store(next, std::memory_order_release);
+    }
+    return result;
+}
 
 // One bounded source batch, with at most four generated outputs and its real.
 // The worker owns values, never caller arrays, pNext pointers, a Swapchain or Vulkan
@@ -782,8 +844,9 @@ private:
     // Callers hold queue->mutex and never sleep there. Every submit waits the
     // binary staged semaphore, and the acquire too when it succeeded. A copy
     // signals that image's present wait and the continuation. A skip signals
-    // only the continuation. Every submit signals the fence.
-    static VkResult submitGeneratedWork(const VkQueue queue, const GeneratedCopy& copy,
+    // only the continuation. Every submit signals the fence. The private queue's
+    // tail is signalled too (F9c, see submitPrivate).
+    static VkResult submitGeneratedWork(DeferredPresentQueue& queue, const GeneratedCopy& copy,
             const bool acquired, const VkCommandBuffer command, const VkSemaphore presentWait) {
         // The staged wait is always the last wait and the continuation the last signal.
         const std::array<VkSemaphore, 2> waits{copy.acquireSemaphore, copy.staged};
@@ -803,7 +866,7 @@ private:
             .signalSemaphoreCount = signalCount,
             .pSignalSemaphores = signals.data() + (2 - signalCount),
         };
-        return copy.submit(queue, 1, &submit, copy.fence);
+        return submitPrivate(queue, copy.submit, submit, copy.fence);
     }
 
     // D6: runs one worker call made under queue->mutex and keeps the longest such
@@ -1271,7 +1334,7 @@ private:
                     if (job.copyActive) {
                         if (copyPending) {
                             const VkResult copied = profiledLockCall(ready.profile, result.lockSubmitNs, [&] {
-                                return submitGeneratedWork(queue->queue, job.copy, true,
+                                return submitGeneratedWork(*queue, job.copy, true,
                                     job.copy.copies.at(job.image), job.wait);
                             });
                             presentOutput = copied == VK_SUCCESS;
@@ -1279,7 +1342,7 @@ private:
                         }
                         if (!presentOutput) {
                             const VkResult signalled = profiledLockCall(ready.profile, result.lockSubmitNs, [&] {
-                                return submitGeneratedWork(queue->queue, job.copy,
+                                return submitGeneratedWork(*queue, job.copy,
                                     acquired, VK_NULL_HANDLE, VK_NULL_HANDLE);
                             });
                             if (skipResult == VK_SUCCESS) skipResult = signalled;
