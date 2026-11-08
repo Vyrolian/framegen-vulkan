@@ -5,6 +5,7 @@
 #include "tools/benchmark.hpp"
 #include "tools/debug.hpp"
 #include "tools/inspect_dll.hpp"
+#include "tools/mark.hpp"
 #include "tools/quality.hpp"
 #include "tools/validate.hpp"
 
@@ -62,6 +63,7 @@ GLOBAL OPTIONS:
 
 COMMANDS:
     validate    Validate a configuration file
+    mark        Append a timestamped hitch mark to $XDG_RUNTIME_DIR/framegen-vulkan/marks.log
     benchmark   Run a benchmark
     debug       Run fgvk on a set of images
     inspect-dll Inspect and fingerprint licensed model-resource compatibility
@@ -822,6 +824,12 @@ int main(int argc, char** argv) {
         );
     else if (command == "combined-quality-regression")
         on_combined_quality_regression(command_argc, command_argv, program);
+    else if (command == "mark") {
+        std::vector<std::string_view> words;
+        for (int index = 1; index < command_argc; ++index)
+            words.emplace_back(command_argv[index]);
+        std::exit(mark::run(words));
+    }
 
     usage(program);
     return EXIT_FAILURE;

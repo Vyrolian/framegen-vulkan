@@ -9,6 +9,7 @@ set(CLI_SOURCES
     "src/tools/benchmark.cpp"
     "src/tools/debug.cpp"
     "src/tools/inspect_dll.cpp"
+    "src/tools/mark.cpp"
     "src/tools/quality.cpp"
     "src/tools/validate.cpp"
     "src/main.cpp")
@@ -56,6 +57,7 @@ if(BUILD_TESTING)
     # Exercise the production parser and option defaults without a GPU or DLL.
     add_executable(fgvk-cli-precision-probe
         "src/main.cpp"
+        "src/tools/mark.cpp"
         "tests/precision_cli_stubs.cpp")
     target_link_libraries(fgvk-cli-precision-probe PRIVATE fgvk-cli-support)
     target_include_directories(fgvk-cli-precision-probe PRIVATE

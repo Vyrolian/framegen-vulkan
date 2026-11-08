@@ -40,6 +40,32 @@ namespace fgvk::layer::present_diagnostics {
     void writePacingProfileRecords(std::string_view records) noexcept;
     /// Prepare the private capture outside presentation; never capture game stdout.
     void initializePacingProfileLog() noexcept;
+    /// Test hook: writes every queued pacing record before returning. Production never calls it.
+    void flushPacingProfileForTests() noexcept;
+    /// Records one Wayland feedback sample or lost-sample gap, keyed by the observer's token.
+    /// Only the pacing profile calls these.
+    enum class WaylandEvent : uint8_t { Request, Call, Presented, Discarded, Unavailable, Abandoned };
+    struct WaylandSample {
+        WaylandEvent event{};
+        uint64_t id{}, context{}, source{};
+        uint32_t image{};
+        bool generated{};
+        uint64_t requested{}, received{}, finished{}, presentationNow{}, calibrationSpan{};
+        uint64_t presented{}, sequence{};
+        uint32_t refresh{}, flags{}, output{}, clock{UINT32_MAX}, reason{};
+        VkResult result{};
+    };
+    /// False when the sample was not queued (the record queue was full). Each returns false without the profile.
+    [[nodiscard]] bool recordWaylandSample(uint64_t token, const WaylandSample& sample) noexcept;
+    [[nodiscard]] bool recordWaylandGap(uint64_t token, uint64_t lost) noexcept;
+    /// Cost of one display-feedback probe (its before/after/dispatch work), in nanoseconds.
+    void recordDisplayProbeCost(uint64_t nanoseconds) noexcept;
+    /// The display truth probe runs with the pacing profile unless FGVK_PACING_PROFILE_DISPLAY=0 (an A/B switch).
+    [[nodiscard]] bool pacingDisplayProbeEnabled();
+    /// The deferred worker calls this once, from its own thread, so the writer can sample its scheduling.
+    void registerDeferredWorkerThread() noexcept;
+    /// The lower present ID carried by a present's pNext chain (VkPresentIdKHR or VkPresentId2KHR), or 0.
+    [[nodiscard]] uint64_t lowerPresentId(const void* chain) noexcept;
     /// D7: records the steady-clock time of an application present. Only with the pacing profile.
     void noteApplicationPresent();
     /// D7: nanoseconds of the last noted present on the steady clock, or zero before the first.
@@ -159,6 +185,12 @@ namespace fgvk::layer::present_diagnostics {
             bool applicationImage{};
             // Limiter arrival of a worker batch, on its first output only; zero otherwise.
             Clock::time_point arrival{};
+            // Display identity: the Wayland feedback id of the lower present (0 if none), the backend
+            // frame the output belongs to, its interpolation position (0 for a real), and the lower present ID.
+            uint64_t feedback{};
+            uint64_t backendFrame{};
+            double phase{};
+            uint64_t presentId{};
         };
         struct OutputSample {
             size_t ordinal{}, source{};
@@ -467,6 +499,44 @@ namespace fgvk::layer::present_diagnostics {
         bool host{};
     };
 
+    /// Layer entrypoints timed with the pacing profile. The order is fixed; the names are the record text.
+    enum class LayerCall : uint8_t {
+        QueuePresent, AcquireNextImage, AcquireNextImage2, QueueSubmit2, WaitSemaphores,
+        QueueWaitIdle, DeviceWaitIdle, WaitForPresent, WaitForPresent2, ReleaseSwapchainImages,
+        GetSwapchainImages, LatencySleep, Count
+    };
+    /// One layer call on the calling thread. With the pacing profile off it reads no clock and
+    /// touches no thread-local state. Nested layer calls count once, in the outermost span.
+    /// A present span also emits the application-frame record that splits the gap before it.
+    class LayerCallSpan {
+    public:
+        explicit LayerCallSpan(LayerCall call) noexcept;
+        ~LayerCallSpan();
+        LayerCallSpan(const LayerCallSpan&) = delete;
+        LayerCallSpan& operator=(const LayerCallSpan&) = delete;
+        VkResult returned(VkResult value) noexcept { result = value; return value; }
+        void presentWait(uint64_t presentId, uint64_t timeoutNs) noexcept {
+            if (active) { this->presentId = presentId; this->timeoutNs = timeoutNs; }
+        }
+        void semaphoreWait(uint64_t count, uint64_t timeoutNs) noexcept {
+            if (active) { waitCount = count; this->timeoutNs = timeoutNs; }
+        }
+    private:
+        LayerCall call;
+        bool active{};
+        Clock::time_point enter{};
+        VkResult result{VK_SUCCESS};
+        uint64_t presentId{}, timeoutNs{}, waitCount{};
+        bool outermost{};
+        // Present spans: the inside-layer sums since the previous present exit, read at entry.
+        std::array<int64_t, 4> inside{};
+        Clock::time_point previousExit{};
+    };
+    /// Reflex markers and mode calls, recorded only with the pacing profile.
+    void recordReflexMarker(uint64_t presentId, VkLatencyMarkerNV marker, Clock::time_point at) noexcept;
+    void recordReflexSleep(Clock::time_point entered, Clock::time_point exited, VkResult result) noexcept;
+    void recordReflexMode(VkBool32 lowLatency, VkBool32 boost, uint32_t minimumIntervalUs) noexcept;
+
     /// Bounded CPU observations at the application's layer entrypoints. These
     /// include intentional pacing, unlike the private-work present timer.
     /// A stream owns one caller/swapchain pair; switching drops its old window.
@@ -582,6 +652,11 @@ namespace fgvk::layer::present_diagnostics {
     /// Does nothing outside an application acquire scope.
     void recordInternalAcquire(Clock::duration ringWait, Clock::duration queueLock,
         Clock::duration submit, bool host) noexcept;
+    /// F10 per-acquire record, pacing profile only: one line per application acquire of the internal
+    /// images. Times are steady-clock; zero means not measured. tailSeen is when this acquire read the
+    /// tail counter; tailWaitValue is the tail value the host path waited on (0 on the queued path).
+    void recordPacingAcquire(bool host, Clock::time_point enter, Clock::time_point exit,
+        Clock::duration lockWait, uint64_t tailWaitValue, Clock::time_point tailSeen) noexcept;
 
     void recordApplicationAcquireDriver(uint64_t timeout, VkResult result,
         Clock::time_point started, Clock::time_point finished,

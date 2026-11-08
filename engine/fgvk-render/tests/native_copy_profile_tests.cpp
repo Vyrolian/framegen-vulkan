@@ -106,6 +106,8 @@ int main() {
         NativeCopyProfile failed({}, functions, 64, 1.0F, 78);
         expect(!failed.ready(), "failed initialization marked ready");
     }
+    // Records reach the file through the writer; the test reads it now, so flush first.
+    flushPacingProfileForTests();
     std::ifstream input(path);
     const std::string log{std::istreambuf_iterator<char>(input), {}};
     expect(log.find("source=9 generation=3") != std::string::npos &&

@@ -732,6 +732,9 @@ namespace fgvk::layer {
             ? timelineCounter(impl->funcs, impl->device, impl->release->handle()) : 0;
         const uint64_t tailCounter = hostCandidate && tailValue != 0
             ? timelineCounter(impl->funcs, impl->device, impl->queue->tail) : 0;
+        // When this acquire read the tail counter, for the per-acquire record. No extra read.
+        const auto tailSeen = measured && tailCounter != 0
+            ? present_diagnostics::Clock::now() : present_diagnostics::Clock::time_point{};
         bool signalledOnHost = false;
         if (hostAcquireEligible(fence, semaphore, hostDisabled, tailPresent, functionsLoaded,
                 waitValue, releaseCounter, tailValue, tailCounter)) {
@@ -747,8 +750,11 @@ namespace fgvk::layer {
             const VkResult imported = impl->funcs.ImportSemaphoreFdKHR(impl->device, &importInfo);
             if (imported == VK_SUCCESS) {
                 signalledOnHost = true;
-                if (measured)
+                if (measured) {
                     present_diagnostics::recordInternalAcquire(ringWait, {}, {}, true);
+                    present_diagnostics::recordPacingAcquire(true, ringStarted,
+                        present_diagnostics::Clock::now(), {}, tailValue, tailSeen);
+                }
             } else if (!impl->queue->hostAcquireDisabled.exchange(true)) {
                 // A failed import is not an acquire error: this acquire takes the queued path.
                 std::cerr << "framegen-vulkan: host acquire signal disabled: result="
@@ -804,8 +810,11 @@ namespace fgvk::layer {
                     static_cast<void>(impl->ring.release(*index));
                 }
             }
-            if (measured)
+            if (measured) {
                 present_diagnostics::recordInternalAcquire(ringWait, lockWait, submitWait, false);
+                present_diagnostics::recordPacingAcquire(false, ringStarted,
+                    present_diagnostics::Clock::now(), lockWait, 0, {});
+            }
             if (submitted != VK_SUCCESS)
                 return submitted;
         }

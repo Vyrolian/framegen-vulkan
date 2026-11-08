@@ -203,7 +203,8 @@ VkResult Swapchain::presentGeneratedFrames(
                 copy.presentWaits.at(k) = this->postCopySemaphores.at(k).first.handle();
             }
             if (this->deferredPresent->enqueueGeneratedCopy(invocation.swapchain, generatedChain.head(),
-                    invocation.pacedOutputs->at(i), copy)) {
+                    invocation.pacedOutputs->at(i), copy,
+                    DeferredPresent::OutputIdentity{this->frameState.backendFrameIndex - 1, plan.scheduledGeneratedFrames[i]})) {
                 this->deferredOutputQueuedThisFrame = true;
                 slot.inFlight = true;
                 // Worker copies are counted on completion, when a pressure
@@ -624,6 +625,8 @@ VkResult Swapchain::presentGeneratedFrames(
                 .scheduled = invocation.pacedOutputs ? invocation.pacedOutputs->at(i)
                     : invocation.originalPresentDeadline.value_or(DiagnosticsClock::time_point{}),
                 .generated = true, .copyExpected = true,
+                .backendFrame = this->frameState.backendFrameIndex - 1,
+                .phase = plan.scheduledGeneratedFrames[i],
             }
         );
         const auto oneGeneratedPresentDuration = finishPresentDiagnostic(

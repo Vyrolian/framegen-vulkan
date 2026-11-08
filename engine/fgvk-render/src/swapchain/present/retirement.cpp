@@ -119,7 +119,8 @@ VkResult Swapchain::completeDeferredPresent(const uint64_t timeoutNs, const bool
                     .readinessStarted = call.readinessStarted, .readinessFinished = call.readinessFinished,
                     .readinessDeadline = call.readinessDeadline, .readinessResult = call.readinessResult,
                     .queue = call.outputQueue, .presentWait = call.presentWait,
-                    .arrival = call.arrival,
+                    .arrival = call.arrival, .feedback = call.feedback,
+                    .backendFrame = call.backendFrame, .phase = call.phase, .presentId = call.presentId,
                 });
                 present_diagnostics::logPacingOutput(this->diagnosticsState.contextId, call.swapchain, sample);
             }
@@ -399,7 +400,8 @@ VkResult Swapchain::queuePresentWithRetirementFence(
             }
             const bool admitted = this->deferredPresent && (internalReal
                 ? this->enqueueInternalRealPresent(vk, info, *this->deferredPresentDeadline)
-                : this->deferredPresent->enqueue(info, *this->deferredPresentDeadline, observation.generated));
+                : this->deferredPresent->enqueue(info, *this->deferredPresentDeadline, observation.generated,
+                    DeferredPresent::OutputIdentity{observation.backendFrame, observation.phase}));
             if (admitted) {
                 this->deferredOutputQueuedThisFrame = true;
                 this->deferredPresentDeadline.reset();
@@ -433,13 +435,16 @@ VkResult Swapchain::queuePresentWithRetirementFence(
             info.pWaitSemaphores = &materializedWait;
             info.pImageIndices = &materializedIndex;
         }
+        // The feedback this lower present requested, for the output record's join to presented_ns.
+        uint64_t feedbackId{};
         const auto submit = [&] {
             this->realFramePacer.synchronousOutput();
             const auto observedPresent = [&](VkQueue selectedQueue, const VkPresentInfoKHR& selectedInfo) {
                 if (this->info.waylandPresentation)
                     return WaylandPresentationFeedback::observe(this->info.waylandPresentation.get(),
                         vk.df().QueuePresentKHR, selectedQueue, selectedInfo, this->diagnosticsState.contextId,
-                        this->pacingProfile ? this->pacingProfile->sourceOrdinal() : 0, observation.generated);
+                        this->pacingProfile ? this->pacingProfile->sourceOrdinal() : 0, observation.generated,
+                        &feedbackId);
                 return vk.df().QueuePresentKHR(selectedQueue, &selectedInfo);
             };
             if (nativePrivatePresentQueueEligible(this->gamescopeDetected,
@@ -472,6 +477,8 @@ VkResult Swapchain::queuePresentWithRetirementFence(
         const auto started = DiagnosticsClock::now();
         const auto result = submit();
         const auto finished = DiagnosticsClock::now();
+        observed.feedback = feedbackId;
+        observed.presentId = present_diagnostics::lowerPresentId(info.pNext);
         if (observed.copyExpected && present_diagnostics::pacingGpuProfileEnabled() && !this->renderSlots.empty()) {
             observed.copyChecked = true;
             observed.copyStatus = vk.df().GetFenceStatus(vk.dev(), this->currentRenderSlot().fence.handle());

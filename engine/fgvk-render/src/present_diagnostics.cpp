@@ -2,6 +2,8 @@
 
 #include "present_diagnostics.hpp"
 #include "native_copy_profile.hpp"
+#include "present_records.hpp"
+#include "trace_recorder.hpp"
 
 #include <algorithm>
 #include <array>
@@ -33,185 +35,70 @@
 #endif
 
 namespace fgvk::layer::present_diagnostics {
-void NativeCopyProfile::publish(const Sample& sample) noexcept {
-    try {
-        const auto ns = [](auto time) { return std::chrono::duration_cast<std::chrono::nanoseconds>(time.time_since_epoch()).count(); };
-        std::ostringstream line;
-        line.imbue(std::locale::classic());
-        line << std::setprecision(std::numeric_limits<float>::max_digits10)
-             << "framegen-vulkan: present diagnostics: operation=pacing-profile-copy-gpu version=1"
-             << " pid=" << getpid() << " context=" << sample.context << " source=" << sample.source
-             << " generation=" << sample.generation << " swapchain=" << sample.swapchain
-             << " device=" << sample.device << " queue=" << sample.queue << " command=" << sample.command
-             << " slot=" << sample.slot << " generated=" << sample.generated << " image_index=" << sample.image
-             << " query_result=" << sample.queryResult << " available=" << sample.available
-             << " begin_ticks=" << sample.begin << " end_ticks=" << sample.end
-             << " valid_bits=" << sample.validBits << " period_ns=" << sample.period
-             << " collected_ns=" << ns(sample.collected) << " read_started_ns=" << ns(sample.readStarted)
-             << " read_finished_ns=" << ns(sample.readFinished);
-        const auto calibration = [&](const char* name, const Calibration& value) {
-            line << ' ' << name << "_result=" << value.result << ' ' << name << "_device_ticks=" << value.device
-                 << ' ' << name << "_host_ns=" << value.host << ' ' << name << "_deviation_ns=" << value.deviation
-                 << ' ' << name << "_started_ns=" << ns(value.started) << ' ' << name << "_finished_ns=" << ns(value.finished);
-        };
-        calibration("before", sample.before);
-        calibration("after", sample.after);
-        line << '\n';
-        writePacingProfileRecords(line.str());
-    } catch (...) {}
-}
 namespace {
-// Read the mapped ELF note of this very DSO, not a cached CMake fingerprint
-// or a pathname whose file may already have been replaced during development.
-std::string loadedRendererBuildId() {
-    struct State { uintptr_t address; std::string id; } state{
-        reinterpret_cast<uintptr_t>(&pacingFrameTraceEnabled), "unavailable"};
-    dl_iterate_phdr([](dl_phdr_info* info, size_t, void* data) {
-        auto& state = *static_cast<State*>(data);
-        bool contains{};
-        for (size_t i = 0; i < info->dlpi_phnum; ++i) {
-            const auto& segment = info->dlpi_phdr[i];
-            const auto begin = info->dlpi_addr + segment.p_vaddr;
-            if (segment.p_type == PT_LOAD && state.address >= begin && state.address - begin < segment.p_memsz)
-                contains = true;
-        }
-        if (!contains) return 0;
-        for (size_t i = 0; i < info->dlpi_phnum; ++i) {
-            const auto& segment = info->dlpi_phdr[i];
-            if (segment.p_type != PT_NOTE || segment.p_memsz > 65536) continue;
-            const auto* bytes = reinterpret_cast<const unsigned char*>(info->dlpi_addr + segment.p_vaddr);
-            size_t offset{};
-            while (offset <= segment.p_memsz && segment.p_memsz - offset >= sizeof(ElfW(Nhdr))) {
-                ElfW(Nhdr) note{};
-                std::memcpy(&note, bytes + offset, sizeof(note));
-                offset += sizeof(note);
-                const size_t nameBytes = (static_cast<size_t>(note.n_namesz) + 3) & ~size_t{3};
-                const size_t valueBytes = (static_cast<size_t>(note.n_descsz) + 3) & ~size_t{3};
-                if (nameBytes > segment.p_memsz - offset || valueBytes > segment.p_memsz - offset - nameBytes) break;
-                if (note.n_type == NT_GNU_BUILD_ID && note.n_namesz == 4 && note.n_descsz && note.n_descsz <= 64 &&
-                        std::memcmp(bytes + offset, "GNU", 4) == 0) {
-                    constexpr char hex[] = "0123456789abcdef";
-                    state.id.clear();
-                    for (size_t n = 0; n < note.n_descsz; ++n) {
-                        const auto value = bytes[offset + nameBytes + n];
-                        state.id += hex[value >> 4]; state.id += hex[value & 15];
-                    }
-                    return 1;
-                }
-                offset += nameBytes + valueBytes;
-            }
-        }
-        return 1;
-    }, &state);
-    return state.id;
-}
-
-class PacingLog {
-public:
-    PacingLog() noexcept {
-        try {
-            retainBeginning = pacingWaylandProfileEnabled();
-            byteLimit = retainBeginning ? 512ull * 1024 * 1024 : 16 * 1024 * 1024;
-            const char* requested = std::getenv("FGVK_PACING_PROFILE_LOG");
-            if (requested && std::string_view(requested) == "stderr") {
-                descriptor = STDERR_FILENO;
-                return;
-            }
-            std::filesystem::path path;
-            if (requested && *requested) {
-                path = requested;
-                if (!path.is_absolute()) return;
-            } else {
-                const char* temporary = std::getenv("TMPDIR");
-                std::filesystem::path directory = temporary && *temporary ? temporary : "/tmp";
-                if (!directory.is_absolute()) directory = "/tmp";
-                path = directory / ("fgvk-pacing-" + std::to_string(geteuid()) + "-" +
-                    std::to_string(getpid()) + "-" + std::to_string(Clock::now().time_since_epoch().count()) + ".log");
-            }
-            // Exclusive creation refuses old files, symlinks, FIFOs and devices.
-            // This log contains only framegen-vulkan timing, never launcher/game output.
-            descriptor = ::open(path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK, 0600);
-            if (descriptor < 0) {
-                std::cerr << "framegen-vulkan: pacing profile capture unavailable; choose a new absolute FGVK_PACING_PROFILE_LOG path\n";
-                return;
-            }
-            owned = true;
-            std::cerr << "framegen-vulkan: pacing profile capture: path=" << path
-                      << "; observations=cpu-submission; gpu_requested=" << pacingGpuProfileEnabled()
-                      << "; limit_bytes=" << byteLimit << "; retention=" << (retainBeginning ? "stop" : "wrap") << '\n';
-            std::ostringstream identity;
-            identity << "framegen-vulkan: present diagnostics: operation=pacing-profile-session version=2 pid="
-                     << getpid() << " build=" << FGVK_BUILD_VERSION << " fingerprint=" << FGVK_BUILD_FINGERPRINT
-                     << " renderer_build_id=" << loadedRendererBuildId()
-                     << " capture_limit_bytes=" << byteLimit << " retention=" << (retainBeginning ? "stop" : "wrap")
-                     << " wayland_requested=" << pacingWaylandProfileEnabled()
-                     << " frame_trace=" << pacingFrameTraceEnabled() << '\n';
-            write(identity.str());
-        } catch (...) {
-            if (owned) ::close(descriptor);
-            descriptor = -1;
-            owned = false;
-        }
-    }
-    ~PacingLog() { if (owned) ::close(descriptor); }
-    void write(const std::string_view line) {
-        const std::unique_lock lock(mutex, std::try_to_lock);
-        if (!lock.owns_lock()) { dropped.fetch_add(1, std::memory_order_relaxed); return; }
-        if (descriptor < 0) return;
-        if (owned && bytes + line.size() + 256 > byteLimit) {
-            if (retainBeginning) {
-                std::array<char, 256> marker{};
-                const auto size = std::snprintf(marker.data(), marker.size(),
-                    "framegen-vulkan: present diagnostics: operation=pacing-profile-capture-limit version=1 pid=%ld limit_bytes=%zu captured_bytes=%zu rejected_bytes=%zu\n",
-                    static_cast<long>(getpid()), byteLimit, bytes, line.size());
-                static_cast<void>(::write(descriptor, marker.data(), static_cast<size_t>(size)));
-                ::close(descriptor);
-                descriptor = -1;
-                owned = false;
-                return; // Preserve the session header and every earlier phase.
-            }
-            if (::ftruncate(descriptor, 0) != 0 || ::lseek(descriptor, 0, SEEK_SET) < 0) {
-                ::close(descriptor); descriptor = -1; owned = false;
-                return;
-            }
-            bytes = 0;
-            constexpr std::string_view marker = "framegen-vulkan: present diagnostics: operation=pacing-profile-log-wrap version=2\n";
-            const auto count = ::write(descriptor, marker.data(), marker.size());
-            if (count > 0) bytes += static_cast<size_t>(count);
-        }
-        // No flush-per-field or retry loop. Publication time is measured by
-        // the caller, so a slow output sink remains visible in the next window.
-        const auto count = ::write(descriptor, line.data(), line.size());
-        if (count > 0) bytes += static_cast<size_t>(count);
-        if (count != static_cast<ssize_t>(line.size())) dropped.fetch_add(1, std::memory_order_relaxed);
-        const auto lost = dropped.exchange(0, std::memory_order_relaxed);
-        if (lost) {
-            std::array<char, 160> marker{};
-            const auto size = std::snprintf(marker.data(), marker.size(),
-                "\nframegen-vulkan: present diagnostics: operation=pacing-profile-capture-gap lost_records=%zu\n", lost);
-            const auto recorded = ::write(descriptor, marker.data(), static_cast<size_t>(size));
-            if (recorded > 0) bytes += static_cast<size_t>(recorded);
-        }
-    }
-private:
-    size_t byteLimit{16 * 1024 * 1024};
-    int descriptor{-1};
-    size_t bytes{};
-    bool owned{};
-    bool retainBeginning{};
-    std::mutex mutex;
-    std::atomic<size_t> dropped{};
+// Per-thread state of the layer-call spans. Only the owning thread touches it.
+struct LayerCallThreadState {
+    uint32_t thread{};
+    uint32_t depth{};
+    // Layer, submit, wait and acquire time since this thread's previous present exit.
+    std::array<int64_t, 4> inside{};
+    Clock::time_point previousExit{};
+    struct Aggregate {
+        uint64_t count{};
+        int64_t sumNs{};
+        int64_t maxNs{};
+    };
+    std::array<Aggregate, static_cast<size_t>(LayerCall::Count)> aggregates{};
+    Clock::time_point windowStart{};
+    uint64_t boundSource{};
 };
 
-PacingLog& pacingLog() {
-    static PacingLog output;
-    return output;
+LayerCallThreadState& layerThreadState() {
+    thread_local LayerCallThreadState state;
+    if (!state.thread) state.thread = trace_recorder::currentThreadId();
+    return state;
 }
+
+uint64_t& layerThreadBoundSource() {
+    return layerThreadState().boundSource;
+}
+
+constexpr int64_t layerCallRecordNs = 250'000;
+
+size_t insideBucket(const LayerCall call) {
+    switch (call) {
+    case LayerCall::QueueSubmit2:
+        return 1;
+    case LayerCall::WaitSemaphores:
+    case LayerCall::QueueWaitIdle:
+    case LayerCall::DeviceWaitIdle:
+    case LayerCall::WaitForPresent:
+    case LayerCall::WaitForPresent2:
+    case LayerCall::LatencySleep:
+        return 2;
+    case LayerCall::AcquireNextImage:
+    case LayerCall::AcquireNextImage2:
+    case LayerCall::ReleaseSwapchainImages:
+    case LayerCall::GetSwapchainImages:
+        return 3;
+    default:
+        return 0;
+    }
+}
+}
+
+void NativeCopyProfile::publish(const Sample& sample) noexcept {
+    if (!pacingProfileEnabled()) return;
+    present_records::enqueue(trace_recorder::RecordKind::PacingCopyGpu, sample);
 }
 
 void initializePacingProfileLog() noexcept {
     if (!pacingProfileEnabled()) return;
-    try { (void)pacingLog(); } catch (...) {}
+    present_records::initialize();
+}
+
+void flushPacingProfileForTests() noexcept {
+    present_records::flushRecords();
 }
 
 namespace {
@@ -399,7 +286,7 @@ bool pacingWaylandProfileEnabled() {
 
 void writePacingProfileRecords(const std::string_view records) noexcept {
     if (!pacingProfileEnabled() || records.empty()) return;
-    try { pacingLog().write(records); } catch (...) {}
+    try { present_records::writeText(std::string(records)); } catch (...) {}
 }
 
 namespace {
@@ -549,204 +436,73 @@ bool pacingProfileEnabled() {
     return value;
 }
 
-namespace {
-void appendPacingOutput(std::ostream& line, const uint64_t context, const VkSwapchainKHR swapchain,
-        const PacingProfile::OutputSample& sample) {
-    const auto ns = [](auto time) { return std::chrono::duration_cast<std::chrono::nanoseconds>(time.time_since_epoch()).count(); };
-    const auto& observed = sample.observation;
-    line << "framegen-vulkan: present diagnostics: operation=pacing-profile-output"
-         << " version=" << (pacingFrameTraceEnabled() ? 2 : 1) << " context=" << context << " pid=" << getpid() << " swapchain=" << swapchain
-         << " ordinal=" << sample.ordinal << " source=" << sample.source
-         << " generated=" << observed.generated << " deferred=" << observed.deferred
-         << " image_index=" << observed.imageIndex
-         << " scheduled_ns=" << ns(observed.scheduled)
-         << " started_ns=" << ns(sample.started) << " finished_ns=" << ns(sample.finished)
-         << " result=" << sample.result << " copy_checked=" << observed.copyChecked
-         << " copy_status=" << observed.copyStatus
-         << " copy_sampled_ns=" << ns(observed.copySampledAt)
-         << " arrival_ns=" << ns(observed.arrival);
-    if (pacingFrameTraceEnabled())
-        line << " enqueued_ns=" << ns(observed.enqueued)
-             << " queue_lock_started_ns=" << ns(observed.queueLockStarted)
-             << " queue_lock_acquired_ns=" << ns(observed.queueLockAcquired)
-             << " ready_checked=" << observed.readinessChecked
-             << " ready_started_ns=" << ns(observed.readinessStarted)
-             << " ready_finished_ns=" << ns(observed.readinessFinished)
-             << " ready_deadline_ns=" << ns(observed.readinessDeadline)
-             << " ready_result=" << observed.readinessResult
-             << " queue=" << observed.queue << " present_wait=" << observed.presentWait;
-    line << '\n';
-}
-}
-
 void logPacingOutput(const uint64_t context, const VkSwapchainKHR swapchain,
         const PacingProfile::OutputSample& sample) noexcept {
     if (!pacingFrameTraceEnabled()) return;
-    try {
-        std::ostringstream line;
-        line.imbue(std::locale::classic());
-        appendPacingOutput(line, context, swapchain, sample);
-        writePacingProfileRecords(line.str());
-    } catch (...) {}
+    present_records::enqueue(trace_recorder::RecordKind::PacingOutput,
+        present_records::PacingOutputPayload{context, swapchain, sample});
 }
 
 void logPacingSkip(const uint64_t context, const uint64_t source, const std::string_view reason,
         const Clock::time_point scheduled, const Clock::time_point now) noexcept {
-    try {
-        const auto ns = [](Clock::time_point time) {
-            return std::chrono::duration_cast<std::chrono::nanoseconds>(time.time_since_epoch()).count();
-        };
-        std::ostringstream line;
-        line.imbue(std::locale::classic());
-        line << "framegen-vulkan: present diagnostics: operation=pacing-profile-skip version=1"
-             << " pid=" << getpid() << " context=" << context << " source=" << source
-             << " reason=" << reason << " scheduled_ns=" << ns(scheduled) << " now_ns=" << ns(now) << '\n';
-        writePacingProfileRecords(line.str());
-    } catch (...) {}
+    if (!pacingProfileEnabled()) return;
+    present_records::PacingSkipPayload payload{.context = context, .source = source,
+        .scheduled = scheduled, .now = now};
+    const auto length = std::min(reason.size(), payload.reason.size() - 1);
+    std::memcpy(payload.reason.data(), reason.data(), length);
+    present_records::enqueue(trace_recorder::RecordKind::PacingSkip, payload);
 }
 
 void logPacingProfile(const uint64_t context, const VkPresentModeKHR mode,
         const Clock::time_point finished, const PacingProfile::Window& window,
         const VkSwapchainKHR swapchain, const std::string_view wsi, const bool waylandObserver) noexcept {
     try {
-        constexpr std::array<std::string_view, PacingProfile::MetricCount> names{
-            "source_interval", "layer_present", "outside_layer", "output_interval",
-            "within_batch", "between_batches", "lower_present", "source_cap_wait",
-            "readiness_wait", "output_wait", "profiler_publish", "planned_output_interval",
-            "output_wake_lateness", "source_cap_wake_lateness", "source_deadline_lateness",
-            "gpu_prepass", "gpu_generation", "gpu_output", "gpu_span", "gpu_readback",
-            "present_target_interval"};
-        std::ostringstream line;
-        line.imbue(std::locale::classic());
-        line << "framegen-vulkan: present diagnostics: operation=pacing-profile"
-             << " version=2 context=" << context << " pid=" << getpid()
-             << " sample_end_monotonic_ms=" << std::chrono::duration_cast<std::chrono::milliseconds>(finished.time_since_epoch()).count()
-             << " window_ms=" << std::chrono::duration<double, std::milli>(window.elapsed).count()
-             << " present_mode=" << mode << " sources=" << window.sources
-             << " swapchain=" << swapchain
-             << " wsi=" << wsi << " wayland_requested=" << pacingWaylandProfileEnabled()
-             << " wayland_observer=" << waylandObserver
-             << " output_attempts=" << window.outputs << " output_errors=" << window.errors
-             << " ready_batches=" << window.readyBatches << " cap_batches=" << window.capBatches
-             << " worker_batches=" << window.workerBatches
-             << " worker_readiness_misses=" << window.workerReadinessMisses
-             << " generated_skip_readiness=" << window.generatedSkips[PacingProfile::SkipReadiness]
-             << " generated_skip_expedite=" << window.generatedSkips[PacingProfile::SkipExpedite]
-             << " generated_skip_give_up=" << window.generatedSkips[PacingProfile::SkipGiveUp]
-             << " generated_skip_acquire=" << window.generatedSkips[PacingProfile::SkipAcquire]
-             << " generated_skip_other=" << window.generatedSkips[PacingProfile::SkipOther]
-             << " late_readiness_batches=" << window.lateReadinessBatches
-             << " generated_compressed=" << window.generatedCompressed
-             << " internal_real_prepared=" << window.internalRealPrepared
-             << " internal_real_at_deadline=" << window.internalRealAtDeadline
-             << " internal_images=" << (window.internalImages ? 1 : 0)
-             << " output_trace_version=" << (pacingFrameTraceEnabled() ? 2 : 1) << " output_trace_samples=" << (pacingFrameTraceEnabled() ? window.outputs : window.outputTraceCount)
-             << " output_trace_dropped=" << (pacingFrameTraceEnabled() ? 0 : window.outputTraceDropped)
-             << " wait_capture=1"
-             << " fifo_caller_timing_sources=" << window.fifoCallerTimingSources
-             << " smooth_cadence=" << window.smoothCadence
-             << " effective_base_cap_fps=" << window.effectiveCapFps
-             << " frame_generation_enabled=" << window.frameGenerationEnabled
-             << " adaptive=" << window.adaptive
-             << " configured_multiplier=" << window.configuredMultiplier
-             << " configured_base_cap_fps=" << window.configuredCapFps;
-        line << " gpu_requested=" << pacingGpuProfileEnabled();
-        constexpr std::array<std::string_view, PacingProfile::OutputTimingCount> timingNames{
-            "driver", "application", "ext", "google", "bridge"};
-        for (size_t i = 0; i < timingNames.size(); ++i)
-            line << " timing_" << timingNames[i] << "_attempts=" << window.timingAttempts[i];
-        line << " present_target_discontinuities=" << window.targetDiscontinuities;
-        const auto ms = [](Clock::duration duration) {
-            return std::chrono::duration<double, std::milli>(duration).count();
-        };
-        const auto& hitch = window.worstSource;
-        line << " worst_source_previous_frame=" << hitch.previousFrame
-             << " worst_source_interval_ms=" << ms(hitch.interval)
-             << " worst_source_layer_ms=" << ms(hitch.layer)
-             << " worst_source_outside_ms=" << ms(hitch.outside)
-             << " worst_source_cap_wait_ms=" << ms(hitch.capWait)
-             << " worst_source_readiness_wait_ms=" << ms(hitch.readinessWait)
-             << " worst_source_output_wait_ms=" << ms(hitch.outputWait)
-             << " worst_source_profiler_publish_ms=" << ms(hitch.profilerPublish);
-        constexpr std::array<std::string_view, 9> phaseNames{
-            "private_total", "render_fence", "schedule", "source_copy", "acquire",
-            "generated_submit", "generated_present", "original_present", "unattributed"};
-        for (size_t index = 0; index < phaseNames.size(); ++index) {
-            line << " worst_source_" << phaseNames[index] << "_ms=" << ms(hitch.phases[index])
-                 << ' ' << phaseNames[index] << "_mean_ms=" << window.phases[index].mean()
-                 << ' ' << phaseNames[index] << "_max_ms=" << window.phases[index].maximum;
+        present_records::PacingWindowPayload payload{.context = context, .swapchain = swapchain,
+            .mode = mode, .finished = finished, .waylandObserver = waylandObserver};
+        const auto length = std::min(wsi.size(), payload.wsi.size() - 1);
+        std::memcpy(payload.wsi.data(), wsi.data(), length);
+        if (!pacingProfileEnabled()) {
+            // Without the profile this window keeps its existing stderr output.
+            std::ostringstream line;
+            line.imbue(std::locale::classic());
+            present_records::formatPacingWindow(payload, window, line);
+            std::cerr << line.str();
+            return;
         }
-        constexpr std::array<std::string_view, 3> lockNames{"acquire", "submit", "present"};
-        const std::array<const PacingProfile::Samples*, 3> lockSamples{
-            &window.workerLockAcquire, &window.workerLockSubmit, &window.workerLockPresent};
-        for (size_t index = 0; index < lockNames.size(); ++index)
-            line << " worker_lock_" << lockNames[index] << "_mean_ms=" << lockSamples[index]->mean()
-                 << " worker_lock_" << lockNames[index] << "_max_ms=" << lockSamples[index]->maximum;
-        for (size_t index = 0; index < names.size(); ++index) {
-            const auto& sample = window.metrics[index];
-            line << ' ' << names[index] << "_samples=" << sample.count
-                 << ' ' << names[index] << "_min_ms=" << sample.minimum
-                 << ' ' << names[index] << "_mean_ms=" << sample.mean()
-                 << ' ' << names[index] << "_max_ms=" << sample.maximum
-                 << ' ' << names[index] << "_over_33ms=" << sample.over33ms;
+        auto* recorder = present_records::activeRecorder();
+        auto* pools = present_records::activePools();
+        if (!recorder || !pools) return;
+        // The window is copied into a fixed slot; a full pool is a counted drop, never a wait.
+        const size_t slot = pools->pacingWindows.claim(window);
+        if (slot == decltype(pools->pacingWindows)::none) {
+            recorder->noteSlotDrop();
+            return;
         }
-        line << '\n';
-        const auto ns = [](Clock::time_point time) {
-            return std::chrono::duration_cast<std::chrono::nanoseconds>(time.time_since_epoch()).count();
-        };
-        for (size_t i = 0; i < window.outputTraceCount; ++i) {
-            const auto& sample = window.outputTrace[i];
-            if (!pacingFrameTraceEnabled()) appendPacingOutput(line, context, swapchain, sample);
-        }
-        if (pacingProfileEnabled()) pacingLog().write(line.str());
-        else std::cerr << line.str();
+        payload.slot = slot;
+        if (!present_records::enqueue(trace_recorder::RecordKind::PacingWindow, payload))
+            pools->pacingWindows.release(slot);
     } catch (...) {}
 }
 
 void logPacingSource(const uint64_t context, const VkSwapchainKHR swapchain,
         const PacingProfile::SourceSample& sample) noexcept {
-    try {
-        const auto ns = [](auto value) { return std::chrono::duration_cast<std::chrono::nanoseconds>(value).count(); };
-        std::ostringstream line;
-        line.imbue(std::locale::classic());
-        line << "framegen-vulkan: present diagnostics: operation=pacing-profile-source version=1"
-             << " pid=" << getpid() << " tid=" << gettid() << " context=" << context << " swapchain=" << swapchain
-             << " source=" << sample.source << " started_ns=" << ns(sample.started.time_since_epoch())
-             << " finished_ns=" << ns(sample.finished.time_since_epoch())
-             << " backend_scheduled=" << sample.backendScheduled << " backend_epoch=" << sample.backendEpoch
-             << " backend_frame=" << sample.backendFrame
-             << " frame_generation_enabled=" << sample.frameGeneration << " adaptive=" << sample.adaptive
-             << " multiplier=" << sample.multiplier << " smooth_cadence=" << sample.smooth
-             << " effective_cap_fps=" << sample.cap << " configured_cap_fps=" << sample.configuredCap;
-        constexpr std::array<std::string_view, 3> waitNames{"cap", "readiness", "output"};
-        for (size_t i = 0; i < waitNames.size(); ++i)
-            line << ' ' << waitNames[i] << "_wait_ns=" << ns(sample.waits[i]);
-        constexpr std::array<std::string_view, 9> names{
-            "private_total", "render_fence", "schedule", "source_copy", "acquire",
-            "generated_submit", "generated_present", "original_present", "unattributed"};
-        for (size_t i = 0; i < names.size(); ++i) line << ' ' << names[i] << "_ns=" << ns(sample.phases[i]);
-        line << '\n';
-        writePacingProfileRecords(line.str());
-    } catch (...) {}
+    if (!pacingProfileEnabled()) return;
+    present_records::enqueue(trace_recorder::RecordKind::PacingSource,
+        present_records::PacingSourcePayload{context, swapchain, trace_recorder::currentThreadId(), sample});
 }
 
 void logPacingGpuFrame(const uint64_t context, const uint64_t source, const uint64_t epoch,
         const uint64_t frame, const double previousWaitUs, const double prepassSubmitUs,
         const double generationSubmitUs, const double prepassUs, const double spanUs,
         const double readbackUs, const std::span<const double> generatedUs) noexcept {
-    try {
-        std::ostringstream line;
-        line.imbue(std::locale::classic());
-        line << "framegen-vulkan: present diagnostics: operation=pacing-profile-gpu version=1"
-             << " pid=" << getpid() << " context=" << context << " source=" << source
-             << " backend_epoch=" << epoch << " backend_frame=" << frame
-             << " previous_wait_us=" << previousWaitUs << " prepass_submit_us=" << prepassSubmitUs
-             << " generation_submit_us=" << generationSubmitUs << " prepass_us=" << prepassUs
-             << " span_us=" << spanUs << " readback_us=" << readbackUs << " outputs=" << generatedUs.size();
-        for (size_t i = 0; i < generatedUs.size(); ++i) line << " output_" << i << "_us=" << generatedUs[i];
-        line << '\n';
-        writePacingProfileRecords(line.str());
-    } catch (...) {}
+    if (!pacingProfileEnabled()) return;
+    present_records::PacingGpuPayload payload{.context = context, .source = source, .epoch = epoch,
+        .frame = frame, .previousWaitUs = previousWaitUs, .prepassSubmitUs = prepassSubmitUs,
+        .generationSubmitUs = generationSubmitUs, .prepassUs = prepassUs, .spanUs = spanUs,
+        .readbackUs = readbackUs, .outputs = static_cast<uint32_t>(generatedUs.size())};
+    const auto listed = std::min(generatedUs.size(), payload.generatedUs.size());
+    std::copy_n(generatedUs.begin(), listed, payload.generatedUs.begin());
+    present_records::enqueue(trace_recorder::RecordKind::PacingGpu, payload);
 }
 
 void reportPacingGpuSplitUnavailable(const std::string_view reason, const std::string_view detail) noexcept {
@@ -762,17 +518,10 @@ void reportPacingGpuSplitUnavailable(const std::string_view reason, const std::s
 void logPacingGpuSplitFrame(const uint64_t context, const uint64_t source, const uint64_t backendFrame,
         const int64_t gameDoneNs, const int64_t sourceCopyEndNs, const int64_t fgStartNs,
         const int64_t prepassEndNs, const int64_t generatedEndNs, const int64_t batchEndNs) noexcept {
-    try {
-        std::ostringstream line;
-        line.imbue(std::locale::classic());
-        line << "framegen-vulkan: present diagnostics: operation=pacing-profile-gpu-split version=1"
-             << " pid=" << getpid() << " context=" << context << " source=" << source
-             << " backend_frame=" << backendFrame << " game_done_ns=" << gameDoneNs
-             << " source_copy_end_ns=" << sourceCopyEndNs << " fg_start_ns=" << fgStartNs
-             << " prepass_end_ns=" << prepassEndNs << " generated_end_ns=" << generatedEndNs
-             << " batch_end_ns=" << batchEndNs << '\n';
-        writePacingProfileRecords(line.str());
-    } catch (...) {}
+    if (!pacingProfileEnabled()) return;
+    present_records::enqueue(trace_recorder::RecordKind::PacingGpuSplit,
+        present_records::PacingGpuSplitPayload{context, source, backendFrame, gameDoneNs,
+            sourceCopyEndNs, fgStartNs, prepassEndNs, generatedEndNs, batchEndNs});
 }
 
 SteamOverlayLibraries steamOverlayLibraries() {
@@ -835,6 +584,15 @@ void recordInternalAcquire(const Clock::duration ringWait, const Clock::duration
         applicationAcquireScope->observation.internal = InternalAcquireTiming{ringWait, queueLock, submit, host};
 }
 
+void recordPacingAcquire(const bool host, const Clock::time_point enter, const Clock::time_point exit,
+        const Clock::duration lockWait, const uint64_t tailWaitValue, const Clock::time_point tailSeen) noexcept {
+    if (!pacingProfileEnabled()) return;
+    present_records::enqueue(trace_recorder::RecordKind::PacingAcquire, present_records::PacingAcquirePayload{
+        .thread = trace_recorder::currentThreadId(), .enter = enter, .exit = exit, .host = host,
+        .lockWaitNs = std::chrono::duration_cast<std::chrono::nanoseconds>(lockWait).count(),
+        .tailWaitValue = tailWaitValue, .tailSeenNs = trace_recorder::nanoseconds(tailSeen)});
+}
+
 void bindApplicationAcquireContext(const uint64_t context) noexcept {
     if (applicationAcquireScope) applicationAcquireScope->observation.context = context;
 }
@@ -846,44 +604,51 @@ void recordApplicationAcquireDriver(const uint64_t timeout, const VkResult resul
     auto& observation = applicationAcquireScope->observation;
     ++observation.lowerCalls;
     observation.lowerDuration += finished - started;
-    try {
-        const auto ns = [](auto time) { return std::chrono::duration_cast<std::chrono::nanoseconds>(time.time_since_epoch()).count(); };
-        std::ostringstream line;
-        line.imbue(std::locale::classic());
-        line << "framegen-vulkan: present diagnostics: operation=pacing-profile-acquire-driver version=1"
-             << " pid=" << getpid() << " tid=" << gettid() << " call_id=" << observation.callId
-             << " attempt=" << observation.lowerCalls << " timeout_ns=" << timeout
-             << " started_ns=" << ns(started) << " finished_ns=" << ns(finished)
-             << " result=" << result << " image_index=" << imageIndex.value_or(UINT32_MAX) << '\n';
-        writePacingProfileRecords(line.str());
-    } catch (...) {}
+    if (!pacingProfileEnabled()) return;
+    present_records::PacingAcquireDriverPayload payload{.thread = trace_recorder::currentThreadId(),
+        .callId = observation.callId, .attempt = observation.lowerCalls, .timeout = timeout,
+        .started = started, .finished = finished, .result = result,
+        .imageIndex = imageIndex.value_or(UINT32_MAX)};
+    present_records::enqueue(trace_recorder::RecordKind::PacingAcquireDriver, payload);
 }
 
 void recordCopySubmission(const CopySubmission& info, const Clock::time_point started,
         const Clock::time_point finished, const bool submitted) noexcept {
-    try {
-        const auto ns = [](auto time) { return std::chrono::duration_cast<std::chrono::nanoseconds>(time.time_since_epoch()).count(); };
-        std::ostringstream line;
-        line.imbue(std::locale::classic());
-        line << "framegen-vulkan: present diagnostics: operation=pacing-profile-copy version=1"
-             << " pid=" << getpid() << " tid=" << gettid()
-             << " context=" << info.context << " source=" << info.source << " swapchain=" << info.swapchain
-             << " generated=" << info.generated << " image_index=" << info.imageIndex << " pass=" << info.pass
-             << " device=" << info.device << " queue=" << info.queue << " command=" << info.command
-             << " started_ns=" << ns(started) << " finished_ns=" << ns(finished) << " submitted=" << submitted
-             << " timeline_wait=" << info.timelineWait << " wait_value=" << info.waitValue
-             << " timeline_signal=" << info.timelineSignal << " signal_value=" << info.signalValue
-             << " fence=" << info.fence;
-        const auto semaphores = [&](std::string_view name, std::span<const VkSemaphore> values) {
-            const size_t recorded = std::min(values.size(), size_t{16});
-            line << ' ' << name << "_count=" << values.size() << ' ' << name << "_recorded=" << recorded;
-            for (size_t i = 0; i < recorded; ++i) line << ' ' << name << '_' << i << '=' << values[i];
-        };
-        semaphores("wait", info.waits);
-        semaphores("signal", info.signals);
-        line << '\n';
-        writePacingProfileRecords(line.str());
-    } catch (...) {}
+    if (!pacingProfileEnabled()) return;
+    auto* recorder = present_records::activeRecorder();
+    auto* pools = present_records::activePools();
+    if (!recorder || !pools) return;
+    present_records::CopySlot slot{};
+    slot.context = info.context;
+    slot.source = info.source;
+    slot.swapchain = info.swapchain;
+    slot.generated = info.generated;
+    slot.imageIndex = info.imageIndex;
+    slot.pass = info.pass;
+    slot.device = info.device;
+    slot.queue = info.queue;
+    slot.command = info.command;
+    slot.started = started;
+    slot.finished = finished;
+    slot.submitted = submitted;
+    slot.timelineWait = info.timelineWait;
+    slot.waitValue = info.waitValue;
+    slot.timelineSignal = info.timelineSignal;
+    slot.signalValue = info.signalValue;
+    slot.fence = info.fence;
+    slot.thread = trace_recorder::currentThreadId();
+    slot.waitCount = info.waits.size();
+    slot.signalCount = info.signals.size();
+    std::copy_n(info.waits.begin(), std::min(info.waits.size(), size_t{16}), slot.waits.begin());
+    std::copy_n(info.signals.begin(), std::min(info.signals.size(), size_t{16}), slot.signals.begin());
+    const size_t claimed = pools->copies.claim(slot);
+    if (claimed == decltype(pools->copies)::none) {
+        recorder->noteSlotDrop();
+        return;
+    }
+    if (!present_records::enqueue(trace_recorder::RecordKind::PacingCopy,
+            present_records::PacingCopyPayload{claimed}))
+        pools->copies.release(claimed);
 }
 
 void recordApplicationFrameTiming(const ApplicationFrameApi api, const uintptr_t caller,
@@ -896,78 +661,47 @@ void recordApplicationFrameTiming(const ApplicationFrameApi api, const uintptr_t
         const ApplicationAcquireDetails* acquisition) {
     thread_local std::array<ApplicationFrameTiming, 3> observations;
     thread_local uint64_t streamId = allocateContextId();
-    thread_local const auto threadId = gettid();
+    thread_local const auto threadId = trace_recorder::currentThreadId();
     if (pacingFrameTraceEnabled()) {
         thread_local uint64_t ordinal{};
-        const auto ns = [](auto time) { return std::chrono::duration_cast<std::chrono::nanoseconds>(time.time_since_epoch()).count(); };
-        std::ostringstream trace;
-        trace.imbue(std::locale::classic());
-        trace << "framegen-vulkan: present diagnostics: operation=pacing-profile-application version=1"
-              << " pid=" << getpid() << " tid=" << threadId << " stream=" << streamId << " ordinal=" << ++ordinal
-              << " context=" << context << " source=" << source << " swapchain=" << swapchain
-              << " api=" << (api == ApplicationFrameApi::Present ? "present" : api == ApplicationFrameApi::AcquireKhr ? "acquire" : "acquire2")
-              << " image_index=" << imageIndex.value_or(UINT32_MAX)
-              << " started_ns=" << ns(started) << " finished_ns=" << ns(finished)
-              << " result_known=" << result.has_value() << " result=" << result.value_or(VK_SUCCESS)
-              << " timeout_known=" << timeout.has_value() << " timeout_ns=" << timeout.value_or(0)
-              << " join_known=" << deferredJoin.has_value() << " join_ns=" << (deferredJoin ? std::chrono::duration_cast<std::chrono::nanoseconds>(*deferredJoin).count() : 0)
-              << " configuration_known=" << configurationUpdate.has_value() << " configuration_ns=" << (configurationUpdate ? std::chrono::duration_cast<std::chrono::nanoseconds>(*configurationUpdate).count() : 0)
-              << " caller=" << reinterpret_cast<void*>(caller);
-        if (acquisition && acquisition->callId)
-            trace << " call_id=" << acquisition->callId << " lower_calls=" << acquisition->lowerCalls
-                  << " lower_ns=" << std::chrono::duration_cast<std::chrono::nanoseconds>(acquisition->lowerDuration).count();
-        trace << '\n';
-        writePacingProfileRecords(trace.str());
+        present_records::PacingApplicationPayload payload{.thread = threadId, .stream = streamId,
+            .ordinal = ++ordinal, .context = context, .source = source, .swapchain = swapchain,
+            .api = api, .imageIndex = imageIndex.value_or(UINT32_MAX), .started = started,
+            .finished = finished, .result = result, .timeout = timeout,
+            .configurationUpdate = configurationUpdate, .deferredJoin = deferredJoin,
+            .caller = caller, .callId = acquisition ? acquisition->callId : 0,
+            .lowerCalls = acquisition ? acquisition->lowerCalls : 0,
+            .lowerDuration = acquisition ? acquisition->lowerDuration : Clock::duration{}};
+        present_records::enqueue(trace_recorder::RecordKind::PacingApplication, payload);
     }
     const auto window = observations.at(static_cast<size_t>(api)).observe(
         caller, swapchain, started, finished, result, timeout, configurationUpdate, deferredJoin,
         acquisition ? acquisition->internal : std::nullopt);
     if (!window)
         return;
-    const bool present = api == ApplicationFrameApi::Present;
-    std::ostringstream line;
-    line.imbue(std::locale::classic());
-    line << "framegen-vulkan: present diagnostics: operation="
-         << (present ? "application-queue-present" : "application-acquire")
-         << " stream=" << streamId << " pid=" << getpid()
-         << " tid=" << threadId
-         << " sample_end_monotonic_ms=" << std::chrono::duration_cast<std::chrono::milliseconds>(finished.time_since_epoch()).count()
-         << (present ? " queue=" : " device=") << reinterpret_cast<void*>(caller)
-         << " swapchain=" << swapchain
-         << " api=" << (present ? "KHR" : api == ApplicationFrameApi::AcquireKhr ? "KHR" : "KHR2")
-         << " calls=" << window->calls
-         << " entry_interval_samples=" << window->entryInterval.count
-         << " entry_interval_mean_ms=" << window->entryInterval.mean()
-         << " entry_interval_max_ms=" << window->entryInterval.maximum
-         << " duration_mean_ms=" << window->duration.mean()
-         << " duration_max_ms=" << window->duration.maximum;
-    if (present) {
-        line << " includes_intentional_pacing=1"
-             << " configuration_update_samples=" << window->configurationUpdate.count
-             << " configuration_update_mean_ms=" << window->configurationUpdate.mean()
-             << " configuration_update_max_ms=" << window->configurationUpdate.maximum
-             << " deferred_join_samples=" << window->deferredJoin.count
-             << " deferred_join_mean_ms=" << window->deferredJoin.mean()
-             << " deferred_join_max_ms=" << window->deferredJoin.maximum;
-    } else {
-        line << " successful=" << window->successful << " timeouts=" << window->timeouts
-             << " not_ready=" << window->notReady << " errors=" << window->errors
-             << " polls=" << window->polls;
-        // Direct acquires have no F5 split, so their records keep the existing fields only.
-        if (window->internalRingWait.count)
-            line << " internal_samples=" << window->internalRingWait.count
-                 << " internal_ring_wait_mean_ms=" << window->internalRingWait.mean()
-                 << " internal_ring_wait_max_ms=" << window->internalRingWait.maximum
-                 << " internal_queue_lock_mean_ms=" << window->internalQueueLock.mean()
-                 << " internal_queue_lock_max_ms=" << window->internalQueueLock.maximum
-                 << " internal_submit_mean_ms=" << window->internalSubmit.mean()
-                 << " internal_submit_max_ms=" << window->internalSubmit.maximum
-                 << " internal_host=" << window->internalHost
-                 << " internal_queued=" << window->internalQueued;
+    present_records::ApplicationWindowPayload payload{.thread = threadId, .stream = streamId,
+        .caller = caller, .swapchain = swapchain, .api = api, .finished = finished};
+    if (!pacingProfileEnabled()) {
+        std::ostringstream line;
+        line.imbue(std::locale::classic());
+        present_records::formatApplicationWindow(payload, *window, line);
+        std::cerr << line.str();
+        return;
     }
-    line << '\n';
-    if (pacingProfileEnabled()) pacingLog().write(line.str());
-    else std::cerr << line.str();
+    auto* recorder = present_records::activeRecorder();
+    auto* pools = present_records::activePools();
+    if (!recorder || !pools) return;
+    const size_t slot = pools->applicationWindows.claim(*window);
+    if (slot == decltype(pools->applicationWindows)::none) {
+        recorder->noteSlotDrop();
+        return;
+    }
+    payload.slot = slot;
+    const auto kind = api == ApplicationFrameApi::Present
+        ? trace_recorder::RecordKind::ApplicationPresentWindow
+        : trace_recorder::RecordKind::ApplicationAcquireWindow;
+    if (!present_records::enqueue(kind, payload))
+        pools->applicationWindows.release(slot);
 }
 
 namespace { thread_local ApplicationPresentScope* applicationPresentScope{}; }
@@ -977,6 +711,7 @@ void bindApplicationPresentSource(const uint64_t context, const uint64_t source)
         applicationPresentScope->context = context;
         applicationPresentScope->source = source;
     }
+    layerThreadBoundSource() = source;
 }
 
 ApplicationPresentScope::ApplicationPresentScope(const VkQueue queue,
@@ -1070,46 +805,173 @@ void recordApplicationPresentWait(const VkDevice device, const VkSwapchainKHR sw
         const Clock::time_point finished) {
     thread_local ApplicationPresentWait observations;
     thread_local uint64_t waiterId = allocateContextId();
-    thread_local const auto threadId = gettid();
+    thread_local const auto threadId = trace_recorder::currentThreadId();
     if (pacingFrameTraceEnabled()) {
-        std::ostringstream trace;
-        trace << "framegen-vulkan: present diagnostics: operation=pacing-profile-wait version=1"
-              << " pid=" << getpid() << " tid=" << threadId << " swapchain=" << swapchain
-              << " api=" << (api == PresentWaitApi::Khr ? "KHR" : "KHR2")
-              << " present_id=" << presentId << " timeout_ns=" << timeout << " result=" << result
-              << " started_ns=" << std::chrono::duration_cast<std::chrono::nanoseconds>(started.time_since_epoch()).count()
-              << " finished_ns=" << std::chrono::duration_cast<std::chrono::nanoseconds>(finished.time_since_epoch()).count() << '\n';
-        writePacingProfileRecords(trace.str());
+        present_records::PacingWaitPayload payload{.thread = threadId, .swapchain = swapchain,
+            .api = api, .presentId = presentId, .timeout = timeout, .result = result,
+            .started = started, .finished = finished};
+        present_records::enqueue(trace_recorder::RecordKind::PacingWait, payload);
     }
     const auto window = observations.observe(device, swapchain, api,
         presentId, timeout, result, started, finished);
     if (!window)
         return;
-    std::ostringstream line;
-    line << "framegen-vulkan: present diagnostics: operation=application-present-wait"
-         << " waiter=" << waiterId << " pid=" << getpid()
-         << " tid=" << threadId
-         << " sample_end_monotonic_ms=" << std::chrono::duration_cast<std::chrono::milliseconds>(finished.time_since_epoch()).count()
-         << " device=" << device << " swapchain=" << swapchain
-         << " api=" << (api == PresentWaitApi::Khr ? "KHR" : "KHR2")
-         << " calls=" << window->calls << " successful=" << window->successful
-         << " timeouts=" << window->timeouts << " errors=" << window->errors
-         << " polls=" << window->polls
-         << " first_present_id=" << window->firstPresentId
-         << " last_present_id=" << window->lastPresentId
-         << " duration_mean_ms=" << window->duration.mean()
-         << " duration_max_ms=" << window->duration.maximum;
-    if (window->firstFailure) {
-        const auto& failure = *window->firstFailure;
-        line << " first_failure_result=" << failure.result
-             << " first_failure_present_id=" << failure.presentId
-             << " first_failure_timeout_ns=" << failure.timeout
-             << " first_failure_duration_ms=" << failure.durationMs;
+    present_records::PresentWaitWindowPayload payload{.thread = threadId, .waiter = waiterId,
+        .device = device, .swapchain = swapchain, .api = api, .finished = finished};
+    if (enabled()) {
+        std::ostringstream line;
+        line.imbue(std::locale::classic());
+        present_records::formatPresentWaitWindow(payload, *window, line);
+        std::cerr << line.str();
     }
-    line << '\n';
-    if (pacingProfileEnabled()) pacingLog().write(line.str());
-    if (enabled()) std::cerr << line.str();
+    if (!pacingProfileEnabled()) return;
+    auto* recorder = present_records::activeRecorder();
+    auto* pools = present_records::activePools();
+    if (!recorder || !pools) return;
+    const size_t slot = pools->presentWaitWindows.claim(*window);
+    if (slot == decltype(pools->presentWaitWindows)::none) {
+        recorder->noteSlotDrop();
+        return;
+    }
+    payload.slot = slot;
+    if (!present_records::enqueue(trace_recorder::RecordKind::ApplicationPresentWaitWindow, payload))
+        pools->presentWaitWindows.release(slot);
 }
+
+void recordReflexMarker(const uint64_t presentId, const VkLatencyMarkerNV marker,
+        const Clock::time_point at) noexcept {
+    if (!pacingProfileEnabled()) return;
+    present_records::enqueue(trace_recorder::RecordKind::ReflexMarker, present_records::ReflexMarkerPayload{
+        trace_recorder::currentThreadId(), presentId, marker, trace_recorder::nanoseconds(at)});
+}
+
+void recordReflexSleep(const Clock::time_point entered, const Clock::time_point exited,
+        const VkResult result) noexcept {
+    if (!pacingProfileEnabled()) return;
+    present_records::enqueue(trace_recorder::RecordKind::ReflexSleep, present_records::ReflexSleepPayload{
+        trace_recorder::currentThreadId(), entered, exited, result});
+}
+
+void recordReflexMode(const VkBool32 lowLatency, const VkBool32 boost,
+        const uint32_t minimumIntervalUs) noexcept {
+    if (!pacingProfileEnabled()) return;
+    present_records::enqueue(trace_recorder::RecordKind::ReflexMode, present_records::ReflexModePayload{
+        lowLatency, boost, minimumIntervalUs});
+}
+
+bool recordWaylandSample(const uint64_t token, const WaylandSample& sample) noexcept {
+    if (!pacingProfileEnabled()) return false;
+    return present_records::enqueue(trace_recorder::RecordKind::WaylandSample,
+        present_records::WaylandSamplePayload{token, sample});
+}
+
+bool recordWaylandGap(const uint64_t token, const uint64_t lost) noexcept {
+    if (!pacingProfileEnabled()) return false;
+    return present_records::enqueue(trace_recorder::RecordKind::WaylandGap,
+        present_records::WaylandGapPayload{token, lost});
+}
+
+void recordDisplayProbeCost(const uint64_t nanoseconds) noexcept {
+    if (!pacingProfileEnabled()) return;
+    present_records::noteDisplayProbeCost(nanoseconds);
+}
+
+bool pacingDisplayProbeEnabled() {
+    static const bool value = [] {
+        const char* display = std::getenv("FGVK_PACING_PROFILE_DISPLAY");
+        return pacingProfileEnabled() && !(display && std::string_view(display) == "0");
+    }();
+    return value;
+}
+
+void registerDeferredWorkerThread() noexcept {
+    if (!pacingProfileEnabled()) return;
+    present_records::registerWorkerThread(trace_recorder::currentThreadId());
+}
+
+uint64_t lowerPresentId(const void* chain) noexcept {
+    // Bounded like the worker's own chain walk: the present's pNext holds at most a few nodes.
+    for (unsigned depth = 0; chain && depth < 8; ++depth) {
+        VkStructureType type{};
+        std::memcpy(&type, chain, sizeof(type));
+        if (type == VK_STRUCTURE_TYPE_PRESENT_ID_KHR) {
+            VkPresentIdKHR node{};
+            std::memcpy(&node, chain, sizeof(node));
+            return node.swapchainCount >= 1 && node.pPresentIds ? node.pPresentIds[0] : 0;
+        }
+#if defined(VK_KHR_present_id2)
+        if (type == VK_STRUCTURE_TYPE_PRESENT_ID_2_KHR) {
+            VkPresentId2KHR node{};
+            std::memcpy(&node, chain, sizeof(node));
+            return node.swapchainCount >= 1 && node.pPresentIds ? node.pPresentIds[0] : 0;
+        }
+#endif
+        const void* next{};
+        std::memcpy(&next, static_cast<const std::byte*>(chain) + offsetof(VkBaseInStructure, pNext), sizeof(next));
+        chain = next;
+    }
+    return 0;
+}
+
+LayerCallSpan::LayerCallSpan(const LayerCall callKind) noexcept : call(callKind) {
+    if (!pacingProfileEnabled()) return;
+    active = true;
+    auto& state = layerThreadState();
+    outermost = state.depth == 0;
+    ++state.depth;
+    if (call == LayerCall::QueuePresent) {
+        inside = state.inside;
+        previousExit = state.previousExit;
+    }
+    enter = Clock::now();
+}
+
+LayerCallSpan::~LayerCallSpan() {
+    if (!active) return;
+    try {
+        const auto exit = Clock::now();
+        auto& state = layerThreadState();
+        --state.depth;
+        const int64_t duration = trace_recorder::nanoseconds(exit) - trace_recorder::nanoseconds(enter);
+        auto& aggregate = state.aggregates[static_cast<size_t>(call)];
+        ++aggregate.count;
+        aggregate.sumNs += duration;
+        aggregate.maxNs = std::max(aggregate.maxNs, duration);
+        if (call == LayerCall::QueuePresent) {
+            present_records::PacingAppFramePayload frame{.thread = state.thread, .source = state.boundSource,
+                .enter = enter, .exit = exit, .previousExit = previousExit, .insideLayer = inside[0],
+                .insideSubmit = inside[1], .insideWait = inside[2], .insideAcquire = inside[3]};
+            present_records::enqueue(trace_recorder::RecordKind::PacingAppFrame, frame);
+            state.inside = {};
+            state.previousExit = exit;
+            state.boundSource = 0;
+        } else if (outermost) {
+            state.inside[0] += duration;
+            if (const auto bucket = insideBucket(call)) state.inside[bucket] += duration;
+        }
+        if (duration >= layerCallRecordNs) {
+            present_records::PacingCallPayload record{.thread = state.thread, .call = call,
+                .enter = enter, .exit = exit, .result = result, .presentId = presentId,
+                .timeoutNs = timeoutNs, .waitCount = waitCount};
+            present_records::enqueue(trace_recorder::RecordKind::PacingCall, record);
+        }
+        if (!state.windowStart.time_since_epoch().count()) {
+            state.windowStart = exit;
+        } else if (exit - state.windowStart >= std::chrono::seconds(1)) {
+            for (size_t index = 0; index < state.aggregates.size(); ++index) {
+                auto& window = state.aggregates[index];
+                if (!window.count) continue;
+                present_records::PacingCallWindowPayload record{.thread = state.thread,
+                    .call = static_cast<LayerCall>(index), .count = window.count,
+                    .sumNs = window.sumNs, .maxNs = window.maxNs};
+                present_records::enqueue(trace_recorder::RecordKind::PacingCallWindow, record);
+                window = {};
+            }
+            state.windowStart = exit;
+        }
+    } catch (...) {}
+}
+
 namespace {
     std::atomic<uint32_t> nextContextSequence{1};
     thread_local uint64_t activeContextId{0};

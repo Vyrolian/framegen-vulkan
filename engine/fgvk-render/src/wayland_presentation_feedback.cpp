@@ -40,8 +40,8 @@ struct WaylandPresentationFeedback::Impl {
     wl_proxy* discovery{};
     bool discovered{}, stopped{}, diagnostics{};
     uint32_t global{}, clockId{UINT32_MAX};
-    uint64_t nextId{}, token{present_diagnostics::allocateContextId()};
-    Clock::time_point published{Clock::now()};
+    uint64_t nextId{};
+    uint64_t token{present_diagnostics::allocateContextId()};
     // Fed only from presented feedback on this surface's private queue, which
     // is dispatched exclusively under `mutex`.
 
@@ -72,64 +72,23 @@ struct WaylandPresentationFeedback::Impl {
     wl_interface feedbackInterface{"wp_presentation_feedback", 1, 0, nullptr, 3, feedbackEvents.data()};
     wl_interface presentationInterface{"wp_presentation", 1, 2, requests.data(), 1, events.data()};
 
-    enum class Event { Request, Call, Presented, Discarded, Unavailable, Abandoned };
-    struct Sample {
-        Event event{};
-        uint64_t id{}, context{}, source{};
-        uint32_t image{};
-        bool generated{};
-        uint64_t requested{}, received{}, finished{}, presentationNow{}, calibrationSpan{};
-        uint64_t presented{}, sequence{};
-        uint32_t refresh{}, flags{}, output{}, clock{UINT32_MAX}, reason{};
-        VkResult result{};
-    };
+    using Event = present_diagnostics::WaylandEvent;
+    using Sample = present_diagnostics::WaylandSample;
     struct Pending {
         Impl* owner{};
         wl_proxy* proxy{};
         Sample sample;
     };
     std::array<Pending, 256> pending{};
-    std::array<Sample, 512> samples{};
-    size_t count{}, dropped{};
+    // Samples are queued as they happen. A sample the queue refuses is counted here and reported
+    // as a gap before the next sample that is queued.
+    uint64_t dropped{};
+    uint64_t requestedId{};
 
     void record(const Sample& sample) noexcept {
         if (!diagnostics) return;
-        if (count < samples.size()) samples[count++] = sample;
-        else ++dropped;
-    }
-    void publish(bool force = false) {
-        if (!diagnostics || (!force && Clock::now() - published < std::chrono::seconds(1))) return;
-        std::ostringstream out;
-        out.imbue(std::locale::classic());
-        for (size_t i = 0; i < count; ++i) {
-            const auto& s = samples[i];
-            constexpr std::array<const char*, 6> names{"request", "call", "presented", "discarded", "unavailable", "abandoned"};
-            out << "framegen-vulkan: present diagnostics: operation=pacing-profile-wayland version=2 pid=" << getpid()
-                << " surface_token=" << token << " event=" << names[static_cast<size_t>(s.event)]
-                << " feedback=" << s.id;
-            if (s.event == Event::Request || s.event == Event::Unavailable) {
-                out << " context=" << s.context << " source=" << s.source
-                    << " image_index=" << s.image << " generated=" << s.generated
-                    << " requested_ns=" << s.requested << " clock_id=" << s.clock;
-                if (s.event == Event::Request)
-                    out << " presentation_now_ns=" << s.presentationNow << " calibration_span_ns=" << s.calibrationSpan;
-                else out << " reason=" << s.reason;
-            } else if (s.event == Event::Call) {
-                out << " started_ns=" << s.requested << " finished_ns=" << s.finished << " result=" << s.result;
-            } else {
-                out << " received_ns=" << s.received;
-                if (s.event == Event::Presented)
-                    out << " clock_id=" << s.clock << " presented_ns=" << s.presented << " sequence=" << s.sequence
-                        << " refresh_ns=" << s.refresh << " flags=" << s.flags << " output_id=" << s.output;
-            }
-            out << '\n';
-        }
-        if (dropped)
-            out << "framegen-vulkan: present diagnostics: operation=pacing-profile-wayland-gap version=1 pid="
-                << getpid() << " surface_token=" << token << " lost_records=" << dropped << '\n';
-        present_diagnostics::writePacingProfileRecords(out.str());
-        count = dropped = 0;
-        published = Clock::now();
+        if (dropped && present_diagnostics::recordWaylandGap(token, dropped)) dropped = 0;
+        if (!present_diagnostics::recordWaylandSample(token, sample)) ++dropped;
     }
     static void globalAdded(void* data, wl_proxy*, uint32_t name, const char* interface, uint32_t version) noexcept {
         auto& self = *static_cast<Impl*>(data);
@@ -240,7 +199,7 @@ struct WaylandPresentationFeedback::Impl {
     uint64_t before(uint64_t context, uint64_t source, uint32_t image, bool generated) {
         if (stopped) return 0;
         if (dispatchPending(display, queue) < 0) { cleanup(); return 0; }
-        publish();
+        requestedId = 0;
         Sample sample{.event = Event::Request, .id = ++nextId, .context = context,
             .source = source, .image = image, .generated = generated, .requested = hostNow(), .clock = clockId};
         uint32_t reason = !presentation ? (discovered ? 2u : 1u) : clockId == UINT32_MAX ? 3u : 0u;
@@ -265,6 +224,7 @@ struct WaylandPresentationFeedback::Impl {
                     destroy(item.proxy); item.proxy = nullptr; reason = 5; break;
                 }
                 record(sample);
+                requestedId = sample.id;
                 return sample.id;
             }
             if (!reason) reason = 4; // Bounded outstanding-feedback capacity.
@@ -295,7 +255,6 @@ struct WaylandPresentationFeedback::Impl {
         if (discovery) { destroy(discovery); discovery = nullptr; }
         if (registry) { destroy(registry); registry = nullptr; }
         if (queue) { destroyQueue(queue); queue = nullptr; }
-        try { publish(true); } catch (...) {}
     }
     ~Impl() {
         cleanup();
@@ -320,18 +279,36 @@ void WaylandPresentationFeedback::stop() noexcept {
     try { const std::lock_guard lock(impl->mutex); impl->cleanup(); } catch (...) {}
 }
 VkResult WaylandPresentationFeedback::observe(void* owner, PFN_vkQueuePresentKHR lower, VkQueue queue,
-        const VkPresentInfoKHR& info, uint64_t context, uint64_t source, bool generated) noexcept {
+        const VkPresentInfoKHR& info, uint64_t context, uint64_t source, bool generated,
+        uint64_t* feedbackId) noexcept {
     auto& self = *static_cast<WaylandPresentationFeedback*>(owner)->impl;
     std::unique_lock lock(self.mutex, std::defer_lock);
     uint64_t id{};
+    // The display probe's own cost (before, dispatch, after) is measured only when it is reported.
+    const bool measured = self.diagnostics;
+    const auto costStarted = measured ? Clock::now() : Clock::time_point{};
+    Clock::time_point costBefore{}, costAfterStarted{};
     try {
         lock.lock();
         if (info.swapchainCount == 1 && info.pImageIndices)
             id = self.before(context, source, *info.pImageIndices, generated);
     } catch (...) {}
+    if (measured) costBefore = Clock::now();
     const auto started = hostNow();
     const auto result = lower(queue, &info); // Exactly once, unchanged arguments/result.
     const auto finished = hostNow();
-    try { if (lock.owns_lock()) self.after(id, started, finished, result); } catch (...) {}
+    try {
+        if (lock.owns_lock()) {
+            if (measured) costAfterStarted = Clock::now();
+            self.after(id, started, finished, result);
+        }
+    } catch (...) {}
+    if (measured) {
+        const auto costEnded = Clock::now();
+        const auto spent = (costBefore - costStarted) + (costEnded - costAfterStarted);
+        present_diagnostics::recordDisplayProbeCost(static_cast<uint64_t>(std::max<int64_t>(0,
+            std::chrono::duration_cast<std::chrono::nanoseconds>(spent).count())));
+    }
+    if (feedbackId) *feedbackId = self.requestedId;
     return result;
 }

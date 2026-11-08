@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "wayland_presentation_feedback.hpp"
+#include "present_diagnostics.hpp"
 
 #include <cstdlib>
 #include <filesystem>
@@ -60,13 +61,18 @@ int main() {
         observer.reset();
         expect(fgvk_test_wayland_objects()==0);
     }
+    // Records reach the file through the writer; the test reads it now, so flush first.
+    fgvk::layer::present_diagnostics::flushPacingProfileForTests();
     std::ifstream file(path);
     const std::string contents((std::istreambuf_iterator<char>(file)),{});
     expect(contents.find("event=presented")!=std::string::npos);
     expect(contents.find("event=discarded")!=std::string::npos);
     expect(contents.find("event=abandoned")!=std::string::npos);
     expect(contents.find("event=unavailable")!=std::string::npos);
-    for (const auto* field : {"reason=2", "reason=3", "pacing-profile-wayland-gap", "clock_id=1", "sequence=1", "flags=7", "context=100", "generated=1"})
+    for (const auto* field : {"reason=2", "reason=3", "clock_id=1", "sequence=1", "flags=7", "context=100", "generated=1"})
         expect(contents.find(field)!=std::string::npos);
+    // Samples are queued, not buffered per second, so this run's few hundred samples are all kept.
+    // A gap is only reported when the recorder queue itself is full, which this test never reaches.
+    expect(contents.find("pacing-profile-wayland-gap")==std::string::npos);
     std::filesystem::remove_all(directory);
 }

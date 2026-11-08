@@ -2,6 +2,7 @@
 #pragma once
 
 #include "generated_frame_plan.hpp"
+#include "present_diagnostics.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -264,6 +265,12 @@ public:
         return reason < names.size() ? names[reason] : "unknown";
     }
 
+    // Diagnostics only: what a generated output was rendered for. No default member
+    // initialisers: the defaulted `= {}` arguments below need the type complete here.
+    struct OutputIdentity {
+        uint64_t backendFrame;
+        double phase;
+    };
     struct Call {
         VkResult result{VK_SUCCESS};
         Clock::time_point started{}, finished{};
@@ -296,6 +303,9 @@ public:
         // Diagnostics only (D6, pacing profile): the longest worker call made under
         // queue->mutex for this output, by kind. Zero without the profile.
         uint64_t lockAcquireNs{}, lockSubmitNs{}, lockPresentNs{};
+        // Diagnostics only (pacing profile): the output's identity and the lower present it made.
+        uint64_t backendFrame{}, presentId{}, feedback{};
+        double phase{};
     };
     struct Completion : Call {
         uint64_t source{};
@@ -358,7 +368,7 @@ public:
         // borrowed Swapchain state or application arrays reach the worker.
         std::shared_ptr<void> observer;
         VkResult (*observe)(void*, PFN_vkQueuePresentKHR, VkQueue,
-            const VkPresentInfoKHR&, uint64_t, uint64_t, bool){};
+            const VkPresentInfoKHR&, uint64_t, uint64_t, bool, uint64_t*){};
         uint64_t context{}, source{};
         bool trace{};
         // Diagnostics only: the pacing profile is enabled, so the worker measures its
@@ -563,8 +573,10 @@ public:
     [[nodiscard]] static bool supportsChain(const void* chain) {
         return snapshotChain(chain).has_value();
     }
-    bool enqueue(const VkPresentInfoKHR& info, Clock::time_point deadline, bool generated = false) {
-        return admit(info, deadline, generated, nullptr);
+    // identity is diagnostics only: the backend frame and the interpolation position of a generated output.
+    bool enqueue(const VkPresentInfoKHR& info, Clock::time_point deadline, bool generated = false,
+            OutputIdentity identity = {}) {
+        return admit(info, deadline, generated, nullptr, identity);
     }
     // The real output of an internal application image. Admission matches
     // enqueue. The worker acquires a lower image, copies the application image
@@ -573,14 +585,14 @@ public:
     // the deadline (see presentInternalReal). info.pWaitSemaphores[0] is the
     // continuation that copy waits.
     bool enqueueInternalReal(const VkPresentInfoKHR& info, Clock::time_point deadline,
-            const InternalRealCopy& copy) {
+            const InternalRealCopy& copy, OutputIdentity identity = {}) {
         return copy.tryAcquire && copy.submit && copy.abandon && copy.owner &&
-            admit(info, deadline, false, &copy);
+            admit(info, deadline, false, &copy, identity);
     }
     // A generated output whose image the worker acquires at its deadline. Only
     // the newest open batch admits it, so the real output follows in that batch.
     bool enqueueGeneratedCopy(VkSwapchainKHR swapchain, const void* chain,
-            Clock::time_point deadline, const GeneratedCopy& copy) {
+            Clock::time_point deadline, const GeneratedCopy& copy, OutputIdentity identity = {}) {
         if (copy.imageCount == 0 || copy.imageCount > maxCopyImages || !copy.acquire || !copy.submit ||
                 !copy.staged || !copy.continuation || !copy.fence)
             return false;
@@ -592,7 +604,7 @@ public:
             Batch& batch = batches[slotAt(count - 1)];
             if (batch.produced == batch.limit) return false;
             batch.jobs[batch.produced++] = {swapchain, UINT32_MAX, VK_NULL_HANDLE, *metadata, deadline, true,
-                batch.readiness.trace ? Clock::now() : Clock::time_point{}, true, copy};
+                batch.readiness.trace ? Clock::now() : Clock::time_point{}, true, copy, false, {}, identity.backendFrame, identity.phase};
         }
         changed.notify_all();
         return true;
@@ -836,11 +848,14 @@ private:
         GeneratedCopy copy{};
         bool internalActive{};
         InternalRealCopy internal{};
+        // Diagnostics only: the backend frame and interpolation position of a generated output.
+        uint64_t backendFrame{};
+        double phase{};
     };
     // Shared admission for enqueue and enqueueInternalReal. The metadata snapshot,
     // present-ID registration and batch rules are the same for both.
     bool admit(const VkPresentInfoKHR& info, Clock::time_point deadline, bool generated,
-            const InternalRealCopy* internal) {
+            const InternalRealCopy* internal, OutputIdentity identity = {}) {
         if (info.swapchainCount != 1 || info.waitSemaphoreCount != 1 || info.pResults ||
                 !info.pSwapchains || !info.pImageIndices || !info.pWaitSemaphores)
             return false;
@@ -872,6 +887,8 @@ private:
                 job.internalActive = true;
                 job.internal = *internal;
             }
+            job.backendFrame = identity.backendFrame;
+            job.phase = identity.phase;
             batch.jobs[batch.produced++] = std::move(job);
         }
         waitTarget() = {serialWait, info.pSwapchains[0],
@@ -1115,9 +1132,10 @@ private:
         result.presentWait = presentWait;
         result.started = Clock::now();
         queue->beginCall(lowerOpPresentReal, lowerIndex);
+        result.presentId = present_diagnostics::lowerPresentId(chain);
         result.result = ready.observer && ready.observe
             ? ready.observe(ready.observer.get(), present, queue->queue,
-                info, ready.context, ready.source, job.generated)
+                info, ready.context, ready.source, job.generated, &result.feedback)
             : present(queue->queue, &info);
         queue->endCall();
         result.finished = Clock::now();
@@ -1203,6 +1221,7 @@ private:
     }
 
     void run() {
+        present_diagnostics::registerDeferredWorkerThread();
         std::unique_lock lock(mutex);
         Clock::duration readinessShift{};
         // Shift from the batch's first output to its final deadline. Later
@@ -1383,6 +1402,8 @@ private:
             result.scheduled = deadline;
             result.swapchain = job.swapchain;
             result.generated = job.generated;
+            result.backendFrame = current.backendFrame;
+            result.phase = current.phase;
             result.workerCopy = job.copyActive;
             result.outputQueue = queue->queue;
             result.lateReadiness = first && lateReadiness;
@@ -1522,9 +1543,10 @@ private:
                     if (presentOutput) {
                         result.started = Clock::now();
                         queue->beginCall(lowerOpPresentGenerated, job.image);
+                        result.presentId = present_diagnostics::lowerPresentId(chain);
                         result.result = ready.observer && ready.observe
                             ? ready.observe(ready.observer.get(), present, queue->queue,
-                                info, ready.context, ready.source, job.generated)
+                                info, ready.context, ready.source, job.generated, &result.feedback)
                             : present(queue->queue, &info);
                         queue->endCall();
                         result.finished = Clock::now();

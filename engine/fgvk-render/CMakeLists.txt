@@ -1,9 +1,15 @@
+# The pacing recorder: the bounded record queue, and the writer that formats it.
+set(PRESENT_RECORD_SOURCES
+    "src/trace_recorder.cpp"
+    "src/present_records.cpp")
+
 set(LAYER_SOURCES
     "src/entrypoint.cpp"
     "src/gamescope_hdr_feedback.cpp"
     "src/gamescope_scaling_surface.cpp"
     "src/instance.cpp"
     "src/present_diagnostics.cpp"
+    ${PRESENT_RECORD_SOURCES}
     "src/frame_content_capture.cpp"
     "src/wayland_presentation_feedback.cpp"
     "src/runtime_health.cpp"
@@ -202,7 +208,7 @@ if(BUILD_TESTING)
         "../scripts/test-launch-preload.cpp")
     target_compile_definitions(fgvk-launch-preload-fixture PRIVATE FGVK_TEST_RETAINED)
     add_executable(fgvk-steam-overlay-diagnostics-tests
-        "tests/steam_overlay_libraries_tests.cpp" "src/present_diagnostics.cpp")
+        "tests/steam_overlay_libraries_tests.cpp" "src/present_diagnostics.cpp" ${PRESENT_RECORD_SOURCES})
     target_include_directories(fgvk-steam-overlay-diagnostics-tests PRIVATE "src")
     target_link_libraries(fgvk-steam-overlay-diagnostics-tests
         PRIVATE fgvk-adaptive ${CMAKE_DL_LIBS})
@@ -212,13 +218,13 @@ if(BUILD_TESTING)
     fgvk_register_portable_policy_test(fgvk-steam-overlay-diagnostics-tests steam-overlay-library-diagnostics)
 
     add_executable(fgvk-pacing-profile-tests
-        "tests/pacing_profile_tests.cpp" "src/present_diagnostics.cpp")
+        "tests/pacing_profile_tests.cpp" "src/present_diagnostics.cpp" ${PRESENT_RECORD_SOURCES})
     target_include_directories(fgvk-pacing-profile-tests PRIVATE "src")
     target_link_libraries(fgvk-pacing-profile-tests PRIVATE fgvk-adaptive ${CMAKE_DL_LIBS})
     add_test(NAME pacing-profile COMMAND fgvk-pacing-profile-tests)
     fgvk_register_portable_policy_test(fgvk-pacing-profile-tests pacing-profile)
     add_executable(fgvk-native-copy-profile-tests
-        "tests/native_copy_profile_tests.cpp" "src/present_diagnostics.cpp")
+        "tests/native_copy_profile_tests.cpp" "src/present_diagnostics.cpp" ${PRESENT_RECORD_SOURCES})
     target_include_directories(fgvk-native-copy-profile-tests PRIVATE "src")
     target_link_libraries(fgvk-native-copy-profile-tests PRIVATE fgvk-adaptive ${CMAKE_DL_LIBS})
     add_test(NAME native-copy-profile COMMAND fgvk-native-copy-profile-tests)
@@ -232,10 +238,28 @@ if(BUILD_TESTING)
     add_test(NAME latency-comparison
         COMMAND "${FGVK_PYTHON3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_latency_compare.py")
     fgvk_register_portable_policy_test(fgvk-pacing-profile-tests latency-comparison)
+    # The pacing writer runs a thread, so every target that compiles it links the thread library.
+    foreach(fgvk_recorder_test IN ITEMS fgvk-steam-overlay-diagnostics-tests fgvk-pacing-profile-tests
+            fgvk-native-copy-profile-tests)
+        target_link_libraries(${fgvk_recorder_test} PRIVATE Threads::Threads)
+    endforeach()
+    add_executable(fgvk-pacing-record-golden-tests
+        "tests/pacing_record_golden_tests.cpp" "src/present_diagnostics.cpp" ${PRESENT_RECORD_SOURCES})
+    target_include_directories(fgvk-pacing-record-golden-tests PRIVATE "src")
+    target_link_libraries(fgvk-pacing-record-golden-tests PRIVATE fgvk-adaptive ${CMAKE_DL_LIBS})
+    add_test(NAME pacing-record-golden COMMAND fgvk-pacing-record-golden-tests
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/pacing-record-golden.txt")
+    fgvk_register_portable_policy_test(fgvk-pacing-record-golden-tests pacing-record-golden)
+    add_executable(fgvk-trace-recorder-tests "tests/trace_recorder_tests.cpp" "src/trace_recorder.cpp")
+    target_include_directories(fgvk-trace-recorder-tests PRIVATE "src")
+    target_link_libraries(fgvk-trace-recorder-tests PRIVATE Threads::Threads)
+    add_test(NAME trace-recorder COMMAND fgvk-trace-recorder-tests)
+    fgvk_register_portable_policy_test(fgvk-trace-recorder-tests trace-recorder)
     add_executable(fgvk-pacing-profile-benchmark
-        "tests/pacing_profile_benchmark.cpp" "src/present_diagnostics.cpp")
+        "tests/pacing_profile_benchmark.cpp" "src/present_diagnostics.cpp" ${PRESENT_RECORD_SOURCES})
     target_include_directories(fgvk-pacing-profile-benchmark PRIVATE "src")
     target_link_libraries(fgvk-pacing-profile-benchmark PRIVATE fgvk-adaptive ${CMAKE_DL_LIBS})
+    target_link_libraries(fgvk-pacing-profile-benchmark PRIVATE Threads::Threads)
 
     add_executable(fgvk-runtime-health-tests
         "tests/runtime_health_tests.cpp" "src/runtime_health.cpp")
@@ -366,11 +390,17 @@ if(BUILD_TESTING)
     fgvk_register_portable_policy_test(
         fgvk-presentation-policy-tests presentation-policy)
 
-    add_executable(fgvk-deferred-present-tests "tests/deferred_present_tests.cpp")
+    add_executable(fgvk-deferred-present-tests
+        "tests/deferred_present_tests.cpp" "src/present_diagnostics.cpp" ${PRESENT_RECORD_SOURCES})
     target_include_directories(fgvk-deferred-present-tests PRIVATE "src")
-    target_link_libraries(fgvk-deferred-present-tests PRIVATE Threads::Threads)
+    target_link_libraries(fgvk-deferred-present-tests PRIVATE fgvk-adaptive ${CMAKE_DL_LIBS} Threads::Threads)
     add_test(NAME deferred-present COMMAND fgvk-deferred-present-tests)
     fgvk_register_portable_policy_test(fgvk-deferred-present-tests deferred-present)
+
+    # The hitch analyser is standard-library Python; its synthetic capture is checked here.
+    add_test(NAME analyze-hitches
+        COMMAND "${FGVK_PYTHON3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_analyze_hitches.py")
+    set_tests_properties(analyze-hitches PROPERTIES LABELS "portable-policy")
 
     add_executable(fgvk-release-gate-tests "tests/release_gate_tests.cpp")
     target_include_directories(fgvk-release-gate-tests PRIVATE "src")
@@ -416,7 +446,7 @@ if(BUILD_TESTING)
             OUTPUT_NAME "wayland-client" SOVERSION 0
             LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/wayland-presentation-fixture")
         add_executable(fgvk-wayland-presentation-tests
-            "tests/wayland_presentation_feedback_tests.cpp" "src/wayland_presentation_feedback.cpp" "src/present_diagnostics.cpp")
+            "tests/wayland_presentation_feedback_tests.cpp" "src/wayland_presentation_feedback.cpp" "src/present_diagnostics.cpp" ${PRESENT_RECORD_SOURCES})
         target_include_directories(fgvk-wayland-presentation-tests PRIVATE src)
         target_link_libraries(fgvk-wayland-presentation-tests PRIVATE fgvk-wayland-presentation-fixture fgvk-adaptive Threads::Threads ${CMAKE_DL_LIBS})
         add_test(NAME wayland-presentation-feedback COMMAND ${CMAKE_COMMAND} -E env
@@ -457,7 +487,7 @@ if(BUILD_TESTING)
                 "$<TARGET_FILE_DIR:fgvk-surface-client-fixture>/libX11-xcb.so.1")
         add_executable(fgvk-gamescope-scaling-surface-tests
             "tests/gamescope_scaling_surface_tests.cpp"
-            "src/present_diagnostics.cpp"
+            "src/present_diagnostics.cpp" ${PRESENT_RECORD_SOURCES}
             "src/gamescope_scaling_surface.cpp")
         target_include_directories(fgvk-gamescope-scaling-surface-tests
             PRIVATE "src" "../fgvk-common/include")

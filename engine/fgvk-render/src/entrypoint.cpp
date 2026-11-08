@@ -1286,7 +1286,12 @@ namespace {
         }
     }
 
+    VkResult myvkDeviceWaitIdleBody(VkDevice device);
     VkResult myvkDeviceWaitIdle(VkDevice device) {
+        present_diagnostics::LayerCallSpan span(present_diagnostics::LayerCall::DeviceWaitIdle);
+        return span.returned(myvkDeviceWaitIdleBody(device));
+    }
+    VkResult myvkDeviceWaitIdleBody(VkDevice device) {
         drainDeferredDevice(device);
         const auto lower = reinterpret_cast<PFN_vkDeviceWaitIdle>(
             instance_info->funcs.GetDeviceProcAddr(device, "vkDeviceWaitIdle"));
@@ -1301,7 +1306,12 @@ namespace {
         return lower(device);
     }
 
+    VkResult myvkQueueWaitIdleBody(VkQueue queue);
     VkResult myvkQueueWaitIdle(VkQueue queue) {
+        present_diagnostics::LayerCallSpan span(present_diagnostics::LayerCall::QueueWaitIdle);
+        return span.returned(myvkQueueWaitIdleBody(queue));
+    }
+    VkResult myvkQueueWaitIdleBody(VkQueue queue) {
         const auto identity = instance_info->queueIdentities.find(queue);
         if (identity == instance_info->queueIdentities.end()) {
             const auto lower = reinterpret_cast<PFN_vkQueueWaitIdle>(
@@ -1360,7 +1370,16 @@ namespace {
     // See swapchain/release_gate.hpp: record the cap deadline against the
     // signal-only submit that follows an application present.
     template<const char* Name>
+    VkResult VKAPI_CALL myvkQueueSubmit2CommonBody(VkQueue queue, uint32_t submitCount,
+            const VkSubmitInfo2* submits, VkFence fence);
+    template<const char* Name>
     VkResult VKAPI_CALL myvkQueueSubmit2Common(VkQueue queue, uint32_t submitCount,
+            const VkSubmitInfo2* submits, VkFence fence) {
+        present_diagnostics::LayerCallSpan span(present_diagnostics::LayerCall::QueueSubmit2);
+        return span.returned(myvkQueueSubmit2CommonBody<Name>(queue, submitCount, submits, fence));
+    }
+    template<const char* Name>
+    VkResult VKAPI_CALL myvkQueueSubmit2CommonBody(VkQueue queue, uint32_t submitCount,
             const VkSubmitInfo2* submits, VkFence fence) {
         static thread_local CachedLower<PFN_vkQueueSubmit2, VkQueue> lower;
         const auto next = lower.get(queue, [&] { return lowerQueueCommand(queue, Name); });
@@ -1374,7 +1393,17 @@ namespace {
     // its cap deadline. A deadline after the caller's timeout keeps the token
     // and reports VK_TIMEOUT, as if the value had not yet been reached.
     template<const char* Name>
+    VkResult VKAPI_CALL myvkWaitSemaphoresCommonBody(VkDevice device,
+            const VkSemaphoreWaitInfo* info, uint64_t timeout);
+    template<const char* Name>
     VkResult VKAPI_CALL myvkWaitSemaphoresCommon(VkDevice device,
+            const VkSemaphoreWaitInfo* info, uint64_t timeout) {
+        present_diagnostics::LayerCallSpan span(present_diagnostics::LayerCall::WaitSemaphores);
+        if (info) span.semaphoreWait(info->semaphoreCount, timeout);
+        return span.returned(myvkWaitSemaphoresCommonBody<Name>(device, info, timeout));
+    }
+    template<const char* Name>
+    VkResult VKAPI_CALL myvkWaitSemaphoresCommonBody(VkDevice device,
             const VkSemaphoreWaitInfo* info, uint64_t timeout) {
         static thread_local CachedLower<PFN_vkWaitSemaphores, VkDevice> lower;
         const auto next = lower.get(device, [&] {
@@ -1519,7 +1548,15 @@ namespace {
     // Instrument only an application-invoked wait. Do not invent completion,
     // shorten timeouts, reinterpret present IDs, or take a swapchain-owner lock
     // across the driver's blocking call. GPA gates retain optional support.
+    VkResult VKAPI_CALL myvkWaitForPresentKHRBody(VkDevice device,
+            VkSwapchainKHR swapchain, uint64_t presentId, uint64_t timeout);
     VkResult VKAPI_CALL myvkWaitForPresentKHR(VkDevice device,
+            VkSwapchainKHR swapchain, uint64_t presentId, uint64_t timeout) {
+        present_diagnostics::LayerCallSpan span(present_diagnostics::LayerCall::WaitForPresent);
+        span.presentWait(presentId, timeout);
+        return span.returned(myvkWaitForPresentKHRBody(device, swapchain, presentId, timeout));
+    }
+    VkResult VKAPI_CALL myvkWaitForPresentKHRBody(VkDevice device,
             VkSwapchainKHR swapchain, uint64_t presentId, uint64_t timeout) {
         const auto next = reinterpret_cast<PFN_vkWaitForPresentKHR>(
             instance_info->funcs.GetDeviceProcAddr(device, "vkWaitForPresentKHR"));
@@ -1533,7 +1570,15 @@ namespace {
     }
 
 #if defined(VK_KHR_present_wait2)
+    VkResult VKAPI_CALL myvkWaitForPresent2KHRBody(VkDevice device,
+            VkSwapchainKHR swapchain, const VkPresentWait2InfoKHR* info);
     VkResult VKAPI_CALL myvkWaitForPresent2KHR(VkDevice device,
+            VkSwapchainKHR swapchain, const VkPresentWait2InfoKHR* info) {
+        present_diagnostics::LayerCallSpan span(present_diagnostics::LayerCall::WaitForPresent2);
+        if (info) span.presentWait(info->presentId, info->timeout);
+        return span.returned(myvkWaitForPresent2KHRBody(device, swapchain, info));
+    }
+    VkResult VKAPI_CALL myvkWaitForPresent2KHRBody(VkDevice device,
             VkSwapchainKHR swapchain, const VkPresentWait2InfoKHR* info) {
         const auto next = reinterpret_cast<PFN_vkWaitForPresent2KHR>(
             instance_info->funcs.GetDeviceProcAddr(device, "vkWaitForPresent2KHR"));
@@ -1627,6 +1672,57 @@ namespace {
     }
 
     // get device-level function pointers
+    // Reflex pass-through, pacing profile on only: each call is recorded, then forwarded with its
+    // arguments unchanged. The extension is never advertised; these answer only an app that asks for it.
+    VkResult VKAPI_CALL myvkSetLatencySleepModeNV(VkDevice device, VkSwapchainKHR swapchain,
+            const VkLatencySleepModeInfoNV* info) {
+        static thread_local CachedLower<PFN_vkSetLatencySleepModeNV, VkDevice> lower;
+        const auto next = lower.get(device, [&] {
+            return instance_info->funcs.GetDeviceProcAddr(device, "vkSetLatencySleepModeNV"); });
+        if (!next) return VK_ERROR_EXTENSION_NOT_PRESENT;
+        if (info) present_diagnostics::recordReflexMode(info->lowLatencyMode, info->lowLatencyBoost,
+            info->minimumIntervalUs);
+        return next(device, swapchain, info);
+    }
+
+    VkResult VKAPI_CALL myvkLatencySleepNV(VkDevice device, VkSwapchainKHR swapchain,
+            const VkLatencySleepInfoNV* info) {
+        static thread_local CachedLower<PFN_vkLatencySleepNV, VkDevice> lower;
+        const auto next = lower.get(device, [&] {
+            return instance_info->funcs.GetDeviceProcAddr(device, "vkLatencySleepNV"); });
+        if (!next) return VK_ERROR_EXTENSION_NOT_PRESENT;
+        const auto entered = present_diagnostics::Clock::now();
+        const auto result = next(device, swapchain, info);
+        present_diagnostics::recordReflexSleep(entered, present_diagnostics::Clock::now(), result);
+        return result;
+    }
+
+    void VKAPI_CALL myvkSetLatencyMarkerNV(VkDevice device, VkSwapchainKHR swapchain,
+            const VkSetLatencyMarkerInfoNV* info) {
+        static thread_local CachedLower<PFN_vkSetLatencyMarkerNV, VkDevice> lower;
+        const auto next = lower.get(device, [&] {
+            return instance_info->funcs.GetDeviceProcAddr(device, "vkSetLatencyMarkerNV"); });
+        if (!next) return;
+        if (info) present_diagnostics::recordReflexMarker(info->presentID, info->marker,
+            present_diagnostics::Clock::now());
+        next(device, swapchain, info);
+    }
+
+    // The Reflex wrapper for a command the next layer exports, with the pacing profile on only.
+    // Profile off, or a next layer without the command, returns nothing and the lookup stays unchanged.
+    PFN_vkVoidFunction reflexPassThrough(VkDevice device, const char* name) {
+        if (!present_diagnostics::pacingProfileEnabled()) return nullptr;
+        PFN_vkVoidFunction wrapper{};
+        if (std::string_view(name) == "vkSetLatencySleepModeNV")
+            wrapper = reinterpret_cast<PFN_vkVoidFunction>(myvkSetLatencySleepModeNV);
+        else if (std::string_view(name) == "vkLatencySleepNV")
+            wrapper = reinterpret_cast<PFN_vkVoidFunction>(myvkLatencySleepNV);
+        else if (std::string_view(name) == "vkSetLatencyMarkerNV")
+            wrapper = reinterpret_cast<PFN_vkVoidFunction>(myvkSetLatencyMarkerNV);
+        if (!wrapper || !instance_info->funcs.GetDeviceProcAddr(device, name)) return nullptr;
+        return wrapper;
+    }
+
     PFN_vkVoidFunction myvkGetDeviceProcAddr(VkDevice device, const char* name) {
         if (!name) return nullptr;
         if (!layer_info || !instance_info) return nullptr;
@@ -1652,6 +1748,7 @@ namespace {
             return instance_info->funcs.GetDeviceProcAddr(device, name);
         }
 
+        if (const auto reflex = reflexPassThrough(device, name)) return reflex;
         auto func = getProcAddr(name);
         if (func) return func;
 
@@ -2531,7 +2628,9 @@ namespace {
             CreateWaylandSurface
         >(instance, createInfo, alloc, surface, "vkCreateWaylandSurfaceKHR",
             SpatialSurfaceOrigin::Wayland);
-        const bool diagnostics = present_diagnostics::pacingWaylandProfileEnabled();
+        // FGVK_PACING_PROFILE_DISPLAY=0 keeps the profile but leaves the display probe out (A/B run).
+        const bool diagnostics = present_diagnostics::pacingWaylandProfileEnabled() ||
+            present_diagnostics::pacingDisplayProbeEnabled();
         if (result == VK_SUCCESS && createInfo && surface && instance_info &&
                 !spatialScalingLayer && diagnostics) {
             try {
@@ -3413,7 +3512,12 @@ namespace {
         const std::shared_ptr<InternalSwapchainImages>& internal,
         const VkPresentInfoKHR& presentInfo, uint32_t presentIndex);
 
+    VkResult myvkQueuePresentKHRBody(VkQueue queue, const VkPresentInfoKHR* info);
     VkResult myvkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR* info) {
+        present_diagnostics::LayerCallSpan span(present_diagnostics::LayerCall::QueuePresent);
+        return span.returned(myvkQueuePresentKHRBody(queue, info));
+    }
+    VkResult myvkQueuePresentKHRBody(VkQueue queue, const VkPresentInfoKHR* info) {
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wunknown-warning-option"
 #pragma clang diagnostic ignored "-Wunsafe-buffer-usage"
@@ -3874,7 +3978,16 @@ namespace {
         return result;
     }
 
+    VkResult myvkAcquireNextImageKHRBody(
+            VkDevice device, VkSwapchainKHR swapchain, uint64_t timeout,
+            VkSemaphore semaphore, VkFence fence, uint32_t* imageIndex);
     VkResult myvkAcquireNextImageKHR(
+            VkDevice device, VkSwapchainKHR swapchain, uint64_t timeout,
+            VkSemaphore semaphore, VkFence fence, uint32_t* imageIndex) {
+        present_diagnostics::LayerCallSpan span(present_diagnostics::LayerCall::AcquireNextImage);
+        return span.returned(myvkAcquireNextImageKHRBody(device, swapchain, timeout, semaphore, fence, imageIndex));
+    }
+    VkResult myvkAcquireNextImageKHRBody(
             VkDevice device, VkSwapchainKHR swapchain, uint64_t timeout,
             VkSemaphore semaphore, VkFence fence, uint32_t* imageIndex) {
         const auto mapping = instance_info->swapchains.find(swapchain);
@@ -3898,7 +4011,14 @@ namespace {
             }, imageIndex);
     }
 
+    VkResult myvkAcquireNextImage2KHRBody(VkDevice device,
+            const VkAcquireNextImageInfoKHR* info, uint32_t* imageIndex);
     VkResult myvkAcquireNextImage2KHR(VkDevice device,
+            const VkAcquireNextImageInfoKHR* info, uint32_t* imageIndex) {
+        present_diagnostics::LayerCallSpan span(present_diagnostics::LayerCall::AcquireNextImage2);
+        return span.returned(myvkAcquireNextImage2KHRBody(device, info, imageIndex));
+    }
+    VkResult myvkAcquireNextImage2KHRBody(VkDevice device,
             const VkAcquireNextImageInfoKHR* info, uint32_t* imageIndex) {
         if (!instance_info || !info) return VK_ERROR_INITIALIZATION_FAILED;
         const auto mapping = instance_info->swapchains.find(info->swapchain);
@@ -3938,7 +4058,14 @@ namespace {
         return copied < source.size() ? VK_INCOMPLETE : VK_SUCCESS;
     }
 
+    VkResult myvkGetSwapchainImagesKHRBody(VkDevice device, VkSwapchainKHR swapchain,
+            uint32_t* count, VkImage* images);
     VkResult myvkGetSwapchainImagesKHR(VkDevice device, VkSwapchainKHR swapchain,
+            uint32_t* count, VkImage* images) {
+        present_diagnostics::LayerCallSpan span(present_diagnostics::LayerCall::GetSwapchainImages);
+        return span.returned(myvkGetSwapchainImagesKHRBody(device, swapchain, count, images));
+    }
+    VkResult myvkGetSwapchainImagesKHRBody(VkDevice device, VkSwapchainKHR swapchain,
             uint32_t* count, VkImage* images) {
         if (!instance_info) return VK_ERROR_INITIALIZATION_FAILED;
         if (const auto* internal = internalImagesFor(swapchain))
@@ -3966,14 +4093,28 @@ namespace {
 #endif
 
 #if defined(VK_KHR_swapchain_maintenance1)
+    VkResult myvkReleaseSwapchainImagesKHRBody(VkDevice device,
+            const VkReleaseSwapchainImagesInfoKHR* info);
     VkResult myvkReleaseSwapchainImagesKHR(VkDevice device,
+            const VkReleaseSwapchainImagesInfoKHR* info) {
+        present_diagnostics::LayerCallSpan span(present_diagnostics::LayerCall::ReleaseSwapchainImages);
+        return span.returned(myvkReleaseSwapchainImagesKHRBody(device, info));
+    }
+    VkResult myvkReleaseSwapchainImagesKHRBody(VkDevice device,
             const VkReleaseSwapchainImagesInfoKHR* info) {
         return releaseSwapchainImagesCommon(device, info, "vkReleaseSwapchainImagesKHR");
     }
 #endif
 
 #if defined(VK_EXT_swapchain_maintenance1)
+    VkResult myvkReleaseSwapchainImagesEXTBody(VkDevice device,
+            const VkReleaseSwapchainImagesInfoEXT* info);
     VkResult myvkReleaseSwapchainImagesEXT(VkDevice device,
+            const VkReleaseSwapchainImagesInfoEXT* info) {
+        present_diagnostics::LayerCallSpan span(present_diagnostics::LayerCall::ReleaseSwapchainImages);
+        return span.returned(myvkReleaseSwapchainImagesEXTBody(device, info));
+    }
+    VkResult myvkReleaseSwapchainImagesEXTBody(VkDevice device,
             const VkReleaseSwapchainImagesInfoEXT* info) {
         return releaseSwapchainImagesCommon(device, info, "vkReleaseSwapchainImagesEXT");
     }

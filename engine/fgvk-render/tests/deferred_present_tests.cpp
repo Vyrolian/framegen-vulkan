@@ -647,10 +647,11 @@ void observeCopiesWithoutChangingDelivery() {
 }
 struct ObserverState { std::atomic_uint calls{}; };
 VkResult observePresent(void* owner, PFN_vkQueuePresentKHR lower, VkQueue queue,
-        const VkPresentInfoKHR& info, uint64_t context, uint64_t source, bool generated) {
+        const VkPresentInfoKHR& info, uint64_t context, uint64_t source, bool generated, uint64_t* feedback) {
     auto& state = *static_cast<ObserverState*>(owner);
     expect(context == 123 && source == 456 && generated == (state.calls == 0),
         "retained observer lost the admitted context/source/output role");
+    expect(feedback != nullptr, "retained observer lost the feedback out-parameter");
     ++state.calls;
     return lower(queue, &info);
 }

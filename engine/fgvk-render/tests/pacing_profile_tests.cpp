@@ -291,8 +291,12 @@ void emit() {
     expect(empty && empty->metrics[PacingProfile::GpuSpan].count == 0,
         "a previous GPU batch was repeated into a later window");
     logPacingProfile(17, VK_PRESENT_MODE_IMMEDIATE_KHR, start + 1s, *window);
-    for (size_t i = 0; i < 6000; ++i)
+    // A window holds one of four slots until the writer writes it. A burst must therefore flush
+    // between windows to reach the file, which is what this loop exists to fill (the wrap).
+    for (size_t i = 0; i < 6000; ++i) {
         logPacingProfile(17, VK_PRESENT_MODE_IMMEDIATE_KHR, start + 1s, *window);
+        flushPacingProfileForTests();
+    }
     int calls = 0;
     const auto result = observeApplicationAcquire({}, {}, ApplicationFrameApi::AcquireKhr, 0,
         [&] { ++calls; return VK_TIMEOUT; });
@@ -484,6 +488,8 @@ int main() {
             setenv("FGVK_PACING_PROFILE_TRACE", "0", 1);
             unsetenv("FGVK_PRESENT_DIAGNOSTICS");
             setenv("FGVK_PACING_PROFILE_LOG", path.c_str(), 1);
+            // The default log limit is 1 GiB now; this scenario checks the wrap marker at 16 MB.
+            setenv("FGVK_PACING_PROFILE_LIMIT_MB", "16", 1);
             expect(pacingProfileEnabled() && !enabled(), "profiler enabled broad diagnostics");
             expect(pacingGpuProfileEnabled() == gpuOnly, "GPU timing must remain separately opt-in");
             initializePacingProfileLog();
