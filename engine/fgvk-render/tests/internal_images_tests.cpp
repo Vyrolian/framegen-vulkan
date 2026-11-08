@@ -141,6 +141,21 @@ namespace {
             "complete did not record the release value");
     }
 
+    void testReleaseValueOfReadsCompletedValue() {
+        InternalImageRing ring(2);
+        expect(ring.acquire() == 0u && ring.present(0), "setup failed");
+        expect(ring.releaseValueOf(0) == 0, "a pending image already had a release value");
+        expect(ring.complete(0, 42) && ring.releaseValueOf(0) == 42,
+            "releaseValueOf did not return the value stored by complete");
+        bool outOfRange = false;
+        try {
+            static_cast<void>(ring.releaseValueOf(2));
+        } catch (const std::out_of_range&) {
+            outOfRange = true;
+        }
+        expect(outOfRange, "releaseValueOf accepted an index outside the ring");
+    }
+
     void testRingSizeBounds() {
         for (const uint32_t count : {2u, 8u}) {
             InternalImageRing ring(count);
@@ -394,6 +409,7 @@ int main() {
     testAcquiredCountAndAcquiredState();
     testReleaseValuesPerIndex();
     testCompleteStoresReleaseValue();
+    testReleaseValueOfReadsCompletedValue();
     testRingSizeBounds();
     testAcquireWaitsForComplete();
     testAcquireWaitZeroNeverWaits();

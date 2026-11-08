@@ -232,6 +232,16 @@ namespace fgvk::layer {
             return values.at(index);
         }
 
+        /// Timeline value of the last copy that read this index, read under the
+        /// ring mutex. On the production path only complete() writes it, and only
+        /// for a Pending index, so a caller that holds the index Acquired reads a
+        /// stable value.
+        /// @throws std::out_of_range for an index outside the ring.
+        [[nodiscard]] uint64_t releaseValueOf(const uint32_t index) const {
+            const std::lock_guard lock(mutex);
+            return values.at(index);
+        }
+
         /// Indices the application holds (Acquired, not yet presented).
         [[nodiscard]] size_t acquiredCount() const {
             return countState(State::Acquired);

@@ -685,9 +685,10 @@ ApplicationAcquireScope::~ApplicationAcquireScope() {
     if (installed) applicationAcquireScope = previous;
 }
 
-void recordInternalAcquire(const Clock::duration ringWait, const Clock::duration queueLock) noexcept {
+void recordInternalAcquire(const Clock::duration ringWait, const Clock::duration queueLock,
+        const Clock::duration submit) noexcept {
     if (applicationAcquireScope)
-        applicationAcquireScope->observation.internal = InternalAcquireTiming{ringWait, queueLock};
+        applicationAcquireScope->observation.internal = InternalAcquireTiming{ringWait, queueLock, submit};
 }
 
 void bindApplicationAcquireContext(const uint64_t context) noexcept {
@@ -814,7 +815,9 @@ void recordApplicationFrameTiming(const ApplicationFrameApi api, const uintptr_t
                  << " internal_ring_wait_mean_ms=" << window->internalRingWait.mean()
                  << " internal_ring_wait_max_ms=" << window->internalRingWait.maximum
                  << " internal_queue_lock_mean_ms=" << window->internalQueueLock.mean()
-                 << " internal_queue_lock_max_ms=" << window->internalQueueLock.maximum;
+                 << " internal_queue_lock_max_ms=" << window->internalQueueLock.maximum
+                 << " internal_submit_mean_ms=" << window->internalSubmit.mean()
+                 << " internal_submit_max_ms=" << window->internalSubmit.maximum;
     }
     line << '\n';
     if (pacingProfileEnabled()) pacingLog().write(line.str());

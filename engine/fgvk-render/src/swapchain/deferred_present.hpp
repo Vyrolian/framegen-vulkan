@@ -23,10 +23,24 @@ namespace fgvk::layer {
 // A device-private queue from the same family as the application's graphics
 // queue. The application never receives this queue's index. Multiple surfaces
 // share the lock, but never hold it while sleeping.
+//
+// acquireQueue is a second private queue, present only when the family had room
+// for it. The emulated acquire submits on it under acquireMutex, so the acquire
+// does not wait behind the worker's submits under mutex. Lock order everywhere
+// both are held: mutex before acquireMutex. No path takes mutex while holding
+// acquireMutex.
 struct DeferredPresentQueue {
     VkQueue queue{};
     std::mutex mutex;
+    VkQueue acquireQueue{};
+    std::mutex acquireMutex;
 
+    // The queue and lock the emulated acquire must use. Without acquireQueue,
+    // this is the present queue and its mutex, as before the second queue existed.
+    [[nodiscard]] std::pair<VkQueue, std::mutex&> acquireTarget() {
+        if (acquireQueue != VK_NULL_HANDLE) return {acquireQueue, acquireMutex};
+        return {queue, mutex};
+    }
 
     // Synchronous outputs use the exact same queue as the retained tail.
     // CPU call ordering across different queues is not present ordering.

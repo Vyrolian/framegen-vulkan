@@ -66,7 +66,10 @@ namespace fgvk::layer {
         std::vector<VkImage> lowerImages;
 
         std::optional<vk::TimelineSemaphore> release;
-        // Every value read or written here is serialised by queue->mutex.
+        // Serialised by queue->mutex: the release value and everything the copy and
+        // release paths write. The emulated acquire never touches these. It reads only
+        // the ring (its own mutex) and the release handle, fixed at creation, and it
+        // submits under acquireTarget()'s mutex, never queue->mutex.
         uint64_t lastReleaseValue{0};
         std::vector<vk::Semaphore> copied;
         std::vector<vk::Semaphore> lowerAcquire;
@@ -371,15 +374,30 @@ namespace fgvk::layer {
         const auto ringWait = measured ? lockStarted - ringStarted : present_diagnostics::Clock::duration{};
 
         // The release timeline orders the acquired image after its last copy.
-        // The value is read under the queue lock, where every writer updates it.
+        // Safety of the wait value: an index returns to Free only through complete(),
+        // which stores a value whose release-timeline signal submit already returned
+        // VK_SUCCESS (submitCopyLocked and releaseLocked; after a failed submit, the last
+        // value that was submitted), or through release/releaseAll, which keep the value
+        // already stored. So the release signal is submitted before this submit. The
+        // application's binary semaphore, signalled here, depends on that wait, and
+        // VUID-vkQueueSubmit-pWaitSemaphores-03238 requires every signal it depends on
+        // to be submitted before a binary wait on it. The timeline wait may cross queues.
+        // The index is Acquired by this call, so complete() cannot change its value
+        // between the read and the submit. The application's semaphore and fence are
+        // signalled on the acquire queue, which no other submit uses. Without a second
+        // queue the submit runs on the present queue under its mutex, as before F9.
+        // D5's internal_queue_lock_* fields keep their names. They now measure the wait
+        // for submitMutex, the acquire queue's lock (or the present queue's lock).
         {
-            const std::lock_guard lock(impl->queue->mutex);
-            if (measured)
-                present_diagnostics::recordInternalAcquire(ringWait,
-                    present_diagnostics::Clock::now() - lockStarted);
-            const uint64_t waitValue = impl->ring.releaseValue(*index);
+            const auto [submitQueue, submitMutex] = impl->queue->acquireTarget();
+            const std::lock_guard lock(submitMutex);
+            const auto lockAcquired = measured ? present_diagnostics::Clock::now() : present_diagnostics::Clock::time_point{};
+            const auto lockWait = measured ? lockAcquired - lockStarted : present_diagnostics::Clock::duration{};
+            const uint64_t waitValue = impl->ring.releaseValueOf(*index);
             const bool waitRelease = waitValue != 0;
             const bool signalSemaphore = semaphore != VK_NULL_HANDLE;
+            present_diagnostics::Clock::duration submitWait{};
+            VkResult submitted = VK_SUCCESS;
             if (waitRelease || signalSemaphore || fence != VK_NULL_HANDLE) {
                 const VkSemaphore releaseHandle = impl->release->handle();
                 const VkPipelineStageFlags stage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
@@ -402,13 +420,19 @@ namespace fgvk::layer {
                     .signalSemaphoreCount = signalSemaphore ? 1u : 0u,
                     .pSignalSemaphores = &semaphore,
                 };
-                const auto submitted = impl->funcs.QueueSubmit(impl->queue->queue, 1, &submit, fence);
+                const auto submitStarted = measured ? present_diagnostics::Clock::now() : present_diagnostics::Clock::time_point{};
+                submitted = impl->funcs.QueueSubmit(submitQueue, 1, &submit, fence);
+                if (measured)
+                    submitWait = present_diagnostics::Clock::now() - submitStarted;
                 if (submitted != VK_SUCCESS) {
                     impl->sticky.store(submitted);
                     static_cast<void>(impl->ring.release(*index));
-                    return submitted;
                 }
             }
+            if (measured)
+                present_diagnostics::recordInternalAcquire(ringWait, lockWait, submitWait);
+            if (submitted != VK_SUCCESS)
+                return submitted;
         }
 
         *imageIndex = *index;

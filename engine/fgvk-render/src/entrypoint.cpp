@@ -1141,6 +1141,21 @@ namespace {
                     const auto result = (*wrapper->second.loaderdatafunc())(*device, privateQueue->queue);
                     if (result != VK_SUCCESS) privateQueue->queue = VK_NULL_HANDLE;
                 }
+                // The emulated acquire's queue exists only when the family had room
+                // for both. Like the present queue, it is never registered in
+                // queueIdentities, so the application cannot see it.
+                if (privatePresentQueue.acquireIndex) {
+                    wrapper->second.df().GetDeviceQueue(*device, *layerQueueFamily,
+                        *privatePresentQueue.acquireIndex, &privateQueue->acquireQueue);
+                    if (privateQueue->acquireQueue && wrapper->second.loaderdatafunc()) {
+                        const auto result = (*wrapper->second.loaderdatafunc())(*device, privateQueue->acquireQueue);
+                        if (result != VK_SUCCESS) privateQueue->acquireQueue = VK_NULL_HANDLE;
+                    }
+                }
+                const bool acquireQueueActive = privateQueue->queue != VK_NULL_HANDLE &&
+                    privateQueue->acquireQueue != VK_NULL_HANDLE;
+                std::cerr << "framegen-vulkan: internal acquire queue: active="
+                          << (acquireQueueActive ? 1 : 0) << '\n';
                 if (privateQueue->queue)
                     instance_info->deferredPresentQueues.emplace(*device, std::move(privateQueue));
             }
@@ -1243,6 +1258,14 @@ namespace {
         drainDeferredDevice(device);
         const auto lower = reinterpret_cast<PFN_vkDeviceWaitIdle>(
             instance_info->funcs.GetDeviceProcAddr(device, "vkDeviceWaitIdle"));
+        // vkDeviceWaitIdle host-synchronises every queue of the device, so it holds
+        // the private queues' locks too. Lock order: mutex before acquireMutex.
+        if (const auto owned = instance_info->deferredPresentQueues.find(device);
+                owned != instance_info->deferredPresentQueues.end()) {
+            const std::lock_guard queueLock(owned->second->mutex);
+            const std::lock_guard acquireLock(owned->second->acquireMutex);
+            return lower(device);
+        }
         return lower(device);
     }
 
@@ -1259,9 +1282,16 @@ namespace {
             instance_info->funcs.GetDeviceProcAddr(device, "vkQueueWaitIdle"));
         if (const auto owned = instance_info->deferredPresentQueues.find(device);
                 owned != instance_info->deferredPresentQueues.end()) {
-            const std::lock_guard queueLock(owned->second->mutex);
-            const auto result = lower(owned->second->queue);
-            if (result != VK_SUCCESS) return result;
+            {
+                const std::lock_guard queueLock(owned->second->mutex);
+                const auto result = lower(owned->second->queue);
+                if (result != VK_SUCCESS) return result;
+            }
+            if (owned->second->acquireQueue != VK_NULL_HANDLE) {
+                const std::lock_guard acquireLock(owned->second->acquireMutex);
+                const auto result = lower(owned->second->acquireQueue);
+                if (result != VK_SUCCESS) return result;
+            }
         }
         return lower(queue);
     }
