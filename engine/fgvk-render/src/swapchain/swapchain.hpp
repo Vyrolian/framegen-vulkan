@@ -146,13 +146,15 @@ namespace fgvk::layer {
     /// @param profile active game profile
     /// @param maxImages maximum number of images supported by the surface
     /// @param createInfo swapchain create info to modify
+    /// @param surfaceMinImages surface minImageCount for the layer-needs floor (0 = none)
     [[nodiscard]] bool context_ModifySwapchainCreateInfo(
         const ls::GameConf& profile, uint32_t maxImages,
         VkSwapchainCreateInfoKHR& createInfo, bool gamescopeHdrActive,
         bool gamescopeDetected,
         const PresentationEnvironmentPolicy& presentationEnvironment,
         bool frameGenerationInteropEnabled,
-        bool spatialScalingActive);
+        bool spatialScalingActive,
+        uint32_t surfaceMinImages = 0);
 
     /// swapchain context for a layer instance
     class Swapchain {

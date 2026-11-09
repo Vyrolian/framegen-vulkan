@@ -86,16 +86,42 @@ namespace fgvk::layer {
         return returnedImages - requestedMinImages;
     }
 
+    /// Lower images the layer itself holds acquired and not yet presented at
+    /// one time: an internal real prepared early (acquired and copied before
+    /// its deadline) plus the generated output the worker is acquiring and
+    /// copying. The worker presents generated outputs one at a time, so this
+    /// does not grow with the multiplier.
+    inline constexpr uint32_t layerHeldLowerImages = 2;
+
+    /// Vulkan sizing rule: the surface minimum plus the images held at once
+    /// (the same rule as an application's minImageCount + 1 for one held
+    /// image). Used as a floor, so the application-derived count, which the
+    /// direct path and the generated capacity check rely on, never shrinks.
+    /// surfaceMinImages == 0 leaves the count unchanged.
+    [[nodiscard]] constexpr uint32_t lowerImageCountWithLayerFloor(
+            const uint32_t current, const uint32_t surfaceMinImages,
+            const uint32_t maxImages) noexcept {
+        if (surfaceMinImages == 0)
+            return current;
+        uint32_t count = std::max(current, surfaceMinImages + layerHeldLowerImages);
+        if (maxImages && count > maxImages)
+            count = maxImages;
+        return count;
+    }
+
     /// Apply only the WSI mutations justified by resources provisioned on the
     /// application device. Standalone scaling needs transfer usage, but must
     /// not reserve FG images or change the application's present mode.
+    /// surfaceMinImages (0 = unknown) adds the layer-needs floor for Fixed FG
+    /// without combined scaling.
     [[nodiscard]] inline bool applySwapchainCreateProvisioning(
             const ls::GameConf& profile, const uint32_t maxImages,
             VkSwapchainCreateInfoKHR& createInfo,
             const bool frameGenerationProvisioned,
             const bool spatialScalingActive,
             const bool orderedFrameGenerationTransport,
-            const bool swapchainImageCountCompatibility = false) {
+            const bool swapchainImageCountCompatibility = false,
+            const uint32_t surfaceMinImages = 0) {
         if (!frameGenerationProvisioned && !spatialScalingActive)
             return false;
 
@@ -134,6 +160,9 @@ namespace fgvk::layer {
                     ));
                     if (maxImages && createInfo.minImageCount > maxImages)
                         createInfo.minImageCount = maxImages;
+                    if (!combinedScalingTopology && !profile.adaptive)
+                        createInfo.minImageCount = lowerImageCountWithLayerFloor(
+                            createInfo.minImageCount, surfaceMinImages, maxImages);
                 }
                 if (orderedFrameGenerationTransport) {
                     createInfo.presentMode = VK_PRESENT_MODE_FIFO_KHR;

@@ -2054,6 +2054,50 @@ int main() {
             frameGenerationOnlyCreate.presentMode == VK_PRESENT_MODE_FIFO_KHR,
         "Ordered FG-only must restore the release-3.0 three-image plus two-output plus one-relief contract");
 
+    // Layer-needs floor: surface minimum + the two lower images the layer
+    // holds at once, never below the application-derived count.
+    expect(lowerImageCountWithLayerFloor(3, 2, 8) == 4 &&
+            lowerImageCountWithLayerFloor(5, 2, 8) == 5 &&
+            lowerImageCountWithLayerFloor(3, 0, 8) == 3 &&
+            lowerImageCountWithLayerFloor(3, 4, 5) == 5 &&
+            lowerImageCountWithLayerFloor(3, 4, 0) == 6,
+        "Lower image floor must be surface minimum plus layer-held images, capped by the surface maximum");
+    {
+        auto doubleProfile = frameGenerationOnlyProfile;
+        doubleProfile.multiplier = 2;
+        doubleProfile.adaptive_max_multiplier = 2;
+        expect(generatedFrameCapacityForProfile(doubleProfile) == 1,
+            "The 2x test profile reserves one generated image");
+        const auto provision = [&](const ls::GameConf& profile, const uint32_t applicationMin,
+                const VkPresentModeKHR mode, const bool ordered, const bool compatibility,
+                const uint32_t surfaceMin, const uint32_t maxImages) {
+            VkSwapchainCreateInfoKHR create{
+                .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
+                .minImageCount = applicationMin,
+                .imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+                .presentMode = mode,
+            };
+            static_cast<void>(applySwapchainCreateProvisioning(profile, maxImages, create,
+                true, false, ordered, compatibility, surfaceMin));
+            return create.minImageCount;
+        };
+        expect(provision(doubleProfile, 2, VK_PRESENT_MODE_IMMEDIATE_KHR, false, false, 2, 8) == 4,
+            "A low application request must not leave the layer fewer than surface minimum plus held images");
+        expect(provision(doubleProfile, 2, VK_PRESENT_MODE_IMMEDIATE_KHR, false, false, 0, 8) == 3,
+            "Without a surface minimum the application-derived count stays as before");
+        expect(provision(doubleProfile, 3, VK_PRESENT_MODE_IMMEDIATE_KHR, false, false, 2, 8) == 4 &&
+                provision(doubleProfile, 3, VK_PRESENT_MODE_FIFO_KHR, true, false, 2, 8) == 5,
+            "Cyberpunk counts (application 3, surface 2..8) stay 4 IMMEDIATE and 5 FIFO");
+        expect(provision(doubleProfile, 2, VK_PRESENT_MODE_IMMEDIATE_KHR, false, false, 4, 5) == 5,
+            "The layer floor is capped by the surface maximum");
+        expect(provision(doubleProfile, 2, VK_PRESENT_MODE_IMMEDIATE_KHR, false, true, 2, 8) == 2,
+            "Image-count compatibility keeps the application's count");
+        auto adaptiveProfile = doubleProfile;
+        adaptiveProfile.adaptive = true;
+        expect(provision(adaptiveProfile, 2, VK_PRESENT_MODE_IMMEDIATE_KHR, false, false, 2, 8) == 3,
+            "Adaptive keeps the application-derived count");
+    }
+
     VkSwapchainCreateInfoKHR compatibleFrameGenerationOnlyCreate{
         .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
         .minImageCount = 3,

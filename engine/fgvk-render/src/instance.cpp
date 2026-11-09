@@ -1110,7 +1110,8 @@ SwapchainCreateModification Root::modifySwapchainCreateInfo(const vk::Vulkan& vk
         this->gamescopeDetected,
         this->presentationEnvironment,
         frameGenerationInteropForLayer(vk.frameGenerationInteropEnabled()),
-        hdrResizePolicy.has_value()
+        hdrResizePolicy.has_value(),
+        caps.minImageCount
     ));
     auto policySnapshot = this->surfaceScalingPolicySnapshot();
     if (hdrResizePolicy)
@@ -1497,6 +1498,8 @@ SwapchainCreateModification Root::modifySwapchainCreateInfo(const vk::Vulkan& vk
         );
     }
 
+    const uint32_t applicationMinImages = createInfo.minImageCount;
+    const VkPresentModeKHR applicationPresentMode = createInfo.presentMode;
     modification.privateOrderedTransport = context_ModifySwapchainCreateInfo(
         contextProfile,
         caps.maxImageCount,
@@ -1506,7 +1509,8 @@ SwapchainCreateModification Root::modifySwapchainCreateInfo(const vk::Vulkan& vk
         this->gamescopeDetected,
         this->presentationEnvironment,
         frameGenerationInteropForLayer(vk.frameGenerationInteropEnabled()),
-        modification.spatialScalingActive
+        modification.spatialScalingActive,
+        caps.minImageCount
     );
 
     // Gamescope forwards both a MAILBOX base mode and a MAILBOX-only
@@ -1559,6 +1563,16 @@ SwapchainCreateModification Root::modifySwapchainCreateInfo(const vk::Vulkan& vk
         gamescopePresentContract.compositorPresentMode;
     if (modification.gamescopeProtocolPresentMode)
         modification.gamescopePresentRefreshHz = *this->gamescopeRefreshHz;
+
+    // Once per swapchain creation: what the layer asks the lower driver for.
+    std::cerr << "framegen-vulkan: lower swapchain request: role=" << layerRoleName
+              << " present_mode=" << static_cast<int>(createInfo.presentMode)
+              << " application_present_mode=" << static_cast<int>(applicationPresentMode)
+              << " min_images=" << createInfo.minImageCount
+              << " application_min_images=" << applicationMinImages
+              << " surface_min_images=" << caps.minImageCount
+              << " surface_max_images=" << caps.maxImageCount
+              << '\n';
 
     finish();
     if (modification.spatialScalingActive && !spatialExtentOwner) {

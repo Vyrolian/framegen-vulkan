@@ -72,7 +72,8 @@ bool layer::context_ModifySwapchainCreateInfo(const ls::GameConf& profile,
         const bool gamescopeDetected,
         const PresentationEnvironmentPolicy& presentationEnvironment,
         const bool frameGenerationInteropEnabled,
-        const bool spatialScalingActive) {
+        const bool spatialScalingActive,
+        const uint32_t surfaceMinImages) {
     const auto colorPipeline = classifySwapchainColor(
         createInfo.imageFormat, createInfo.imageColorSpace,
         gamescopeHdrActive
@@ -98,7 +99,8 @@ bool layer::context_ModifySwapchainCreateInfo(const ls::GameConf& profile,
         profile, maxImages, createInfo,
         frameGenerationProvisioned, spatialScalingActive,
         orderedFrameGenerationTransport,
-        profile.swapchain_image_count_compatibility
+        profile.swapchain_image_count_compatibility,
+        gamescopeDetected ? 0 : surfaceMinImages
     );
 }
 
