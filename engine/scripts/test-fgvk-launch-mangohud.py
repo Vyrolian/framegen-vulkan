@@ -84,7 +84,7 @@ class MangoHudLauncherTests(unittest.TestCase):
                     self.assertTrue(env["VK_IMPLICIT_LAYER_PATH"].endswith(":" + str(self.private)))
                     self.assertNotIn(str(self.manifests), env["VK_IMPLICIT_LAYER_PATH"])
                     if bits == "64":
-                        self.assertEqual(env["VK_INSTANCE_LAYERS"], "VK_LAYER_FGVK_render:VK_LAYER_MANGOHUD_overlay_x86_64:VK_LAYER_TEST")
+                        self.assertEqual(env["VK_INSTANCE_LAYERS"], "VK_LAYER_MANGOHUD_overlay_x86_64:VK_LAYER_FGVK_render:VK_LAYER_TEST")
                     else:
                         self.assertNotIn("MANGOHUD", env["VK_INSTANCE_LAYERS"])
                 staged = list(self.private.glob("*.json"))
