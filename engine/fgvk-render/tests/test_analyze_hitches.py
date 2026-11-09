@@ -216,6 +216,22 @@ class AnalyseHitchesTest(unittest.TestCase):
         self.assertIn("  flags 7: n 1", out, out)
         self.assertNotIn("  flags 15:", out, out)
 
+    def test_real_copy_split_joins_real_outputs(self):
+        # T3b: a real output (generated=0) with its private -> lower copy timed; the generated
+        # output of the same source must not be joined to the real-copy record.
+        call = ms(500)
+        self.append_lines([
+            output(90, 50, 0, call, 900), presented(900, 506, 14),
+            output(91, 50, 1, call + 2 * MS, 901), presented(901, 509, 14),
+            "framegen-vulkan: present diagnostics: operation=pacing-profile-real-copy-gpu version=1 pid=1 "
+            f"context=1 source=50 available=1 copy_start_ns={call + 2 * MS} copy_end_ns={call + 2 * MS + MS // 10}",
+        ])
+        out = self.run_analyser("--min-gap", "20")
+        self.assertIn("after-call split (real outputs, available copies): 1 joined; 0 unavailable", out, out)
+        real = out[out.index("after-call split (real outputs"):]
+        self.assertIn("median 2.00 ", section_line(real, "  overall: n 1", "call -> copy start:"), out)
+        self.assertIn("median 6.00 ", section_line(real, "  overall: n 1", "call -> presented:"), out)
+
     def test_after_call_split_absent_without_gpu_split_records(self):
         out = self.run_analyser("--min-gap", "20")
         self.assertIn("after-call split: no pacing-profile-output-gpu records", out, out)

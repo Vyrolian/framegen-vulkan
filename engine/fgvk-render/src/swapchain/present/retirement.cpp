@@ -207,6 +207,20 @@ void Swapchain::ensureInternalPresentSlots(const vk::Vulkan& vk) {
     }
 }
 
+// T3b, diagnostics only: time the real copy of this application image on the GPU and tag
+// it with the source the output record carries. No effect without the GPU split gate.
+void Swapchain::noteInternalCopyProfile(const vk::Vulkan& vk, InternalPresentImage& image) {
+    if (!this->pacingProfile || !present_diagnostics::pacingGpuSplitProfileEnabled() || !image.owner)
+        return;
+    const auto get = [&](const char* name) { return vk.fi().GetDeviceProcAddr(vk.dev(), name); };
+    auto calibrate = this->info.copyTimestampCalibration
+        ? reinterpret_cast<PFN_vkGetCalibratedTimestampsKHR>(get("vkGetCalibratedTimestampsKHR")) : nullptr;
+    if (this->info.copyTimestampCalibration && !calibrate)
+        calibrate = reinterpret_cast<PFN_vkGetCalibratedTimestampsKHR>(get("vkGetCalibratedTimestampsEXT"));
+    image.owner->enableCopyTimestamps(vk, calibrate, this->diagnosticsState.contextId);
+    image.owner->noteCopySource(image.applicationIndex, this->pacingProfile->sourceOrdinal());
+}
+
 // Worker branch of the real output. The copy and the lower acquire happen on the
 // worker at the deadline. Returns false when the worker refuses, and the caller
 // then materializes synchronously.
@@ -216,6 +230,7 @@ bool Swapchain::enqueueInternalRealPresent(const vk::Vulkan& vk,
     if (!image.owner || !image.keepAlive || !this->deferredPresent ||
             presentInfo.waitSemaphoreCount != 1)
         return false;
+    this->noteInternalCopyProfile(vk, image);
     if (image.owner->ensureCopies(vk, image.applicationIndex) != VK_SUCCESS)
         return false;
     const DeferredPresent::InternalRealCopy copy{
@@ -241,6 +256,7 @@ VkResult Swapchain::materializeInternalPresent(const vk::Vulkan& vk,
     const auto waits = presentInfo.waitSemaphoreCount > 0
         ? std::span<const VkSemaphore>(presentInfo.pWaitSemaphores, presentInfo.waitSemaphoreCount)
         : std::span<const VkSemaphore>{};
+    this->noteInternalCopyProfile(vk, image);
     const VkResult result = image.owner->materialize(vk, image, waits, lowerIndex, copied);
     if (result == VK_SUCCESS)
         image.handedOff = true;

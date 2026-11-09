@@ -804,6 +804,7 @@ namespace fgvk::layer {
         void ensureInternalPresentSlots(const vk::Vulkan& vk);
         [[nodiscard]] bool enqueueInternalRealPresent(const vk::Vulkan& vk,
             const VkPresentInfoKHR& presentInfo, DeferredPresent::Clock::time_point deadline);
+        void noteInternalCopyProfile(const vk::Vulkan& vk, InternalPresentImage& image);
         [[nodiscard]] VkResult materializeInternalPresent(const vk::Vulkan& vk,
             const VkPresentInfoKHR& presentInfo, uint32_t* lowerIndex, VkSemaphore* copied);
         VkResult retireAcquiredImagesAndPresent(const vk::Vulkan& vk,

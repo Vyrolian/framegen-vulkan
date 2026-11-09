@@ -8,6 +8,8 @@
 #include "fgvk-common/helpers/errors.hpp"
 #include "fgvk-common/vulkan/command_buffer.hpp"
 #include "fgvk-common/vulkan/device_memory_accounting.hpp"
+#include "fgvk-common/vulkan/gpu_clock.hpp"
+#include "fgvk-common/vulkan/timestamp_query_pool.hpp"
 #include "fgvk-common/vulkan/semaphore.hpp"
 #include "fgvk-common/vulkan/timeline_semaphore.hpp"
 #include "fgvk-common/vulkan/vulkan.hpp"
@@ -106,6 +108,18 @@ namespace fgvk::layer {
         // Index applicationIndex * lowerImages.size() + lowerIndex. Recorded on
         // the game thread by ensureCopies and only read afterwards.
         std::vector<std::optional<vk::CommandBuffer>> copies;
+        // T3b, diagnostics only: one timestamp pair per copy pair (same index as copies).
+        // The pool pointer and context are set on the game thread under queue->mutex;
+        // timed is written when a pair is recorded (game thread), pending/pendingSource
+        // under queue->mutex. copySource is written lock-free by the game thread.
+        std::unique_ptr<vk::TimestampQueryPool> copyTimes;
+        std::optional<vk::CalibratedClock> copyClock;
+        present_diagnostics::Clock::time_point copyClockAt{};
+        uint64_t copyContext{};
+        std::vector<char> copyTimed, copyPending;
+        std::vector<uint64_t> copyPendingSource;
+        std::unique_ptr<std::atomic<uint64_t>[]> copySource;
+        bool copyTimesTried{};
 
         std::atomic<VkResult> sticky{VK_SUCCESS};
         std::atomic<bool> lowerSuboptimal{false};
@@ -269,7 +283,18 @@ namespace fgvk::layer {
                     barrier(target, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_MEMORY_READ_BIT,
                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR),
                 };
+                const size_t pair = static_cast<size_t>(applicationIndex) * lowerImages.size() + lowerIndex;
+                const auto first = static_cast<uint32_t>(pair * 2);
+                if (copyTimes) {
+                    // The submit's waits block the transfer stage, so the start stamp follows them.
+                    copyTimes->reset(slot->handle(), first, 2);
+                    copyTimes->write(slot->handle(), VK_PIPELINE_STAGE_TRANSFER_BIT, first);
+                }
                 slot->blitImage(vk, preBarriers, {source, target}, extent, postBarriers);
+                if (copyTimes) {
+                    copyTimes->write(slot->handle(), VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, first + 1);
+                    copyTimed.at(pair) = 1;
+                }
                 slot->end(vk);
             } catch (...) {
                 slot.reset();
@@ -944,11 +969,18 @@ namespace fgvk::layer {
                     .signalSemaphoreCount = static_cast<uint32_t>(signals.size()),
                     .pSignalSemaphores = signals.data(),
                 };
+                const size_t pair = static_cast<size_t>(applicationIndex) * impl->lowerImages.size() + lowerIndex;
+                if (impl->copyTimes) collectCopyTimestampsLocked(pair);
                 result = queue == impl->queue->queue
                     ? submitPrivate(*impl->queue, impl->funcs.QueueSubmit, submit, impl->lowerFences.at(slot),
                         SubmitTag{.kind = submitKindCopy, .applicationIndex = applicationIndex, .lowerIndex = lowerIndex})
                     : impl->funcs.QueueSubmit(queue, 1, &submit, impl->lowerFences.at(slot));
                 if (result == VK_SUCCESS) {
+                    if (impl->copyTimes && impl->copyTimed.at(pair)) {
+                        impl->copyPending.at(pair) = 1;
+                        impl->copyPendingSource.at(pair) = applicationIndex < impl->images.size()
+                            ? impl->copySource[applicationIndex].load(std::memory_order_relaxed) : 0;
+                    }
                     impl->lastReleaseValue = value;
                     static_cast<void>(impl->ring.complete(applicationIndex, value));
                     return VK_SUCCESS;
@@ -961,6 +993,66 @@ namespace fgvk::layer {
         impl->sticky.store(result);
         static_cast<void>(impl->ring.complete(applicationIndex, impl->lastReleaseValue));
         return result;
+    }
+
+    void InternalSwapchainImages::enableCopyTimestamps(const vk::Vulkan& vk,
+            const PFN_vkGetCalibratedTimestampsKHR calibrate, const uint64_t context) noexcept {
+        if (impl->copyTimesTried)
+            return;
+        impl->copyTimesTried = true;
+        try {
+            const size_t pairs = impl->copies.size();
+            auto pool = std::make_unique<vk::TimestampQueryPool>(vk, static_cast<uint32_t>(pairs * 2));
+            auto sources = std::make_unique<std::atomic<uint64_t>[]>(impl->images.size());
+            const std::lock_guard lock(impl->queue->mutex);
+            impl->copyClock.emplace(impl->device, calibrate, pool->timestampValidBits(),
+                pool->timestampPeriodNanoseconds());
+            impl->copyContext = context;
+            impl->copyTimed.assign(pairs, 0);
+            impl->copyPending.assign(pairs, 0);
+            impl->copyPendingSource.assign(pairs, 0);
+            impl->copySource = std::move(sources);
+            impl->copyTimes = std::move(pool);
+        } catch (const std::exception& error) {
+            present_diagnostics::reportPacingGpuSplitUnavailable("real-copy-queries", error.what());
+        } catch (...) {
+            present_diagnostics::reportPacingGpuSplitUnavailable("real-copy-queries", "unknown error");
+        }
+    }
+
+    void InternalSwapchainImages::noteCopySource(const uint32_t applicationIndex, const uint64_t source) noexcept {
+        if (impl->copySource && applicationIndex < impl->images.size())
+            impl->copySource[applicationIndex].store(source, std::memory_order_relaxed);
+    }
+
+    void InternalSwapchainImages::collectCopyTimestampsLocked(const size_t resubmitted) noexcept {
+        if (!impl->copyTimes || !impl->copyClock)
+            return;
+        const auto now = present_diagnostics::Clock::now();
+        if (!impl->copyClock->calibrated() || now - impl->copyClockAt >= std::chrono::seconds(1)) {
+            impl->copyClockAt = now;
+            static_cast<void>(impl->copyClock->recalibrate());
+        }
+        for (size_t pair = 0; pair < impl->copyPending.size(); ++pair) {
+            if (!impl->copyPending[pair])
+                continue;
+            bool available = false;
+            int64_t startNs{}, endNs{};
+            try {
+                if (const auto ticks = impl->copyTimes->tryTimestampsAt(static_cast<uint32_t>(pair * 2), 2);
+                        ticks && impl->copyClock->calibrated()) {
+                    startNs = impl->copyClock->monotonicNanoseconds(ticks->at(0));
+                    endNs = impl->copyClock->monotonicNanoseconds(ticks->at(1));
+                    available = startNs != 0 && endNs != 0;
+                } else if (!ticks && pair != resubmitted) {
+                    continue; // still running; read on a later submit
+                }
+            } catch (const std::exception&) {
+            }
+            impl->copyPending[pair] = 0;
+            present_diagnostics::logPacingRealCopyGpu(impl->copyContext, impl->copyPendingSource[pair],
+                available, startNs, endNs);
+        }
     }
 
     VkResult InternalSwapchainImages::materialize(const vk::Vulkan& vk,

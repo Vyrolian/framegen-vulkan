@@ -532,6 +532,14 @@ void logPacingOutputGpu(const uint64_t context, const uint64_t source, const boo
             available ? copyStartNs : 0, available ? copyEndNs : 0});
 }
 
+void logPacingRealCopyGpu(const uint64_t context, const uint64_t source, const bool available,
+        const int64_t copyStartNs, const int64_t copyEndNs) noexcept {
+    if (!pacingProfileEnabled()) return;
+    present_records::enqueue(trace_recorder::RecordKind::PacingRealCopyGpu,
+        present_records::PacingOutputGpuPayload{context, source, available,
+            available ? copyStartNs : 0, available ? copyEndNs : 0});
+}
+
 SteamOverlayLibraries steamOverlayLibraries() {
     SteamOverlayLibraries libraries;
     dl_iterate_phdr([](dl_phdr_info* info, size_t, void* state) {

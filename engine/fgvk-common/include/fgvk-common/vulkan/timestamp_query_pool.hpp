@@ -105,6 +105,12 @@ namespace vk {
             this->resetFunction(commandBuffer, this->pool, 0, this->count);
         }
 
+        void reset(const VkCommandBuffer commandBuffer, const uint32_t first, const uint32_t queryCount) const {
+            if (first > this->count || queryCount > this->count - first)
+                throw ls::error("timestamp reset exceeds query capacity");
+            this->resetFunction(commandBuffer, this->pool, first, queryCount);
+        }
+
         void write(const VkCommandBuffer commandBuffer,
                 const VkPipelineStageFlagBits stage,
                 const uint32_t query) const {
@@ -139,6 +145,24 @@ namespace vk {
             std::vector<uint64_t> timestamps(usedCount);
             const auto result = this->resultsFunction(
                 this->device, this->pool, 0, usedCount,
+                timestamps.size() * sizeof(uint64_t), timestamps.data(),
+                sizeof(uint64_t), VK_QUERY_RESULT_64_BIT
+            );
+            if (result == VK_NOT_READY)
+                return std::nullopt;
+            if (result != VK_SUCCESS)
+                throw ls::vulkan_error(result, "vkGetQueryPoolResults() failed");
+            return timestamps;
+        }
+
+        /// Read queries [first, first + queryCount) without VK_QUERY_RESULT_WAIT_BIT.
+        /// Returns no values unless every query in the range is available.
+        [[nodiscard]] std::optional<std::vector<uint64_t>> tryTimestampsAt(uint32_t first, uint32_t queryCount) const {
+            if (queryCount == 0 || first > this->count || queryCount > this->count - first)
+                throw ls::error("timestamp read exceeds query capacity");
+            std::vector<uint64_t> timestamps(queryCount);
+            const auto result = this->resultsFunction(
+                this->device, this->pool, first, queryCount,
                 timestamps.size() * sizeof(uint64_t), timestamps.data(),
                 sizeof(uint64_t), VK_QUERY_RESULT_64_BIT
             );

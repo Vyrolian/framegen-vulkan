@@ -92,13 +92,14 @@ def describe_output(output):
     return f"{label} src{int(number(output, 'source'))}"
 
 
-def after_call_samples(outputs, output_gpu, presented, presented_flags):
-    # Joins each available worker-copy record to its generated output by (context, source),
+def after_call_samples(outputs, output_gpu, presented, presented_flags, generated_outputs=True):
+    # Joins each available copy record to its output (generated or real) by (context, source),
     # then to the output's on-screen time by feedback. Each sample is
     # (flags, call_ns, copy_start_ns, copy_end_ns, presented_ns).
     generated = defaultdict(list)
+    wanted = "1" if generated_outputs else "0"
     for output in outputs:
-        if output.get("generated") == "1":
+        if output.get("generated", "0") == wanted:
             generated[(integer(output, "context"), integer(output, "source"))].append(output)
     samples = []
     unavailable = unjoined = ambiguous = unshown = 0
@@ -123,8 +124,8 @@ def after_call_samples(outputs, output_gpu, presented, presented_flags):
     return samples, unavailable, unjoined, ambiguous, unshown
 
 
-def print_after_call(samples, unavailable, unjoined, ambiguous, unshown):
-    print(f"after-call split (generated outputs, available copies): {len(samples)} joined;"
+def print_after_call(samples, unavailable, unjoined, ambiguous, unshown, label="generated outputs"):
+    print(f"after-call split ({label}, available copies): {len(samples)} joined;"
           f" {unavailable} unavailable and {unjoined} unjoined (counted over the whole capture);"
           f" {ambiguous} ambiguous; {unshown} not presented")
     if not samples:
@@ -425,6 +426,13 @@ def main(argv):
     else:
         print("after-call split: no pacing-profile-output-gpu records"
               " (FGVK_PACING_PROFILE_GPU_SPLIT unset, or no generated copy was timed)")
+    # T3b: the private -> lower copy of real outputs (internal images), FG on or off. With FG
+    # off the copy waits the game's present semaphores, so its start is the game's GPU frame end.
+    if records["pacing-profile-real-copy-gpu"]:
+        samples, unavailable, unjoined, ambiguous, unshown = after_call_samples(
+            outputs, records["pacing-profile-real-copy-gpu"], presented, presented_flags, False)
+        samples = [sample for sample in samples if in_window(sample[1], sample[1])]
+        print_after_call(samples, unavailable, unjoined, ambiguous, unshown, "real outputs")
 
     recorder_drops = sum(int(number(r, "dropped")) for r in records["pacing-profile-recorder"])
     slot_drops = sum(int(number(r, "window_slot_drops")) for r in records["pacing-profile-recorder"])

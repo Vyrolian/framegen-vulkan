@@ -422,6 +422,14 @@ namespace fgvk::layer {
         [[nodiscard]] VkResult workerAbandon(VkQueue queue, uint32_t applicationIndex,
             VkSemaphore continuation);
 
+        /// T3b, diagnostics only (pacing profile with GPU split): time each copy on the GPU.
+        /// Game thread, before ensureCopies; idempotent. Copies recorded earlier stay untimed.
+        void enableCopyTimestamps(const vk::Vulkan& vk, PFN_vkGetCalibratedTimestampsKHR calibrate,
+            uint64_t context) noexcept;
+        /// T3b: the pacing source of the application image about to be copied. Game thread,
+        /// before the copy of that image is enqueued or materialized; lock-free.
+        void noteCopySource(uint32_t applicationIndex, uint64_t source) noexcept;
+
         /// Sticky failure. OUT_OF_DATE, SURFACE_LOST and full-screen-exclusive
         /// loss from the lower path are kept. Submit failures are also kept.
         [[nodiscard]] VkResult stickyError() const noexcept;
@@ -437,6 +445,9 @@ namespace fgvk::layer {
         // the sticky error and frees p at the last submitted release value.
         [[nodiscard]] VkResult submitCopyLocked(VkQueue queue, uint32_t applicationIndex,
             uint32_t lowerIndex, uint32_t slot, std::span<const VkSemaphore> waits);
+        // T3b: caller holds queue->mutex. Emits every timed copy whose timestamps are
+        // available; a pending copy of pair `resubmitted` is emitted unavailable.
+        void collectCopyTimestampsLocked(size_t resubmitted) noexcept;
         // D7 stall probe, pacing profile only. create registers each owner and the
         // destructor removes it, under one registry mutex. A single detached watchdog
         // dumps the registered owners after an application stall.

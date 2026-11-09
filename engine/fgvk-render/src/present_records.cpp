@@ -382,11 +382,19 @@ void formatPacingGpuSplit(const PacingGpuSplitPayload& payload, std::ostream& li
          << " batch_end_ns=" << payload.batchEndNs << '\n';
 }
 
-void formatPacingOutputGpu(const PacingOutputGpuPayload& payload, std::ostream& line) {
-    line << "framegen-vulkan: present diagnostics: operation=pacing-profile-output-gpu version=1"
+static void formatTimedCopy(const char* operation, const PacingOutputGpuPayload& payload, std::ostream& line) {
+    line << "framegen-vulkan: present diagnostics: operation=" << operation << " version=1"
          << " pid=" << getpid() << " context=" << payload.context << " source=" << payload.source
          << " available=" << payload.available << " copy_start_ns=" << payload.copyStartNs
          << " copy_end_ns=" << payload.copyEndNs << '\n';
+}
+
+void formatPacingOutputGpu(const PacingOutputGpuPayload& payload, std::ostream& line) {
+    formatTimedCopy("pacing-profile-output-gpu", payload, line);
+}
+
+void formatPacingRealCopyGpu(const PacingOutputGpuPayload& payload, std::ostream& line) {
+    formatTimedCopy("pacing-profile-real-copy-gpu", payload, line);
 }
 
 void formatAcquireDriver(const PacingAcquireDriverPayload& payload, std::ostream& line) {
@@ -876,6 +884,12 @@ void handleRecord(Recorder& s, const trace_recorder::TraceRecord& record, const 
         PacingOutputGpuPayload payload{};
         load(payload);
         emit([&](std::ostream& line) { formatPacingOutputGpu(payload, line); });
+        break;
+    }
+    case RecordKind::PacingRealCopyGpu: {
+        PacingOutputGpuPayload payload{};
+        load(payload);
+        emit([&](std::ostream& line) { formatPacingRealCopyGpu(payload, line); });
         break;
     }
     case RecordKind::PacingAcquireDriver: {

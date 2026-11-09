@@ -87,6 +87,8 @@ void profileScenario() {
     // The output copy's timestamps; an unavailable output keeps no times even when given some.
     logPacingOutputGpu(17, 1, true, 10003000, 10004500);
     logPacingOutputGpu(17, 2, false, 10005000, 10006000);
+    // T3b: the real copy's timestamps share the format under their own operation.
+    logPacingRealCopyGpu(17, 3, true, 10007000, 10007100);
 
     // Application windows: the second call closes the first window.
     ApplicationAcquireDetails details{};

@@ -438,6 +438,10 @@ namespace fgvk::layer::present_diagnostics {
     /// both times are then zero.
     void logPacingOutputGpu(uint64_t context, uint64_t source, bool available,
         int64_t copyStartNs, int64_t copyEndNs) noexcept;
+    /// T3b: the same split for the private -> lower copy of a real output (internal images),
+    /// FG on or off. With FG off its start follows the game's present waits.
+    void logPacingRealCopyGpu(uint64_t context, uint64_t source, bool available,
+        int64_t copyStartNs, int64_t copyEndNs) noexcept;
     /// Diagnostic: one line per process for the first split step that cannot start.
     void reportPacingGpuSplitUnavailable(std::string_view reason, std::string_view detail) noexcept;
 
