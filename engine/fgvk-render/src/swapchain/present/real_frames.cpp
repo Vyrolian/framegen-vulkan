@@ -432,20 +432,8 @@ bool Swapchain::recordRenderSplitBegin(const vk::Vulkan& vk,
     try {
         if (!slot.splitQueries)
             slot.splitQueries = std::make_unique<vk::TimestampQueryPool>(vk, 2);
-        if (!this->splitRenderClock) {
-            // The application device may not have enabled calibration. Then this
-            // clock stays uncalibrated and the render half reports zeros.
-            const auto get = [&](const char* name) {
-                return vk.fi().GetDeviceProcAddr(vk.dev(), name);
-            };
-            auto calibrate = this->info.copyTimestampCalibration
-                ? reinterpret_cast<PFN_vkGetCalibratedTimestampsKHR>(get("vkGetCalibratedTimestampsKHR")) : nullptr;
-            if (this->info.copyTimestampCalibration && !calibrate)
-                calibrate = reinterpret_cast<PFN_vkGetCalibratedTimestampsKHR>(get("vkGetCalibratedTimestampsEXT"));
-            this->splitRenderClock.emplace(vk.dev(), calibrate,
-                slot.splitQueries->timestampValidBits(),
-                slot.splitQueries->timestampPeriodNanoseconds());
-        }
+        this->ensureSplitRenderClock(vk, slot.splitQueries->timestampValidBits(),
+            slot.splitQueries->timestampPeriodNanoseconds());
     } catch (const std::exception& error) {
         // Disable only the render half for this swapchain; the backend half is unaffected.
         this->splitRenderUnavailable = true;

@@ -84,6 +84,9 @@ void profileScenario() {
     const std::array generated{125.0, 8.5};
     logPacingGpuFrame(17, 1, 1, 0, 1.5, 2.25, 3.0, 125.0, 250.0, 1.75, generated);
     logPacingGpuSplitFrame(17, 1, 0, 1000, 2000, 3000, 4000, 5000, 6000);
+    // The output copy's timestamps; an unavailable output keeps no times even when given some.
+    logPacingOutputGpu(17, 1, true, 10003000, 10004500);
+    logPacingOutputGpu(17, 2, false, 10005000, 10006000);
 
     // Application windows: the second call closes the first window.
     ApplicationAcquireDetails details{};

@@ -541,6 +541,11 @@ namespace fgvk::layer {
             std::unique_ptr<vk::TimestampQueryPool> splitQueries;
             uint64_t splitSource{};
             bool splitPending{};
+            // Diagnostic output split: the start and end of this slot's worker copy of a
+            // generated output. Created with the recorded copies; read only after the slot fence.
+            std::unique_ptr<vk::TimestampQueryPool> outputQueries;
+            uint64_t outputSource{};
+            bool outputPending{};
         };
         std::vector<RenderSlot> renderSlots;
         size_t renderSlotIndex{0};
@@ -584,8 +589,8 @@ namespace fgvk::layer {
         std::unique_ptr<present_diagnostics::NativeCopyProfile> nativeCopyProfile;
         bool nativeCopyProfileInitialized{};
         std::shared_ptr<FrameContentCapture> frameContentCapture;
-        // Diagnostic GPU split timestamps; created only while the current backend
-        // context reports them enabled. Recent halves wait here for their backend sample.
+        // Diagnostic GPU split timestamps, render and output halves. Created on first use
+        // with the split gate on; recent halves wait here for their backend sample.
         std::optional<vk::CalibratedClock> splitRenderClock;
         present_diagnostics::Clock::time_point splitRenderCalibratedAt{};
         bool splitRenderUnavailable{};
@@ -755,7 +760,10 @@ namespace fgvk::layer {
         // Diagnostic split timestamps. Recording only adds two queries to the existing copy.
         [[nodiscard]] bool recordRenderSplitBegin(const vk::Vulkan& vk, VkCommandBuffer command, RenderSlot& slot);
         void recordRenderSplitEnd(VkCommandBuffer command, RenderSlot& slot);
-        void collectRenderSplitTimestamps();
+        void ensureSplitRenderClock(const vk::Vulkan& vk, uint32_t validBits, float periodNs);
+        void refreshSplitRenderCalibration();
+        void recordOutputGpuSplit(const vk::Vulkan& vk, const RenderSlot& slot);
+        void collectRenderSplitTimestamps(const vk::Vulkan& vk);
         [[nodiscard]] present_diagnostics::SplitRenderHalf findRenderSplitHalf(uint64_t source) const;
         [[nodiscard]] bool recordGeneratedCopies(const vk::Vulkan& vk, RenderSlot& slot);
         [[nodiscard]] bool renderSlotsInFlight() const;

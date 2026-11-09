@@ -382,6 +382,13 @@ void formatPacingGpuSplit(const PacingGpuSplitPayload& payload, std::ostream& li
          << " batch_end_ns=" << payload.batchEndNs << '\n';
 }
 
+void formatPacingOutputGpu(const PacingOutputGpuPayload& payload, std::ostream& line) {
+    line << "framegen-vulkan: present diagnostics: operation=pacing-profile-output-gpu version=1"
+         << " pid=" << getpid() << " context=" << payload.context << " source=" << payload.source
+         << " available=" << payload.available << " copy_start_ns=" << payload.copyStartNs
+         << " copy_end_ns=" << payload.copyEndNs << '\n';
+}
+
 void formatAcquireDriver(const PacingAcquireDriverPayload& payload, std::ostream& line) {
     const auto ns = [](auto time) { return std::chrono::duration_cast<std::chrono::nanoseconds>(time.time_since_epoch()).count(); };
     line << "framegen-vulkan: present diagnostics: operation=pacing-profile-acquire-driver version=1"
@@ -863,6 +870,12 @@ void handleRecord(Recorder& s, const trace_recorder::TraceRecord& record, const 
         PacingGpuSplitPayload payload{};
         load(payload);
         emit([&](std::ostream& line) { formatPacingGpuSplit(payload, line); });
+        break;
+    }
+    case RecordKind::PacingOutputGpu: {
+        PacingOutputGpuPayload payload{};
+        load(payload);
+        emit([&](std::ostream& line) { formatPacingOutputGpu(payload, line); });
         break;
     }
     case RecordKind::PacingAcquireDriver: {

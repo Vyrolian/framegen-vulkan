@@ -10,6 +10,7 @@ first output. A generated output of the pair (s-1, s) carries source s.
 """
 
 import argparse
+import math
 import re
 import statistics
 import sys
@@ -20,6 +21,7 @@ MARK = re.compile(r"^framegen-vulkan: mark monotonic_ns=(-?\d+) note=(.*)$")
 NS_PER_MS = 1_000_000.0
 NS_PER_S = 1_000_000_000.0
 FG_LATE_MS = 3.0
+COPY_LATE_MS = 1.0
 
 
 def fields_of(text):
@@ -36,6 +38,36 @@ def number(fields, key, default=0.0):
         return float(fields[key])
     except (KeyError, ValueError):
         return default
+
+
+def integer(fields, key, default=0):
+    # Nanosecond fields stay exact integers; float() would round past 2^53.
+    try:
+        return int(fields[key])
+    except (KeyError, ValueError):
+        return default
+
+
+def percentile(ordered, q):
+    # Linear interpolation between the two nearest ranks of an ascending list.
+    position = (len(ordered) - 1) * q
+    low = int(position)
+    high = min(low + 1, len(ordered) - 1)
+    return ordered[low] + (ordered[high] - ordered[low]) * (position - low)
+
+
+def correlation(xs, ys):
+    # Pearson r. Sums are exact integers, so a constant series has exactly zero variance.
+    n = len(xs)
+    if n < 2:
+        return None
+    sum_x, sum_y = sum(xs), sum(ys)
+    var_x = n * sum(x * x for x in xs) - sum_x * sum_x
+    var_y = n * sum(y * y for y in ys) - sum_y * sum_y
+    if var_x <= 0 or var_y <= 0:
+        return None
+    cov = n * sum(x * y for x, y in zip(xs, ys)) - sum_x * sum_y
+    return cov / math.sqrt(var_x * var_y)
 
 
 def load(path, records, marks):
@@ -58,6 +90,71 @@ def overlapping(rows, start, end):
 def describe_output(output):
     label = "gen" if output.get("generated") == "1" else "real"
     return f"{label} src{int(number(output, 'source'))}"
+
+
+def after_call_samples(outputs, output_gpu, presented, presented_flags):
+    # Joins each available worker-copy record to its generated output by (context, source),
+    # then to the output's on-screen time by feedback. Each sample is
+    # (flags, call_ns, copy_start_ns, copy_end_ns, presented_ns).
+    generated = defaultdict(list)
+    for output in outputs:
+        if output.get("generated") == "1":
+            generated[(integer(output, "context"), integer(output, "source"))].append(output)
+    samples = []
+    unavailable = unjoined = ambiguous = unshown = 0
+    for record in output_gpu:
+        if not integer(record, "available"):
+            unavailable += 1
+            continue
+        matches = generated.get((integer(record, "context"), integer(record, "source")), [])
+        if not matches:
+            unjoined += 1
+            continue
+        if len(matches) > 1:
+            ambiguous += 1
+            continue
+        feedback = integer(matches[0], "feedback")
+        if feedback not in presented:
+            unshown += 1
+            continue
+        samples.append((presented_flags.get(feedback, 0), integer(matches[0], "started_ns"),
+                        integer(record, "copy_start_ns"), integer(record, "copy_end_ns"),
+                        int(presented[feedback])))
+    return samples, unavailable, unjoined, ambiguous, unshown
+
+
+def print_after_call(samples, unavailable, unjoined, ambiguous, unshown):
+    print(f"after-call split (generated outputs, available copies): {len(samples)} joined;"
+          f" {unavailable} unavailable and {unjoined} unjoined (counted over the whole capture);"
+          f" {ambiguous} ambiguous; {unshown} not presented")
+    if not samples:
+        return
+    groups = defaultdict(list)
+    for sample in samples:
+        groups[sample[0]].append(sample)
+
+    def report(label, rows):
+        metrics = (
+            ("call -> copy start", [(r[2] - r[1]) / NS_PER_MS for r in rows]),
+            ("copy duration", [(r[3] - r[2]) / NS_PER_MS for r in rows]),
+            ("copy end -> presented", [(r[4] - r[3]) / NS_PER_MS for r in rows]),
+            ("call -> presented", [(r[4] - r[1]) / NS_PER_MS for r in rows]),
+        )
+        print(f"  {label}: n {len(rows)}")
+        for name, values in metrics:
+            ordered = sorted(values)
+            print(f"    {name}: p5 {percentile(ordered, .05):.2f} median {percentile(ordered, .5):.2f}"
+                  f" p95 {percentile(ordered, .95):.2f} p99 {percentile(ordered, .99):.2f} ms")
+        late = sum((r[3] - r[1]) / NS_PER_MS > COPY_LATE_MS for r in rows)
+        print(f"    copy end later than call by > {COPY_LATE_MS:.0f} ms: {late} of {len(rows)}"
+              f" ({100.0 * late / len(rows):.0f}%)")
+        coefficient = correlation([r[3] - r[1] for r in rows], [r[4] - r[1] for r in rows])
+        text = "n/a" if coefficient is None else f"{coefficient:.2f}"
+        print(f"    correlation of (copy end - call) with (presented - call): {text}")
+
+    for flags in sorted(groups):
+        report(f"flags {flags}", groups[flags])
+    report("overall", samples)
 
 
 def main(argv):
@@ -97,9 +194,11 @@ def main(argv):
     for split in records["pacing-profile-gpu-split"]:
         game_done.setdefault(int(number(split, "source")), number(split, "game_done_ns"))
     presented = {}
+    presented_flags = {}
     for sample in records["pacing-profile-wayland"]:
         if sample.get("event") == "presented" and number(sample, "feedback") and "presented_ns" in sample:
             presented[int(number(sample, "feedback"))] = number(sample, "presented_ns")
+            presented_flags[int(number(sample, "feedback"))] = integer(sample, "flags")
 
     frames = records["pacing-profile-app-frame"]
     calls = records["pacing-profile-call"]
@@ -315,6 +414,17 @@ def main(argv):
     skips = Counter(skip.get("reason", "?") for skip in records["pacing-profile-skip"])
     for reason, count in sorted(skips.items()):
         print(f"skip reason {reason}: {count}")
+
+    # Worker copy timestamps of generated outputs (FGVK_PACING_PROFILE_GPU_SPLIT=1 only). A sample
+    # counts when its call time falls in --from/--to; unavailable and unjoined rows carry no call time.
+    if records["pacing-profile-output-gpu"]:
+        samples, unavailable, unjoined, ambiguous, unshown = after_call_samples(
+            outputs, records["pacing-profile-output-gpu"], presented, presented_flags)
+        samples = [sample for sample in samples if in_window(sample[1], sample[1])]
+        print_after_call(samples, unavailable, unjoined, ambiguous, unshown)
+    else:
+        print("after-call split: no pacing-profile-output-gpu records"
+              " (FGVK_PACING_PROFILE_GPU_SPLIT unset, or no generated copy was timed)")
 
     recorder_drops = sum(int(number(r, "dropped")) for r in records["pacing-profile-recorder"])
     slot_drops = sum(int(number(r, "window_slot_drops")) for r in records["pacing-profile-recorder"])

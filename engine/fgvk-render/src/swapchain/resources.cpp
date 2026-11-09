@@ -197,6 +197,18 @@ bool Swapchain::recordGeneratedCopies(const vk::Vulkan& vk, RenderSlot& slot) {
     if (this->destinationImages.empty() || this->spatialScaler ||
             this->info.images.size() > DeferredPresent::maxCopyImages)
         return false;
+    // Diagnostic output split: two timestamps around each worker copy. Created once per slot.
+    // A failure leaves the copies untimed, as they are without the split gate.
+    if (present_diagnostics::pacingGpuSplitProfileEnabled() && this->pacingProfile && !slot.outputQueries) {
+        try {
+            slot.outputQueries = std::make_unique<vk::TimestampQueryPool>(vk, 2);
+        } catch (const std::exception& error) {
+            present_diagnostics::reportPacingGpuSplitUnavailable("output-queries", error.what());
+        } catch (...) {
+            present_diagnostics::reportPacingGpuSplitUnavailable("output-queries", "unknown error");
+        }
+    }
+    vk::TimestampQueryPool* const outputTimer = slot.outputQueries.get();
     try {
         const auto& destinationImage = this->destinationImages.at(0);
         const VkExtent2D extent = destinationImage.getExtent();
@@ -210,6 +222,8 @@ bool Swapchain::recordGeneratedCopies(const vk::Vulkan& vk, RenderSlot& slot) {
             command.begin(vk, 0);
             vk::acquireExternalImage(vk, command.handle(), destinationImage.handle(),
                 VK_ACCESS_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+            // The staged signal orders this reset before the worker copies' timestamps.
+            if (outputTimer) outputTimer->reset(command.handle());
             const std::array preBarriers{
                 present_detail::barrierHelper(destinationImage.handle(),
                     VK_ACCESS_NONE,
@@ -261,9 +275,11 @@ bool Swapchain::recordGeneratedCopies(const vk::Vulkan& vk, RenderSlot& slot) {
                     VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
                 ),
             };
+            if (outputTimer) outputTimer->write(command.handle(), VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 0);
             command.blitImage(vk, preBarriers,
                 {stagingImage, swapchainImage},
                 extent, postBarriers);
+            if (outputTimer) outputTimer->write(command.handle(), VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 1);
             command.end(vk);
         }
         slot.generatedCopies = std::move(copies);
@@ -410,6 +426,9 @@ void Swapchain::commitFrameGenerationResources(
         slot.stagingCopy.reset();
         slot.staged.reset();
         slot.staging.reset();
+        // The output timestamps belong to the copies released above; a pending read is dropped.
+        slot.outputPending = false;
+        slot.outputQueries.reset();
     }
     this->frameState.sourceReleaseTimelineValue = 0;
     this->frameState.nextSourceReleaseTimelineValue = 0;

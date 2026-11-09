@@ -207,6 +207,12 @@ VkResult Swapchain::presentGeneratedFrames(
                     DeferredPresent::OutputIdentity{this->frameState.backendFrameIndex - 1, plan.scheduledGeneratedFrames[i]})) {
                 this->deferredOutputQueuedThisFrame = true;
                 slot.inFlight = true;
+                if (slot.outputQueries && this->pacingProfile) {
+                    // The worker's pacing-profile-output record carries this batch's source, which
+                    // beginDeferredPresentBatch set from the same ordinal in this present.
+                    slot.outputSource = this->pacingProfile->sourceOrdinal();
+                    slot.outputPending = true;
+                }
                 // Worker copies are counted on completion, when a pressure
                 // skip can be distinguished from a submitted generated image.
                 this->frameState.sequenceIndex++;

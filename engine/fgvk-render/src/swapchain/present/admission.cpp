@@ -288,35 +288,87 @@ bool Swapchain::pollRenderSlotsIdle(const vk::Vulkan& vk) {
     return idle;
 }
 
-void Swapchain::collectRenderSplitTimestamps() {
+void Swapchain::ensureSplitRenderClock(const vk::Vulkan& vk, const uint32_t validBits, const float periodNs) {
+    if (this->splitRenderClock)
+        return;
+    // The application device may not have enabled calibration. Then this
+    // clock stays uncalibrated and the split halves report zeros.
+    const auto get = [&](const char* name) {
+        return vk.fi().GetDeviceProcAddr(vk.dev(), name);
+    };
+    auto calibrate = this->info.copyTimestampCalibration
+        ? reinterpret_cast<PFN_vkGetCalibratedTimestampsKHR>(get("vkGetCalibratedTimestampsKHR")) : nullptr;
+    if (this->info.copyTimestampCalibration && !calibrate)
+        calibrate = reinterpret_cast<PFN_vkGetCalibratedTimestampsKHR>(get("vkGetCalibratedTimestampsEXT"));
+    this->splitRenderClock.emplace(vk.dev(), calibrate, validBits, periodNs);
+}
+
+void Swapchain::refreshSplitRenderCalibration() {
+    if (!this->splitRenderClock)
+        return;
+    // Refresh the calibration at most once per second; a failed call keeps the previous pair.
+    const auto now = present_diagnostics::Clock::now();
+    if (now - this->splitRenderCalibratedAt >= std::chrono::seconds(1)) {
+        this->splitRenderCalibratedAt = now;
+        static_cast<void>(this->splitRenderClock->recalibrate());
+    }
+}
+
+void Swapchain::recordOutputGpuSplit(const vk::Vulkan& vk, const RenderSlot& slot) {
+    bool available = false;
+    int64_t copyStartNs{};
+    int64_t copyEndNs{};
+    try {
+        if (slot.outputQueries) {
+            this->ensureSplitRenderClock(vk, slot.outputQueries->timestampValidBits(),
+                slot.outputQueries->timestampPeriodNanoseconds());
+            this->refreshSplitRenderCalibration();
+            // No WAIT flag: a skipped or unfinished copy returns no values, so this output is unavailable.
+            if (const auto ticks = slot.outputQueries->tryTimestamps(2);
+                    ticks && this->splitRenderClock && this->splitRenderClock->calibrated()) {
+                copyStartNs = this->splitRenderClock->monotonicNanoseconds(ticks->at(0));
+                copyEndNs = this->splitRenderClock->monotonicNanoseconds(ticks->at(1));
+                available = copyStartNs != 0 && copyEndNs != 0;
+            }
+        }
+    } catch (const std::exception&) {
+        // A failed diagnostic read affects only this output's record.
+    }
+    present_diagnostics::logPacingOutputGpu(this->diagnosticsState.contextId, slot.outputSource,
+        available, copyStartNs, copyEndNs);
+}
+
+void Swapchain::collectRenderSplitTimestamps(const vk::Vulkan& vk) {
     if (!present_diagnostics::pacingGpuSplitProfileEnabled())
         return;
     for (auto& slot : this->renderSlots) {
         // inFlight is cleared only after an observed signal, so a pending slot
         // that is not in flight has a copy whose completion the fence proves.
-        if (!slot.splitPending || slot.inFlight || !slot.splitQueries)
+        if (slot.inFlight)
             continue;
-        slot.splitPending = false;
-        present_diagnostics::SplitRenderHalf half{.source = slot.splitSource};
-        try {
-            if (this->splitRenderClock) {
-                // Refresh the calibration at most once per second; a failed call keeps the previous pair.
-                const auto now = present_diagnostics::Clock::now();
-                if (now - this->splitRenderCalibratedAt >= std::chrono::seconds(1)) {
-                    this->splitRenderCalibratedAt = now;
-                    static_cast<void>(this->splitRenderClock->recalibrate());
+        if (slot.splitPending && slot.splitQueries) {
+            slot.splitPending = false;
+            present_diagnostics::SplitRenderHalf half{.source = slot.splitSource};
+            try {
+                if (this->splitRenderClock) {
+                    this->refreshSplitRenderCalibration();
+                    // No WAIT flag: an incomplete query returns no values and this source keeps zeros.
+                    if (const auto ticks = slot.splitQueries->tryTimestamps(2)) {
+                        half.gameDoneNs = this->splitRenderClock->monotonicNanoseconds(ticks->at(0));
+                        half.sourceCopyEndNs = this->splitRenderClock->monotonicNanoseconds(ticks->at(1));
+                    }
                 }
-                // No WAIT flag: an incomplete query returns no values and this source keeps zeros.
-                if (const auto ticks = slot.splitQueries->tryTimestamps(2)) {
-                    half.gameDoneNs = this->splitRenderClock->monotonicNanoseconds(ticks->at(0));
-                    half.sourceCopyEndNs = this->splitRenderClock->monotonicNanoseconds(ticks->at(1));
-                }
+            } catch (const std::exception&) {
+                // A failed diagnostic read affects only this source's render half.
             }
-        } catch (const std::exception&) {
-            // A failed diagnostic read affects only this source's render half.
+            this->splitRenderHalves.at(this->splitRenderHalfNext) = half;
+            this->splitRenderHalfNext = (this->splitRenderHalfNext + 1) % this->splitRenderHalves.size();
         }
-        this->splitRenderHalves.at(this->splitRenderHalfNext) = half;
-        this->splitRenderHalfNext = (this->splitRenderHalfNext + 1) % this->splitRenderHalves.size();
+        // The output half does not depend on the render half or on the backend's split state.
+        if (slot.outputPending) {
+            slot.outputPending = false;
+            this->recordOutputGpuSplit(vk, slot);
+        }
     }
 }
 
@@ -343,7 +395,7 @@ bool Swapchain::prepareRenderFence(const vk::Vulkan& vk) {
                     return slot.fence.wait(vk, budgetNs);
                 }))
             return false;
-        this->collectRenderSplitTimestamps();
+        this->collectRenderSplitTimestamps(vk);
         this->renderSlotIndex = next;
         slot.fence.reset(vk);
         return true;
@@ -370,7 +422,7 @@ bool Swapchain::prepareRenderFence(const vk::Vulkan& vk) {
         if (this->nativeCopyProfile)
             this->nativeCopyProfile->completed();
     }
-    this->collectRenderSplitTimestamps();
+    this->collectRenderSplitTimestamps(vk);
     this->renderSlotIndex = next;
     this->renderSlots.at(next).fence.reset(vk);
     return true;

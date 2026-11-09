@@ -433,6 +433,11 @@ namespace fgvk::layer::present_diagnostics {
     void logPacingGpuSplitFrame(uint64_t context, uint64_t source, uint64_t backendFrame,
         int64_t gameDoneNs, int64_t sourceCopyEndNs, int64_t fgStartNs, int64_t prepassEndNs,
         int64_t generatedEndNs, int64_t batchEndNs) noexcept;
+    /// Copy-side split of one generated output's worker copy, in CLOCK_MONOTONIC nanoseconds.
+    /// available is false when no copy timestamps were read (a skipped output, or uncalibrated);
+    /// both times are then zero.
+    void logPacingOutputGpu(uint64_t context, uint64_t source, bool available,
+        int64_t copyStartNs, int64_t copyEndNs) noexcept;
     /// Diagnostic: one line per process for the first split step that cannot start.
     void reportPacingGpuSplitUnavailable(std::string_view reason, std::string_view detail) noexcept;
 

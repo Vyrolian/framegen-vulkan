@@ -26,6 +26,38 @@ def output(ordinal, source, generated, started, feedback):
             f"backend_frame=0 phase=0 present_id=0")
 
 
+def output_gpu(source, available, copy_start, copy_end):
+    return (f"framegen-vulkan: present diagnostics: operation=pacing-profile-output-gpu version=1 pid=1 "
+            f"context=1 source={source} available={available} copy_start_ns={copy_start} copy_end_ns={copy_end}")
+
+
+def presented(feedback, shown, flags):
+    return (f"framegen-vulkan: present diagnostics: operation=pacing-profile-wayland version=2 pid=1 "
+            f"surface_token=1 event=presented feedback={feedback} received_ns={ms(shown)} clock_id=1 "
+            f"presented_ns={ms(shown)} sequence={feedback} refresh_ns=8000000 flags={flags} output_id=0")
+
+
+def after_call_lines():
+    # Generated sources 4 to 6 (feedback 6 to 8), called at 200, 300 and 400 ms.
+    # Source 4 copies from 1 ms to 3 ms after its call and shows 12 ms after it, on flags 7.
+    # Source 5 copies from 0.5 to 1.5 ms after its call and shows 16 ms after it, on flags 7.
+    # Source 6 copies from 0 to 0.2 ms after its call and shows 8 ms after it, on flags 15.
+    # Source 7 has no copy (unavailable). Source 99 has no generated output (unjoined).
+    return [
+        output(6, 4, 1, ms(200), 6),
+        output(7, 5, 1, ms(300), 7),
+        output(8, 6, 1, ms(400), 8),
+        output_gpu(4, 1, ms(201), ms(203)),
+        output_gpu(5, 1, ms(300.5), ms(301.5)),
+        output_gpu(6, 1, ms(400), ms(400.2)),
+        output_gpu(7, 0, 0, 0),
+        output_gpu(99, 1, ms(500), ms(500.5)),
+        presented(6, 212, 7),
+        presented(7, 316, 7),
+        presented(8, 408, 15),
+    ]
+
+
 def capture_lines():
     lines = [
         output(1, 1, 0, ms(0), 1),
@@ -144,6 +176,61 @@ class AnalyseHitchesTest(unittest.TestCase):
     def test_window_excludes_gaps_outside_it(self):
         out = self.run_analyser("--min-gap", "20", "--from", "0.2")
         self.assertIn("totals: gaps 0;", out, out)
+
+    def append_lines(self, lines):
+        with self.log.open("a", encoding="utf-8") as handle:
+            handle.write("\n".join(lines) + "\n")
+
+    def test_after_call_split_joins_copy_times_to_presented_outputs(self):
+        self.append_lines(after_call_lines())
+        out = self.run_analyser("--min-gap", "20")
+        self.assertIn("after-call split (generated outputs, available copies): 3 joined; 1 unavailable"
+                      " and 1 unjoined (counted over the whole capture); 0 ambiguous; 0 not presented", out, out)
+        # Flags 7 holds sources 4 and 5 (copy starts 1.0 and 0.5 ms after the call, shown 12 and 16 ms after it).
+        self.assertIn("  flags 7: n 2", out, out)
+        self.assertIn("median 0.75 ", section_line(out, "  flags 7: n 2", "call -> copy start:"), out)
+        self.assertIn("median 1.50 ", section_line(out, "  flags 7: n 2", "copy duration:"), out)
+        self.assertIn("median 11.75 ", section_line(out, "  flags 7: n 2", "copy end -> presented:"), out)
+        self.assertIn("median 14.00 ", section_line(out, "  flags 7: n 2", "call -> presented:"), out)
+        self.assertIn("2 of 2 (100%)", section_line(out, "  flags 7: n 2", "copy end later"), out)
+        # Two points on opposite slopes: copy end after the call falls as the on-screen time rises.
+        self.assertIn("-1.00", section_line(out, "  flags 7: n 2", "correlation"), out)
+        # One sample has no correlation.
+        self.assertIn("  flags 15: n 1", out, out)
+        self.assertTrue(section_line(out, "  flags 15: n 1", "correlation").endswith("n/a"), out)
+        # All three: call to copy start median 0.50, call to presented median 12.00, copy end to presented 9.00.
+        self.assertIn("median 0.50 ", section_line(out, "  overall: n 3", "call -> copy start:"), out)
+        self.assertIn("median 12.00 ", section_line(out, "  overall: n 3", "call -> presented:"), out)
+        self.assertIn("median 9.00 ", section_line(out, "  overall: n 3", "copy end -> presented:"), out)
+        self.assertIn("2 of 3 (67%)", section_line(out, "  overall: n 3", "copy end later"), out)
+
+    def test_after_call_split_honours_window(self):
+        self.append_lines(after_call_lines())
+        # Call times 200, 300 and 400 ms are 0.2, 0.3 and 0.4 s from the first output.
+        out = self.run_analyser("--min-gap", "20", "--from", "0.35")
+        self.assertIn("  overall: n 1", out, out)
+        self.assertIn("  flags 15: n 1", out, out)
+        self.assertNotIn("  flags 7:", out, out)
+        out = self.run_analyser("--min-gap", "20", "--to", "0.25")
+        self.assertIn("  overall: n 1", out, out)
+        self.assertIn("  flags 7: n 1", out, out)
+        self.assertNotIn("  flags 15:", out, out)
+
+    def test_after_call_split_absent_without_gpu_split_records(self):
+        out = self.run_analyser("--min-gap", "20")
+        self.assertIn("after-call split: no pacing-profile-output-gpu records", out, out)
+
+
+def section_line(out, header, metric):
+    # The metric line under one group header of the after-call split, without its indentation.
+    lines = out.splitlines()
+    start = next(i for i, line in enumerate(lines) if line == header)
+    for line in lines[start + 1:]:
+        if not line.startswith("    "):
+            break
+        if line.strip().startswith(metric):
+            return line.strip()
+    raise AssertionError(f"no '{metric}' line under '{header}'\n{out}")
 
 
 if __name__ == "__main__":

@@ -89,6 +89,14 @@ struct PacingGpuSplitPayload {
     int64_t batchEndNs{};
 };
 
+struct PacingOutputGpuPayload {
+    uint64_t context{};
+    uint64_t source{};
+    bool available{};
+    int64_t copyStartNs{};
+    int64_t copyEndNs{};
+};
+
 struct PacingAcquireDriverPayload {
     uint32_t thread{};
     uint64_t callId{};
