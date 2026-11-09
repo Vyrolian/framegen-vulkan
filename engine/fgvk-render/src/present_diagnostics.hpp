@@ -191,6 +191,10 @@ namespace fgvk::layer::present_diagnostics {
             uint64_t backendFrame{};
             double phase{};
             uint64_t presentId{};
+            // S1: first output only; slack is the signed deadline-minus-readiness
+            // before the shift, and marginStep is the applied B1 increment.
+            Clock::time_point readyAt{};
+            Clock::duration slack{}, marginStep{};
         };
         struct OutputSample {
             size_t ordinal{}, source{};
@@ -260,6 +264,7 @@ namespace fgvk::layer::present_diagnostics {
             Samples workerLockAcquire, workerLockSubmit, workerLockPresent;
             // F9b: presented internal reals, by whether a lower image was prepared before the deadline.
             size_t internalRealPrepared{}, internalRealAtDeadline{};
+            size_t generatedPrepared{}, generatedAtDeadline{};
             bool internalImages{};
             size_t fifoCallerTimingSources{};
             std::array<OutputSample, outputTraceCapacity> outputTrace{};
@@ -378,6 +383,10 @@ namespace fgvk::layer::present_diagnostics {
         void internalRealPresented(bool prepared) {
             if (prepared) ++window.internalRealPrepared;
             else ++window.internalRealAtDeadline;
+        }
+        void generatedPresented(bool prepared) {
+            if (prepared) ++window.generatedPrepared;
+            else ++window.generatedAtDeadline;
         }
         // Persistent for this swapchain: set once a present uses F5 internal images.
         void internalImagesActive() { internalImages = true; }

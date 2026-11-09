@@ -197,6 +197,7 @@ VkResult Swapchain::presentGeneratedFrames(
                 .fence = slot.fence.handle(),
                 .imageCount = static_cast<uint32_t>(this->info.images.size()),
                 .giveUp = invocation.pacedOutputs->interval / 2,
+                .internalImages = this->internalPresent != nullptr,
             };
             for (uint32_t k = 0; k < copy.imageCount; ++k) {
                 copy.copies.at(k) = slot.generatedCopies.at(k).handle();

@@ -2,11 +2,14 @@
 #pragma once
 
 #include "generated_frame_plan.hpp"
+#include "swapchain/output_margin.hpp"
+#include "swapchain/create_policy.hpp"
 #include "present_diagnostics.hpp"
 
 #include <algorithm>
 #include <atomic>
 #include <array>
+#include <cassert>
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
@@ -259,40 +262,6 @@ inline VkResult submitPrivate(DeferredPresentQueue& q, const PFN_vkQueueSubmit s
 // The worker owns values, never caller arrays, pNext pointers, a Swapchain or Vulkan
 // wrappers. All binary signals are submitted before admission. The next
 // source batch joins before resource reuse or reporting actual lower errors.
-/// Optional output margin (B1, FGVK_OUTPUT_MARGIN_MS, 0 to 2 ms, default 0 = off).
-/// A released batch normally presents the moment its generated frame is ready,
-/// so any later readiness moves the frames on screen. With a margin the output
-/// clock is steered to sit up to that long after readiness: each batch whose
-/// slack (slot minus readiness, negative when late) is below the margin moves
-/// the clock an eighth of the missing slack later. Small steps keep the spacing
-/// even; the added latency never exceeds the margin.
-[[nodiscard]] constexpr std::chrono::steady_clock::duration outputMarginStep(
-        const std::chrono::steady_clock::duration slack,
-        const std::chrono::steady_clock::duration margin) noexcept {
-    using Duration = std::chrono::steady_clock::duration;
-    const auto held = slack > Duration{} ? slack : Duration{};
-    return held < margin ? (margin - held) / 8 : Duration{};
-}
-static_assert(outputMarginStep(std::chrono::milliseconds{0}, std::chrono::milliseconds{0}).count() == 0);
-static_assert(outputMarginStep(std::chrono::milliseconds{-5}, std::chrono::milliseconds{2}) ==
-    std::chrono::microseconds{250});
-static_assert(outputMarginStep(std::chrono::milliseconds{1}, std::chrono::milliseconds{2}) ==
-    std::chrono::microseconds{125});
-static_assert(outputMarginStep(std::chrono::milliseconds{3}, std::chrono::milliseconds{2}).count() == 0);
-
-[[nodiscard]] inline std::chrono::steady_clock::duration outputMargin() noexcept {
-    static const auto margin = [] {
-        const char* text = std::getenv("FGVK_OUTPUT_MARGIN_MS");
-        char* end = nullptr;
-        const double value = text ? std::strtod(text, &end) : 0.0;
-        if (!text || end == text || !(value > 0.0))
-            return std::chrono::steady_clock::duration{};
-        return std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-            std::chrono::duration<double, std::milli>(value < 2.0 ? value : 2.0));
-    }();
-    return margin;
-}
-
 class DeferredPresent {
 public:
     using Clock = std::chrono::steady_clock;
@@ -346,6 +315,7 @@ public:
         Clock::time_point arrival{};
         // Diagnostics only (F9b): the real was lower-prepared before its deadline.
         bool internalPrepared{};
+        bool generatedPrepared{};
         // Diagnostics only (D6, pacing profile): the longest worker call made under
         // queue->mutex for this output, by kind. Zero without the profile.
         uint64_t lockAcquireNs{}, lockSubmitNs{}, lockPresentNs{};
@@ -358,6 +328,8 @@ public:
         std::array<Call, capacity> calls{};
         size_t count{};
         Clock::duration readinessShift{};
+        Clock::time_point readyAt{};
+        Clock::duration slack{}, marginStep{};
         bool readinessMiss{};
         // Diagnostics only: output spacing of the batch.
         Clock::duration outputInterval{};
@@ -426,7 +398,8 @@ public:
         bool capOwned{};
         Clock::time_point finished{};
     };
-    // The generated image is acquired by the worker just before its output.
+    // The generated image is acquired by the worker before its output. Eligible
+    // internal overlap jobs try early; other jobs acquire at their deadline.
     // staged is signalled by the render slot's staging copy on the game queue and
     // is waited exactly once, by the worker's copy or skip. copies[k] is a
     // pre-recorded, resubmittable copy from the staging image into swapchain
@@ -445,6 +418,8 @@ public:
         std::array<VkCommandBuffer, maxCopyImages> copies{};
         std::array<VkSemaphore, maxCopyImages> presentWaits{};
         Clock::duration giveUp{};
+        // S2: only Fixed FG with internal application images may prepare early.
+        bool internalImages{};
     };
     // The real output of an internal application image. The worker polls for a
     // lower image at its deadline and never skips the output. The callbacks get
@@ -478,7 +453,11 @@ public:
     DeferredPresent(std::shared_ptr<DeferredPresentQueue> queue,
             PFN_vkQueuePresentKHR present, VkDevice device = VK_NULL_HANDLE) :
             device(device), queue(std::move(queue)), present(present),
-            worker([this] { run(); }) {}
+            worker() {
+        // Initialize and report the setting before the worker can use it.
+        static_cast<void>(outputMargin());
+        worker = std::thread([this] { run(); });
+    }
     DeferredPresent(const DeferredPresent&) = delete;
     DeferredPresent& operator=(const DeferredPresent&) = delete;
     ~DeferredPresent() {
@@ -635,7 +614,7 @@ public:
         return copy.tryAcquire && copy.submit && copy.abandon && copy.owner &&
             admit(info, deadline, false, &copy, identity);
     }
-    // A generated output whose image the worker acquires at its deadline. Only
+    // A generated output whose lower acquire/copy belongs to the worker. Only
     // the newest open batch admits it, so the real output follows in that batch.
     bool enqueueGeneratedCopy(VkSwapchainKHR swapchain, const void* chain,
             Clock::time_point deadline, const GeneratedCopy& copy, OutputIdentity identity = {}) {
@@ -1097,8 +1076,8 @@ private:
             std::chrono::duration_cast<std::chrono::nanoseconds>(duration).count()));
     }
 
-    // F9b switch for isolating the 2026-11-08 freeze: FGVK_INTERNAL_PREPARE=0 keeps
-    // every internal real on the at-deadline path (F8 behaviour). Read once per process.
+    // F9b/S2 diagnostic switch: FGVK_INTERNAL_PREPARE=0 keeps internal real and
+    // generated worker copies on the at-deadline path. Read once per process.
     static bool internalPrepareEnabled() noexcept {
         static const bool enabled = [] {
             const char* value = std::getenv("FGVK_INTERNAL_PREPARE");
@@ -1111,6 +1090,7 @@ private:
     struct InternalPreparation {
         // A lower image is acquired and its copy submitted: the deadline presents it.
         bool prepared{};
+        bool acquired{};
         // An error ended the job before its wait: nothing waits and nothing presents.
         bool settled{};
         VkResult error{VK_SUCCESS};
@@ -1154,6 +1134,47 @@ private:
                 job.wait, &prep.presentWait);
         });
         if (submitted < 0) {
+            prep.settled = true;
+            prep.error = submitted;
+            return prep;
+        }
+        prep.prepared = true;
+        return prep;
+    }
+
+    // S2: prepare only the current generated output. The single worker finishes its
+    // lower present before it takes the next job (including an internal real), so
+    // preparations never accumulate across outputs or batches. An acquired copy is
+    // presented even when stopping, exactly like an F9b prepared real.
+    InternalPreparation prepareGenerated(const Job& job, const Readiness& ready) {
+        InternalPreparation prep;
+        const std::lock_guard queueLock(queue->mutex);
+        const bool noted = queue->history;
+        const auto started = noted ? Clock::now() : Clock::time_point{};
+        queue->beginCall(lowerOpAcquireGenerated, UINT32_MAX);
+        const auto acquired = profiledLockCall(ready.profile, prep.acquireNs, [&] {
+            return job.copy.acquire(job.copy.device, job.swapchain, 0,
+                job.copy.acquireSemaphore, VK_NULL_HANDLE, &prep.lowerIndex);
+        });
+        queue->endCall();
+        prep.acquired = acquired == VK_SUCCESS || acquired == VK_SUBOPTIMAL_KHR;
+        if (noted && acquired != VK_NOT_READY && acquired != VK_TIMEOUT)
+            queue->noteLower(lowerOpAcquireGenerated, job.swapchain,
+                prep.acquired ? prep.lowerIndex : UINT32_MAX, acquired, ready.source,
+                steadyNanoseconds(started), steadyNanoseconds(Clock::now()));
+        if (acquired < 0 || (prep.acquired && prep.lowerIndex >= job.copy.imageCount)) {
+            prep.settled = true;
+            prep.error = acquired < 0 ? acquired : VK_ERROR_UNKNOWN;
+            return prep;
+        }
+        if (!prep.acquired) return prep; // The unchanged path retries at the deadline.
+        prep.presentWait = job.copy.presentWaits.at(prep.lowerIndex);
+        const auto submitted = profiledLockCall(ready.profile, prep.submitNs, [&] {
+            return submitGeneratedWork(*queue, job.copy, true,
+                job.copy.copies.at(prep.lowerIndex), prep.presentWait, prep.lowerIndex,
+                0, ready.source);
+        });
+        if (submitted != VK_SUCCESS) {
             prep.settled = true;
             prep.error = submitted;
             return prep;
@@ -1271,6 +1292,8 @@ private:
         present_diagnostics::registerDeferredWorkerThread();
         std::unique_lock lock(mutex);
         Clock::duration readinessShift{};
+        Clock::time_point readyAt{};
+        Clock::duration slack{}, marginStep{};
         // Shift from the batch's first output to its final deadline. Later
         // outputs of the same batch keep their requested spacing from it.
         Clock::duration batchShift{};
@@ -1283,6 +1306,7 @@ private:
         // Last output of the previous batch on this worker, for cross-batch spacing.
         Clock::time_point previousStarted{}, previousFinished{}, previousScheduled{};
         bool havePrevious{};
+        uint32_t heldLowerImages{};
         for (;;) {
             changed.wait(lock, [this] {
                 return stopping || (count && batches[head].consumed < batches[head].produced);
@@ -1321,6 +1345,8 @@ private:
             if (first) {
                 workerWait = {};
                 readinessShift = {};
+                readyAt = {};
+                slack = marginStep = {};
                 batchShift = {};
                 readinessMiss = false;
                 lateReadiness = false;
@@ -1362,10 +1388,10 @@ private:
                     }
                     readinessMiss = readinessResult != VK_SUCCESS;
                     if (!readinessMiss) {
-                        const auto readyAt = Clock::now();
-                        readinessShift = std::max(Clock::duration{}, readyAt - deadline) +
-                            (ready.overlap ? outputMarginStep(deadline - readyAt, outputMargin())
-                                : Clock::duration{});
+                        readyAt = Clock::now();
+                        slack = deadline - readyAt;
+                        marginStep = ready.overlap ? outputMarginStep(slack, outputMargin()) : Clock::duration{};
+                        readinessShift = std::max(Clock::duration{}, readyAt - deadline) + marginStep;
                         deadline += readinessShift;
                     }
                 }
@@ -1375,13 +1401,22 @@ private:
             // present still waits for the deadline. Stopping is read under mutex, as
             // presentInternalReal reads it, and the lock is not held here.
             InternalPreparation prep{};
-            if (current.internalActive && !readinessMiss) {
+            const bool earlyGenerated = current.copyActive && current.copy.internalImages && ready.overlap;
+            if ((current.internalActive || earlyGenerated) && !readinessMiss) {
                 bool stopped{};
                 {
                     const std::lock_guard stopLock(mutex);
                     stopped = stopping;
                 }
-                if (!stopped && internalPrepareEnabled()) prep = prepareInternalReal(current, ready.profile);
+                if (!stopped && internalPrepareEnabled()) {
+                    // The previous job has already returned its lower image through present.
+                    assert(heldLowerImages == 0);
+                    assert(heldLowerImages < layerHeldLowerImages);
+                    prep = current.internalActive ? prepareInternalReal(current, ready.profile)
+                        : prepareGenerated(current, ready);
+                    if (prep.prepared || prep.acquired) ++heldLowerImages;
+                    assert(heldLowerImages <= layerHeldLowerImages);
+                }
             }
             if (!readinessMiss && !prep.settled) {
                 const auto waitStarted = Clock::now();
@@ -1458,7 +1493,7 @@ private:
             result.outputQueue = queue->queue;
             result.lateReadiness = first && lateReadiness;
             result.arrival = first ? ready.arrival : Clock::time_point{};
-            // A generated output takes its image only at its deadline. Polling
+            // A generated output without an early preparation takes its image at the deadline. Polling
             // never sleeps under queue->mutex, and every path below signals the
             // continuation and the render-slot fence.
             if (job.internalActive && prep.settled) {
@@ -1484,15 +1519,25 @@ private:
             } else if (job.internalActive) {
                 presentInternalReal(job, ready, chain, result);
             } else {
-                VkResult skipResult = VK_SUCCESS;
-                bool acquired{};
+                VkResult skipResult = earlyGenerated && prep.settled ? prep.error : VK_SUCCESS;
+                bool acquired = earlyGenerated && prep.acquired;
                 bool copyPending{};
+                const bool generatedPrepared = earlyGenerated && prep.prepared;
+                if (earlyGenerated) {
+                    result.lockAcquireNs = prep.acquireNs;
+                    result.lockSubmitNs = prep.submitNs;
+                }
+                if (generatedPrepared) {
+                    job.image = prep.lowerIndex;
+                    job.wait = prep.presentWait;
+                    result.generatedPrepared = true;
+                }
                 // Why this generated output presents no image, when it does not. Readiness
                 // and stopping always skip. Expedite skips only a non-overlapped batch: an
                 // overlapped batch keeps polling for its lower image (F7 rule 4). A window
                 // that ends with no lower image is an acquire skip (F7 rule 2).
                 SkipReason skipWhy = SkipReason::None;
-                if (job.copyActive) {
+                if (job.copyActive && !generatedPrepared && !prep.settled) {
                     uint32_t image{};
                     VkResult acquireResult = VK_NOT_READY;
                     auto giveUpAt = deadline + job.copy.giveUp;
@@ -1567,8 +1612,8 @@ private:
                     if (ready.trace) result.queueLockStarted = Clock::now();
                     const std::lock_guard queueLock(queue->mutex);
                     if (ready.trace) result.queueLockAcquired = Clock::now();
-                    bool presentOutput = !job.copyActive;
-                    if (job.copyActive) {
+                    bool presentOutput = !job.copyActive || generatedPrepared;
+                    if (job.copyActive && !generatedPrepared) {
                         if (copyPending) {
                             const VkResult copied = profiledLockCall(ready.profile, result.lockSubmitNs, [&] {
                                 return submitGeneratedWork(*queue, job.copy, true,
@@ -1622,6 +1667,9 @@ private:
                     }
                 }
             }
+            // A prepared output follows F9b: its lower present is always issued,
+            // including during stop/retirement; no second release mechanism is needed.
+            heldLowerImages = 0;
             if (applicationIdentified(metadata)) {
                 {
                     const std::lock_guard deliveryLock(delivery->mutex);
@@ -1635,6 +1683,9 @@ private:
             batch.aggregate.source = ready.source;
             batch.aggregate.outputInterval = ready.outputInterval;
             batch.aggregate.readinessShift = readinessShift;
+            batch.aggregate.readyAt = readyAt;
+            batch.aggregate.slack = slack;
+            batch.aggregate.marginStep = marginStep;
             batch.aggregate.readinessMiss = readinessMiss;
             if (readinessResult < 0) batch.aggregate.result = readinessResult;
             if (batch.aggregate.count == 0) batch.aggregate.started = result.started;

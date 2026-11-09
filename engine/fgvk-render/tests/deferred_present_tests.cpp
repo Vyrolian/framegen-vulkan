@@ -1618,6 +1618,11 @@ void readinessExtensionIsBounded() {
         expect(scriptedCalls == 2 && scriptedTimeouts[1] == 20'000'000,
             "readiness extension was not bounded by the output interval times the batch limit");
         if (signalledInExtension) {
+            expect(completion->readyAt != DeferredPresent::Clock::time_point{} &&
+                completion->slack == now + 1ms - completion->readyAt &&
+                completion->marginStep == outputMarginStep(completion->slack, outputMargin()) &&
+                completion->calls[0].scheduled == now + 1ms + completion->readinessShift,
+                "readiness diagnostics lost the pre-shift deadline or applied margin");
             expect(!completion->readinessMiss && completion->calls[0].lateReadiness &&
                 completion->calls[0].readinessResult == VK_SUCCESS && !completion->calls[0].skipped &&
                 copyAcquireCalls == 1 && copyPresents.size() == 2 &&
@@ -2774,7 +2779,233 @@ void presentsAreNotedWithHistory() {
     }
 }
 
-int main() {
+namespace {
+// One lower image pool shared by generated and internal-real callbacks. These
+// tests measure outstanding acquisitions, submission times and lower order.
+struct PreparedPool {
+    uint32_t next{}, held{}, peak{};
+    unsigned attempts{}, misses{};
+    bool failAcquire{}, failSubmit{};
+    VkResult presentResult{VK_SUCCESS};
+    std::vector<uint32_t> order;
+    std::vector<DeferredPresent::Clock::time_point> acquiredAt, copiedAt;
+    std::atomic_uint submitted{};
+    std::atomic_bool holdSubmission{}, releaseSubmission{};
+};
+PreparedPool* preparedPool{};
+VkResult poolAcquire(uint32_t* image) {
+    auto& pool = *preparedPool;
+    ++pool.attempts;
+    if (pool.failAcquire) return VK_ERROR_OUT_OF_DATE_KHR;
+    if (pool.misses) { --pool.misses; return VK_NOT_READY; }
+    *image = pool.next++;
+    ++pool.held;
+    pool.peak = std::max(pool.peak, pool.held);
+    expect(pool.held <= layerHeldLowerImages, "early copies exceeded the lower-image budget");
+    pool.acquiredAt.push_back(DeferredPresent::Clock::now());
+    return VK_SUCCESS;
+}
+VkResult VKAPI_CALL preparedAcquire(VkDevice, VkSwapchainKHR, uint64_t timeout,
+        VkSemaphore, VkFence, uint32_t* image) {
+    expect(timeout == 0, "early generated acquire blocked");
+    return poolAcquire(image);
+}
+VkResult VKAPI_CALL preparedSubmit(VkQueue queue, uint32_t count, const VkSubmitInfo* info, VkFence fence) {
+    if (preparedPool->failSubmit && info->commandBufferCount) {
+        preparedPool->failSubmit = false;
+        return VK_ERROR_DEVICE_LOST;
+    }
+    const auto result = copySubmit(queue, count, info, fence);
+    preparedPool->copiedAt.push_back(DeferredPresent::Clock::now());
+    ++preparedPool->submitted;
+    if (preparedPool->holdSubmission.load()) {
+        const auto limit = DeferredPresent::Clock::now() + 2s;
+        while (!preparedPool->releaseSubmission.load() && DeferredPresent::Clock::now() < limit)
+            std::this_thread::sleep_for(100us);
+        expect(preparedPool->releaseSubmission.load(), "test did not release the preparation callback");
+    }
+    return result;
+}
+VkResult VKAPI_CALL preparedPresent(VkQueue, const VkPresentInfoKHR* info) {
+    auto& pool = *preparedPool;
+    expect(pool.held > 0, "prepared present returned an unacquired lower image");
+    --pool.held;
+    pool.order.push_back(info->pImageIndices[0]);
+    return pool.presentResult;
+}
+VkResult poolRealAcquire(void*, uint32_t* image) { return poolAcquire(image); }
+VkResult poolRealSubmit(void*, VkQueue, uint32_t, uint32_t, VkSemaphore, VkSemaphore* wait) {
+    *wait = handle<VkSemaphore>(100);
+    return VK_SUCCESS;
+}
+VkResult poolRealAbandon(void*, VkQueue, uint32_t, VkSemaphore) { return VK_SUCCESS; }
+DeferredPresent::GeneratedCopy preparedCopy() {
+    auto copy = generatedCopy();
+    copy.acquire = preparedAcquire;
+    copy.submit = preparedSubmit;
+    copy.internalImages = true;
+    copy.imageCount = 8;
+    for (uint32_t i = 0; i < copy.imageCount; ++i) {
+        copy.copies[i] = handle<VkCommandBuffer>(80 + i);
+        copy.presentWaits[i] = handle<VkSemaphore>(70 + i);
+    }
+    return copy;
+}
+// At 2x, 3x and 4x only the next output is prepared. Each lower present returns
+// its image before the next acquire; the following internal real uses that pool.
+void generatedPreparedOrderAndBudget() {
+    for (const size_t multiplier : {2u, 3u, 4u}) {
+        auto pool = std::make_shared<PreparedPool>();
+        preparedPool = pool.get();
+        copySubmits.clear();
+        auto queue = std::make_shared<DeferredPresentQueue>();
+        queue->queue = handle<VkQueue>(7);
+        DeferredPresent worker(queue, preparedPresent);
+        const auto swapchain = handle<VkSwapchainKHR>(11);
+        const auto wait = handle<VkSemaphore>(12);
+        const uint32_t image = 4;
+        const VkPresentInfoKHR real{.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+            .waitSemaphoreCount = 1, .pWaitSemaphores = &wait,
+            .swapchainCount = 1, .pSwapchains = &swapchain, .pImageIndices = &image};
+        const auto first = DeferredPresent::Clock::now() + 60ms;
+        expect(worker.beginBatch(multiplier, {.overlap = true, .outputInterval = 10ms}),
+            "prepared multiplier batch rejected");
+        for (size_t i = 0; i + 1 < multiplier; ++i)
+            expect(worker.enqueueGeneratedCopy(swapchain, nullptr, first + 10ms * i, preparedCopy()),
+                "prepared generated output rejected");
+        const DeferredPresent::InternalRealCopy realCopy{.owner = pool, .tryAcquire = poolRealAcquire,
+            .submit = poolRealSubmit, .abandon = poolRealAbandon};
+        expect(worker.enqueueInternalReal(real, first + 10ms * (multiplier - 1), realCopy),
+            "prepared internal real rejected");
+        worker.closeBatch();
+        const auto done = worker.finish(UINT64_MAX, false);
+        expect(done && done->count == multiplier && done->result == VK_SUCCESS,
+            "prepared multiplier batch failed");
+        expect(done->readyAt == DeferredPresent::Clock::time_point{} &&
+            done->slack == DeferredPresent::Clock::duration{} &&
+            done->marginStep == DeferredPresent::Clock::duration{},
+            "a batch without a readiness wait reported readiness or margin data");
+        expect(pool->held == 0 && pool->peak <= 2 && pool->order.size() == multiplier,
+            "prepared multiplier batch leaked or over-acquired images");
+        for (size_t i = 0; i < multiplier; ++i) {
+            expect(pool->order[i] == i && !done->calls[i].skipped,
+                "prepared lower outputs changed order");
+            if (i + 1 < multiplier)
+                expect(done->calls[i].generatedPrepared &&
+                    pool->copiedAt[i] < done->calls[i].scheduled &&
+                    done->calls[i].started >= done->calls[i].scheduled,
+                    "generated copy was not submitted before its unchanged present slot");
+        }
+        expect(copySubmits.size() == multiplier - 1,
+            "prepared generated work was submitted more than once");
+    }
+}
+// A failed early acquire must not consume staged work. The existing deadline
+// acquire then submits exactly once. The direct and non-overlap gates do not try early.
+void generatedPreparationFallbackAndGates(bool disabled = false) {
+    for (unsigned mode = disabled ? 3 : 0; mode < (disabled ? 4u : 3u); ++mode) {
+        PreparedPool pool;
+        preparedPool = &pool;
+        if (mode == 0) pool.misses = 1;
+        copySubmits.clear();
+        auto queue = std::make_shared<DeferredPresentQueue>();
+        queue->queue = handle<VkQueue>(7);
+        DeferredPresent worker(queue, preparedPresent);
+        auto copy = preparedCopy();
+        if (mode == 1) copy.internalImages = false;
+        const auto due = DeferredPresent::Clock::now() + 60ms;
+        expect(worker.beginBatch(1, {.overlap = mode != 2}), "fallback batch rejected");
+        expect(worker.enqueueGeneratedCopy(handle<VkSwapchainKHR>(11), nullptr, due, copy),
+            "fallback generated output rejected");
+        worker.closeBatch();
+        const auto done = worker.finish(UINT64_MAX, false);
+        expect(done && done->count == 1 && !done->calls[0].skipped &&
+            !done->calls[0].generatedPrepared && pool.held == 0 &&
+            pool.attempts == (mode == 0 ? 2u : 1u) && copySubmits.size() == 1 &&
+            pool.acquiredAt[0] >= due, "fallback or preparation gate changed deadline delivery");
+    }
+}
+// Retirement drains the worker before resources die (the destructor is that
+// drain). An out-of-date lower present still consumes the prepared image once.
+void generatedPreparedRetirement() {
+    PreparedPool pool;
+    preparedPool = &pool;
+    pool.presentResult = VK_ERROR_OUT_OF_DATE_KHR;
+    copySubmits.clear();
+    {
+        auto queue = std::make_shared<DeferredPresentQueue>();
+        queue->queue = handle<VkQueue>(7);
+        DeferredPresent worker(queue, preparedPresent);
+        expect(worker.beginBatch(1, {.overlap = true}), "retiring batch rejected");
+        expect(worker.enqueueGeneratedCopy(handle<VkSwapchainKHR>(11), nullptr,
+            DeferredPresent::Clock::now() + 60ms, preparedCopy()), "retiring copy rejected");
+        worker.closeBatch();
+        const auto limit = DeferredPresent::Clock::now() + 2s;
+        while (!pool.submitted.load() && DeferredPresent::Clock::now() < limit)
+            std::this_thread::sleep_for(100us);
+        expect(pool.submitted.load() == 1, "retirement did not reach early preparation");
+    }
+    expect(pool.held == 0 && pool.order.size() == 1 && copySubmits.size() == 1,
+        "retirement lost or duplicated a prepared image");
+}
+void generatedPreparedStop() {
+    PreparedPool pool;
+    pool.holdSubmission = true;
+    preparedPool = &pool;
+    copySubmits.clear();
+    auto queue = std::make_shared<DeferredPresentQueue>();
+    queue->queue = handle<VkQueue>(7);
+    DeferredPresent worker(queue, preparedPresent);
+    expect(worker.beginBatch(1, {.expediteOnJoin = true, .overlap = true}), "stop batch rejected");
+    expect(worker.enqueueGeneratedCopy(handle<VkSwapchainKHR>(11), nullptr,
+        DeferredPresent::Clock::now() + 2s, preparedCopy()), "stop copy rejected");
+    worker.closeBatch();
+    const auto limit = DeferredPresent::Clock::now() + 2s;
+    while (!pool.submitted.load() && DeferredPresent::Clock::now() < limit)
+        std::this_thread::sleep_for(100us);
+    expect(pool.submitted.load() == 1, "stop did not reach early preparation");
+    DeferredPresentTestAccess::requestStop(worker);
+    pool.releaseSubmission = true;
+    const auto done = worker.finish(1'000'000'000, false);
+    expect(done && done->count == 1 && done->calls[0].generatedPrepared &&
+        !done->calls[0].skipped && pool.held == 0 && pool.order.size() == 1 && copySubmits.size() == 1,
+        "stop stranded a prepared image or failed to finish");
+}
+// Errors must consume the staging/continuation contract once without retrying
+// an acquire or submitting a failed copy twice.
+void generatedPreparationErrors() {
+    for (const bool submitFailure : {false, true}) {
+        PreparedPool pool;
+        preparedPool = &pool;
+        pool.failAcquire = !submitFailure;
+        pool.failSubmit = submitFailure;
+        copySubmits.clear();
+        auto queue = std::make_shared<DeferredPresentQueue>();
+        queue->queue = handle<VkQueue>(7);
+        DeferredPresent worker(queue, preparedPresent);
+        expect(worker.beginBatch(1, {.overlap = true}), "error preparation batch rejected");
+        expect(worker.enqueueGeneratedCopy(handle<VkSwapchainKHR>(11), nullptr,
+            DeferredPresent::Clock::now() + 60ms, preparedCopy()), "error preparation rejected");
+        worker.closeBatch();
+        const auto done = worker.finish(UINT64_MAX, false);
+        expect(done && done->count == 1 && done->calls[0].skipped && done->result < 0 &&
+            pool.attempts == 1 && pool.order.empty() && copySubmits.size() == 1 &&
+            copySubmits[0].count == 0 && copySubmits[0].waits == (submitFailure ? 2u : 1u) &&
+            copySubmits[0].signals == 1, "early error retried or double-consumed staged work");
+        // As in the old submit-error path, device-loss cleanup owns the acquired
+        // lower image when no copy could be submitted; no present waits on it.
+    }
+}
+}
+
+int main(int argc, char** argv) {
+    if (argc == 2 && std::strcmp(argv[1], "--no-preparation") == 0) {
+        setenv("FGVK_INTERNAL_PREPARE", "0", 1);
+        generatedPreparationFallbackAndGates(true);
+        return 0;
+    }
+    generatedPreparedOrderAndBudget(); generatedPreparationFallbackAndGates();
+    generatedPreparedRetirement(); generatedPreparedStop(); generatedPreparationErrors();
     queueRequest(); acquireQueueRequest(); acquireTargetAvoidsPresentLock();
     privateSubmitWithoutTailIsUnchanged(); privateSubmitAppendsTail();
     privateSubmitFailureLeavesTail(); privateSubmitForeignChainBypassesTail();

@@ -7,6 +7,7 @@
 #include "present_records.hpp"
 
 #include "library_pin.hpp"
+#include "swapchain/output_margin.hpp"
 
 #include <algorithm>
 #include <array>
@@ -321,7 +322,10 @@ void appendPacingOutput(std::ostream& line, const uint64_t context, const VkSwap
     line << " feedback=" << observed.feedback
          << " backend_frame=" << observed.backendFrame
          << " phase=" << observed.phase
-         << " present_id=" << observed.presentId;
+         << " present_id=" << observed.presentId
+         << " ready_ns=" << ns(observed.readyAt)
+         << " slack_ns=" << std::chrono::duration_cast<std::chrono::nanoseconds>(observed.slack).count()
+         << " margin_step_ns=" << std::chrono::duration_cast<std::chrono::nanoseconds>(observed.marginStep).count();
     line << '\n';
 }
 
@@ -678,6 +682,8 @@ void formatPacingWindowBody(const PacingWindowPayload& payload, const PacingProf
          << " generated_compressed=" << window.generatedCompressed
          << " internal_real_prepared=" << window.internalRealPrepared
          << " internal_real_at_deadline=" << window.internalRealAtDeadline
+         << " generated_prepared=" << window.generatedPrepared
+         << " generated_at_deadline=" << window.generatedAtDeadline
          << " internal_images=" << (window.internalImages ? 1 : 0)
          << " output_trace_version=" << (pacingFrameTraceEnabled() ? 2 : 1) << " output_trace_samples=" << (pacingFrameTraceEnabled() ? window.outputs : window.outputTraceCount)
          << " output_trace_dropped=" << (pacingFrameTraceEnabled() ? 0 : window.outputTraceDropped)
@@ -729,6 +735,7 @@ void formatPacingWindowBody(const PacingWindowPayload& payload, const PacingProf
              << ' ' << names[index] << "_max_ms=" << sample.maximum
              << ' ' << names[index] << "_over_33ms=" << sample.over33ms;
     }
+    line << " output_margin_ms=" << std::chrono::duration<double, std::milli>(fgvk::layer::outputMargin()).count();
     line << '\n';
     for (size_t i = 0; i < window.outputTraceCount; ++i) {
         const auto& sample = window.outputTrace[i];

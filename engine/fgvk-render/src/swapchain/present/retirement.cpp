@@ -101,6 +101,8 @@ VkResult Swapchain::completeDeferredPresent(const uint64_t timeoutNs, const bool
                 // the presented internal reals: prepared before the deadline, or polled at it.
                 if (call.workerCopy && !call.generated && !call.skipped)
                     this->pacingProfile->internalRealPresented(call.internalPrepared);
+                if (call.workerCopy && call.generated && !call.skipped)
+                    this->pacingProfile->generatedPresented(call.generatedPrepared);
                 if (call.lockAcquireNs || call.lockSubmitNs || call.lockPresentNs)
                     this->pacingProfile->workerLockSplit(call.lockAcquireNs, call.lockSubmitNs, call.lockPresentNs);
             }
@@ -121,6 +123,9 @@ VkResult Swapchain::completeDeferredPresent(const uint64_t timeoutNs, const bool
                     .queue = call.outputQueue, .presentWait = call.presentWait,
                     .arrival = call.arrival, .feedback = call.feedback,
                     .backendFrame = call.backendFrame, .phase = call.phase, .presentId = call.presentId,
+                    .readyAt = i == 0 ? completion.readyAt : DiagnosticsClock::time_point{},
+                    .slack = i == 0 ? completion.slack : DiagnosticsClock::duration{},
+                    .marginStep = i == 0 ? completion.marginStep : DiagnosticsClock::duration{},
                 });
                 present_diagnostics::logPacingOutput(this->diagnosticsState.contextId, call.swapchain, sample);
             }
