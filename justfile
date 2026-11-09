@@ -112,6 +112,18 @@ test-fgvk-ui:
 latency-probe:
     cmake -S engine/tools/latency-probe -B engine/build/latency-probe -G Ninja -DCMAKE_BUILD_TYPE=Release && cmake --build engine/build/latency-probe -j2
 
+# Build the standalone present measurer (the game's own present path, without framegen-vulkan) and run its tests.
+build-measure:
+    cmake -S engine/fgvk-measure -B engine/build/measure -G Ninja -DCMAKE_BUILD_TYPE=Release
+    cmake --build engine/build/measure
+    ctest --test-dir engine/build/measure --output-on-failure
+    python3 -I engine/fgvk-measure/tests/test_analyze_measure.py
+
+# Install the present measurer as an implicit layer under ~/.local; it loads only with FGVK_MEASURE=1.
+install-measure: build-measure
+    install -Dm755 engine/build/measure/libfgvk-measure.so "$HOME/.local/lib/libfgvk-measure.so"
+    install -Dm644 engine/fgvk-measure/manifest/VkLayer_FGVK_measure.json "$HOME/.local/share/vulkan/implicit_layer.d/VkLayer_FGVK_measure.json"
+
 # Build and run the framegen-vulkan tests.
 test-engine: build-engine
     ctest --test-dir engine/build --output-on-failure

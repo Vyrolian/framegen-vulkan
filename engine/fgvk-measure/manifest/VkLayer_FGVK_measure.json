@@ -1,0 +1,18 @@
+{
+    "file_format_version": "1.2.0",
+    "layer": {
+        "name": "VK_LAYER_FGVK_measure",
+        "type": "GLOBAL",
+        "library_path": "../../../lib/libfgvk-measure.so",
+        "library_arch": "64",
+        "api_version": "1.4.0",
+        "implementation_version": "1",
+        "description": "framegen-vulkan standalone present measurer: the game's own present path, without framegen-vulkan",
+        "enable_environment": {
+            "FGVK_MEASURE": "1"
+        },
+        "disable_environment": {
+            "DISABLE_FGVK_MEASURE": "1"
+        }
+    }
+}
