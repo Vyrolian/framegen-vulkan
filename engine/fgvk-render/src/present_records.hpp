@@ -97,6 +97,16 @@ struct PacingOutputGpuPayload {
     int64_t copyEndNs{};
 };
 
+struct PacingPresentMarkerPayload {
+    uint64_t context{};
+    uint64_t source{};
+    uint64_t feedback{};
+    bool generated{};
+    bool available{};
+    int64_t markerStartNs{};
+    int64_t markerEndNs{};
+};
+
 struct PacingAcquireDriverPayload {
     uint32_t thread{};
     uint64_t callId{};

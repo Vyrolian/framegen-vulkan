@@ -540,6 +540,14 @@ void logPacingRealCopyGpu(const uint64_t context, const uint64_t source, const b
             available ? copyStartNs : 0, available ? copyEndNs : 0});
 }
 
+void logPacingPresentMarkerGpu(const uint64_t context, const uint64_t source, const uint64_t feedback,
+        const bool generated, const bool available, const int64_t markerStartNs, const int64_t markerEndNs) noexcept {
+    if (!pacingProfileEnabled()) return;
+    present_records::enqueue(trace_recorder::RecordKind::PacingPresentMarkerGpu,
+        present_records::PacingPresentMarkerPayload{context, source, feedback, generated, available,
+            available ? markerStartNs : 0, available ? markerEndNs : 0});
+}
+
 SteamOverlayLibraries steamOverlayLibraries() {
     SteamOverlayLibraries libraries;
     dl_iterate_phdr([](dl_phdr_info* info, size_t, void* state) {

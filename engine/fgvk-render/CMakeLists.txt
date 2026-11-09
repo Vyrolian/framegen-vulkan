@@ -18,6 +18,7 @@ set(LAYER_SOURCES
     "src/runtime_status.cpp"
     "src/swapchain/create.cpp"
     "src/swapchain/internal_images.cpp"
+    "src/swapchain/present_marker.cpp"
     "src/swapchain/present.cpp"
     "src/swapchain/present/admission.cpp"
     "src/swapchain/present/generated_frames.cpp"

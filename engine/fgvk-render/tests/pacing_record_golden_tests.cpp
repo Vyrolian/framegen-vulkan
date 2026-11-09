@@ -89,6 +89,9 @@ void profileScenario() {
     logPacingOutputGpu(17, 2, false, 10005000, 10006000);
     // T3b: the real copy's timestamps share the format under their own operation.
     logPacingRealCopyGpu(17, 3, true, 10007000, 10007100);
+    // T4: the private queue marker after a lower present; unavailable keeps no times.
+    logPacingPresentMarkerGpu(17, 4, 9, true, true, 10008000, 10008050);
+    logPacingPresentMarkerGpu(17, 5, 10, false, false, 10009000, 10009050);
 
     // Application windows: the second call closes the first window.
     ApplicationAcquireDetails details{};

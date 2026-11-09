@@ -473,9 +473,14 @@ VkResult Swapchain::queuePresentWithRetirementFence(
                 if (this->info.waylandPresentation) {
                     const std::lock_guard lock(this->info.deferredPresentQueue->mutex);
                     // D7d: noted as a synchronous lower present only when the pacing profile keeps history.
-                    return this->info.deferredPresentQueue->presentSyncLocked(info, [&] {
+                    const VkResult presented = this->info.deferredPresentQueue->presentSyncLocked(info, [&] {
                         return observedPresent(this->info.deferredPresentQueue->queue, info);
                     });
+                    // T4: the private queue marker, outside the timed present bracket.
+                    this->info.deferredPresentQueue->markPresentLocked(this->diagnosticsState.contextId,
+                        this->pacingProfile ? this->pacingProfile->sourceOrdinal() : 0, feedbackId,
+                        observation.generated);
+                    return presented;
                 }
                 return this->info.deferredPresentQueue->presentNow(vk.df().QueuePresentKHR, info);
             }

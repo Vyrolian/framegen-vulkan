@@ -35,6 +35,7 @@ enum class RecordKind : uint16_t {
     PacingGpuSplit,
     PacingOutputGpu,
     PacingRealCopyGpu,
+    PacingPresentMarkerGpu,
     PacingAcquireDriver,
     PacingApplication,
     PacingWait,

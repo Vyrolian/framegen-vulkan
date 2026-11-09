@@ -397,6 +397,14 @@ void formatPacingRealCopyGpu(const PacingOutputGpuPayload& payload, std::ostream
     formatTimedCopy("pacing-profile-real-copy-gpu", payload, line);
 }
 
+void formatPacingPresentMarkerGpu(const PacingPresentMarkerPayload& payload, std::ostream& line) {
+    line << "framegen-vulkan: present diagnostics: operation=pacing-profile-present-marker-gpu version=1"
+         << " pid=" << getpid() << " context=" << payload.context << " source=" << payload.source
+         << " feedback=" << payload.feedback << " generated=" << payload.generated
+         << " available=" << payload.available << " marker_start_ns=" << payload.markerStartNs
+         << " marker_end_ns=" << payload.markerEndNs << '\n';
+}
+
 void formatAcquireDriver(const PacingAcquireDriverPayload& payload, std::ostream& line) {
     const auto ns = [](auto time) { return std::chrono::duration_cast<std::chrono::nanoseconds>(time.time_since_epoch()).count(); };
     line << "framegen-vulkan: present diagnostics: operation=pacing-profile-acquire-driver version=1"
@@ -890,6 +898,12 @@ void handleRecord(Recorder& s, const trace_recorder::TraceRecord& record, const 
         PacingOutputGpuPayload payload{};
         load(payload);
         emit([&](std::ostream& line) { formatPacingRealCopyGpu(payload, line); });
+        break;
+    }
+    case RecordKind::PacingPresentMarkerGpu: {
+        PacingPresentMarkerPayload payload{};
+        load(payload);
+        emit([&](std::ostream& line) { formatPacingPresentMarkerGpu(payload, line); });
         break;
     }
     case RecordKind::PacingAcquireDriver: {

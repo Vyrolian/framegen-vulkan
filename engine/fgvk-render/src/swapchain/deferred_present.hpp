@@ -132,6 +132,18 @@ struct DeferredPresentQueue {
     std::atomic<uint32_t> callLower{UINT32_MAX};
     std::atomic<int64_t> callSinceNs{0};
 
+    // T4, GPU split profile only: a GPU marker submitted on queue right after each observed
+    // lower present, under mutex. Set once at device creation before any present, released at
+    // device destruction; null otherwise.
+    std::shared_ptr<void> marker;
+    void (*markAfterPresent)(void*, VkQueue, uint64_t, uint64_t, uint64_t, bool) noexcept {};
+    // Caller holds mutex. A present without a feedback id cannot be joined and is not marked.
+    void markPresentLocked(const uint64_t context, const uint64_t source, const uint64_t feedback,
+            const bool generated) noexcept {
+        if (marker && markAfterPresent && feedback != 0)
+            markAfterPresent(marker.get(), queue, context, source, feedback, generated);
+    }
+
     // The queue and lock for an acquire submit. F10: the emulated acquire no longer calls
     // this (it submits on queue under mutex). Kept only for acquireTargetAvoidsPresentLock.
     [[nodiscard]] std::pair<VkQueue, std::mutex&> acquireTarget() {
@@ -1139,6 +1151,7 @@ private:
             : present(queue->queue, &info);
         queue->endCall();
         result.finished = Clock::now();
+        queue->markPresentLocked(ready.context, ready.source, result.feedback, job.generated);
         // D7d: the lower present is noted with its source, only when history is set.
         if (queue->history)
             queue->noteLower(lowerOpPresentReal, job.swapchain, lowerIndex, result.result, ready.source,
@@ -1550,6 +1563,7 @@ private:
                             : present(queue->queue, &info);
                         queue->endCall();
                         result.finished = Clock::now();
+                        queue->markPresentLocked(ready.context, ready.source, result.feedback, job.generated);
                         // D7d: the generated lower present, noted only with history.
                         if (queue->history)
                             queue->noteLower(lowerOpPresentGenerated, job.swapchain, job.image, result.result,

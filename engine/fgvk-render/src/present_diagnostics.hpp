@@ -442,6 +442,10 @@ namespace fgvk::layer::present_diagnostics {
     /// FG on or off. With FG off its start follows the game's present waits.
     void logPacingRealCopyGpu(uint64_t context, uint64_t source, bool available,
         int64_t copyStartNs, int64_t copyEndNs) noexcept;
+    /// T4: the private queue's GPU marker submitted right after a lower present, joined by its
+    /// feedback id. Unavailable markers keep no times.
+    void logPacingPresentMarkerGpu(uint64_t context, uint64_t source, uint64_t feedback, bool generated,
+        bool available, int64_t markerStartNs, int64_t markerEndNs) noexcept;
     /// Diagnostic: one line per process for the first split step that cannot start.
     void reportPacingGpuSplitUnavailable(std::string_view reason, std::string_view detail) noexcept;
 

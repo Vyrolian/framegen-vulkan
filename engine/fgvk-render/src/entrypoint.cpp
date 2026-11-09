@@ -16,6 +16,7 @@
 #include "swapchain/private_present_queue.hpp"
 #include "swapchain/release_gate.hpp"
 #include "swapchain/internal_images.hpp"
+#include "swapchain/present_marker.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -1188,6 +1189,12 @@ namespace {
                           << " acquire_tail=" << (privateQueue->tail != VK_NULL_HANDLE ? 1 : 0)
                           << " host_acquire=" << (hostAcquireAvailable ? 1 : 0)
                           << '\n';
+                // T4, GPU split profile only: the marker after each observed lower present.
+                if (privateQueue->queue) {
+                    privateQueue->marker = createPresentMarker(wrapper->second,
+                        instance_info->copyCalibrationDevices.contains(*device));
+                    if (privateQueue->marker) privateQueue->markAfterPresent = &presentMarkerAfterPresent;
+                }
                 if (privateQueue->queue)
                     instance_info->deferredPresentQueues.emplace(*device, std::move(privateQueue));
             }
@@ -1455,6 +1462,13 @@ namespace {
             if (const auto wrapper = instance_info->devices.find(device); wrapper != instance_info->devices.end())
                 wrapper->second.df().DestroySemaphore(device, owned->second->tail, nullptr);
             owned->second->tail = VK_NULL_HANDLE;
+        }
+        // T4: the marker's pools and fences go before the device. The device is idle here.
+        if (const auto owned = instance_info->deferredPresentQueues.find(device);
+                owned != instance_info->deferredPresentQueues.end()) {
+            const std::lock_guard lock(owned->second->mutex);
+            owned->second->markAfterPresent = nullptr;
+            owned->second->marker.reset();
         }
         instance_info->deferredPresentQueues.erase(device);
 

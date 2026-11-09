@@ -124,6 +124,58 @@ def after_call_samples(outputs, output_gpu, presented, presented_flags, generate
     return samples, unavailable, unjoined, ambiguous, unshown
 
 
+def print_present_marker(outputs, output_gpu, markers, presented, presented_flags, in_window):
+    # T4: the private queue marker submitted right after each lower present. Joined to its output
+    # by (context, feedback) and to the on-screen time by feedback. Its start is when the private
+    # queue got past the present's queue-side work.
+    by_feedback = {}
+    for output in outputs:
+        by_feedback[(integer(output, "context"), integer(output, "feedback"))] = output
+    copy_end = {}
+    for record in output_gpu:
+        if integer(record, "available"):
+            copy_end[(integer(record, "context"), integer(record, "source"))] = integer(record, "copy_end_ns")
+    unavailable = unjoined = unshown = 0
+    groups = defaultdict(list)
+    for marker in markers:
+        if not integer(marker, "available"):
+            unavailable += 1
+            continue
+        output = by_feedback.get((integer(marker, "context"), integer(marker, "feedback")))
+        if output is None:
+            unjoined += 1
+            continue
+        feedback = integer(marker, "feedback")
+        if feedback not in presented:
+            unshown += 1
+            continue
+        call = integer(output, "started_ns")
+        if not in_window(call, call):
+            continue
+        kind = "generated" if output.get("generated") == "1" else "real"
+        end = copy_end.get((integer(output, "context"), integer(output, "source"))) if kind == "generated" else None
+        groups[(kind, presented_flags.get(feedback, 0))].append(
+            (call, integer(marker, "marker_start_ns"), int(presented[feedback]), end))
+    total = sum(len(rows) for rows in groups.values())
+    print(f"present marker split (private queue after each lower present): {total} joined;"
+          f" {unavailable} unavailable, {unjoined} unjoined, {unshown} not presented (whole capture)")
+    for (kind, flags) in sorted(groups):
+        rows = groups[(kind, flags)]
+        metrics = [
+            ("call -> marker start", [(r[1] - r[0]) / NS_PER_MS for r in rows]),
+            ("marker start -> presented", [(r[2] - r[1]) / NS_PER_MS for r in rows]),
+            ("call -> presented", [(r[2] - r[0]) / NS_PER_MS for r in rows]),
+        ]
+        ends = [r for r in rows if r[3] is not None]
+        if ends:
+            metrics.append(("copy end -> marker start", [(r[1] - r[3]) / NS_PER_MS for r in ends]))
+        print(f"  {kind} flags {flags}: n {len(rows)}")
+        for name, values in metrics:
+            ordered = sorted(values)
+            print(f"    {name}: p5 {percentile(ordered, .05):.2f} median {percentile(ordered, .5):.2f}"
+                  f" p95 {percentile(ordered, .95):.2f} p99 {percentile(ordered, .99):.2f} ms")
+
+
 def print_after_call(samples, unavailable, unjoined, ambiguous, unshown, label="generated outputs"):
     print(f"after-call split ({label}, available copies): {len(samples)} joined;"
           f" {unavailable} unavailable and {unjoined} unjoined (counted over the whole capture);"
@@ -433,6 +485,10 @@ def main(argv):
             outputs, records["pacing-profile-real-copy-gpu"], presented, presented_flags, False)
         samples = [sample for sample in samples if in_window(sample[1], sample[1])]
         print_after_call(samples, unavailable, unjoined, ambiguous, unshown, "real outputs")
+
+    if records["pacing-profile-present-marker-gpu"]:
+        print_present_marker(outputs, records["pacing-profile-output-gpu"],
+            records["pacing-profile-present-marker-gpu"], presented, presented_flags, in_window)
 
     recorder_drops = sum(int(number(r, "dropped")) for r in records["pacing-profile-recorder"])
     slot_drops = sum(int(number(r, "window_slot_drops")) for r in records["pacing-profile-recorder"])

@@ -232,6 +232,27 @@ class AnalyseHitchesTest(unittest.TestCase):
         self.assertIn("median 2.00 ", section_line(real, "  overall: n 1", "call -> copy start:"), out)
         self.assertIn("median 6.00 ", section_line(real, "  overall: n 1", "call -> presented:"), out)
 
+    def test_present_marker_split_joins_by_feedback(self):
+        # T4: the marker after a generated lower present joins its output by feedback; the
+        # generated copy end gives copy end -> marker start.
+        call = ms(600)
+        self.append_lines([
+            output(92, 60, 1, call, 902), presented(902, 605, 14),
+            "framegen-vulkan: present diagnostics: operation=pacing-profile-output-gpu version=1 pid=1 "
+            f"context=1 source=60 available=1 copy_start_ns={call + MS // 2} copy_end_ns={call + MS}",
+            "framegen-vulkan: present diagnostics: operation=pacing-profile-present-marker-gpu version=1 pid=1 "
+            f"context=1 source=60 feedback=902 generated=1 available=1 marker_start_ns={call + 3 * MS} "
+            f"marker_end_ns={call + 3 * MS + 1000}",
+            "framegen-vulkan: present diagnostics: operation=pacing-profile-present-marker-gpu version=1 pid=1 "
+            "context=1 source=61 feedback=903 generated=0 available=0 marker_start_ns=0 marker_end_ns=0",
+        ])
+        out = self.run_analyser("--min-gap", "20")
+        self.assertIn("present marker split (private queue after each lower present): 1 joined; 1 unavailable", out, out)
+        marker = out[out.index("present marker split"):]
+        self.assertIn("median 3.00 ", section_line(marker, "  generated flags 14: n 1", "call -> marker start:"), out)
+        self.assertIn("median 2.00 ", section_line(marker, "  generated flags 14: n 1", "marker start -> presented:"), out)
+        self.assertIn("median 2.00 ", section_line(marker, "  generated flags 14: n 1", "copy end -> marker start:"), out)
+
     def test_after_call_split_absent_without_gpu_split_records(self):
         out = self.run_analyser("--min-gap", "20")
         self.assertIn("after-call split: no pacing-profile-output-gpu records", out, out)
