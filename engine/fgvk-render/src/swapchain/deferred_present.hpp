@@ -1331,7 +1331,8 @@ private:
                     batch.aggregate.calls[index - 1].started);
             if (first && havePrevious && ready.overlap && ready.outputInterval > Clock::duration::zero() &&
                     Clock::now() - previousFinished < ready.outputInterval)
-                deadline = std::max(deadline, previousScheduled + ready.outputInterval - ready.outputInterval / 16);
+                deadline = std::max(deadline, previousScheduled + ready.outputInterval -
+                    (marginController.below ? Clock::duration{} : ready.outputInterval / 16));
             if (copyTail) {
                 // The real after a generated output keeps full spacing, but a release limit
                 // may pull it in: no later than latestOutput, and at least a quarter output

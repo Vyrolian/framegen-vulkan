@@ -3026,8 +3026,11 @@ static_assert([] {
         if (controller.step(slack, 0ms) != 0ns || controller.bias != 0ns) return false;
     (void)controller.step(-10ms, 2ms);
     if (controller.bias == 0ns) return false;
+    if (!controller.below) return false;
     controller.reset();
-    if (controller.bias != 0ns) return false;
+    if (controller.bias != 0ns || controller.below) return false;
+    (void)controller.step(3ms, 2ms);
+    if (controller.below) return false;
     for (int i = 0; i < 200; ++i)
         if (controller.step(i == 0 ? -10ms : 0ms, 2ms) > 500us) return false;
     return controller.step(0ms, 0ms) == 0ns && controller.bias == 0ns;

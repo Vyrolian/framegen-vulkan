@@ -12,6 +12,10 @@ namespace fgvk::layer {
 struct OutputMarginController {
     using Duration = std::chrono::steady_clock::duration;
     Duration bias{};
+    /// The last stepped batch ended with less reserve than the margin. The
+    /// worker then keeps full spacing from the previous output instead of
+    /// its sixteenth-interval catch-up, which otherwise drains the reserve.
+    bool below{};
 
     [[nodiscard]] constexpr Duration step(Duration slack, Duration margin) noexcept {
         if (margin <= Duration{}) {
@@ -25,9 +29,11 @@ struct OutputMarginController {
         // Retain the allowed margin/8 tolerance so 0.4 ms/batch drift can
         // still be compensated by the bounded 0.5 ms step at a 2 ms margin.
         const auto ceilingStep = std::max(Duration{}, margin + margin / 8 - slack);
-        return std::min(std::clamp(error / 8 + bias, Duration{}, margin / 4), ceilingStep);
+        const auto applied = std::min(std::clamp(error / 8 + bias, Duration{}, margin / 4), ceilingStep);
+        below = std::max(slack, Duration{}) + applied < margin;
+        return applied;
     }
-    constexpr void reset() noexcept { bias = {}; }
+    constexpr void reset() noexcept { bias = {}; below = false; }
 };
 
 [[nodiscard]] inline std::chrono::steady_clock::duration outputMargin() noexcept {
