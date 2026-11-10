@@ -194,7 +194,7 @@ namespace fgvk::layer::present_diagnostics {
             // S1: first output only; slack is the signed deadline-minus-readiness
             // before the shift, and marginStep is the applied B1 increment.
             Clock::time_point readyAt{};
-            Clock::duration slack{}, marginStep{};
+            Clock::duration slack{}, marginStep{}, marginBias{};
         };
         struct OutputSample {
             size_t ordinal{}, source{};

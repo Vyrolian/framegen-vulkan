@@ -1620,7 +1620,7 @@ void readinessExtensionIsBounded() {
         if (signalledInExtension) {
             expect(completion->readyAt != DeferredPresent::Clock::time_point{} &&
                 completion->slack == now + 1ms - completion->readyAt &&
-                completion->marginStep == outputMarginStep(completion->slack, outputMargin()) &&
+                completion->marginStep == OutputMarginController{}.step(completion->slack, outputMargin()) &&
                 completion->calls[0].scheduled == now + 1ms + completion->readinessShift,
                 "readiness diagnostics lost the pre-shift deadline or applied margin");
             expect(!completion->readinessMiss && completion->calls[0].lateReadiness &&
@@ -2996,6 +2996,42 @@ void generatedPreparationErrors() {
         // lower image when no copy could be submitted; no present waits on it.
     }
 }
+}
+
+namespace {
+constexpr bool marginControllerSimulation(std::chrono::nanoseconds drift, bool noisy = false) {
+    using namespace std::chrono_literals;
+    OutputMarginController controller;
+    auto slack = 0ns;
+    auto sum = 0ns;
+    for (int i = 0; i < 400; ++i) {
+        const auto noise = noisy ? (i % 2 ? 1ms : -1ms) : 0ms;
+        const auto step = controller.step(slack + noise, 2ms);
+        if (step < 0ns || step > 500us || controller.bias < 0ns || controller.bias > 500us)
+            return false;
+        slack += step - drift;
+        if (!noisy && slack > 2250us) return false;
+        if (i >= 199 && !noisy && (slack < 1750us || slack > 2250us)) return false;
+        if (i >= 200) sum += slack + noise;
+    }
+    return !noisy || (sum / 200 >= 1500us && sum / 200 <= 2500us);
+}
+static_assert(marginControllerSimulation(0ns));
+static_assert(marginControllerSimulation(200us));
+static_assert(marginControllerSimulation(400us));
+static_assert(marginControllerSimulation(200us, true));
+static_assert([] {
+    OutputMarginController controller;
+    for (const auto slack : {-10ms, 0ms, 10ms})
+        if (controller.step(slack, 0ms) != 0ns || controller.bias != 0ns) return false;
+    (void)controller.step(-10ms, 2ms);
+    if (controller.bias == 0ns) return false;
+    controller.reset();
+    if (controller.bias != 0ns) return false;
+    for (int i = 0; i < 200; ++i)
+        if (controller.step(i == 0 ? -10ms : 0ms, 2ms) > 500us) return false;
+    return controller.step(0ms, 0ms) == 0ns && controller.bias == 0ns;
+}());
 }
 
 int main(int argc, char** argv) {

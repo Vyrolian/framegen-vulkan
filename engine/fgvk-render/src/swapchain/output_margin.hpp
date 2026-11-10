@@ -1,31 +1,34 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #pragma once
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
 
 namespace fgvk::layer {
-/// Optional output margin (B1, FGVK_OUTPUT_MARGIN_MS, 0 to 2 ms, default 0 = off).
-/// A released batch normally presents the moment its generated frame is ready,
-/// so any later readiness moves the frames on screen. With a margin the output
-/// clock is steered to sit up to that long after readiness: each batch whose
-/// slack (slot minus readiness, negative when late) is below the margin moves
-/// the clock an eighth of the missing slack later. Small steps keep the spacing
-/// even; the added latency never exceeds the margin.
-[[nodiscard]] constexpr std::chrono::steady_clock::duration outputMarginStep(
-        const std::chrono::steady_clock::duration slack,
-        const std::chrono::steady_clock::duration margin) noexcept {
+/// Optional reserve after readiness. The integral bias compensates persistent
+/// source-clock drift; bounded positive steps never move an output earlier.
+struct OutputMarginController {
     using Duration = std::chrono::steady_clock::duration;
-    const auto held = slack > Duration{} ? slack : Duration{};
-    return held < margin ? (margin - held) / 8 : Duration{};
-}
-static_assert(outputMarginStep(std::chrono::milliseconds{0}, std::chrono::milliseconds{0}).count() == 0);
-static_assert(outputMarginStep(std::chrono::milliseconds{-5}, std::chrono::milliseconds{2}) ==
-    std::chrono::microseconds{250});
-static_assert(outputMarginStep(std::chrono::milliseconds{1}, std::chrono::milliseconds{2}) ==
-    std::chrono::microseconds{125});
-static_assert(outputMarginStep(std::chrono::milliseconds{3}, std::chrono::milliseconds{2}).count() == 0);
+    Duration bias{};
+
+    [[nodiscard]] constexpr Duration step(Duration slack, Duration margin) noexcept {
+        if (margin <= Duration{}) {
+            reset();
+            return {};
+        }
+        const auto error = std::clamp(margin - slack, -margin, margin);
+        bias = std::clamp(bias + error / 32, Duration{}, margin / 4);
+        // Anti-windup at the reserve ceiling. The specified positive-only PI
+        // rule otherwise strands zero-drift slack above the reserve forever.
+        // Retain the allowed margin/8 tolerance so 0.4 ms/batch drift can
+        // still be compensated by the bounded 0.5 ms step at a 2 ms margin.
+        const auto ceilingStep = std::max(Duration{}, margin + margin / 8 - slack);
+        return std::min(std::clamp(error / 8 + bias, Duration{}, margin / 4), ceilingStep);
+    }
+    constexpr void reset() noexcept { bias = {}; }
+};
 
 [[nodiscard]] inline std::chrono::steady_clock::duration outputMargin() noexcept {
     static const auto margin = [] {

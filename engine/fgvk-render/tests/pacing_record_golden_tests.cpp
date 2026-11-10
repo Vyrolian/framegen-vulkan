@@ -68,7 +68,7 @@ void profileScenario() {
         .queueLockAcquired = start + 2ms, .readinessChecked = true, .readinessStarted = start + 1ms,
         .readinessFinished = start + 2ms, .readinessDeadline = start + 2ms,
         .readinessResult = VK_SUCCESS, .queue = fakeQueue(), .presentWait = fakeSemaphore(0x5000),
-        .arrival = start, .readyAt = start + 2ms, .slack = -1ms, .marginStep = 250us});
+        .arrival = start, .readyAt = start + 2ms, .slack = -1ms, .marginStep = 250us, .marginBias = 125us});
     const auto sample = profile.output(start + 9ms, start + 10ms, VK_ERROR_OUT_OF_DATE_KHR, {
         .scheduled = start + 9ms, .imageIndex = 2, .deferred = true, .copyChecked = true,
         .copyStatus = VK_SUCCESS, .copySampledAt = start + 10ms});

@@ -23,7 +23,7 @@ def output(ordinal, source, generated, started, feedback):
             f"swapchain=0x1 ordinal={ordinal} source={source} generated={generated} deferred=1 image_index=0 "
             f"scheduled_ns={started} started_ns={started} finished_ns={started + MS} result=0 "
             f"copy_checked=0 copy_status=1 copy_sampled_ns=0 arrival_ns=0 feedback={feedback} "
-            f"backend_frame=0 phase=0 present_id=0 ready_ns={started - MS} slack_ns=-1000000 margin_step_ns=250000")
+            f"backend_frame=0 phase=0 present_id=0 ready_ns={started - MS} slack_ns=-1000000 margin_step_ns=250000 margin_bias_ns=125000")
 
 
 def output_gpu(source, available, copy_start, copy_end):

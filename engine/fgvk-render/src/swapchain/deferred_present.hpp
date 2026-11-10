@@ -329,7 +329,7 @@ public:
         size_t count{};
         Clock::duration readinessShift{};
         Clock::time_point readyAt{};
-        Clock::duration slack{}, marginStep{};
+        Clock::duration slack{}, marginStep{}, marginBias{};
         bool readinessMiss{};
         // Diagnostics only: output spacing of the batch.
         Clock::duration outputInterval{};
@@ -944,6 +944,7 @@ private:
     mutable std::mutex mutex;
     std::condition_variable changed;
     bool stopping{};
+    OutputMarginController marginController; // Worker thread only.
     std::thread worker;
 
     [[nodiscard]] size_t slotAt(size_t offset) const { return (head + offset) % slots; }
@@ -1293,7 +1294,7 @@ private:
         std::unique_lock lock(mutex);
         Clock::duration readinessShift{};
         Clock::time_point readyAt{};
-        Clock::duration slack{}, marginStep{};
+        Clock::duration slack{}, marginStep{}, marginBias{};
         // Shift from the batch's first output to its final deadline. Later
         // outputs of the same batch keep their requested spacing from it.
         Clock::duration batchShift{};
@@ -1307,6 +1308,7 @@ private:
         Clock::time_point previousStarted{}, previousFinished{}, previousScheduled{};
         bool havePrevious{};
         uint32_t heldLowerImages{};
+        Clock::time_point lastBatchFinished{};
         for (;;) {
             changed.wait(lock, [this] {
                 return stopping || (count && batches[head].consumed < batches[head].produced);
@@ -1316,6 +1318,9 @@ private:
             const size_t index = batch.consumed;
             const auto current = batch.jobs[index];
             const bool first = index == 0;
+            if (first && (lastBatchFinished != Clock::time_point{} &&
+                    Clock::now() - lastBatchFinished > std::chrono::milliseconds{250}))
+                marginController.reset();
             const auto ready = batch.readiness;
             const size_t limit = batch.limit;
             const bool copyTail = index > 0 && batch.jobs[index - 1].copyActive &&
@@ -1346,7 +1351,8 @@ private:
                 workerWait = {};
                 readinessShift = {};
                 readyAt = {};
-                slack = marginStep = {};
+                slack = marginStep = marginBias = {};
+                if (!ready.overlap) marginController.reset();
                 batchShift = {};
                 readinessMiss = false;
                 lateReadiness = false;
@@ -1387,10 +1393,12 @@ private:
                         }
                     }
                     readinessMiss = readinessResult != VK_SUCCESS;
+                    if (readinessMiss) marginController.reset();
                     if (!readinessMiss) {
                         readyAt = Clock::now();
                         slack = deadline - readyAt;
-                        marginStep = ready.overlap ? outputMarginStep(slack, outputMargin()) : Clock::duration{};
+                        marginStep = ready.overlap ? marginController.step(slack, outputMargin()) : Clock::duration{};
+                        marginBias = marginController.bias;
                         readinessShift = std::max(Clock::duration{}, readyAt - deadline) + marginStep;
                         deadline += readinessShift;
                     }
@@ -1686,6 +1694,7 @@ private:
             batch.aggregate.readyAt = readyAt;
             batch.aggregate.slack = slack;
             batch.aggregate.marginStep = marginStep;
+            batch.aggregate.marginBias = marginBias;
             batch.aggregate.readinessMiss = readinessMiss;
             if (readinessResult < 0) batch.aggregate.result = readinessResult;
             if (batch.aggregate.count == 0) batch.aggregate.started = result.started;
@@ -1694,6 +1703,7 @@ private:
                 batch.aggregate.result = result.result;
             batch.aggregate.calls[batch.aggregate.count++] = result;
             ++batch.consumed;
+            if (batch.consumed == batch.produced) lastBatchFinished = Clock::now();
             // The worker is done with an internal real job; drop its owner reference.
             batch.jobs[index].internal = {};
             if (!result.skipped) {

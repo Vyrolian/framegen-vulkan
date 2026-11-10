@@ -126,6 +126,7 @@ VkResult Swapchain::completeDeferredPresent(const uint64_t timeoutNs, const bool
                     .readyAt = i == 0 ? completion.readyAt : DiagnosticsClock::time_point{},
                     .slack = i == 0 ? completion.slack : DiagnosticsClock::duration{},
                     .marginStep = i == 0 ? completion.marginStep : DiagnosticsClock::duration{},
+                    .marginBias = i == 0 ? completion.marginBias : DiagnosticsClock::duration{},
                 });
                 present_diagnostics::logPacingOutput(this->diagnosticsState.contextId, call.swapchain, sample);
             }

@@ -325,7 +325,8 @@ void appendPacingOutput(std::ostream& line, const uint64_t context, const VkSwap
          << " present_id=" << observed.presentId
          << " ready_ns=" << ns(observed.readyAt)
          << " slack_ns=" << std::chrono::duration_cast<std::chrono::nanoseconds>(observed.slack).count()
-         << " margin_step_ns=" << std::chrono::duration_cast<std::chrono::nanoseconds>(observed.marginStep).count();
+         << " margin_step_ns=" << std::chrono::duration_cast<std::chrono::nanoseconds>(observed.marginStep).count()
+         << " margin_bias_ns=" << std::chrono::duration_cast<std::chrono::nanoseconds>(observed.marginBias).count();
     line << '\n';
 }
 
