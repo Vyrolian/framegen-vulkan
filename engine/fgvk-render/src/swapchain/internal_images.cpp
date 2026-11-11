@@ -493,6 +493,7 @@ namespace fgvk::layer {
             case submitKindRelease: return "release";
             case submitKindGeneratedCopy: return "gen_copy";
             case submitKindGeneratedSkip: return "gen_skip";
+            case submitKindGeneratedYield: return "gen_yield";
             default: return "unknown";
             }
         }

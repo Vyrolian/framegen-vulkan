@@ -1073,7 +1073,7 @@ struct CopySubmit {
     uint32_t waits{};
     std::array<VkSemaphore, 2> waitSemaphores{};
     uint32_t signals{};
-    std::array<VkSemaphore, 2> signalSemaphores{};
+    std::array<VkSemaphore, 3> signalSemaphores{};
     VkFence fence{};
 };
 std::vector<CopySubmit> copySubmits;
@@ -2971,6 +2971,53 @@ void generatedPreparedStop() {
         !done->calls[0].skipped && pool.held == 0 && pool.order.size() == 1 && copySubmits.size() == 1,
         "stop stranded a prepared image or failed to finish");
 }
+// S6: the yield is signalled exactly once per job. A prepared copy carries it as its
+// first signal. Without a prepared copy an empty submit releases it before the slot,
+// and the deadline copy or the skip does not signal it again.
+void generatedYieldSignalledOnce() {
+    const auto yield = handle<VkSemaphore>(65);
+    // 0 prepared, 1 early acquire misses, 2 no early attempt (direct images), 3 acquire error.
+    for (unsigned mode = 0; mode < 4; ++mode) {
+        PreparedPool pool;
+        preparedPool = &pool;
+        if (mode == 1) pool.misses = 1;
+        if (mode == 3) pool.failAcquire = true;
+        copySubmits.clear();
+        auto queue = std::make_shared<DeferredPresentQueue>();
+        queue->queue = handle<VkQueue>(7);
+        DeferredPresent worker(queue, preparedPresent);
+        auto copy = preparedCopy();
+        copy.yield = yield;
+        if (mode == 2) copy.internalImages = false;
+        const auto due = DeferredPresent::Clock::now() + 60ms;
+        expect(worker.beginBatch(1, {.overlap = true}), "yield batch rejected");
+        expect(worker.enqueueGeneratedCopy(handle<VkSwapchainKHR>(11), nullptr, due, copy),
+            "yield generated output rejected");
+        worker.closeBatch();
+        const auto done = worker.finish(UINT64_MAX, false);
+        expect(done && done->count == 1 && pool.held == 0, "yield batch failed or leaked an image");
+        if (mode == 0) {
+            expect(done->calls[0].generatedPrepared && copySubmits.size() == 1 &&
+                copySubmits[0].count == 1 && copySubmits[0].waits == 2 && copySubmits[0].signals == 3 &&
+                copySubmits[0].signalSemaphores[0] == yield &&
+                copySubmits[0].signalSemaphores[1] == copy.presentWaits[0] &&
+                copySubmits[0].signalSemaphores[2] == copy.continuation &&
+                copySubmits[0].fence == copy.fence && pool.copiedAt[0] < due,
+                "a prepared copy did not carry the yield before its slot");
+            continue;
+        }
+        expect(copySubmits.size() == 2 && copySubmits[0].count == 0 && copySubmits[0].waits == 0 &&
+            copySubmits[0].signals == 1 && copySubmits[0].signalSemaphores[0] == yield &&
+            copySubmits[0].fence == VK_NULL_HANDLE && pool.copiedAt[0] < due,
+            "an unprepared output did not release the yield before its slot");
+        const auto& last = copySubmits[1];
+        expect(last.fence == copy.fence && last.waitSemaphores[last.waits - 1] == copy.staged &&
+            last.signalSemaphores[last.signals - 1] == copy.continuation &&
+            last.signals == (mode == 3 ? 1u : 2u) && last.count == (mode == 3 ? 0u : 1u) &&
+            last.signalSemaphores[0] != yield && done->calls[0].skipped == (mode == 3),
+            "the deadline copy or skip signalled the yield again or lost its contract");
+    }
+}
 // Errors must consume the staging/continuation contract once without retrying
 // an acquire or submitting a failed copy twice.
 void generatedPreparationErrors() {
@@ -3045,6 +3092,7 @@ int main(int argc, char** argv) {
     }
     generatedPreparedOrderAndBudget(); generatedPreparationFallbackAndGates();
     generatedPreparedRetirement(); generatedPreparedStop(); generatedPreparationErrors();
+    generatedYieldSignalledOnce();
     queueRequest(); acquireQueueRequest(); acquireTargetAvoidsPresentLock();
     privateSubmitWithoutTailIsUnchanged(); privateSubmitAppendsTail();
     privateSubmitFailureLeavesTail(); privateSubmitForeignChainBypassesTail();

@@ -216,6 +216,7 @@ bool Swapchain::recordGeneratedCopies(const vk::Vulkan& vk, RenderSlot& slot) {
             VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
         const VkImage stagingImage = slot.staging->handle();
         slot.staged.emplace(vk);
+        slot.yielded.emplace(vk);
         slot.stagingCopy.emplace(vk);
         {
             const auto& command = *slot.stagingCopy;
@@ -288,6 +289,7 @@ bool Swapchain::recordGeneratedCopies(const vk::Vulkan& vk, RenderSlot& slot) {
         slot.generatedCopies.clear();
         slot.stagingCopy.reset();
         slot.staged.reset();
+        slot.yielded.reset();
         slot.staging.reset();
         return false;
     }
@@ -425,6 +427,7 @@ void Swapchain::commitFrameGenerationResources(
         slot.generatedCopies.clear();
         slot.stagingCopy.reset();
         slot.staged.reset();
+        slot.yielded.reset();
         slot.staging.reset();
         // The output timestamps belong to the copies released above; a pending read is dropped.
         slot.outputPending = false;

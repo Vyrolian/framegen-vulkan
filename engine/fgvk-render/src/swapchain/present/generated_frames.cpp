@@ -194,6 +194,9 @@ VkResult Swapchain::presentGeneratedFrames(
                 .staged = slot.staged->handle(),
                 .continuation = this->postCopySemaphores.at(
                     this->presentationSlotFor(invocation.imageIndex)).first.handle(),
+                // S6: only the early-prepared path can use the yield.
+                .yield = this->internalPresent != nullptr && generatedYieldEnabled()
+                    ? slot.yielded->handle() : VK_NULL_HANDLE,
                 .fence = slot.fence.handle(),
                 .imageCount = static_cast<uint32_t>(this->info.images.size()),
                 .giveUp = invocation.pacedOutputs->interval / 2,
@@ -218,6 +221,22 @@ VkResult Swapchain::presentGeneratedFrames(
                 // skip can be distinguished from a submitted generated image.
                 this->frameState.sequenceIndex++;
                 this->frameState.backendTimelineIndex++;
+                if (copy.yield != VK_NULL_HANDLE) {
+                    // S6: the game queue stops here, right after the staging copy, until the
+                    // worker's early copy (or its release) has run on the private queue. The
+                    // game's following GPU work would otherwise hold the GPU for a timeslice
+                    // (about 1 ms) before that copy starts.
+                    const VkPipelineStageFlags yieldStage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+                    const VkSubmitInfo yield{
+                        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                        .waitSemaphoreCount = 1, .pWaitSemaphores = &copy.yield,
+                        .pWaitDstStageMask = &yieldStage,
+                    };
+                    const auto yielded = invocation.vk.df().QueueSubmit(
+                        invocation.vk.queue(), 1, &yield, VK_NULL_HANDLE);
+                    if (yielded != VK_SUCCESS)
+                        throw ls::vulkan_error(yielded, "vkQueueSubmit() failed");
+                }
                 continue;
             }
             // Refused: no worker copy or skip will wait the staged signal, so

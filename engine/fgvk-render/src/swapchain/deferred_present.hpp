@@ -35,6 +35,7 @@ inline constexpr uint8_t submitKindCopy = 1;
 inline constexpr uint8_t submitKindRelease = 2;
 inline constexpr uint8_t submitKindGeneratedCopy = 3;
 inline constexpr uint8_t submitKindGeneratedSkip = 4;
+inline constexpr uint8_t submitKindGeneratedYield = 5;
 struct SubmitTag {
     uint8_t kind{submitKindUnknown};
     uint32_t applicationIndex{UINT32_MAX};
@@ -406,6 +407,10 @@ public:
     // image k and signals presentWaits[k] and continuation. On a skip an empty
     // submit waits staged and signals continuation and fence, so the real present
     // and the render slot never wait on an unsignalled object.
+    // S6: yield, when set, is waited once on the game queue right after the staging
+    // copy. The worker signals it exactly once per job, as soon as the first output's
+    // readiness is known: with the early copy when that was prepared, otherwise with an
+    // empty submit, so the game queue never waits for a lower image or a deadline.
     struct GeneratedCopy {
         VkDevice device{};
         PFN_vkAcquireNextImageKHR acquire{};
@@ -413,6 +418,7 @@ public:
         VkSemaphore acquireSemaphore{};
         VkSemaphore staged{};
         VkSemaphore continuation{};
+        VkSemaphore yield{};
         VkFence fence{};
         uint32_t imageCount{};
         std::array<VkCommandBuffer, maxCopyImages> copies{};
@@ -1031,14 +1037,18 @@ private:
     // (0 for a copy) and source the batch ordinal; both only label the submit's history record.
     static VkResult submitGeneratedWork(DeferredPresentQueue& queue, const GeneratedCopy& copy,
             const bool acquired, const VkCommandBuffer command, const VkSemaphore presentWait,
-            const uint32_t lowerIndex, const uint8_t reason, const uint64_t source) {
-        // The staged wait is always the last wait and the continuation the last signal.
+            const uint32_t lowerIndex, const uint8_t reason, const uint64_t source,
+            const VkSemaphore yield = VK_NULL_HANDLE) {
+        // The staged wait is always the last wait. Signals: the optional yield, the
+        // optional present wait, then the continuation.
         const std::array<VkSemaphore, 2> waits{copy.acquireSemaphore, copy.staged};
         const std::array<VkPipelineStageFlags, 2> stages{
             VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT};
-        const std::array<VkSemaphore, 2> signals{presentWait, copy.continuation};
+        const std::array<VkSemaphore, 3> signals{yield, presentWait, copy.continuation};
         const uint32_t waitCount = acquired ? 2u : 1u;
-        const uint32_t signalCount = presentWait != VK_NULL_HANDLE ? 2u : 1u;
+        // The yield is only ever signalled together with a present wait (a prepared copy).
+        const uint32_t signalCount = presentWait == VK_NULL_HANDLE ? 1u :
+            yield == VK_NULL_HANDLE ? 2u : 3u;
         const VkSubmitInfo submit{
             .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
             .pNext = nullptr,
@@ -1048,7 +1058,7 @@ private:
             .commandBufferCount = command != VK_NULL_HANDLE ? 1u : 0u,
             .pCommandBuffers = command != VK_NULL_HANDLE ? &command : nullptr,
             .signalSemaphoreCount = signalCount,
-            .pSignalSemaphores = signals.data() + (2 - signalCount),
+            .pSignalSemaphores = signals.data() + (3 - signalCount),
         };
         const bool copying = command != VK_NULL_HANDLE;
         const SubmitTag tag{
@@ -1059,6 +1069,18 @@ private:
             .source = source,
         };
         return submitPrivate(queue, copy.submit, submit, copy.fence, tag);
+    }
+    // S6: lets the game queue continue when no early copy carries the yield signal.
+    // It waits nothing and uses no fence (the slot fence belongs to the copy or skip).
+    static VkResult submitGeneratedYield(DeferredPresentQueue& queue, const GeneratedCopy& copy,
+            const uint64_t source) {
+        const VkSubmitInfo submit{
+            .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+            .signalSemaphoreCount = 1, .pSignalSemaphores = &copy.yield,
+        };
+        return submitPrivate(queue, copy.submit, submit, VK_NULL_HANDLE,
+            SubmitTag{.kind = submitKindGeneratedYield, .applicationIndex = UINT32_MAX,
+                .lowerIndex = UINT32_MAX, .source = source});
     }
 
     // D6: runs one worker call made under queue->mutex and keeps the longest such
@@ -1173,7 +1195,7 @@ private:
         const auto submitted = profiledLockCall(ready.profile, prep.submitNs, [&] {
             return submitGeneratedWork(*queue, job.copy, true,
                 job.copy.copies.at(prep.lowerIndex), prep.presentWait, prep.lowerIndex,
-                0, ready.source);
+                0, ready.source, job.copy.yield);
         });
         if (submitted != VK_SUCCESS) {
             prep.settled = true;
@@ -1426,6 +1448,14 @@ private:
                     if (prep.prepared || prep.acquired) ++heldLowerImages;
                     assert(heldLowerImages <= layerHeldLowerImages);
                 }
+            }
+            // S6: the game queue waits this job's yield. A prepared copy signals it. Every
+            // other outcome (no early attempt, no free lower image, an error, a readiness
+            // miss, stopping) releases it here, before any wait for the output slot. A
+            // failed release is device loss, which the copy or skip below reports.
+            if (current.copyActive && current.copy.yield != VK_NULL_HANDLE && !prep.prepared) {
+                const std::lock_guard queueLock(queue->mutex);
+                static_cast<void>(submitGeneratedYield(*queue, current.copy, ready.source));
             }
             if (!readinessMiss && !prep.settled) {
                 const auto waitStarted = Clock::now();
