@@ -8,7 +8,13 @@
 # Needs FGVK_PACING_PROFILE=1 (fgvk) or FGVK_MEASURE=1 (game alone).
 # Usage: scanout-watch.sh [log]
 set -euo pipefail
-log="${1:-$(ls -t /tmp/fgvk-pacing-"$(id -u)"-*.log /tmp/fgvk-measure-"$(id -u)"-*.log 2>/dev/null | head -1)}"
+# Newest log over 1 MB: the small ones written next to the game's are Wine helpers.
+newest() {
+    find /tmp -maxdepth 1 \( -name "fgvk-pacing-$(id -u)-*.log" -o -name "fgvk-measure-$(id -u)-*.log" \) \
+        "$@" -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-
+}
+log="${1:-$(newest -size +1M)}"
+[[ -n "$log" ]] || log="$(newest)"
 [[ -n "$log" && -f "$log" ]] || { echo "no framegen-vulkan log found in /tmp" >&2; exit 1; }
 echo "watching $log (Ctrl+C to stop)"
 tail -n0 -F "$log" 2>/dev/null | gawk '
