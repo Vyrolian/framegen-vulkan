@@ -462,6 +462,7 @@ public:
             worker() {
         // Initialize and report the setting before the worker can use it.
         static_cast<void>(outputMargin());
+        static_cast<void>(realOffset());
         worker = std::thread([this] { run(); });
     }
     DeferredPresent(const DeferredPresent&) = delete;
@@ -1355,6 +1356,7 @@ private:
                     Clock::now() - previousFinished < ready.outputInterval)
                 deadline = std::max(deadline, previousScheduled + ready.outputInterval -
                     (marginController.below ? Clock::duration{} : ready.outputInterval / 16));
+            Clock::duration appliedRealOffset{};
             if (copyTail) {
                 // The real after a generated output keeps full spacing, but a release limit
                 // may pull it in: no later than latestOutput, and at least a quarter output
@@ -1363,6 +1365,13 @@ private:
                 // each image at least one refresh.
                 deadline = std::max(deadline,
                     batch.aggregate.calls[index - 1].started + ready.outputInterval);
+                // S7: the optional real offset, never closer than a quarter interval.
+                if (ready.overlap && batch.jobs[index - 1].copy.internalImages) {
+                    const auto moved = realDeadlineWithOffset(deadline,
+                        batch.aggregate.calls[index - 1].started, ready.outputInterval, realOffset());
+                    appliedRealOffset = moved - deadline;
+                    deadline = moved;
+                }
                 if (ready.latestOutput != Clock::time_point::max())
                     deadline = std::min(deadline, std::max(ready.latestOutput,
                         batch.aggregate.calls[index - 1].started + ready.outputInterval / 4));
@@ -1741,7 +1750,8 @@ private:
                 previousStarted = result.started;
                 previousFinished = result.finished;
                 // An early (expedited) output anchors the next batch at its actual start; late wakes keep the schedule.
-                previousScheduled = std::min(result.scheduled, result.started);
+                // S7: a real moved by the offset anchors the next batch where it would have been.
+                previousScheduled = std::min(result.scheduled, result.started) - appliedRealOffset;
                 havePrevious = true;
             }
             retireFinishedHeadsLocked();

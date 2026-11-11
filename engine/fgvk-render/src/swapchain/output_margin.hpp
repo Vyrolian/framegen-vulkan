@@ -67,4 +67,32 @@ struct OutputMarginController {
     return enabled;
 }
 
+// S7: FGVK_REAL_OFFSET_US=<-1000..1000> moves the real output that follows a generated
+// output on released internal-image batches by that many microseconds (negative =
+// earlier). The next batch's first-output floor ignores the move, so only reals shift.
+// It centres the generated output between its reals when the two kinds wait unequally
+// for the private queue's GPU turn. 0 or unset = unchanged timing. Read once per process.
+template <typename TimePoint, typename Duration>
+[[nodiscard]] constexpr TimePoint realDeadlineWithOffset(const TimePoint deadline,
+        const TimePoint generatedStarted, const Duration interval, const Duration offset) noexcept {
+    // Never closer to the generated present than a quarter output interval, and
+    // never later because of that bound than the unmoved deadline.
+    return offset == Duration{} ? deadline
+        : std::max(deadline + offset, std::min(deadline, generatedStarted + interval / 4));
+}
+[[nodiscard]] inline std::chrono::steady_clock::duration realOffset() noexcept {
+    static const auto offset = [] {
+        const char* text = std::getenv("FGVK_REAL_OFFSET_US");
+        char* end = nullptr;
+        const long value = text ? std::strtol(text, &end, 10) : 0;
+        if (!text || end == text || value == 0)
+            return std::chrono::steady_clock::duration{};
+        const long clamped = std::clamp(value, -1000L, 1000L);
+        std::fprintf(stderr, "framegen-vulkan: real offset: offset_us=%ld\n", clamped);
+        return std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+            std::chrono::microseconds{clamped});
+    }();
+    return offset;
+}
+
 }

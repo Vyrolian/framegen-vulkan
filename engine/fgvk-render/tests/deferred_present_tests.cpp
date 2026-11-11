@@ -2974,6 +2974,23 @@ void generatedPreparedStop() {
 // S6: the yield is signalled exactly once per job. A prepared copy carries it as its
 // first signal. Without a prepared copy an empty submit releases it before the slot,
 // and the deadline copy or the skip does not signal it again.
+// S7: the real offset moves a tail real by the offset, keeps a quarter interval after the
+// generated present, and changes nothing when it is zero.
+namespace real_offset_checks {
+using Ns = std::chrono::nanoseconds;
+using Tp = std::chrono::time_point<std::chrono::steady_clock, Ns>;
+constexpr Tp at(const int64_t us) { return Tp{std::chrono::microseconds{us}}; }
+constexpr Ns us(const int64_t value) { return std::chrono::microseconds{value}; }
+static_assert(realDeadlineWithOffset(at(6500), at(0), us(6500), us(0)) == at(6500));
+static_assert(realDeadlineWithOffset(at(6500), at(0), us(6500), us(-550)) == at(5950));
+static_assert(realDeadlineWithOffset(at(6500), at(0), us(6500), us(400)) == at(6900));
+// Short interval: the quarter-interval bound holds.
+static_assert(realDeadlineWithOffset(at(2000), at(0), us(2000), us(-1000)) == at(1000));
+static_assert(realDeadlineWithOffset(at(1000), at(0), us(2000), us(-1000)) == at(500));
+// A deadline already inside the bound is not pushed later by a negative offset.
+static_assert(realDeadlineWithOffset(at(300), at(0), us(2000), us(-1000)) == at(300));
+}
+
 void generatedYieldSignalledOnce() {
     const auto yield = handle<VkSemaphore>(65);
     // 0 prepared, 1 early acquire misses, 2 no early attempt (direct images), 3 acquire error.
