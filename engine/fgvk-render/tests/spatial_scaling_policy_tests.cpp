@@ -1870,7 +1870,8 @@ int main() {
              VK_IMAGE_USAGE_TRANSFER_DST_BIT),
         "Standalone scaling must request only its required transfer usage");
 
-    for (const auto mode : {VK_PRESENT_MODE_MAILBOX_KHR, VK_PRESENT_MODE_IMMEDIATE_KHR}) {
+    for (const auto mode : {VK_PRESENT_MODE_MAILBOX_KHR, VK_PRESENT_MODE_IMMEDIATE_KHR,
+            VK_PRESENT_MODE_FIFO_LATEST_READY_KHR}) {
         expect(directUnthrottledPresentation(false, mode) &&
                 !directUnthrottledPresentation(true, mode),
             "Native VSync-off modes must retain their own transport without changing Gamescope");

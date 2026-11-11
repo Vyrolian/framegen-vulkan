@@ -14,10 +14,14 @@
 
 namespace fgvk::layer {
 
+    /// Modes whose present never blocks on the display: the application's mode is kept
+    /// and outputs are spaced on the CPU. FIFO_LATEST_READY latches the newest ready
+    /// image at each refresh and drops older ones, like MAILBOX with ready-time selection.
     [[nodiscard]] constexpr bool directUnthrottledPresentation(
             const bool gamescopeDetected, const VkPresentModeKHR mode) noexcept {
         return !gamescopeDetected &&
-            (mode == VK_PRESENT_MODE_MAILBOX_KHR || mode == VK_PRESENT_MODE_IMMEDIATE_KHR);
+            (mode == VK_PRESENT_MODE_MAILBOX_KHR || mode == VK_PRESENT_MODE_IMMEDIATE_KHR ||
+             mode == VK_PRESENT_MODE_FIFO_LATEST_READY_KHR);
     }
 
     /// Native FIFO supports CPU output spacing without taking a Vulkan timing
