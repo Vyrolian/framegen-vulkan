@@ -170,7 +170,11 @@ impl App {
     }
 
     fn editor(&mut self, ui: &mut Ui, settings: Settings) {
-        let Settings { profiles, dll } = settings;
+        let Settings {
+            profiles,
+            dll,
+            allow_fp16,
+        } = settings;
         if !self.restored {
             self.select(initial_index(&profiles, self.remembered.as_deref()));
             self.restored = true;
@@ -191,7 +195,7 @@ impl App {
         }
 
         section(ui, "Global");
-        self.global(ui, dll.unwrap_or_default());
+        self.global(ui, dll.unwrap_or_default(), allow_fp16);
     }
 
     fn profile_row(&mut self, ui: &mut Ui, profiles: &[Profile]) {
@@ -343,6 +347,8 @@ impl App {
         section(ui, "Quality (flow scale)");
         self.quality(ui, profile);
         hint(ui, "Higher = better motion quality, more GPU");
+        self.performance_mode(ui, profile);
+        hint(ui, "Lighter model: more FPS, lower quality. Applies live.");
 
         ui.add_space(6.0);
         self.fps_limit(ui, profile);
@@ -529,6 +535,14 @@ impl App {
         }
     }
 
+    fn performance_mode(&mut self, ui: &mut Ui, profile: &Profile) {
+        let mut on = profile.performance_mode;
+        if ui.checkbox(&mut on, "Performance mode").changed() {
+            let result = self.config.set_performance_mode(&profile.key, on);
+            self.report(result);
+        }
+    }
+
     fn fps_limit(&mut self, ui: &mut Ui, profile: &Profile) {
         let shown_on = profile.base_fps_cap > 0;
         let mut on = shown_on;
@@ -573,7 +587,17 @@ impl App {
         }
     }
 
-    fn global(&mut self, ui: &mut Ui, dll: String) {
+    fn global(&mut self, ui: &mut Ui, dll: String, allow_fp16: bool) {
+        let mut fp16 = allow_fp16;
+        if ui.checkbox(&mut fp16, "FP16 (faster)").changed() {
+            let result = self.config.set_global_allow_fp16(fp16);
+            self.report(result);
+        }
+        hint(
+            ui,
+            "Half precision for frame generation. Restart the game to apply.",
+        );
+
         ui.label("Lossless.dll");
         let typed = text_commit(ui, &mut self.dll_text, &dll, 360.0, "Path to Lossless.dll");
         if let Some(text) = typed.filter(|text| text.trim() != dll.trim()) {
@@ -872,6 +896,7 @@ mod tests {
             adaptive_max_multiplier: 3,
             flow_scale: 0.8,
             base_fps_cap: 0,
+            performance_mode: false,
         }
     }
 

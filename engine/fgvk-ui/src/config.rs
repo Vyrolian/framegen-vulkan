@@ -38,6 +38,8 @@ const DEFAULT_MULTIPLIER: i64 = 2;
 const DEFAULT_TARGET_FPS: i64 = 120;
 const DEFAULT_ADAPTIVE_MAX_MULTIPLIER: i64 = 3;
 const DEFAULT_FLOW_SCALE: f64 = 0.8;
+const DEFAULT_ALLOW_FP16: bool = true;
+const DEFAULT_PERFORMANCE_MODE: bool = false;
 
 /// Chooses the configuration path from an environment lookup.
 ///
@@ -117,6 +119,7 @@ pub struct Profile {
     pub adaptive_max_multiplier: i64,
     pub flow_scale: f64,
     pub base_fps_cap: i64,
+    pub performance_mode: bool,
 }
 
 /// Typed snapshot of the parts of the file the window edits.
@@ -124,6 +127,7 @@ pub struct Profile {
 pub struct Settings {
     pub profiles: Vec<Profile>,
     pub dll: Option<String>,
+    pub allow_fp16: bool,
 }
 
 /// What the window should show for the file right now.
@@ -202,6 +206,7 @@ impl Config {
             Document::Ready(doc) => ConfigView::Ready(Settings {
                 profiles: read_profiles(doc),
                 dll: read_global_dll(doc),
+                allow_fp16: read_global_allow_fp16(doc),
             }),
         }
     }
@@ -312,11 +317,27 @@ impl Config {
         })
     }
 
+    pub fn set_performance_mode(&mut self, key: &ProfileKey, value: bool) -> Result<(), String> {
+        self.edit_profile(key, |table| {
+            set_value(table, "performance_mode", Value::from(value));
+        })
+    }
+
     /// `None` removes the `dll` key. The `[global]` table is created only when a path is set.
     pub fn set_global_dll(&mut self, dll: Option<&str>) -> Result<(), String> {
         let dll = dll.map(str::trim).filter(|dll| !dll.is_empty());
         self.edit(|doc| {
             write_global_dll(doc, dll);
+            Ok(())
+        })
+    }
+
+    /// Writes `[global] allow_fp16`. The `[global]` table is created when the file has none.
+    pub fn set_global_allow_fp16(&mut self, value: bool) -> Result<(), String> {
+        self.edit(|doc| {
+            if let Some(global) = global_mut(doc) {
+                set_value(global, "allow_fp16", Value::from(value));
+            }
             Ok(())
         })
     }
@@ -468,6 +489,10 @@ fn read_profile(index: usize, table: &Table) -> Profile {
         ),
         flow_scale: float_or(table, "flow_scale", DEFAULT_FLOW_SCALE),
         base_fps_cap: int_or(table, "base_fps_cap", 0),
+        performance_mode: table
+            .get("performance_mode")
+            .and_then(Item::as_bool)
+            .unwrap_or(DEFAULT_PERFORMANCE_MODE),
     }
 }
 
@@ -493,6 +518,15 @@ fn read_global_dll(doc: &DocumentMut) -> Option<String> {
         .get("dll")?
         .as_str()
         .map(str::to_owned)
+}
+
+/// A missing table, a missing key and a non-boolean value all read as the renderer default.
+fn read_global_allow_fp16(doc: &DocumentMut) -> bool {
+    doc.get("global")
+        .and_then(Item::as_table_like)
+        .and_then(|global| global.get("allow_fp16"))
+        .and_then(Item::as_bool)
+        .unwrap_or(DEFAULT_ALLOW_FP16)
 }
 
 fn int_or(table: &Table, key: &str, default: i64) -> i64 {
@@ -636,16 +670,18 @@ fn write_active_in(table: &mut dyn TableLike, entries: &[String]) {
     set_value(table, "active_in", Value::Array(array));
 }
 
+/// The `[global]` table, created empty when the file has none.
+fn global_mut(doc: &mut DocumentMut) -> Option<&mut dyn TableLike> {
+    if doc.get("global").is_none() {
+        doc.insert("global", Item::Table(Table::new()));
+    }
+    doc.get_mut("global")?.as_table_like_mut()
+}
+
 fn write_global_dll(doc: &mut DocumentMut, dll: Option<&str>) {
     match dll {
         Some(path) => {
-            if doc.get("global").is_none() {
-                doc.insert("global", Item::Table(Table::new()));
-            }
-            if let Some(global) = doc
-                .get_mut("global")
-                .and_then(|item| item.as_table_like_mut())
-            {
+            if let Some(global) = global_mut(doc) {
                 set_value(global, "dll", Value::from(path));
             }
         }
@@ -902,6 +938,116 @@ mod tests {
             .is_none());
     }
 
+    fn ready(config: &Config) -> Settings {
+        match config.view() {
+            ConfigView::Ready(settings) => settings,
+            other => panic!("expected ready view, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn missing_fp16_and_performance_keys_read_as_defaults() {
+        let doc = parse("version = 2\n\n[[profile]]\nname = \"Bare\"\n");
+        assert!(
+            read_global_allow_fp16(&doc),
+            "missing [global] reads as allowed"
+        );
+        assert!(
+            !profiles(&doc).remove(0).performance_mode,
+            "missing key reads as off"
+        );
+
+        let doc = parse(
+            "version = 2\n\n[global]\nallow_fp16 = \"no\"\n\n[[profile]]\nname = \"Bare\"\nperformance_mode = 1\n",
+        );
+        assert!(read_global_allow_fp16(&doc), "non-boolean reads as allowed");
+        assert!(
+            !profiles(&doc).remove(0).performance_mode,
+            "non-boolean reads as off"
+        );
+    }
+
+    #[test]
+    fn fp16_and_performance_mode_setters_round_trip() {
+        let dir = temp_dir("toggles");
+        let path = dir.join(FILE_NAME);
+        fs::write(&path, BASE).expect("write fixture");
+        let mut config = Config::open(Ok(path.clone()));
+        let alpha = key(0, "Alpha");
+
+        let settings = ready(&config);
+        assert!(settings.allow_fp16, "BASE writes allow_fp16 = true");
+        assert!(!settings.profiles[0].performance_mode);
+
+        config.set_global_allow_fp16(false).expect("fp16 off saves");
+        config
+            .set_performance_mode(&alpha, true)
+            .expect("performance mode on saves");
+        let settings = ready(&config);
+        assert!(!settings.allow_fp16);
+        assert!(settings.profiles[0].performance_mode);
+
+        config.set_global_allow_fp16(true).expect("fp16 on saves");
+        config
+            .set_performance_mode(&alpha, false)
+            .expect("performance mode off saves");
+        let settings = ready(&config);
+        assert!(settings.allow_fp16);
+        assert!(!settings.profiles[0].performance_mode);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn fp16_setter_creates_global_when_the_file_has_none() {
+        let dir = temp_dir("fp16-create");
+        let path = dir.join(FILE_NAME);
+        fs::write(&path, "version = 2\n\n[[profile]]\nname = \"Alpha\"\n").expect("write fixture");
+        let mut config = Config::open(Ok(path.clone()));
+        assert!(ready(&config).allow_fp16, "missing table reads as allowed");
+
+        config.set_global_allow_fp16(false).expect("fp16 off saves");
+        let saved = fs::read_to_string(&path).expect("read back");
+        assert!(saved.contains("[global]\nallow_fp16 = false"), "{saved}");
+        let settings = ready(&config);
+        assert!(!settings.allow_fp16);
+        assert_eq!(settings.profiles[0].key.name, "Alpha", "profile is kept");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn new_edits_keep_comments_unknown_keys_and_order() {
+        let text = "# top comment\nversion = 2\nfuture_root = \"keep\"\n\n[global]\n# fp16 note\nallow_fp16 = true # trailing fp16 note\nfuture_global = 7\n\n[[profile]]\n# profile note\nname = \"Alpha\"\nunknown_profile_key = 42\nperformance_mode = false # trailing performance note\nmultiplier = 3 # trailing note\nactive_in = [\"Game.exe\"]\n";
+        let dir = temp_dir("keep-comments");
+        let path = dir.join(FILE_NAME);
+        fs::write(&path, text).expect("write fixture");
+        let mut config = Config::open(Ok(path.clone()));
+
+        config.set_global_allow_fp16(false).expect("fp16 off saves");
+        config
+            .set_performance_mode(&key(0, "Alpha"), true)
+            .expect("performance mode on saves");
+        let out = fs::read_to_string(&path).expect("read back");
+
+        assert!(out.contains("# top comment"));
+        assert!(out.contains("future_root = \"keep\""));
+        assert!(out.contains("# fp16 note"));
+        assert!(
+            out.contains("allow_fp16 = false # trailing fp16 note"),
+            "{out}"
+        );
+        assert!(out.contains("future_global = 7"));
+        assert!(out.contains("# profile note"));
+        assert!(out.contains("unknown_profile_key = 42"));
+        assert!(
+            out.contains("performance_mode = true # trailing performance note"),
+            "{out}"
+        );
+        assert!(out.contains("multiplier = 3 # trailing note"));
+        assert!(out.find("[global]") < out.find("[[profile]]"));
+        assert!(out.find("name = \"Alpha\"") < out.find("performance_mode = true"));
+        fs::remove_dir_all(&dir).ok();
+    }
+
     #[test]
     fn new_profile_has_the_specified_defaults() {
         let mut doc = default_document();
@@ -1055,6 +1201,8 @@ mod tests {
             "create refuses to replace a file"
         );
         assert!(config.set_global_dll(Some("C:/x.dll")).is_err());
+        assert!(config.set_global_allow_fp16(false).is_err());
+        assert!(config.set_performance_mode(&key(0, "oops"), true).is_err());
 
         assert_eq!(fs::read_to_string(&path).expect("read back"), broken);
         assert!(!dir.join("conf.toml.tmp").exists());
