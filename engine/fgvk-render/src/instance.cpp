@@ -1569,6 +1569,20 @@ SwapchainCreateModification Root::modifySwapchainCreateInfo(const vk::Vulkan& vk
         modification.gamescopePresentRefreshHz = *this->gamescopeRefreshHz;
 
     // Once per swapchain creation: what the layer asks the lower driver for.
+    // present_mode_group lists the modes each present may switch between
+    // (VK_EXT_swapchain_maintenance1); with a group, present_mode is only
+    // the starting mode.
+    std::string presentModeGroup = "-";
+    for (auto* node = static_cast<const VkBaseInStructure*>(createInfo.pNext); node; node = node->pNext) {
+        if (node->sType != VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_MODES_CREATE_INFO_EXT)
+            continue;
+        const auto* group = reinterpret_cast<const VkSwapchainPresentModesCreateInfoEXT*>(node);
+        if (!group->pPresentModes || !group->presentModeCount)
+            continue;
+        presentModeGroup.clear();
+        for (uint32_t m = 0; m < group->presentModeCount; ++m)
+            presentModeGroup += (m ? "," : "") + std::to_string(static_cast<int64_t>(group->pPresentModes[m]));
+    }
     std::cerr << "framegen-vulkan: lower swapchain request: role=" << layerRoleName
               << " present_mode=" << static_cast<int>(createInfo.presentMode)
               << " application_present_mode=" << static_cast<int>(applicationPresentMode)
@@ -1576,6 +1590,7 @@ SwapchainCreateModification Root::modifySwapchainCreateInfo(const vk::Vulkan& vk
               << " application_min_images=" << applicationMinImages
               << " surface_min_images=" << caps.minImageCount
               << " surface_max_images=" << caps.maxImageCount
+              << " present_mode_group=" << presentModeGroup
               << '\n';
 
     finish();

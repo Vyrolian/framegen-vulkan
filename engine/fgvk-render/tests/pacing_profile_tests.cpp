@@ -242,12 +242,23 @@ void detailedTrace() {
     logPacingOutput(77, {}, sample);
 }
 
+static_assert(PacingProfile::presentModeSlot(-1) == 0 &&
+    PacingProfile::presentModeSlot(VK_PRESENT_MODE_IMMEDIATE_KHR) == 1 &&
+    PacingProfile::presentModeSlot(VK_PRESENT_MODE_FIFO_KHR) == 3 &&
+    PacingProfile::presentModeSlot(1000361000) == 5 &&
+    PacingProfile::presentModeSlot(VK_PRESENT_MODE_MAX_ENUM_KHR) == 6,
+    "per-present mode slots must match presentModeSlotNames");
+
 void emit() {
     PacingProfile profile;
     const auto start = Clock::time_point{10s};
     profile.beginSource(start);
     profile.policy(true, 60, true);
     profile.settings(true, false, 2, 60);
+    // VKD3D-Proton: FIFO-created swapchain, IMMEDIATE per present.
+    profile.presentModes(VK_PRESENT_MODE_IMMEDIATE_KHR, VK_PRESENT_MODE_IMMEDIATE_KHR, VK_PRESENT_MODE_FIFO_KHR);
+    profile.generatedPresentMode(VK_PRESENT_MODE_IMMEDIATE_KHR);
+    profile.generatedPresentMode(-1);
     profile.wait(PacingProfile::SourceCapWait, 3ms);
     profile.wait(PacingProfile::ReadinessWait, 2ms);
     profile.wait(PacingProfile::OutputWait, 4ms);
@@ -511,6 +522,8 @@ int main() {
         "setup tracing must remain full-trace-only");
     expect(output.find("operation=pacing-profile version=2") != std::string::npos &&
         output.find("frame_generation_enabled=1 adaptive=0 configured_multiplier=2 configured_base_cap_fps=60") != std::string::npos &&
+        output.find(" swapchain_present_mode=2 application_present_modes=immediate:1 "
+            "real_present_modes=immediate:1 generated_present_modes=none:1,immediate:1 ") != std::string::npos &&
         output.find("gpu_requested=1") != std::string::npos &&
         output.find("gpu_span_mean_ms=12") != std::string::npos &&
         output.find("worst_source_interval_ms=60") != std::string::npos &&

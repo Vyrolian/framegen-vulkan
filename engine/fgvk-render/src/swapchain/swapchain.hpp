@@ -630,6 +630,8 @@ namespace fgvk::layer {
         // inferred again from the current SDR/HDR colour pipeline.
         bool privateOrderedTransport{false};
         VkPresentModeKHR currentPresentMode{VK_PRESENT_MODE_FIFO_KHR};
+        // Last per-present modes printed to stderr (-2 = nothing printed yet).
+        int64_t loggedApplicationPresentMode{-2}, loggedRealPresentMode{-2};
         std::optional<uint32_t> gamescopeRefreshHz;
         GamescopePresentationFeedback gamescopePresentationFeedback;
         FixedRefreshBudget fixedRefreshBudget;

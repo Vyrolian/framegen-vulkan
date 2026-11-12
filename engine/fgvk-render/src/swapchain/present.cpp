@@ -308,6 +308,30 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
                 this->currentPresentMode = modes->pPresentModes[0];
         }
     }
+    {
+        // -1: no per-present mode, the create-time mode applies.
+        const auto chainMode = [](const void* chain) -> int64_t {
+            const auto found = present_diagnostics::applicationPresentMode(
+                VK_PRESENT_MODE_MAX_ENUM_KHR, chain);
+            if (!found.dynamic) return -1;
+            return found.mode < 0 ? VK_PRESENT_MODE_MAX_ENUM_KHR : found.mode;
+        };
+        const int64_t applicationMode = chainMode(nextChain);
+        const int64_t realMode = chainMode(lowerNextChain);
+        if (this->pacingProfile)
+            this->pacingProfile->presentModes(applicationMode, realMode, this->info.presentMode);
+        if (applicationMode != this->loggedApplicationPresentMode ||
+                realMode != this->loggedRealPresentMode) {
+            this->loggedApplicationPresentMode = applicationMode;
+            this->loggedRealPresentMode = realMode;
+            std::cerr << "framegen-vulkan: per-present mode: context=" << this->diagnosticsState.contextId
+                      << " swapchain_present_mode=" << static_cast<int64_t>(this->info.presentMode)
+                      << " application_present_mode=" << applicationMode
+                      << " real_present_mode=" << realMode
+                      << " tracked_present_mode=" << static_cast<int64_t>(this->currentPresentMode)
+                      << " (-1 = none, create-time mode applies)\n";
+        }
+    }
     const bool directUnthrottled = directUnthrottledPresentation(
         this->gamescopeDetected, this->currentPresentMode);
 #if defined(VK_EXT_present_timing) && defined(VK_KHR_present_id2)

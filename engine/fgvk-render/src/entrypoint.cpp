@@ -3844,8 +3844,7 @@ namespace {
                 result = VK_ERROR_UNKNOWN;
             }
 
-            if (result != VK_SUCCESS && info->pResults)
-                info->pResults[i] = result;
+            recordPresentResult(*info, i, result);
 
             if (result == VK_ERROR_OUT_OF_DATE_KHR)
                 swapchainOutOfDate = true;

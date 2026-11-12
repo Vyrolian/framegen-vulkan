@@ -168,6 +168,7 @@ namespace fgvk::layer::present_diagnostics {
         // Worker-deferred generated outputs that presented no image, by cause.
         enum GeneratedSkip : size_t { SkipReadiness, SkipExpedite, SkipGiveUp, SkipAcquire,
             SkipOther, GeneratedSkipCount };
+        static constexpr size_t PresentModeSlotCount = 7;
         struct OutputObservation {
             Clock::time_point scheduled{};
             uint32_t imageIndex{UINT32_MAX};
@@ -275,7 +276,35 @@ namespace fgvk::layer::present_diagnostics {
             bool frameGenerationEnabled{}, adaptive{};
             size_t configuredMultiplier{};
             double configuredCapFps{};
+            // Per-present VkSwapchainPresentModeInfoEXT mode, by present
+            // kind (slots in presentModeSlotNames), and the lower swapchain's
+            // create-time mode, which applies to presents without one.
+            std::array<size_t, PresentModeSlotCount> applicationModes{}, realModes{}, generatedModes{};
+            int64_t swapchainPresentMode{-1};
         };
+        static constexpr std::array<std::string_view, PresentModeSlotCount> presentModeSlotNames{
+            "none", "immediate", "mailbox", "fifo", "fifo_relaxed", "fifo_latest_ready", "other"};
+        // -1 means the present carried no per-present mode.
+        [[nodiscard]] static constexpr size_t presentModeSlot(int64_t mode) {
+            switch (mode) {
+            case -1: return 0;
+            case VK_PRESENT_MODE_IMMEDIATE_KHR: return 1;
+            case VK_PRESENT_MODE_MAILBOX_KHR: return 2;
+            case VK_PRESENT_MODE_FIFO_KHR: return 3;
+            case VK_PRESENT_MODE_FIFO_RELAXED_KHR: return 4;
+            case 1000361000: return 5; // VK_PRESENT_MODE_FIFO_LATEST_READY_KHR
+            default: return 6;
+            }
+        }
+        // One call per application present: the mode in the caller's chain
+        // and in the chain framegen-vulkan forwards for the real image.
+        void presentModes(int64_t application, int64_t real, VkPresentModeKHR swapchainMode) {
+            ++window.applicationModes[presentModeSlot(application)];
+            ++window.realModes[presentModeSlot(real)];
+            window.swapchainPresentMode = static_cast<int64_t>(swapchainMode);
+        }
+        // One call per generated output handed to a lower present.
+        void generatedPresentMode(int64_t mode) { ++window.generatedModes[presentModeSlot(mode)]; }
         void beginSource(Clock::time_point now) {
             if (!windowStarted) windowStarted = now;
             if (sourceStarted) window.metrics[SourceInterval].add(now - *sourceStarted);

@@ -51,6 +51,11 @@ VkResult Swapchain::presentGeneratedFrames(
     std::optional<VkResult> deferredAcquireError;
     const GeneratedPresentPNextChain generatedChain(
         this->gamescopeDetected ? nullptr : invocation.nextChain);
+    const int64_t generatedMode = [&]() -> int64_t {
+        const auto found = present_diagnostics::applicationPresentMode(
+            VK_PRESENT_MODE_MAX_ENUM_KHR, generatedChain.head());
+        return found.dynamic ? found.mode : -1;
+    }();
     const bool deferredFirst = invocation.deferredOutputEligible && invocation.pacedOutputs;
     bool deferredTail = invocation.deferredOutputEligible && invocation.pacedOutputs &&
         (deferredFirst || plan.scheduledGeneratedFrames.size() > 1) &&
@@ -210,6 +215,7 @@ VkResult Swapchain::presentGeneratedFrames(
                     invocation.pacedOutputs->at(i), copy,
                     DeferredPresent::OutputIdentity{this->frameState.backendFrameIndex - 1, plan.scheduledGeneratedFrames[i]})) {
                 this->deferredOutputQueuedThisFrame = true;
+                if (this->pacingProfile) this->pacingProfile->generatedPresentMode(generatedMode);
                 slot.inFlight = true;
                 if (slot.outputQueries && this->pacingProfile) {
                     // The worker's pacing-profile-output record carries this batch's source, which
@@ -630,6 +636,7 @@ VkResult Swapchain::presentGeneratedFrames(
             generatedSubmitStarted, std::nullopt, i
         );
 
+        if (this->pacingProfile) this->pacingProfile->generatedPresentMode(generatedMode);
         const VkPresentInfoKHR presentInfo{
             .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
             .pNext = generatedChain.head(),

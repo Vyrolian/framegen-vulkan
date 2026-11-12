@@ -696,6 +696,22 @@ void formatPacingWindowBody(const PacingWindowPayload& payload, const PacingProf
          << " adaptive=" << window.adaptive
          << " configured_multiplier=" << window.configuredMultiplier
          << " configured_base_cap_fps=" << window.configuredCapFps;
+    // What each present actually asked for: the per-present mode overrides
+    // the swapchain's create-time mode (present_mode is the layer's tracking).
+    line << " swapchain_present_mode=" << window.swapchainPresentMode;
+    const auto modes = [&](std::string_view key, const auto& counts) {
+        line << ' ' << key << '=';
+        bool any = false;
+        for (size_t i = 0; i < counts.size(); ++i) {
+            if (!counts[i]) continue;
+            line << (any ? "," : "") << PacingProfile::presentModeSlotNames[i] << ':' << counts[i];
+            any = true;
+        }
+        if (!any) line << '-';
+    };
+    modes("application_present_modes", window.applicationModes);
+    modes("real_present_modes", window.realModes);
+    modes("generated_present_modes", window.generatedModes);
     line << " gpu_requested=" << pacingGpuProfileEnabled();
     constexpr std::array<std::string_view, PacingProfile::OutputTimingCount> timingNames{
         "driver", "application", "ext", "google", "bridge"};

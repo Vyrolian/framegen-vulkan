@@ -414,6 +414,17 @@ namespace fgvk::layer {
         return result;
     }
 
+    /// vkQueuePresentKHR writes every swapchain's result, VK_SUCCESS included.
+    /// Callers may pass uninitialised storage: VKD3D-Proton passes a stack
+    /// VkResult and treats a non-success value there as the present's
+    /// result. Skipping VK_SUCCESS leaves an earlier OUT_OF_DATE in place, so
+    /// the game recreates its swapchain on every present.
+    inline void recordPresentResult(const VkPresentInfoKHR& info,
+            const size_t index, const VkResult result) {
+        if (info.pResults && index < info.swapchainCount)
+            info.pResults[index] = result;
+    }
+
     /// A non-null upstream fence for this swapchain is the caller's Vulkan
     /// lifetime proof for the final lower present. framegen-vulkan never borrows, resets,
     /// or replaces that fence; it only preserves the chain and records that

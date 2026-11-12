@@ -140,6 +140,24 @@ namespace {
         expect(completeRejectedPresent(rejectSubmit, VK_NULL_HANDLE, present,
             VK_ERROR_OUT_OF_DATE_KHR) == VK_ERROR_OUT_OF_DATE_KHR && submitCalls == 0,
             "empty rejected present must not enqueue unnecessary work");
+    {
+        // VKD3D-Proton passes uninitialised stack storage; a stale OUT_OF_DATE
+        // from an earlier present must be overwritten by a later success.
+        std::array<VkResult, 2> results{VK_ERROR_OUT_OF_DATE_KHR, VK_ERROR_OUT_OF_DATE_KHR};
+        const VkPresentInfoKHR batch{
+            .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+            .swapchainCount = 2, .pResults = results.data(),
+        };
+        recordPresentResult(batch, 0, VK_SUCCESS);
+        recordPresentResult(batch, 1, VK_SUBOPTIMAL_KHR);
+        expect(results[0] == VK_SUCCESS && results[1] == VK_SUBOPTIMAL_KHR,
+            "every per-swapchain present result, success included, must be written");
+        recordPresentResult(batch, 2, VK_ERROR_DEVICE_LOST);
+        expect(results[0] == VK_SUCCESS && results[1] == VK_SUBOPTIMAL_KHR,
+            "an index past swapchainCount must not write");
+        const VkPresentInfoKHR noResults{.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, .swapchainCount = 1};
+        recordPresentResult(noResults, 0, VK_SUCCESS);
+    }
     }
     VkResult VKAPI_CALL queryTiming(VkDevice, VkSwapchainKHR, uint32_t* count,
             VkPastPresentationTimingGOOGLE* output) {
