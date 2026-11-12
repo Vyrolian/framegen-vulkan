@@ -304,8 +304,13 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
     for (auto* node = static_cast<const VkBaseInStructure*>(lowerNextChain); node; node = node->pNext) {
         if (node->sType == VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_MODE_INFO_EXT) {
             const auto* modes = reinterpret_cast<const VkSwapchainPresentModeInfoEXT*>(node);
-            if (modes->swapchainCount == 1 && modes->pPresentModes)
+            if (modes->swapchainCount == 1 && modes->pPresentModes &&
+                    this->currentPresentMode != modes->pPresentModes[0]) {
+                // P1: a per-present mode change (in-game VSync toggle) starts a new
+                // output clock; batches already admitted keep the mode they were sent with.
                 this->currentPresentMode = modes->pPresentModes[0];
+                this->realFramePacer.resetOutputs();
+            }
         }
     }
     {
@@ -496,8 +501,7 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
     // Transport half of worker admission; the pacing half is decided below.
     const bool detachedOutputTransport =
         !(this->deferredPresent && this->deferredPresent->serialWaitObserved()) &&
-        (directUnthrottled ? this->configuredFixedGeneratedFrames == 1 :
-            this->currentPresentMode == VK_PRESENT_MODE_FIFO_KHR) &&
+        detachedOutputModeAdmits(directUnthrottled, this->currentPresentMode) &&
         !this->spatialScaler && !this->gamescopeDetected &&
         DeferredPresent::supportsChain(lowerNextChain) &&
         this->info.deferredPresentQueue && queue == vk.queue();

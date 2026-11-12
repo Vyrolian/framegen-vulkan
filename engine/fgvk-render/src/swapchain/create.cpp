@@ -87,20 +87,27 @@ bool layer::context_ModifySwapchainCreateInfo(const ls::GameConf& profile,
         !presentationEnvironment.hdrExposureDisabled &&
         (colorPipeline.hdr ||
             colorPipeline.encoding == backend::FrameEncoding::SdrHighPrecision);
-    const bool orderedFrameGenerationTransport =
+    // P1: the application's per-present mode reaches the lower driver. A create
+    // chain whose present-mode group can switch to an unthrottled mode (VKD3D-Proton
+    // creates FIFO with {FIFO, IMMEDIATE} and sends IMMEDIATE per present with VSync
+    // off) keeps its group and per-present nodes instead of the ordered FIFO transport.
+    const auto group = presentModeGroup(createInfo.pNext, gamescopeDetected);
+    const bool orderedSdrCandidate =
         frameGenerationProvisioned &&
         !directUnthrottledPresentation(gamescopeDetected, createInfo.presentMode) &&
         selectPresentationTransport(
             gamescopeDetected, hdrCapableSwapchain,
             presentationEnvironment
         ) == PresentationTransport::OrderedSdr;
+    const bool orderedFrameGenerationTransport = orderedSdrCandidate && !group.unthrottled;
 
     return applySwapchainCreateProvisioning(
         profile, maxImages, createInfo,
         frameGenerationProvisioned, spatialScalingActive,
         orderedFrameGenerationTransport,
         profile.swapchain_image_count_compatibility,
-        gamescopeDetected ? 0 : surfaceMinImages
+        gamescopeDetected ? 0 : surfaceMinImages,
+        orderedSdrCandidate && group.unthrottled && group.fifo
     );
 }
 

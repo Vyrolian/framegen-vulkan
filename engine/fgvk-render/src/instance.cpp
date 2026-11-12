@@ -1591,6 +1591,7 @@ SwapchainCreateModification Root::modifySwapchainCreateInfo(const vk::Vulkan& vk
               << " surface_min_images=" << caps.minImageCount
               << " surface_max_images=" << caps.maxImageCount
               << " present_mode_group=" << presentModeGroup
+              << " transport=" << (modification.privateOrderedTransport ? "ordered" : "direct")
               << '\n';
 
     finish();

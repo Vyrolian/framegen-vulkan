@@ -24,6 +24,37 @@ namespace fgvk::layer {
              mode == VK_PRESENT_MODE_FIFO_LATEST_READY_KHR);
     }
 
+    /// The application's VK_EXT_swapchain_maintenance1 present-mode group (the modes
+    /// each present may switch between), read from a swapchain create chain.
+    struct PresentModeGroup {
+        bool unthrottled{false};
+        bool fifo{false};
+    };
+
+    [[nodiscard]] inline PresentModeGroup presentModeGroup(const void* createChain,
+            const bool gamescopeDetected) noexcept {
+        PresentModeGroup group{};
+        for (const auto* node = static_cast<const VkBaseInStructure*>(createChain); node; node = node->pNext) {
+            if (node->sType != VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_MODES_CREATE_INFO_EXT)
+                continue;
+            const auto* modes = reinterpret_cast<const VkSwapchainPresentModesCreateInfoEXT*>(node);
+            for (uint32_t i = 0; modes->pPresentModes && i < modes->presentModeCount; ++i) {
+                const auto mode = modes->pPresentModes[i];
+                group.unthrottled |= directUnthrottledPresentation(gamescopeDetected, mode);
+                group.fifo |= mode == VK_PRESENT_MODE_FIFO_KHR || mode == VK_PRESENT_MODE_FIFO_RELAXED_KHR;
+            }
+        }
+        return group;
+    }
+
+    /// Worker admission by the mode actually sent on this present: FIFO and the
+    /// unthrottled modes admit any Fixed multiplier (P1; the old IMMEDIATE/MAILBOX
+    /// 2x limit had no recorded reason and the worker is mode-agnostic).
+    [[nodiscard]] constexpr bool detachedOutputModeAdmits(
+            const bool directUnthrottled, const VkPresentModeKHR mode) noexcept {
+        return directUnthrottled || mode == VK_PRESENT_MODE_FIFO_KHR;
+    }
+
     /// Native FIFO supports CPU output spacing without taking a Vulkan timing
     /// namespace. Source-cap and ready-output policies decide whether existing
     /// caller timing permits that spacing.
@@ -125,7 +156,8 @@ namespace fgvk::layer {
             const bool spatialScalingActive,
             const bool orderedFrameGenerationTransport,
             const bool swapchainImageCountCompatibility = false,
-            const uint32_t surfaceMinImages = 0) {
+            const uint32_t surfaceMinImages = 0,
+            const bool fifoGroupRelief = false) {
         if (!frameGenerationProvisioned && !spatialScalingActive)
             return false;
 
@@ -146,12 +178,15 @@ namespace fgvk::layer {
                 // pool, while the replacement-prime and native-first paths
                 // protect its real frame without double-counting it. An enabled
                 // 1.0 scaler remains inactive and must preserve FG-only relief.
+                // fifoGroupRelief: a direct-transport swapchain whose present-mode
+                // group includes FIFO (in-game VSync can switch to it per present)
+                // keeps the same relief image.
                 if (!swapchainImageCountCompatibility) {
                     const bool combinedScalingTopology =
                         spatialScalingActive ||
                         ls::spatialScalingMayActivate(profile);
                     const uint64_t orderedFrameGenerationReliefImages =
-                        orderedFrameGenerationTransport &&
+                        (orderedFrameGenerationTransport || fifoGroupRelief) &&
                             !combinedScalingTopology
                         ? 1 : 0;
                     createInfo.minImageCount = static_cast<uint32_t>(std::min(

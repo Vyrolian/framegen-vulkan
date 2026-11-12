@@ -6,6 +6,7 @@
 #include "swapchain/create_policy.hpp"
 #include "pnext_chain.hpp"
 
+#include <array>
 #include <bit>
 #include <cstdlib>
 #include <iostream>
@@ -2097,6 +2098,49 @@ int main() {
         adaptiveProfile.adaptive = true;
         expect(provision(adaptiveProfile, 2, VK_PRESENT_MODE_IMMEDIATE_KHR, false, false, 2, 8) == 3,
             "Adaptive keeps the application-derived count");
+
+        // P1: VKD3D-Proton's create chain, FIFO with the group {FIFO, IMMEDIATE}.
+        const std::array vkd3dModes{VK_PRESENT_MODE_FIFO_KHR, VK_PRESENT_MODE_IMMEDIATE_KHR};
+        const VkSwapchainPresentModesCreateInfoEXT vkd3dGroup{
+            .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_MODES_CREATE_INFO_EXT,
+            .presentModeCount = static_cast<uint32_t>(vkd3dModes.size()),
+            .pPresentModes = vkd3dModes.data(),
+        };
+        const auto group = presentModeGroup(&vkd3dGroup, false);
+        expect(group.unthrottled && group.fifo && !presentModeGroup(&vkd3dGroup, true).unthrottled &&
+                !presentModeGroup(nullptr, false).unthrottled,
+            "A {FIFO, IMMEDIATE} group is unthrottled outside Gamescope");
+        const std::array fifoOnlyModes{VK_PRESENT_MODE_FIFO_KHR, VK_PRESENT_MODE_FIFO_RELAXED_KHR};
+        const VkSwapchainPresentModesCreateInfoEXT fifoOnlyGroup{
+            .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_MODES_CREATE_INFO_EXT,
+            .presentModeCount = static_cast<uint32_t>(fifoOnlyModes.size()),
+            .pPresentModes = fifoOnlyModes.data(),
+        };
+        expect(!presentModeGroup(&fifoOnlyGroup, false).unthrottled &&
+                presentModeGroup(&fifoOnlyGroup, false).fifo,
+            "A FIFO-only group keeps the ordered transport");
+        VkSwapchainCreateInfoKHR direct{
+            .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
+            .pNext = &vkd3dGroup,
+            .minImageCount = 3,
+            .imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+            .presentMode = VK_PRESENT_MODE_FIFO_KHR,
+        };
+        expect(!applySwapchainCreateProvisioning(doubleProfile, 8, direct, true, false, false, false, 2,
+                    group.unthrottled && group.fifo) &&
+                direct.minImageCount == 5 && direct.presentMode == VK_PRESENT_MODE_FIFO_KHR &&
+                direct.pNext == &vkd3dGroup,
+            "A direct {FIFO, IMMEDIATE} swapchain keeps its chain and mode and the FIFO relief image (5 at 2x)");
+        auto quadProfile = doubleProfile;
+        quadProfile.multiplier = 4;
+        quadProfile.adaptive_max_multiplier = 4;
+        direct.minImageCount = 3;
+        static_cast<void>(applySwapchainCreateProvisioning(quadProfile, 8, direct, true, false, false, false, 2, true));
+        expect(direct.minImageCount == 7, "A direct {FIFO, IMMEDIATE} swapchain at 4x matches ordered FIFO (7)");
+        expect(detachedOutputModeAdmits(true, VK_PRESENT_MODE_IMMEDIATE_KHR) &&
+                detachedOutputModeAdmits(false, VK_PRESENT_MODE_FIFO_KHR) &&
+                !detachedOutputModeAdmits(false, VK_PRESENT_MODE_FIFO_RELAXED_KHR),
+            "The worker admits FIFO and unthrottled presents at any multiplier");
     }
 
     VkSwapchainCreateInfoKHR compatibleFrameGenerationOnlyCreate{
