@@ -974,11 +974,14 @@ private:
             for (size_t i = 0; i < count; ++i) {
                 const auto& sample = samples[i];
                 if (sample.context != context) continue;
+                const auto heldBefore = realOffsetController.held;
                 if (realOffsetController.observe(sample.generated, sample.source,
                         std::chrono::nanoseconds{sample.gpuNs})) {
                     realOffsetAutoNs.store(realOffsetController.offset.count(), std::memory_order_relaxed);
                     realOffsetAutoSamples.fetch_add(1, std::memory_order_relaxed);
                 }
+                if (realOffsetController.held != heldBefore)
+                    realOffsetAutoHeld.fetch_add(realOffsetController.held - heldBefore, std::memory_order_relaxed);
             }
             if (count < samples.size()) return;
         }
@@ -1394,7 +1397,9 @@ private:
                     Clock::now() - previousFinished < ready.outputInterval)
                 deadline = std::max(deadline, previousScheduled + ready.outputInterval -
                     (marginController.below ? Clock::duration{} : ready.outputInterval / 16));
-            Clock::duration appliedRealOffset{};
+            Clock::duration appliedRealOffset{}, commandedRealOffset{};
+            Clock::time_point unmovedRealDeadline{};
+            bool realOffsetTail{};
             if (copyTail) {
                 // The real after a generated output keeps full spacing, but a release limit
                 // may pull it in: no later than latestOutput, and at least a quarter output
@@ -1403,16 +1408,23 @@ private:
                 // each image at least one refresh.
                 deadline = std::max(deadline,
                     batch.aggregate.calls[index - 1].started + ready.outputInterval);
-                // S7: the optional real offset, never closer than a quarter interval.
+                const auto generatedStarted = batch.aggregate.calls[index - 1].started;
+                const auto limitTail = [&](const Clock::time_point at) {
+                    return ready.latestOutput == Clock::time_point::max() ? at
+                        : std::min(at, std::max(ready.latestOutput, generatedStarted + ready.outputInterval / 4));
+                };
+                // S7: the optional real offset, never closer than a quarter interval. S8d: the
+                // applied move is measured after the release limit, and again after the present.
                 if (ready.overlap && batch.jobs[index - 1].copy.internalImages) {
-                    const auto moved = realDeadlineWithOffset(deadline,
-                        batch.aggregate.calls[index - 1].started, ready.outputInterval, currentRealOffset());
-                    appliedRealOffset = moved - deadline;
-                    deadline = moved;
+                    commandedRealOffset = currentRealOffset();
+                    unmovedRealDeadline = limitTail(deadline);
+                    deadline = limitTail(realDeadlineWithOffset(deadline,
+                        generatedStarted, ready.outputInterval, commandedRealOffset));
+                    appliedRealOffset = deadline - unmovedRealDeadline;
+                    realOffsetTail = true;
+                } else {
+                    deadline = limitTail(deadline);
                 }
-                if (ready.latestOutput != Clock::time_point::max())
-                    deadline = std::min(deadline, std::max(ready.latestOutput,
-                        batch.aggregate.calls[index - 1].started + ready.outputInterval / 4));
             } else {
                 deadline = std::min(deadline, ready.latestOutput);
             }
@@ -1793,7 +1805,13 @@ private:
                 previousFinished = result.finished;
                 // An early (expedited) output anchors the next batch at its actual start; late wakes keep the schedule.
                 // S7: a real moved by the offset anchors the next batch where it would have been.
-                previousScheduled = std::min(result.scheduled, result.started) - appliedRealOffset;
+                // S8d: only the part of the move that took effect is taken back.
+                const auto effectiveRealOffset = realOffsetTail
+                    ? realOffsetEffective(appliedRealOffset, unmovedRealDeadline, result.scheduled, result.started)
+                    : appliedRealOffset;
+                previousScheduled = std::min(result.scheduled, result.started) - effectiveRealOffset;
+                if (realOffsetTail)
+                    realOffsetController.limited = realOffsetLimited(commandedRealOffset, effectiveRealOffset);
                 havePrevious = true;
             }
             retireFinishedHeadsLocked();

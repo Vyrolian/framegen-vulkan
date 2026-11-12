@@ -3163,6 +3163,64 @@ static_assert([] {
     }
     return c.offset == C::limit;
 }());
+// S8d: a real the join expedite started before its moved deadline took only part of the move.
+namespace real_offset_checks {
+static_assert(realOffsetEffective(us(1000), at(4300), at(5300), at(4600)) == us(300));
+static_assert(realOffsetEffective(us(1000), at(4300), at(5300), at(4000)) == us(0));     // before unmoved
+static_assert(realOffsetEffective(us(1000), at(4300), at(5300), at(5400)) == us(1000));  // late wake
+static_assert(realOffsetEffective(us(-500), at(4300), at(3800), at(3000)) == us(-500));  // earlier: kept
+static_assert(realOffsetEffective(us(0), at(4300), at(4300), at(4000)) == us(0));
+static_assert(realOffsetLimited(us(1000), us(300)) == 1);
+static_assert(realOffsetLimited(us(1000), us(960)) == 0);
+static_assert(realOffsetLimited(us(-600), us(-200)) == -1);
+static_assert(realOffsetLimited(us(-600), us(-600)) == 0);
+static_assert(realOffsetLimited(us(0), us(0)) == 0);
+}
+// S8d: while limited one way, samples pushing that way are held; the other way integrates.
+static_assert([] {
+    using namespace std::chrono_literals;
+    using C = RealOffsetController;
+    C c;
+    const auto sample = [&](int k, std::chrono::nanoseconds error) {
+        const auto previous = 13ms * k;
+        (void)c.observe(false, static_cast<uint64_t>(k), previous);
+        (void)c.observe(true, static_cast<uint64_t>(k + 1), previous + 6500us + error);
+        return c.observe(false, static_cast<uint64_t>(k + 1), previous + 13ms);
+    };
+    if (!sample(1, 640us) || c.offset != C::Duration{10us}) return false;
+    c.limited = 1;
+    for (int k = 3; k < 300; k += 2)
+        if (sample(k, 640us)) return false;                          // held, never accepted
+    if (c.offset != C::Duration{10us} || c.held != 149 || c.accepted != 1) return false;
+    if (!sample(301, -640us) || c.offset != 0ns) return false;       // opposite sign integrates
+    c.limited = -1;
+    if (sample(303, -640us) || !sample(305, 640us)) return false;
+    c.forget();
+    if (c.limited != -1) return false;                               // forget keeps it
+    c.limited = 0;
+    return sample(307, 640us) && c.offset == C::Duration{20us} && c.held == 150;
+}());
+// S8d: the cap-bound windup. The real cannot start later than `reach` after its unmoved slot
+// (the next source present joins), so the error stays at `bias - reach` once the offset passes
+// `reach`. With the hold the offset stops at the reach; without it, it runs to the limit.
+constexpr std::chrono::nanoseconds realOffsetWindup(bool hold) {
+    using namespace std::chrono_literals;
+    RealOffsetController c;
+    constexpr std::chrono::nanoseconds period = 8600us, bias = 650us, reach = 200us;
+    for (int k = 1; k <= 600; ++k) {
+        const auto effective = std::min(c.offset, reach);
+        const auto previous = period * k;
+        (void)c.observe(false, static_cast<uint64_t>(k), previous + effective);
+        (void)c.observe(true, static_cast<uint64_t>(k + 1), previous + period / 2 + bias);
+        (void)c.observe(false, static_cast<uint64_t>(k + 1), previous + period + effective);
+        if (hold) c.limited = realOffsetLimited(c.offset, effective);
+        c.forget();
+    }
+    return c.offset;
+}
+static_assert(realOffsetWindup(false) == RealOffsetController::limit);
+static_assert(realOffsetWindup(true) <= std::chrono::microseconds{270});
+static_assert(realOffsetWindup(true) >= std::chrono::microseconds{200});
 }
 
 int main(int argc, char** argv) {

@@ -741,7 +741,8 @@ void formatPacingWindowBody(const PacingWindowPayload& payload, const PacingProf
     if (fgvk::layer::realOffsetAuto()) {
         line << " real_offset_us=" << fgvk::layer::realOffsetAutoNs.load(std::memory_order_relaxed) / 1000
              << " real_offset_auto=1 real_offset_samples="
-             << fgvk::layer::realOffsetAutoSamples.load(std::memory_order_relaxed);
+             << fgvk::layer::realOffsetAutoSamples.load(std::memory_order_relaxed)
+             << " real_offset_held=" << fgvk::layer::realOffsetAutoHeld.load(std::memory_order_relaxed);
     } else {
         line << " real_offset_us=" << std::chrono::duration_cast<std::chrono::microseconds>(fgvk::layer::realOffset()).count();
     }

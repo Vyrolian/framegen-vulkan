@@ -82,6 +82,24 @@ template <typename TimePoint, typename Duration>
     return offset == Duration{} ? deadline
         : std::max(deadline + offset, std::min(deadline, generatedStarted + interval / 4));
 }
+// S8d: the part of a real's move that took effect. A join expedite or a late wake can
+// start the real before its moved deadline; a later move counts only up to the actual
+// start, an earlier one (negative) cannot be undone by starting even earlier.
+template <typename TimePoint, typename Duration>
+[[nodiscard]] constexpr Duration realOffsetEffective(const Duration applied, const TimePoint unmoved,
+        const TimePoint scheduled, const TimePoint started) noexcept {
+    return applied > Duration{}
+        ? std::clamp(Duration{std::min(started, scheduled) - unmoved}, Duration{}, applied) : applied;
+}
+// S8d: the sign of the commanded offset when the real did not get it (by more than 50 us),
+// else 0. The automatic controller does not integrate further in that direction.
+template <typename Duration>
+[[nodiscard]] constexpr int realOffsetLimited(const Duration commanded, const Duration effective) noexcept {
+    constexpr Duration tolerance = std::chrono::microseconds{50};
+    if (commanded > Duration{}) return effective < commanded - tolerance ? 1 : 0;
+    if (commanded < Duration{}) return effective > commanded + tolerance ? -1 : 0;
+    return 0;
+}
 [[nodiscard]] inline std::chrono::steady_clock::duration realOffset() noexcept {
     static const auto offset = [] {
         const char* text = std::getenv("FGVK_REAL_OFFSET_US");
@@ -120,11 +138,14 @@ inline std::atomic<bool> realOffsetAutoConfigured{false};
 // S8b diagnostics only: the last worker's current auto offset and accepted samples.
 inline std::atomic<int64_t> realOffsetAutoNs{0};
 inline std::atomic<uint64_t> realOffsetAutoSamples{0};
+inline std::atomic<uint64_t> realOffsetAutoHeld{0};
 
 /// S8b: integrates the generated output's distance from the midpoint of its two reals,
 /// measured on the private queue's GPU clock, into the real offset. A positive error
 /// (generated late) moves the reals later. Only the mean is corrected: the per-frame
-/// GPU-turn wait is decided after the present call. Worker thread only.
+/// GPU-turn wait is decided after the present call. Worker thread only. S8d: while the
+/// last real could not take the offset (`limited`, its sign), samples pushing further that
+/// way are held: counted in `held`, not integrated, not accepted.
 struct RealOffsetController {
     using Duration = std::chrono::nanoseconds;
     static constexpr Duration limit = std::chrono::microseconds{1000};
@@ -136,6 +157,8 @@ struct RealOffsetController {
     Duration offset{};
     Duration lastError{};
     uint64_t accepted{};
+    uint64_t held{};
+    int limited{};
     bool haveReal{}, haveGenerated{};
     uint64_t realSource{}, generatedSource{};
     Duration realAt{}, generatedAt{};
@@ -155,11 +178,15 @@ struct RealOffsetController {
             if (step >= minStep && step <= maxStep) {
                 const auto error = generatedAt - (realAt + step / 2);
                 if (error <= errorReject && error >= -errorReject) {
-                    offset = std::clamp(offset + std::clamp(error, -errorClamp, errorClamp) / gain,
-                        -limit, limit);
                     lastError = error;
-                    ++accepted;
-                    used = true;
+                    if ((limited > 0 && error > Duration{}) || (limited < 0 && error < Duration{})) {
+                        ++held;
+                    } else {
+                        offset = std::clamp(offset + std::clamp(error, -errorClamp, errorClamp) / gain,
+                            -limit, limit);
+                        ++accepted;
+                        used = true;
+                    }
                 }
             }
         }
@@ -169,7 +196,7 @@ struct RealOffsetController {
         haveGenerated = false;
         return used;
     }
-    /// Drops the pending markers; the offset is kept.
+    /// Drops the pending markers; the offset and `limited` are kept.
     constexpr void forget() noexcept { haveReal = haveGenerated = false; }
 };
 
