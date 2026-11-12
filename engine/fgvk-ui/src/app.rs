@@ -174,6 +174,7 @@ impl App {
             profiles,
             dll,
             allow_fp16,
+            pacing_correction,
         } = settings;
         if !self.restored {
             self.select(initial_index(&profiles, self.remembered.as_deref()));
@@ -195,7 +196,7 @@ impl App {
         }
 
         section(ui, "Global");
-        self.global(ui, dll.unwrap_or_default(), allow_fp16);
+        self.global(ui, dll.unwrap_or_default(), allow_fp16, pacing_correction);
     }
 
     fn profile_row(&mut self, ui: &mut Ui, profiles: &[Profile]) {
@@ -587,7 +588,7 @@ impl App {
         }
     }
 
-    fn global(&mut self, ui: &mut Ui, dll: String, allow_fp16: bool) {
+    fn global(&mut self, ui: &mut Ui, dll: String, allow_fp16: bool, pacing_correction: bool) {
         let mut fp16 = allow_fp16;
         if ui.checkbox(&mut fp16, "FP16 (faster)").changed() {
             let result = self.config.set_global_allow_fp16(fp16);
@@ -596,6 +597,16 @@ impl App {
         hint(
             ui,
             "Half precision for frame generation. Restart the game to apply.",
+        );
+
+        let mut correction = pacing_correction;
+        if ui.checkbox(&mut correction, "Pacing correction").changed() {
+            let result = self.config.set_global_pacing_correction(correction);
+            self.report(result);
+        }
+        hint(
+            ui,
+            "Centres generated frames between real frames from measured GPU timing. Restart the game to apply.",
         );
 
         ui.label("Lossless.dll");

@@ -15,6 +15,7 @@ version = 2
 
 [global]
 allow_fp16 = true
+pacing_correction = true
 
 [[profile]]
 name = "My game"
@@ -49,6 +50,9 @@ The window has these controls:
 | Frame generation | `Off`, a fixed `2x` to `5x` multiplier, or `Adaptive`. Adaptive shows the target FPS (10 to 1000) and the maximum multiplier (2x to 5x). |
 | Quality (flow scale) | `flow_scale` from 25% to 100%. Higher values track motion more precisely and cost more GPU time. |
 | FPS limit | Optional real-FPS cap, stored as `base_fps_cap`. Turn it off to remove the manual cap. |
+| Performance mode | `performance_mode` for the selected profile. |
+| FP16 (faster) | `[global] allow_fp16`. Restart the game to apply. |
+| Pacing correction | `[global] pacing_correction`. Restart the game to apply. |
 | Lossless.dll | The `dll` path for Frame Generation and LS1 scaling. Leave it empty to remove the setting. |
 
 Typed values apply when you press Enter or leave the field. Sliders apply when you release them, and buttons apply at once. Live settings change a running game; restart-only settings apply the next time the game starts. See [Applying changes](#applying-changes).
@@ -122,6 +126,7 @@ For 1920×1080 output at 1.5×, aim for a 1280×720 input. Raising the factor wi
 | `gpu_headroom_percent` | Live, Frame Generation-only reserve that reduces real FPS to keep spare GPU capacity; see below. Off by default. |
 | `performance_mode = true` | Uses the lighter Frame Generation model, which reduces GPU work with potentially more artifacts. |
 | `allow_fp16` (restart, `[global]`) | FP16 for supported Frame Generation models and the framegen-vulkan Scaler; `false` uses FP32. LS1 always uses FP32. |
+| `pacing_correction` (restart, `[global]`) | On by default. Measures when each output gets the GPU after its present and moves real frames so generated frames sit midway between them. `false` keeps the uncorrected timing. |
 | `dll` (restart) | Lossless.dll path override; leave unset for automatic detection. |
 | `gpu` (restart) | Optional GPU name, vendor/device ID, or PCI bus ID. Multi-GPU Frame Generation is unsupported. |
 
@@ -167,7 +172,7 @@ Keep the defaults unless a game needs a change.
 
 | Timing | Common settings |
 | --- | --- |
-| Restart | Enabling `frame_generation_provisioned` or `scaling_enabled`; `dll`; `allow_fp16`; `gpu`; `ultra_performance`; `swapchain_image_count_compatibility`; launcher compatibility settings |
+| Restart | Enabling `frame_generation_provisioned` or `scaling_enabled`; `dll`; `allow_fp16`; `pacing_correction`; `gpu`; `ultra_performance`; `swapchain_image_count_compatibility`; launcher compatibility settings |
 | Live | `frame_generation_enabled`; most Frame Generation timing and cap settings; `scaling_method` and `scaling_sharpness`; `flow_scale`; `performance_mode`; `gpu_headroom_percent`; `hdr_quality` |
 | May wait for resolution change or restart | `scaling_factor`, `scaling_supersampling`, and changes needing more Frame Generation capacity |
 

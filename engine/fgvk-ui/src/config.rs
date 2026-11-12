@@ -39,6 +39,7 @@ const DEFAULT_TARGET_FPS: i64 = 120;
 const DEFAULT_ADAPTIVE_MAX_MULTIPLIER: i64 = 3;
 const DEFAULT_FLOW_SCALE: f64 = 0.8;
 const DEFAULT_ALLOW_FP16: bool = true;
+const DEFAULT_PACING_CORRECTION: bool = true;
 const DEFAULT_PERFORMANCE_MODE: bool = false;
 
 /// Chooses the configuration path from an environment lookup.
@@ -128,6 +129,7 @@ pub struct Settings {
     pub profiles: Vec<Profile>,
     pub dll: Option<String>,
     pub allow_fp16: bool,
+    pub pacing_correction: bool,
 }
 
 /// What the window should show for the file right now.
@@ -207,6 +209,11 @@ impl Config {
                 profiles: read_profiles(doc),
                 dll: read_global_dll(doc),
                 allow_fp16: read_global_allow_fp16(doc),
+                pacing_correction: read_global_bool(
+                    doc,
+                    "pacing_correction",
+                    DEFAULT_PACING_CORRECTION,
+                ),
             }),
         }
     }
@@ -337,6 +344,16 @@ impl Config {
         self.edit(|doc| {
             if let Some(global) = global_mut(doc) {
                 set_value(global, "allow_fp16", Value::from(value));
+            }
+            Ok(())
+        })
+    }
+
+    /// Writes `[global] pacing_correction`. The `[global]` table is created when the file has none.
+    pub fn set_global_pacing_correction(&mut self, value: bool) -> Result<(), String> {
+        self.edit(|doc| {
+            if let Some(global) = global_mut(doc) {
+                set_value(global, "pacing_correction", Value::from(value));
             }
             Ok(())
         })
@@ -522,11 +539,16 @@ fn read_global_dll(doc: &DocumentMut) -> Option<String> {
 
 /// A missing table, a missing key and a non-boolean value all read as the renderer default.
 fn read_global_allow_fp16(doc: &DocumentMut) -> bool {
+    read_global_bool(doc, "allow_fp16", DEFAULT_ALLOW_FP16)
+}
+
+/// A missing table, a missing key and a non-boolean value all read as `default`.
+fn read_global_bool(doc: &DocumentMut, key: &str, default: bool) -> bool {
     doc.get("global")
         .and_then(Item::as_table_like)
-        .and_then(|global| global.get("allow_fp16"))
+        .and_then(|global| global.get(key))
         .and_then(Item::as_bool)
-        .unwrap_or(DEFAULT_ALLOW_FP16)
+        .unwrap_or(default)
 }
 
 fn int_or(table: &Table, key: &str, default: i64) -> i64 {
@@ -994,6 +1016,60 @@ mod tests {
         let settings = ready(&config);
         assert!(settings.allow_fp16);
         assert!(!settings.profiles[0].performance_mode);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn pacing_correction_defaults_on_and_round_trips() {
+        let doc = parse("version = 2\n\n[[profile]]\nname = \"Bare\"\n");
+        assert!(read_global_bool(
+            &doc,
+            "pacing_correction",
+            DEFAULT_PACING_CORRECTION
+        ));
+        let doc = parse("version = 2\n\n[global]\npacing_correction = 1\n");
+        assert!(
+            read_global_bool(&doc, "pacing_correction", DEFAULT_PACING_CORRECTION),
+            "non-boolean reads as on"
+        );
+
+        let dir = temp_dir("pacing-correction");
+        let path = dir.join(FILE_NAME);
+        let text = "version = 2\n\n[global]\n# fp16 note\nallow_fp16 = false # keep\nfuture_global = 7\n\n[[profile]]\nname = \"Alpha\"\n";
+        fs::write(&path, text).expect("write fixture");
+        let mut config = Config::open(Ok(path.clone()));
+        assert!(ready(&config).pacing_correction, "missing key reads as on");
+
+        config
+            .set_global_pacing_correction(false)
+            .expect("pacing correction off saves");
+        let settings = ready(&config);
+        assert!(!settings.pacing_correction);
+        assert!(!settings.allow_fp16, "other global keys are kept");
+        let out = fs::read_to_string(&path).expect("read back");
+        assert!(out.contains("pacing_correction = false"), "{out}");
+        assert!(out.contains("allow_fp16 = false # keep"), "{out}");
+        assert!(
+            out.contains("# fp16 note") && out.contains("future_global = 7"),
+            "{out}"
+        );
+
+        config
+            .set_global_pacing_correction(true)
+            .expect("pacing correction on saves");
+        assert!(ready(&config).pacing_correction);
+
+        let bare = dir.join("bare.toml");
+        fs::write(&bare, "version = 2\n\n[[profile]]\nname = \"Alpha\"\n").expect("write fixture");
+        let mut config = Config::open(Ok(bare.clone()));
+        config
+            .set_global_pacing_correction(false)
+            .expect("creates [global]");
+        let saved = fs::read_to_string(&bare).expect("read back");
+        assert!(
+            saved.contains("[global]\npacing_correction = false"),
+            "{saved}"
+        );
         fs::remove_dir_all(&dir).ok();
     }
 

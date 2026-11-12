@@ -97,17 +97,25 @@ template <typename TimePoint, typename Duration>
     return offset;
 }
 
-// S8b: FGVK_REAL_OFFSET_US=auto derives the S7 offset at run time from the GPU present
+// S8b: the automatic real offset derives the S7 offset at run time from the GPU present
 // marker: the start of the private queue's next GPU work after each lower present, which is
-// when that present reaches the screen up to a constant. Read once per process.
+// when that present reaches the screen up to a constant. On by the `[global]
+// pacing_correction` key (default true), which the layer stores here at startup, before any
+// device exists; without that (tests, tools) it is off. FGVK_REAL_OFFSET_US overrides:
+// `auto` turns it on, any other value (a number, 0) turns it off and keeps S7's fixed value.
+inline std::atomic<bool> realOffsetAutoConfigured{false};
 [[nodiscard]] inline bool realOffsetAuto() noexcept {
-    static const bool enabled = [] {
+    static const int fromEnvironment = [] {
         const char* text = std::getenv("FGVK_REAL_OFFSET_US");
-        const bool on = text && std::strcmp(text, "auto") == 0;
-        if (on) std::fprintf(stderr, "framegen-vulkan: real offset: auto\n");
-        return on;
+        if (!text) return -1;
+        return std::strcmp(text, "auto") == 0 ? 1 : 0;
     }();
-    return enabled;
+    const bool on = fromEnvironment >= 0 ? fromEnvironment == 1
+        : realOffsetAutoConfigured.load(std::memory_order_relaxed);
+    static std::atomic<bool> reported{false};
+    if (on && !reported.exchange(true, std::memory_order_relaxed))
+        std::fprintf(stderr, "framegen-vulkan: real offset: auto\n");
+    return on;
 }
 // S8b diagnostics only: the last worker's current auto offset and accepted samples.
 inline std::atomic<int64_t> realOffsetAutoNs{0};

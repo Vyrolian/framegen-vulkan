@@ -23,6 +23,9 @@ namespace ls {
         std::optional<std::string> dll;
         /// request supported FP16 model/scaling arithmetic; false selects FP32
         bool allow_fp16{true};
+        /// centre generated outputs between their reals from measured GPU present times
+        /// (FGVK_REAL_OFFSET_US overrides); read once when the layer starts
+        bool pacing_correction{true};
     };
 
     /// pacing methods

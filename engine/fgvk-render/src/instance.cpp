@@ -8,6 +8,7 @@
 #include "present_diagnostics.hpp"
 #include "spatial_scaling_policy.hpp"
 #include "swapchain/create_policy.hpp"
+#include "swapchain/output_margin.hpp"
 #include "swapchain/swapchain.hpp"
 
 #include "fgvk-common/configuration/detection.hpp"
@@ -427,6 +428,9 @@ Root::Root() :
     gamescopeEnvironmentDetected(gamescopeProcessEnvironmentHint()),
     hdrFeedbackReader(this->presentationEnvironment) {
     this->fp16AtStartup = this->config.get().global().allow_fp16;
+    // S8b: restart-bound, before any device or worker reads realOffsetAuto().
+    fgvk::layer::realOffsetAutoConfigured.store(this->config.get().global().pacing_correction,
+        std::memory_order_relaxed);
     std::cerr << fgvkBuildIdentity << '\n';
 
     std::cerr << "framegen-vulkan: presentation policy: gamescope_wsi="

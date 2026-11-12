@@ -32,6 +32,7 @@ void ConfigFile::createDefaultConfigFile(const std::filesystem::path& path) {
 [global]
 # dll = '/media/games/Lossless Scaling/Lossless.dll' # if you don't have LS in the default location
 allow_fp16 = true # request FP16 model/scaling arithmetic; false selects FP32
+pacing_correction = true # centre generated frames from measured GPU present times
 
 [[profile]]
 name = "4x FG / 85% [Performance]"
@@ -81,7 +82,8 @@ multiplier = 2
 
 ConfigFile::ConfigFile() {
     this->globalConf = {
-        .allow_fp16 = true
+        .allow_fp16 = true,
+        .pacing_correction = true
     };
     this->profileConfs.emplace_back(GameConf {
         .name = "4x FG / 85% [Performance]",
@@ -298,7 +300,8 @@ namespace {
     GlobalConf parseGlobalConf(const toml::table& tbl) {
         const GlobalConf conf{
             .dll = tbl["dll"].value<std::string>(),
-            .allow_fp16 = tbl["allow_fp16"].value_or(true)
+            .allow_fp16 = tbl["allow_fp16"].value_or(true),
+            .pacing_correction = tbl["pacing_correction"].value_or(true)
         };
 
         // Availability belongs to LSFG/LS1 loading, not profile validity.
@@ -487,7 +490,8 @@ namespace {
     GlobalConf parseGlobalConfFromEnv() {
         GlobalConf conf{
             .dll = std::nullopt,
-            .allow_fp16 = true
+            .allow_fp16 = true,
+            .pacing_correction = true
         };
 
         const char* dll = std::getenv("FGVK_DLL_PATH");
@@ -720,6 +724,7 @@ void ConfigFile::write(const std::filesystem::path& path) const {
     if (this->globalConf.dll)
         global.insert("dll", *this->globalConf.dll);
     global.insert("allow_fp16", this->globalConf.allow_fp16);
+    global.insert("pacing_correction", this->globalConf.pacing_correction);
     table.insert("global", global);
 
     toml::array profiles;

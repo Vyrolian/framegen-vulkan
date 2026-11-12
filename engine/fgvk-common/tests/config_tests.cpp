@@ -463,6 +463,16 @@ int main() {
     fp32Config.write(precisionPath);
     expect(!ls::ConfigFile(precisionPath).global().allow_fp16,
         "Saving an existing FP32 configuration must preserve its precision");
+    expect(ls::GlobalConf{}.pacing_correction && generatedDefaults.global().pacing_correction &&
+            inMemoryDefaults.global().pacing_correction && fp32Config.global().pacing_correction,
+        "Pacing correction must default on, also when the key is missing");
+    writeText(precisionPath, "version = 2\n[global]\npacing_correction = false\n[[profile]]\n");
+    const ls::ConfigFile uncorrected(precisionPath);
+    expect(!uncorrected.global().pacing_correction && uncorrected.global().allow_fp16,
+        "An explicit pacing_correction = false must be read");
+    uncorrected.write(precisionPath);
+    expect(!ls::ConfigFile(precisionPath).global().pacing_correction,
+        "Saving must preserve pacing_correction = false");
 
     const auto path = directory / "conf.toml";
     writeText(path, validConfiguration);
