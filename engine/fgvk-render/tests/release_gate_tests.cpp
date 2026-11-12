@@ -49,6 +49,116 @@ void present(ReleaseGate& gate, const ReleaseGateOwner& owner, uint64_t value,
 }
 }
 
+// A present with an application present ID: the token is that ID on the swapchain.
+namespace {
+const auto swapchain = handle<VkSwapchainKHR>(0x50);
+const auto unbounded = ReleaseGate::Clock::time_point::max();
+
+void presentIdTokenReleasesAtDeadline() {
+    using Clock = ReleaseGate::Clock;
+    const auto now = Clock::now();
+    auto& gate = ReleaseGate::global();
+    expect(gate.empty(), "release tokens were left by an earlier test");
+    ReleaseGateOwner owner;
+    owner.recordPresentId(swapchain, 5, now + 12ms);
+    expect(!gate.empty(), "a present ID token was not recorded");
+    const auto release = gate.releasedPresent(swapchain, 5, now, unbounded);
+    expect(release && release->consumed && release->deadline == now + 12ms && gate.empty(),
+        "the present ID wait did not end at the token's deadline");
+    expect(gate.presentIdReleases() > 0, "a consumed present ID token was not counted");
+}
+
+void olderOrEqualPresentIdsReleaseTogether() {
+    using Clock = ReleaseGate::Clock;
+    const auto now = Clock::now();
+    auto& gate = ReleaseGate::global();
+    expect(gate.empty(), "release tokens were left by an earlier test");
+    ReleaseGateOwner owner;
+    owner.recordPresentId(swapchain, 5, now + 5ms);
+    owner.recordPresentId(swapchain, 6, now + 9ms);
+    expect(!gate.releasedPresent(swapchain, 4, now, unbounded) && !gate.empty(),
+        "a wait for an earlier present ID released a later token");
+    const auto release = gate.releasedPresent(swapchain, 6, now, unbounded);
+    expect(release && release->consumed && release->deadline == now + 9ms && gate.empty(),
+        "a wait covering two present IDs did not use the later deadline");
+    expect(!gate.releasedPresent(swapchain, 6, now, unbounded) && gate.empty(),
+        "a consumed present ID token was released again");
+}
+
+void tokenKindsNeverMatch() {
+    using Clock = ReleaseGate::Clock;
+    const auto now = Clock::now();
+    auto& gate = ReleaseGate::global();
+    expect(gate.empty(), "release tokens were left by an earlier test");
+    // A semaphore and a swapchain that share one handle value, and one token number.
+    const auto semaphore = handle<VkSemaphore>(0x50);
+    uint64_t value = 3;
+    VkSemaphoreWaitInfo waitInfo{.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
+        .semaphoreCount = 1, .pSemaphores = &semaphore, .pValues = &value};
+    {
+        // A present ID token is not satisfied by a semaphore wait, and a semaphore wait
+        // does not consume it.
+        ReleaseGateOwner owner;
+        owner.recordPresentId(swapchain, 3, now + 9ms);
+        expect(!gate.released(waitInfo, now, unbounded) && !gate.empty(),
+            "a semaphore wait consumed a present ID token");
+        expect(!gate.releasedPresent(swapchain, 2, now, unbounded) && !gate.empty(),
+            "a present ID wait for a lower ID consumed a token");
+        const auto release = gate.releasedPresent(swapchain, 3, now, unbounded);
+        expect(release && release->consumed && release->deadline == now + 9ms && gate.empty(),
+            "the present ID token was not released by its own wait");
+    }
+    {
+        // A semaphore token is not satisfied by a present ID wait on the same handle value.
+        ReleaseGateOwner owner;
+        owner.arm(queue, now + 4ms);
+        VkSemaphoreSubmitInfo signal{.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+            .semaphore = semaphore, .value = 3, .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT};
+        VkSubmitInfo2 submit{.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+            .signalSemaphoreInfoCount = 1, .pSignalSemaphoreInfos = &signal};
+        gate.observeSubmit2(queue, 1, &submit, VK_NULL_HANDLE, now);
+        expect(!gate.empty(), "the semaphore release token was not recorded");
+        expect(!gate.releasedPresent(swapchain, 3, now, unbounded) && !gate.empty(),
+            "a present ID wait consumed a semaphore token");
+        const auto release = gate.released(waitInfo, now, unbounded);
+        expect(release && release->consumed && release->deadline == now + 4ms && gate.empty(),
+            "the semaphore token was not released by its own wait");
+    }
+}
+
+void presentIdTimeoutKeepsToken() {
+    using Clock = ReleaseGate::Clock;
+    const auto now = Clock::now();
+    auto& gate = ReleaseGate::global();
+    expect(gate.empty(), "release tokens were left by an earlier test");
+    ReleaseGateOwner owner;
+    owner.recordPresentId(swapchain, 7, now + 20ms);
+    const auto early = gate.releasedPresent(swapchain, 7, now, now + 5ms);
+    expect(early && !early->consumed && early->deadline == now + 20ms && !gate.empty(),
+        "a present ID wait past its timeout consumed the token");
+    const auto late = gate.releasedPresent(swapchain, 7, now, unbounded);
+    expect(late && late->consumed && late->deadline == now + 20ms && gate.empty(),
+        "the kept present ID token was not released by a later wait");
+}
+
+void presentIdAndSemaphoreTokensShareActivation() {
+    using Clock = ReleaseGate::Clock;
+    const auto now = Clock::now();
+    auto& gate = ReleaseGate::global();
+    expect(gate.empty(), "release tokens were left by an earlier test");
+    ReleaseGateOwner owner;
+    owner.recordPresentId(swapchain, 1, now);
+    expect(gate.releasedPresent(swapchain, 1, now, unbounded) && !owner.active(),
+        "one consumed present ID token activated the gate");
+    owner.arm(queue, now);
+    const SignalOnly signal(1);
+    gate.observeSubmit2(queue, 1, &signal.submit, VK_NULL_HANDLE, now);
+    const Wait wait(1);
+    expect(gate.released(wait.info, now, unbounded) && owner.active() && gate.empty(),
+        "a present ID token and a semaphore token did not share one activation run");
+}
+}
+
 int main() {
     using Clock = ReleaseGate::Clock;
     const auto now = Clock::now();
@@ -166,5 +276,10 @@ int main() {
         expect(gate.empty() && ReleaseGate::armed(), "another thread consumed the present's arm");
         ReleaseGate::disarm();
     }
+    presentIdTokenReleasesAtDeadline();
+    olderOrEqualPresentIdsReleaseTogether();
+    tokenKindsNeverMatch();
+    presentIdTimeoutKeepsToken();
+    presentIdAndSemaphoreTokensShareActivation();
     std::cout << "release gate tests passed\n";
 }

@@ -516,9 +516,11 @@ public:
     // The lower wait API may only see an ID after its lower present returned.
     // Join that handoff on any calling thread, then let the driver perform
     // the actual presentation wait with the remainder of the caller's budget.
+    // completionPacing false (framegen-vulkan's own probe polls) leaves the
+    // newest record's completion pacing to the application's waits.
     template<typename Wait>
     static VkResult waitForPresent(VkDevice device, VkSwapchainKHR swapchain,
-            uint64_t id, uint64_t timeout, Wait&& wait) {
+            uint64_t id, uint64_t timeout, Wait&& wait, const bool completionPacing = true) {
         const auto started = Clock::now();
         std::shared_ptr<Delivery> delivery;
         {
@@ -530,8 +532,11 @@ public:
         bool waitedForDelivery{};
         {
             std::unique_lock lock(delivery->mutex);
+            // An ID with no record was never identified by this worker, or its record was
+            // delivered and dropped: the driver answers for it.
             const auto delivered = [&] {
-                return (delivery->id != id && delivery->id2 != id) || delivery->submitted;
+                const size_t index = delivery->indexOf(id);
+                return index == delivery->recordCount || delivery->records[index].submitted;
             };
             if (!delivered()) {
                 if (!timeout) return VK_TIMEOUT;
@@ -543,8 +548,9 @@ public:
                     if (!delivery->changed.wait_for(lock, remaining, delivered)) return VK_TIMEOUT;
                 }
             }
-            if ((delivery->id == id || delivery->id2 == id) && delivery->result < 0)
-                return delivery->result;
+            const size_t index = delivery->indexOf(id);
+            if (index < delivery->recordCount && delivery->records[index].result < 0)
+                return delivery->records[index].result;
         }
         const auto deliveryWait = Clock::now() - started;
         if (timeout != UINT64_MAX) {
@@ -552,16 +558,18 @@ public:
             timeout -= std::min(timeout, static_cast<uint64_t>(std::max<int64_t>(0, elapsed)));
         }
         const auto result = wait(timeout);
-        if (result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR) {
+        if (completionPacing && (result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR)) {
             const std::lock_guard lock(delivery->mutex);
-            if (delivery->id == id || delivery->id2 == id) {
+            const size_t index = delivery->indexOf(id);
+            // Completion pacing follows the newest record only, the latest real.
+            if (index < delivery->recordCount && index + 1 == delivery->recordCount) {
                 if (!delivery->waitFinished) {
                     delivery->waitFinished = true;
                     delivery->waitFinishedAt = Clock::now();
                 }
                 if (waitedForDelivery) {
                     delivery->waitObserved = true;
-                    delivery->completionDelay = std::min(delivery->workerWait, deliveryWait);
+                    delivery->completionDelay = std::min(delivery->records[index].workerWait, deliveryWait);
                 }
             }
         }
@@ -580,9 +588,9 @@ public:
         return {delivery->completionDelay, delivery->capOwned, delivery->waitFinishedAt};
     }
 
-    // Open one source batch, or a newer one while every pending batch is sealed,
-    // overlappable and ID-free, the ring has a free slot, and the completion queue
-    // has an entry for every pending batch plus this one. Each admitted image's
+    // Open one source batch, or a newer one while every pending batch is sealed and
+    // overlappable, the ring has a free slot, and the completion queue has an entry
+    // for every pending batch plus this one. Each admitted image's
     // binary signal must already be submitted. The producer seals on every
     // return/exception path.
     bool beginBatch(size_t limit, Readiness readiness) {
@@ -694,9 +702,9 @@ public:
         const std::lock_guard lock(mutex);
         return count > 0;
     }
-    // Every pending batch is sealed, overlappable and ID-free, so they may keep
-    // outputting while the next source is presented. Admission of a newer batch
-    // additionally needs a free slot (see beginBatch).
+    // Every pending batch is sealed and overlappable, so they may keep outputting
+    // while the next source is presented. Admission of a newer batch additionally
+    // needs a free slot (see beginBatch).
     [[nodiscard]] bool retainable() const {
         const std::lock_guard lock(mutex);
         return retainableLocked();
@@ -761,16 +769,45 @@ private:
     // Test seam only. Production sets stopping in ~DeferredPresent, after every batch
     // has retired, so a test cannot reach a prepared real's wait through the public API.
     friend struct DeferredPresentTestAccess;
+    // Identified batches are admitted up to slots at a time, so the registry keeps one
+    // record per batch that is still pending or still named by a wait.
+    static constexpr size_t slots = 3;
+    // One identified batch: the application's IDs for its real, and the worker's outcome.
+    struct DeliveryRecord {
+        uint64_t id{}, id2{};
+        bool submitted{};
+        VkResult result{VK_SUCCESS};
+        Clock::duration workerWait{};
+    };
     struct Delivery {
         std::mutex mutex;
         std::condition_variable changed;
-        uint64_t id{}, id2{};
-        bool submitted{};
+        // Registration order, oldest first.
+        std::array<DeliveryRecord, slots> records{};
+        size_t recordCount{};
+        // Completion pacing (takeCompletionPacingWait, applicationAcquire) follows the
+        // newest record only: the latest real.
         bool waitObserved{}, waitFinished{}, acquiredBeforeWait{}, delayTaken{};
         bool capOwned{};
-        Clock::duration workerWait{}, completionDelay{};
+        Clock::duration completionDelay{};
         Clock::time_point waitFinishedAt{};
-        VkResult result{VK_SUCCESS};
+        // Index of the record whose id or id2 is presentId, or recordCount when none.
+        [[nodiscard]] size_t indexOf(uint64_t presentId) const {
+            for (size_t i = 0; i < recordCount; ++i)
+                if (records[i].id == presentId || records[i].id2 == presentId) return i;
+            return recordCount;
+        }
+        // Marks the oldest unsubmitted record with these IDs as delivered by the worker.
+        void submitLocked(uint64_t id, uint64_t id2, VkResult result, Clock::duration workerWait) {
+            for (size_t i = 0; i < recordCount; ++i) {
+                DeliveryRecord& record = records[i];
+                if (record.submitted || record.id != id || record.id2 != id2) continue;
+                record.submitted = true;
+                record.result = result;
+                record.workerWait = workerWait;
+                return;
+            }
+        }
     };
     struct DeliveryKey {
         VkDevice device;
@@ -813,19 +850,25 @@ private:
         bool ownedId2{};
         bool hasMetering{};
         uint32_t framesPerBatch{};
+#if defined(VK_EXT_present_timing)
+        // The application's VkPresentTimingInfoEXT, copied; the real present rebuilds
+        // VkPresentTimingsInfoEXT around it.
+        bool hasTiming{};
+        VkPresentTimingInfoEXT timing{};
+#endif
     };
     // Only application IDs make a present identified: VkPresentIdKHR, or a
-    // VkPresentId2KHR that framegen-vulkan did not supply. Identified presents register
-    // the delivery and keep the overlapped batch ring from retaining.
+    // VkPresentId2KHR that framegen-vulkan did not supply. An identified present
+    // registers a delivery record, which a wait for its ID joins.
     static bool applicationIdentified(const Metadata& metadata) {
         return (metadata.hasId && metadata.id) || (metadata.hasId2 && metadata.id2 && !metadata.ownedId2);
     }
     [[nodiscard]] static std::optional<Metadata> snapshotChain(const void* chain,
             const uint64_t* ownedIds = nullptr) {
         Metadata copy;
-        // Four known node kinds, each at most once. Bound even malformed input.
+        // Six known node kinds, each at most once. Bound even malformed input.
         for (unsigned n = 0; chain; ++n) {
-            if (n == 5) return std::nullopt;
+            if (n == 6) return std::nullopt;
             VkStructureType type{};
             std::memcpy(&type, chain, sizeof(type));
             switch (type) {
@@ -869,6 +912,19 @@ private:
                 copy.hasMode = true; copy.mode = node.pPresentModes[0];
                 break;
             }
+#if defined(VK_EXT_present_timing)
+            case VK_STRUCTURE_TYPE_PRESENT_TIMINGS_INFO_EXT: {
+                // VKD3D-Proton's feedback and target-time request. Its one timing info is
+                // copied by value, so the inner struct may not carry a pNext of its own.
+                VkPresentTimingsInfoEXT node{};
+                std::memcpy(&node, chain, sizeof(node));
+                if (copy.hasTiming || node.swapchainCount != 1 || !node.pTimingInfos ||
+                        node.pTimingInfos[0].pNext)
+                    return std::nullopt;
+                copy.hasTiming = true; copy.timing = node.pTimingInfos[0];
+                break;
+            }
+#endif
             default: return std::nullopt;
             }
             const void* next{};
@@ -913,8 +969,7 @@ private:
             if (implicit && (count || completedQueue[0])) return false;
             if (!implicit) {
                 const Batch& open = batches[slotAt(count - 1)];
-                // An overlapping batch behind a pending one cannot own the single present-ID registry.
-                if (open.produced == open.limit || (count >= 2 && identified)) return false;
+                if (open.produced == open.limit) return false;
             }
             if (implicit) openSlotLocked(1, Readiness{}, false);
             Batch& batch = batches[slotAt(count - 1)];
@@ -922,7 +977,6 @@ private:
                 if (implicit) --count;
                 return false;
             }
-            if (identified) batch.registersId = true;
             Job job{info.pSwapchains[0], info.pImageIndices[0], info.pWaitSemaphores[0],
                 *metadata, deadline, generated, batch.readiness.trace ? Clock::now() : Clock::time_point{}};
             if (internal) {
@@ -942,14 +996,13 @@ private:
     struct Batch {
         std::array<Job, capacity> jobs{};
         size_t produced{}, consumed{}, limit{1};
-        bool open{}, registersId{};
+        bool open{};
         Completion aggregate{};
         Readiness readiness{};
         Clock::time_point expediteAt{Clock::time_point::max()};
     };
     // The oldest pending batch is `head`; `count` pending batches follow it in
     // ring order. Only the newest pending batch can still be open.
-    static constexpr size_t slots = 3;
     std::array<Batch, slots> batches{};
     size_t head{}, count{};
     // Finished batches not yet taken, oldest first. completionRoomLocked keeps
@@ -994,13 +1047,13 @@ private:
 
     [[nodiscard]] size_t slotAt(size_t offset) const { return (head + offset) % slots; }
     [[nodiscard]] bool newestOpenLocked() const { return count && batches[slotAt(count - 1)].open; }
-    // Every pending batch must be sealed, overlappable and ID-free. Batches
-    // retained this way are joined oldest first, keeping the newest two outputting.
+    // Every pending batch must be sealed and overlappable. Batches retained this
+    // way are joined oldest first, keeping the newest two outputting.
     [[nodiscard]] bool retainableLocked() const {
         if (count == 0) return false;
         for (size_t offset = 0; offset < count; ++offset) {
             const Batch& batch = batches[slotAt(offset)];
-            if (batch.open || !batch.readiness.overlap || batch.registersId) return false;
+            if (batch.open || !batch.readiness.overlap) return false;
         }
         return true;
     }
@@ -1022,7 +1075,6 @@ private:
         batch.produced = batch.consumed = 0;
         batch.limit = limit;
         batch.open = open;
-        batch.registersId = false;
         batch.aggregate = {};
         batch.expediteAt = Clock::time_point::max();
         batch.readiness = std::move(ready);
@@ -1045,23 +1097,32 @@ private:
             --count;
         }
     }
-    // One registry entry per live worker, replaced only after its previous
-    // source batch completed. Waiters retain shared state without acquiring the
-    // Swapchain owner or the queue lock.
+    // One registry entry per live worker, shared by all of its identified batches.
+    // Each identified batch appends a record. A full list drops its oldest submitted
+    // record, and refuses the batch while every record is still unsubmitted. Waiters
+    // retain shared state without acquiring the Swapchain owner or the queue lock.
     bool registerDeliveryLocked(const Metadata& metadata, VkSwapchainKHR swapchain, bool capOwned) {
         if (registeredSwapchain && registeredSwapchain != swapchain) return false;
+        const std::lock_guard deliveryLock(delivery->mutex);
+        if (delivery->recordCount == slots) {
+            const auto oldest = std::find_if(delivery->records.begin(), delivery->records.end(),
+                [](const DeliveryRecord& record) { return record.submitted; });
+            if (oldest == delivery->records.end()) return false;
+            std::move(oldest + 1, delivery->records.end(), oldest);
+            --delivery->recordCount;
+        }
         try {
-            const std::lock_guard deliveryLock(deliveriesMutex());
+            const std::lock_guard registryLock(deliveriesMutex());
             deliveries().insert_or_assign({device, swapchain}, delivery);
         } catch (...) { return false; }
         registeredSwapchain = swapchain;
-        const std::lock_guard deliveryLock(delivery->mutex);
-        delivery->id = metadata.hasId ? metadata.id : 0;
-        delivery->id2 = metadata.hasId2 && !metadata.ownedId2 ? metadata.id2 : 0;
-        delivery->submitted = false;
-        delivery->result = VK_SUCCESS;
+        delivery->records[delivery->recordCount++] = DeliveryRecord{
+            .id = metadata.hasId ? metadata.id : 0,
+            .id2 = metadata.hasId2 && !metadata.ownedId2 ? metadata.id2 : 0,
+        };
+        // The newest record starts its completion pacing from scratch.
         delivery->waitObserved = delivery->waitFinished = delivery->acquiredBeforeWait = delivery->delayTaken = false;
-        delivery->workerWait = delivery->completionDelay = {};
+        delivery->completionDelay = {};
         delivery->waitFinishedAt = {};
         delivery->capOwned = capOwned;
         return true;
@@ -1576,6 +1637,13 @@ private:
                 .pNext = chain, .swapchainCount = 1, .pPresentModes = &metadata.mode,
             };
             if (metadata.hasMode) chain = &mode;
+#if defined(VK_EXT_present_timing)
+            VkPresentTimingsInfoEXT timings{
+                .sType = VK_STRUCTURE_TYPE_PRESENT_TIMINGS_INFO_EXT,
+                .pNext = chain, .swapchainCount = 1, .pTimingInfos = &metadata.timing,
+            };
+            if (metadata.hasTiming) chain = &timings;
+#endif
             auto job = current;
             Completion result;
             result.source = ready.source;
@@ -1774,10 +1842,10 @@ private:
             heldLowerImages = 0;
             if (applicationIdentified(metadata)) {
                 {
+                    // Batches are presented in order, so this is the oldest unsubmitted record with these IDs.
                     const std::lock_guard deliveryLock(delivery->mutex);
-                    delivery->submitted = true;
-                    delivery->result = result.result;
-                    delivery->workerWait = workerWait;
+                    delivery->submitLocked(metadata.hasId ? metadata.id : 0,
+                        metadata.hasId2 && !metadata.ownedId2 ? metadata.id2 : 0, result.result, workerWait);
                 }
                 delivery->changed.notify_all();
             }

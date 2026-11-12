@@ -184,6 +184,101 @@ void configureResets() {
     expect(!probe.active() && !probe.nextTag().has_value(),
         "configure(false) did not disable the probe");
 }
+
+// After ApplicationIds the probe follows the application's IDs: the poll target is
+// the ID two presents back, and four successful polls confirm the probe.
+void applicationIdsFollowAndConfirm() {
+    Probe probe;
+    probe.configure(true);
+    expect(probe.observeApplicationId(1) && probe.stopReason() == Probe::Stop::ApplicationIds,
+        "the first application ID did not start following");
+    expect(probe.following() && !probe.active() && probe.polling(),
+        "a following probe is not polling the application's IDs");
+    expect(!probe.nextTag().has_value() && probe.lastTagged() == 0,
+        "a following probe tagged a present");
+    for (uint64_t present = 2; present <= 6; ++present) {
+        expect(!probe.observeApplicationId(present), "a following probe reported a second stop");
+        const auto target = probe.pollTarget();
+        if (present < 3) {
+            expect(!target.has_value(), "a poll was offered before two presents had passed");
+            continue;
+        }
+        expect(target == std::optional<uint64_t>{present - 2},
+            "the poll target was not the application ID two presents back");
+        expect(probe.pollResult(*target, Probe::PollResult::Success) == (present == 6),
+            "confirmation did not come with the fourth application poll");
+    }
+    expect(probe.confirmed() && probe.successes() == 4, "the followed probe was not confirmed");
+    expect(!probe.pollTarget().has_value(), "a polled application ID was offered again");
+}
+
+void followedFlavourFollowsTheTargetPresent() {
+    Probe probe;
+    probe.configure(true);
+    expect(probe.observeApplicationId(10, true), "the first VkPresentId2KHR did not start following");
+    probe.observeApplicationId(11, false);
+    probe.observeApplicationId(12, false);
+    expect(probe.pollTarget() == std::optional<uint64_t>{10} && probe.pollTargetIsId2(),
+        "the target two presents back lost its VkPresentId2KHR flavour");
+    probe.observeApplicationId(13, false);
+    expect(probe.pollTarget() == std::optional<uint64_t>{11} && !probe.pollTargetIsId2(),
+        "the target two presents back kept the wrong flavour");
+}
+
+void followedZeroIdsAreNotTargets() {
+    Probe probe;
+    probe.configure(true);
+    expect(probe.observeApplicationId(1), "the first application ID did not start following");
+    expect(!probe.observeApplicationId(0) && !probe.pollTarget().has_value(),
+        "a zero application ID was offered as a poll target");
+    expect(!probe.observeApplicationId(std::nullopt) && probe.pollTarget() == std::optional<uint64_t>{1},
+        "the ID two presents back was lost when the next present had no ID");
+    expect(!probe.pollResult(1, Probe::PollResult::Success) && probe.successes() == 1,
+        "the followed poll was not counted");
+    expect(!probe.observeApplicationId(std::nullopt) && !probe.pollTarget().has_value(),
+        "a zero application ID was offered as a poll target after the first was polled");
+}
+
+void collisionDoesNotFollow() {
+    Probe probe;
+    probe.configure(true);
+    for (int i = 0; i < 3; ++i) probe.nextTag();
+    expect(probe.observeApplicationId(2) && probe.stopReason() == Probe::Stop::Collision,
+        "a colliding application ID did not stop tagging");
+    expect(!probe.following() && !probe.polling(), "a collided probe kept polling");
+    for (uint64_t present = 3; present <= 8; ++present) {
+        expect(!probe.observeApplicationId(present + 10) && probe.stopReason() == Probe::Stop::Collision,
+            "a collided probe followed later application IDs");
+        expect(!probe.pollTarget().has_value(), "a collided probe offered an application poll");
+    }
+    expect(!probe.pollResult(20, Probe::PollResult::Success) && probe.successes() == 0,
+        "a collided probe counted a poll");
+}
+
+void errorDoesNotFollow() {
+    Probe probe;
+    probe.configure(true);
+    for (int i = 0; i < 3; ++i) probe.nextTag();
+    expect(!probe.pollResult(1, Probe::PollResult::Error) && probe.stopReason() == Probe::Stop::Error,
+        "a poll error did not stop the probe");
+    expect(!probe.observeApplicationId(10) && probe.stopReason() == Probe::Stop::Error && !probe.following(),
+        "an errored probe followed application IDs");
+    expect(!probe.pollTarget().has_value() && !probe.confirmed(), "an errored probe offered a poll");
+
+    // An error while following ends the followed polls and revokes confirmation.
+    Probe followed;
+    followed.configure(true);
+    for (uint64_t present = 1; present <= 6; ++present) {
+        followed.observeApplicationId(present);
+        if (const auto target = followed.pollTarget())
+            followed.pollResult(*target, Probe::PollResult::Success);
+    }
+    expect(followed.confirmed(), "the followed probe was not confirmed before the error");
+    followed.observeApplicationId(7);
+    expect(!followed.pollResult(4, Probe::PollResult::Error) && followed.stopReason() == Probe::Stop::Error &&
+            !followed.confirmed() && !followed.polling(),
+        "a followed poll error kept the probe confirmed or polling");
+}
 }
 
 int main() {
@@ -197,6 +292,11 @@ int main() {
     errorStopsAndRevokesConfirmation();
     nullAndZeroApplicationIdsAreIgnored();
     configureResets();
+    applicationIdsFollowAndConfirm();
+    followedFlavourFollowsTheTargetPresent();
+    followedZeroIdsAreNotTargets();
+    collisionDoesNotFollow();
+    errorDoesNotFollow();
     std::cout << "present feedback probe tests passed\n";
     return 0;
 }

@@ -1435,6 +1435,25 @@ namespace {
     constexpr char waitSemaphoresName[] = "vkWaitSemaphores";
     constexpr char waitSemaphoresKhrName[] = "vkWaitSemaphoresKHR";
 
+    // A successful application wait on a present ID is held to the deadline of the
+    // present's release token, as the semaphore wait above is (see release_gate.hpp).
+    // The sleep is on the waiting thread. A deadline past the caller's timeout keeps the
+    // token and reports VK_TIMEOUT.
+    VkResult holdPresentRelease(const VkSwapchainKHR swapchain, const uint64_t presentId,
+            const uint64_t timeout, const ReleaseGate::Clock::time_point started, const VkResult result) {
+        if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) return result;
+        auto& gate = ReleaseGate::global();
+        if (gate.empty()) return result;
+        using Clock = ReleaseGate::Clock;
+        const auto now = Clock::now();
+        const auto limit = timeout >= uint64_t{3'600'000'000'000}
+            ? Clock::time_point::max() : started + std::chrono::nanoseconds(timeout);
+        const auto release = gate.releasedPresent(swapchain, presentId, now, limit);
+        if (!release) return result;
+        std::this_thread::sleep_until(release->consumed ? release->deadline : limit);
+        return release->consumed ? result : VK_TIMEOUT;
+    }
+
     bool isOptionalReleaseCommand(const std::string_view name) {
         return name == queueSubmit2Name || name == queueSubmit2KhrName ||
             name == waitSemaphoresName || name == waitSemaphoresKhrName;
@@ -1581,9 +1600,11 @@ namespace {
         return present_diagnostics::observeApplicationPresentWait(device, swapchain,
             present_diagnostics::PresentWaitApi::Khr, presentId, timeout,
             [&] {
+                const auto started = ReleaseGate::Clock::now();
                 DeferredPresent::applicationWait(swapchain, presentId, timeout);
-                return DeferredPresent::waitForPresent(device, swapchain, presentId, timeout,
+                const auto result = DeferredPresent::waitForPresent(device, swapchain, presentId, timeout,
                     [&](uint64_t remaining) { return next(device, swapchain, presentId, remaining); });
+                return holdPresentRelease(swapchain, presentId, timeout, started, result);
             });
     }
 
@@ -1603,13 +1624,15 @@ namespace {
         return present_diagnostics::observeApplicationPresentWait(device, swapchain,
             present_diagnostics::PresentWaitApi::Khr2, info->presentId, info->timeout,
             [&] {
+                const auto started = ReleaseGate::Clock::now();
                 DeferredPresent::applicationWait(swapchain, info->presentId, info->timeout);
-                return DeferredPresent::waitForPresent(device, swapchain, info->presentId, info->timeout,
+                const auto result = DeferredPresent::waitForPresent(device, swapchain, info->presentId, info->timeout,
                     [&](uint64_t remaining) {
                         auto adjusted = *info;
                         adjusted.timeout = remaining;
                         return next(device, swapchain, &adjusted);
                     });
+                return holdPresentRelease(swapchain, info->presentId, info->timeout, started, result);
             });
     }
 #endif

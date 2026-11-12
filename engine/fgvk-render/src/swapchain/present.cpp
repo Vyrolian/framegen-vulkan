@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -38,6 +39,41 @@ using namespace fgvk;
 using namespace fgvk::layer;
 
 using namespace fgvk::layer::present_detail;
+
+namespace {
+#if defined(VK_KHR_present_id2)
+// The application's present-ID nodes (VkPresentIdKHR or VkPresentId2KHR): the largest
+// non-zero ID, whether it came from VkPresentId2KHR, and whether any such node is present.
+struct ApplicationPresentIds {
+    std::optional<uint64_t> id;
+    bool id2{};
+    bool node{};
+};
+ApplicationPresentIds applicationPresentIds(const void* chain) {
+    ApplicationPresentIds found;
+    for (auto* node = static_cast<const VkBaseInStructure*>(chain); node; node = node->pNext) {
+        // VkPresentIdKHR and VkPresentId2KHR share {sType, pNext, swapchainCount, pPresentIds}.
+        if (node->sType != VK_STRUCTURE_TYPE_PRESENT_ID_KHR && node->sType != VK_STRUCTURE_TYPE_PRESENT_ID_2_KHR)
+            continue;
+        found.node = true;
+        const auto* ids = reinterpret_cast<const VkPresentId2KHR*>(node);
+        if (ids->swapchainCount >= 1 && ids->pPresentIds && ids->pPresentIds[0] &&
+                (!found.id || ids->pPresentIds[0] > *found.id)) {
+            found.id = ids->pPresentIds[0];
+            found.id2 = node->sType == VK_STRUCTURE_TYPE_PRESENT_ID_2_KHR;
+        }
+    }
+    return found;
+}
+#endif
+
+// Once per process: the first present ID token of the release gate (diagnostics only).
+void noteFirstPresentIdReleaseToken() {
+    static std::atomic_bool logged{false};
+    if (!logged.exchange(true, std::memory_order_relaxed))
+        std::clog << "framegen-vulkan: release gate: present-id tokens active\n";
+}
+}
 
 void Swapchain::PresentInvocation::waitForOutput(
         const DiagnosticsClock::time_point deadline) const {
@@ -238,57 +274,77 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         );
     }
     const void* lowerNextChain = filteredPresentChain.head();
-#if defined(VK_KHR_present_id2) && defined(VK_KHR_present_wait2)
+#if defined(VK_KHR_present_id2)
+    // The application's own present ID, when its chain attached one.
+    const auto applicationIds = applicationPresentIds(nextChain);
+#endif
+#if defined(VK_KHR_present_id2) && defined(VK_KHR_present_wait2) && defined(VK_KHR_present_wait)
     VkPresentId2KHR feedbackId{.sType = VK_STRUCTURE_TYPE_PRESENT_ID_2_KHR};
     if (this->info.applicationPresentFeedback) {
         const auto logProbeStop = [this](const int result) {
-            const char* reason = "error";
-            if (this->presentFeedback.stopReason() == PresentFeedbackProbe::Stop::ApplicationIds)
-                reason = "application-ids";
-            else if (this->presentFeedback.stopReason() == PresentFeedbackProbe::Stop::Collision)
-                reason = "collision";
+            const char* reason = this->presentFeedback.stopReason() == PresentFeedbackProbe::Stop::Collision
+                ? "collision" : "error";
             std::clog << "framegen-vulkan: present feedback probe: state=stopped reason=" << reason
                       << " last_tagged=" << this->presentFeedback.lastTagged()
                       << " result=" << result << '\n';
         };
-        std::optional<uint64_t> applicationId;
-        bool applicationIdNode{};
-        for (auto* node = static_cast<const VkBaseInStructure*>(nextChain); node; node = node->pNext) {
-            // VkPresentIdKHR and VkPresentId2KHR share {sType, pNext, swapchainCount, pPresentIds}.
-            if (node->sType == VK_STRUCTURE_TYPE_PRESENT_ID_KHR || node->sType == VK_STRUCTURE_TYPE_PRESENT_ID_2_KHR) {
-                applicationIdNode = true;
-                const auto* ids = reinterpret_cast<const VkPresentId2KHR*>(node);
-                if (ids->swapchainCount >= 1 && ids->pPresentIds && ids->pPresentIds[0])
-                    applicationId = std::max(applicationId.value_or(0), ids->pPresentIds[0]);
-            }
+        if (this->presentFeedback.observeApplicationId(applicationIds.id, applicationIds.id2)) {
+            if (this->presentFeedback.following())
+                std::clog << "framegen-vulkan: present feedback probe: state=following reason=application-ids\n";
+            else
+                logProbeStop(0);
         }
-        if (this->presentFeedback.observeApplicationId(applicationId))
-            logProbeStop(0);
         // Poll before tagging, never blocking.
         if (const auto target = this->presentFeedback.pollTarget()) {
-            if (!this->presentWait2)
-                this->presentWait2 = reinterpret_cast<PFN_vkWaitForPresent2KHR>(
-                    vk.fi().GetDeviceProcAddr(vk.dev(), "vkWaitForPresent2KHR"));
             PresentFeedbackProbe::PollResult poll = PresentFeedbackProbe::PollResult::Error;
             VkResult waited = VK_ERROR_EXTENSION_NOT_PRESENT;
-            if (this->presentWait2) {
-                const VkPresentWait2InfoKHR wait{.sType = VK_STRUCTURE_TYPE_PRESENT_WAIT_2_INFO_KHR, .presentId = *target, .timeout = 0};
-                waited = this->presentWait2(vk.dev(), swapchain, &wait);
+            bool polled = true;
+            if (this->presentFeedback.following()) {
+                // The application's own ID. The worker's registry answers a timeout-0 poll for an
+                // ID it still holds (its real is not yet presented) without any driver call.
+                // Without the driver function there is no poll at all.
+                const bool id2 = this->presentFeedback.pollTargetIsId2();
+                if (id2 && !this->presentWait2)
+                    this->presentWait2 = reinterpret_cast<PFN_vkWaitForPresent2KHR>(
+                        vk.fi().GetDeviceProcAddr(vk.dev(), "vkWaitForPresent2KHR"));
+                if (!id2 && !this->presentWait1)
+                    this->presentWait1 = reinterpret_cast<PFN_vkWaitForPresentKHR>(
+                        vk.fi().GetDeviceProcAddr(vk.dev(), "vkWaitForPresentKHR"));
+                polled = id2 ? this->presentWait2 != nullptr : this->presentWait1 != nullptr;
+                if (polled)
+                    waited = DeferredPresent::waitForPresent(vk.dev(), swapchain, *target, 0,
+                        [&](const uint64_t timeout) {
+                            if (id2) {
+                                const VkPresentWait2InfoKHR wait{.sType = VK_STRUCTURE_TYPE_PRESENT_WAIT_2_INFO_KHR, .presentId = *target, .timeout = timeout};
+                                return this->presentWait2(vk.dev(), swapchain, &wait);
+                            }
+                            return this->presentWait1(vk.dev(), swapchain, *target, timeout);
+                        }, false);
+            } else {
+                if (!this->presentWait2)
+                    this->presentWait2 = reinterpret_cast<PFN_vkWaitForPresent2KHR>(
+                        vk.fi().GetDeviceProcAddr(vk.dev(), "vkWaitForPresent2KHR"));
+                if (this->presentWait2) {
+                    const VkPresentWait2InfoKHR wait{.sType = VK_STRUCTURE_TYPE_PRESENT_WAIT_2_INFO_KHR, .presentId = *target, .timeout = 0};
+                    waited = this->presentWait2(vk.dev(), swapchain, &wait);
+                }
+            }
+            if (polled) {
                 poll = waited == VK_SUCCESS || waited == VK_SUBOPTIMAL_KHR ? PresentFeedbackProbe::PollResult::Success
                     : waited == VK_TIMEOUT || waited == VK_NOT_READY ? PresentFeedbackProbe::PollResult::Timeout
                     : PresentFeedbackProbe::PollResult::Error;
+                if (this->presentFeedback.pollResult(*target, poll))
+                    std::clog << "framegen-vulkan: present feedback probe: state=confirmed polls="
+                              << this->presentFeedback.successes() << " id=" << *target << '\n';
+                if (poll == PresentFeedbackProbe::PollResult::Error)
+                    logProbeStop(static_cast<int>(waited));
             }
-            if (this->presentFeedback.pollResult(*target, poll))
-                std::clog << "framegen-vulkan: present feedback probe: state=confirmed polls="
-                          << this->presentFeedback.successes() << " id=" << *target << '\n';
-            if (poll == PresentFeedbackProbe::PollResult::Error)
-                logProbeStop(static_cast<int>(waited));
         }
         const bool firstTag = this->presentFeedbackTag == 0;
         // An application ID node of any value keeps this present untagged:
         // the deferred worker rejects a second ID node in one chain.
         std::optional<uint64_t> tag;
-        if (!applicationIdNode)
+        if (!applicationIds.node)
             tag = this->presentFeedback.nextTag();
         if (tag) {
             if (firstTag)
@@ -723,19 +779,40 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         this->outputSourceDeadline = limiterDeadline;
     if (!sourceDeadlinePacing && !readyOutputPacing && !releaseGated)
         this->realFramePacer.resetOutputs();
+    // The application's own present ID, when its chain attached one. Such a present
+    // is released through that ID instead of the next submit (see ReleaseArm).
+    std::optional<uint64_t> applicationPresentId;
+#if defined(VK_KHR_present_id2)
+    applicationPresentId = applicationIds.id;
+#endif
     // Destroyed after the return-deadline sleep below. Arm on every capped
     // return, including holds, so the release wait can be observed first. An
     // uncapped detached return arms at its arrival: that deadline never delays
     // the release wait, and arming lets the gate see the producer's token wait.
+    // A present with an application ID records that ID as its token instead: the
+    // application's wait for the ID is then the release wait, and no submit is armed.
     struct ReleaseArm {
         const ReleaseGateOwner& gate;
         VkQueue queue;
+        VkSwapchainKHR swapchain;
         std::optional<DiagnosticsClock::time_point> deadline;
-        ~ReleaseArm() { if (deadline) try { gate.arm(queue, *deadline); } catch (...) {} }
-    } releaseArm{this->releaseGate, queue,
+        std::optional<uint64_t> presentId;
+        ~ReleaseArm() {
+            if (!deadline) return;
+            try {
+                if (presentId) {
+                    noteFirstPresentIdReleaseToken();
+                    gate.recordPresentId(swapchain, *presentId, *deadline);
+                } else {
+                    gate.arm(queue, *deadline);
+                }
+            } catch (...) {}
+        }
+    } releaseArm{this->releaseGate, queue, swapchain,
         baseFpsCap > 0 ? std::optional{limiterDeadline}
             : detachedOutputTransport ? std::optional{limiterArrival}
-            : std::nullopt};
+            : std::nullopt,
+        applicationPresentId};
     if (!releaseGated && !sourceDeadlinePreparation && limiterDeadline > limiterArrival) {
         const auto waitStarted = this->pacingProfile ? DiagnosticsClock::now() : DiagnosticsClock::time_point{};
         std::this_thread::sleep_until(limiterDeadline);

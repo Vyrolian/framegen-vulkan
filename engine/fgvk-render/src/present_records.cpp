@@ -8,6 +8,7 @@
 
 #include "library_pin.hpp"
 #include "swapchain/output_margin.hpp"
+#include "swapchain/release_gate.hpp"
 
 #include <algorithm>
 #include <array>
@@ -754,6 +755,8 @@ void formatPacingWindowBody(const PacingWindowPayload& payload, const PacingProf
     }
     line << " output_margin_ms=" << std::chrono::duration<double, std::milli>(fgvk::layer::outputMargin()).count();
     line << " generated_yield=" << fgvk::layer::generatedYieldEnabled();
+    if (const auto presentIdReleases = fgvk::layer::ReleaseGate::global().presentIdReleases(); presentIdReleases)
+        line << " present_id_gate_releases=" << presentIdReleases;
     if (fgvk::layer::realOffsetAuto()) {
         line << " real_offset_us=" << fgvk::layer::realOffsetAutoNs.load(std::memory_order_relaxed) / 1000
              << " real_offset_auto=1 real_offset_samples="

@@ -664,6 +664,9 @@ namespace fgvk::layer {
         uint64_t refreshQueryLastInterval{UINT64_MAX - 1};
         bool refreshQueryPrinted{false};
         PresentFeedbackProbe presentFeedback;
+#if defined(VK_KHR_present_wait)
+        PFN_vkWaitForPresentKHR presentWait1{};
+#endif
 #if defined(VK_KHR_present_wait2)
         PFN_vkWaitForPresent2KHR presentWait2{};
 #endif

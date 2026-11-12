@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "swapchain/deferred_present.hpp"
 #include "swapchain/private_present_queue.hpp"
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <condition_variable>
@@ -32,6 +33,30 @@ uint32_t observedImage{};
 uint64_t observedId{}, observedId2{};
 VkPresentModeKHR observedMode{};
 DeferredPresent::Clock::time_point observedAt{};
+#if defined(VK_EXT_present_timing)
+uint64_t observedTargetTime{};
+uint32_t observedTimingNodes{};
+#endif
+// The identified ID of each lower present in presentation order (0 when it has none).
+std::mutex presentLogMutex;
+std::vector<uint64_t> presentLog;
+bool presentedContains(uint64_t id) {
+    const std::lock_guard lock(presentLogMutex);
+    return std::find(presentLog.begin(), presentLog.end(), id) != presentLog.end();
+}
+std::vector<uint64_t> presentedIds() {
+    const std::lock_guard lock(presentLogMutex);
+    return presentLog;
+}
+void clearPresentLog() {
+    const std::lock_guard lock(presentLogMutex);
+    presentLog.clear();
+}
+// A driver wait that succeeds only once the worker has presented the ID, so a
+// wait that returned before its own real would report VK_ERROR_UNKNOWN.
+auto awaitedPresent(uint64_t id) {
+    return [id](uint64_t) { return presentedContains(id) ? VK_SUCCESS : VK_ERROR_UNKNOWN; };
+}
 VkResult VKAPI_CALL present(VkQueue queue, const VkPresentInfoKHR* info) {
     expect(queue == handle<VkQueue>(7), "worker borrowed an application queue");
     const auto concurrent = ++active;
@@ -45,6 +70,10 @@ VkResult VKAPI_CALL present(VkQueue queue, const VkPresentInfoKHR* info) {
     observedFence = VK_NULL_HANDLE;
     observedId = observedId2 = 0;
     observedMode = VK_PRESENT_MODE_MAX_ENUM_KHR;
+#if defined(VK_EXT_present_timing)
+    observedTargetTime = 0;
+    observedTimingNodes = 0;
+#endif
     for (const void* chain = info->pNext; chain;) {
         VkStructureType type{}; std::memcpy(&type, chain, sizeof(type));
         if (type == VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_FENCE_INFO_EXT) {
@@ -61,11 +90,22 @@ VkResult VKAPI_CALL present(VkQueue queue, const VkPresentInfoKHR* info) {
         } else if (type == VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_MODE_INFO_EXT) {
             VkSwapchainPresentModeInfoEXT node{}; std::memcpy(&node, chain, sizeof(node));
             observedMode = node.pPresentModes[0];
+#if defined(VK_EXT_present_timing)
+        } else if (type == VK_STRUCTURE_TYPE_PRESENT_TIMINGS_INFO_EXT) {
+            VkPresentTimingsInfoEXT node{}; std::memcpy(&node, chain, sizeof(node));
+            expect(node.swapchainCount == 1 && node.pTimingInfos, "timing request lost its array");
+            observedTargetTime = node.pTimingInfos[0].targetTime;
+            ++observedTimingNodes;
+#endif
         } else expect(false, "unknown metadata reached worker");
         const void* next{};
         std::memcpy(&next, static_cast<const std::byte*>(chain) +
             offsetof(VkBaseInStructure, pNext), sizeof(next));
         chain = next;
+    }
+    {
+        const std::lock_guard lock(presentLogMutex);
+        presentLog.push_back(observedId ? observedId : observedId2);
     }
     ++calls;
     --active;
@@ -870,15 +910,20 @@ void overlapRingOfThree() {
     expect(worker.beginBatch(1, {.expediteOnJoin = true, .overlap = true}), "first ring batch rejected");
     expect(worker.enqueue(info, due), "first ring output rejected");
     worker.closeBatch();
+    // The second and third batches carry identified outputs, which overlap the pending
+    // batches ahead of them and register their own present IDs.
     expect(worker.beginBatch(1, {.expediteOnJoin = true, .overlap = true}), "second ring batch rejected");
-    expect(!worker.enqueue(identified, due + 1ms), "identified image admitted behind a pending batch");
     image = 1;
-    expect(worker.enqueue(info, due + 1ms), "second ring output rejected");
+    expect(worker.enqueue(identified, due + 1ms), "identified image rejected behind a pending batch");
     worker.closeBatch();
     expect(worker.beginBatch(1, {.expediteOnJoin = true, .overlap = true}), "third ring batch rejected");
-    expect(!worker.enqueue(identified, due + 2ms), "identified image admitted with two pending batches");
+    uint64_t thirdId = 202;
+    VkPresentIdKHR thirdIds{.sType = VK_STRUCTURE_TYPE_PRESENT_ID_KHR,
+        .swapchainCount = 1, .pPresentIds = &thirdId};
+    VkPresentInfoKHR thirdIdentified = info;
+    thirdIdentified.pNext = &thirdIds;
     image = 2;
-    expect(worker.enqueue(info, due + 2ms), "third ring output rejected");
+    expect(worker.enqueue(thirdIdentified, due + 2ms), "identified image rejected with two pending batches");
     worker.closeBatch();
     expect(!worker.beginBatch(1, {.expediteOnJoin = true, .overlap = true}),
         "fourth overlapped batch admitted beside three pending batches");
@@ -903,7 +948,7 @@ void overlapRingOfThree() {
     expect(timedImages.size() == 3 && timedImages[0].first == 0 && timedImages[1].first == 1 &&
             timedImages[2].first == 2, "ring presentation order changed");
 }
-void overlapRejectsPresentId() {
+void overlapAcceptsPresentId() {
     auto queue = std::make_shared<DeferredPresentQueue>();
     queue->queue = handle<VkQueue>(7);
     VkSwapchainKHR swapchain = handle<VkSwapchainKHR>(11);
@@ -925,13 +970,13 @@ void overlapRejectsPresentId() {
         .swapchainCount = 1, .pPresentIds = &id};
     VkPresentInfoKHR identified = info;
     identified.pNext = &ids;
-    expect(!worker.enqueue(identified, start + 1ms), "overlapping second batch registered a present ID");
+    expect(worker.enqueue(identified, start + 1ms), "overlapping second batch rejected a present ID");
     expect(worker.enqueue(info, start + 1ms), "overlapping second batch rejected an unidentified image");
     worker.closeBatch();
     const auto older = worker.finish(UINT64_MAX);
     expect(older.has_value() && older->count == 1, "overlapping head batch did not complete");
     const auto newer = worker.finish(UINT64_MAX);
-    expect(newer.has_value() && newer->count == 1, "overlapping second batch did not complete");
+    expect(newer.has_value() && newer->count == 2, "overlapping second batch did not complete");
 }
 void overlapAcceptsOwnedPresentId() {
 #if defined(VK_KHR_present_id2)
@@ -944,7 +989,7 @@ void overlapAcceptsOwnedPresentId() {
         .waitSemaphoreCount = 1, .pWaitSemaphores = &wait,
         .swapchainCount = 1, .pSwapchains = &swapchain, .pImageIndices = &image};
     uint64_t owned = 101;
-    uint64_t foreign = 101;
+    uint64_t foreign = 102;
     DeferredPresent worker(queue, present);
     worker.setOwnedPresentIdStorage(&owned);
     lowerResult = VK_SUCCESS;
@@ -958,7 +1003,7 @@ void overlapAcceptsOwnedPresentId() {
         .swapchainCount = 1, .pPresentIds = &foreign};
     VkPresentInfoKHR foreignInfo = info;
     foreignInfo.pNext = &foreignIds;
-    expect(!worker.enqueue(foreignInfo, start + 1ms), "overlapping second batch accepted a present ID from other storage");
+    expect(worker.enqueue(foreignInfo, start + 1ms), "overlapping second batch rejected an application present ID");
     VkPresentId2KHR ownedIds{.sType = VK_STRUCTURE_TYPE_PRESENT_ID_2_KHR,
         .swapchainCount = 1, .pPresentIds = &owned};
     VkPresentInfoKHR ownedInfo = info;
@@ -968,10 +1013,234 @@ void overlapAcceptsOwnedPresentId() {
     const auto older = worker.finish(UINT64_MAX);
     expect(older.has_value() && older->count == 1, "overlapping head batch did not complete");
     const auto newer = worker.finish(UINT64_MAX);
-    expect(newer.has_value() && newer->count == 1, "overlapping owned-ID batch did not complete");
+    expect(newer.has_value() && newer->count == 2, "overlapping owned-ID batch did not complete");
     expect(observedId2 == 101, "the lower present did not receive the owned present ID");
 #endif
 }
+// Two overlapping identified batches. Each wait joins its own record: an undelivered
+// record is not answered by the driver, an unregistered ID goes straight to it, and
+// presentation follows batch order whatever order the waits come in.
+void twoIdentifiedBatchesJoinTheirOwnRecords() {
+    auto queue = std::make_shared<DeferredPresentQueue>();
+    queue->queue = handle<VkQueue>(7);
+    const auto device = handle<VkDevice>(42);
+    const auto swapchain = handle<VkSwapchainKHR>(43);
+    VkSemaphore wait = handle<VkSemaphore>(44);
+    const std::array<uint64_t, 2> ids{401, 402};
+    std::array<uint32_t, 2> images{0, 1};
+    std::array<VkPresentIdKHR, 2> nodes{};
+    std::array<VkPresentInfoKHR, 2> infos{};
+    for (size_t i = 0; i < ids.size(); ++i) {
+        nodes[i] = VkPresentIdKHR{.sType = VK_STRUCTURE_TYPE_PRESENT_ID_KHR,
+            .swapchainCount = 1, .pPresentIds = &ids[i]};
+        infos[i] = VkPresentInfoKHR{.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, .pNext = &nodes[i],
+            .waitSemaphoreCount = 1, .pWaitSemaphores = &wait,
+            .swapchainCount = 1, .pSwapchains = &swapchain, .pImageIndices = &images[i]};
+    }
+    DeferredPresent worker(queue, present, device);
+    clearPresentLog();
+    lowerResult = VK_SUCCESS;
+    // Far deadlines: only a join presents a batch.
+    const auto due = DeferredPresent::Clock::now() + 2s;
+    expect(worker.beginBatch(1, {.expediteOnJoin = true, .overlap = true}) && worker.enqueue(infos[0], due),
+        "first identified batch rejected");
+    worker.closeBatch();
+    expect(worker.beginBatch(1, {.expediteOnJoin = true, .overlap = true}) && worker.enqueue(infos[1], due),
+        "overlapping identified batch rejected");
+    worker.closeBatch();
+    expect(worker.retainable() && presentedIds().empty(), "overlapping identified batches presented before a join");
+
+    std::atomic_int driverCalls{};
+    const auto driver = [&driverCalls](uint64_t) { ++driverCalls; return VK_SUCCESS; };
+    expect(DeferredPresent::waitForPresent(device, swapchain, ids[1], 0, driver) == VK_TIMEOUT && driverCalls == 0,
+        "a poll for an undelivered record reached the driver");
+    expect(DeferredPresent::waitForPresent(device, swapchain, 999, 0, driver) == VK_SUCCESS && driverCalls == 1,
+        "an ID no record names did not go straight to the driver");
+
+    // The newer wait starts first; each returns only after its own real.
+    VkResult newer = VK_ERROR_UNKNOWN, older = VK_ERROR_UNKNOWN;
+    std::thread newerWaiter([&] {
+        newer = DeferredPresent::waitForPresent(device, swapchain, ids[1], UINT64_MAX, awaitedPresent(ids[1]));
+    });
+    std::thread olderWaiter([&] {
+        older = DeferredPresent::waitForPresent(device, swapchain, ids[0], UINT64_MAX, awaitedPresent(ids[0]));
+    });
+    const auto first = worker.finish(UINT64_MAX);
+    const auto second = worker.finish(UINT64_MAX);
+    newerWaiter.join();
+    olderWaiter.join();
+    expect(older == VK_SUCCESS && newer == VK_SUCCESS,
+        "a joined wait returned before its own real was presented");
+    expect(presentedIds() == std::vector<uint64_t>{ids[0], ids[1]},
+        "overlapping identified batches were presented out of order");
+    expect(first.has_value() && first->count == 1 && second.has_value() && second->count == 1,
+        "overlapping identified batches did not complete");
+}
+
+// Three overlapping identified batches. Joining the oldest leaves the two newer records
+// undelivered, so their waits block until a later join presents them. Each wait joins its
+// own record, and the newest record keeps the completion pacing. Once the list is full, a
+// later identified batch drops the oldest submitted record, and that ID then goes to the driver.
+void threeIdentifiedBatchesJoinInAnyOrder() {
+    auto queue = std::make_shared<DeferredPresentQueue>();
+    queue->queue = handle<VkQueue>(7);
+    const auto device = handle<VkDevice>(42);
+    const auto swapchain = handle<VkSwapchainKHR>(43);
+    VkSemaphore wait = handle<VkSemaphore>(44);
+    const std::array<uint64_t, 3> ids{411, 412, 413};
+    std::array<uint32_t, 3> images{0, 1, 2};
+    std::array<VkPresentIdKHR, 3> nodes{};
+    std::array<VkPresentInfoKHR, 3> infos{};
+    for (size_t i = 0; i < ids.size(); ++i) {
+        nodes[i] = VkPresentIdKHR{.sType = VK_STRUCTURE_TYPE_PRESENT_ID_KHR,
+            .swapchainCount = 1, .pPresentIds = &ids[i]};
+        infos[i] = VkPresentInfoKHR{.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, .pNext = &nodes[i],
+            .waitSemaphoreCount = 1, .pWaitSemaphores = &wait,
+            .swapchainCount = 1, .pSwapchains = &swapchain, .pImageIndices = &images[i]};
+    }
+    DeferredPresent worker(queue, present, device);
+    clearPresentLog();
+    lowerResult = VK_SUCCESS;
+    const auto due = DeferredPresent::Clock::now() + 2s;
+    for (const auto& info : infos) {
+        expect(worker.beginBatch(1, {.expediteOnJoin = true, .overlap = true}) && worker.enqueue(info, due),
+            "overlapping identified batch rejected");
+        worker.closeBatch();
+    }
+    expect(!worker.beginBatch(1, {.expediteOnJoin = true, .overlap = true}),
+        "a fourth batch was admitted beside three pending batches");
+
+    // Retaining the newest two joins only the oldest batch.
+    VkResult oldest = VK_ERROR_UNKNOWN;
+    std::thread oldestWaiter([&] {
+        oldest = DeferredPresent::waitForPresent(device, swapchain, ids[0], UINT64_MAX, awaitedPresent(ids[0]));
+    });
+    const auto joinedOldest = worker.finish(UINT64_MAX, true, true);
+    oldestWaiter.join();
+    expect(joinedOldest.has_value() && joinedOldest->count == 1 && joinedOldest->calls[0].imageIndex == 0,
+        "retained join did not complete the oldest batch");
+    expect(oldest == VK_SUCCESS, "the oldest wait did not return its own presentation");
+    expect(presentedIds() == std::vector<uint64_t>{ids[0]}, "retained join presented a newer batch");
+    // The oldest record is not the newest, so its wait leaves completion pacing alone.
+    expect(worker.takeCompletionPacingWait().finished == DeferredPresent::Clock::time_point{},
+        "a wait on an older record set the newest record's completion pacing");
+    expect(DeferredPresent::waitForPresent(device, swapchain, ids[2], 0, [](uint64_t) { return VK_SUCCESS; }) == VK_TIMEOUT,
+        "a poll for the newest undelivered record reached the driver");
+    expect(DeferredPresent::waitForPresent(device, swapchain, ids[0], 0, [](uint64_t) { return VK_SUCCESS; }) == VK_SUCCESS,
+        "a poll for the joined record did not reach the driver");
+
+    // The two newer waits block until their joins; presentation then keeps batch order.
+    VkResult middle = VK_ERROR_UNKNOWN, newest = VK_ERROR_UNKNOWN;
+    std::thread middleWaiter([&] {
+        middle = DeferredPresent::waitForPresent(device, swapchain, ids[1], UINT64_MAX, awaitedPresent(ids[1]));
+    });
+    std::thread newestWaiter([&] {
+        newest = DeferredPresent::waitForPresent(device, swapchain, ids[2], UINT64_MAX, awaitedPresent(ids[2]));
+    });
+    std::this_thread::sleep_for(10ms);
+    expect(presentedIds() == std::vector<uint64_t>{ids[0]}, "a blocked wait presented a batch");
+    const auto joinedMiddle = worker.finish(UINT64_MAX);
+    const auto joinedNewest = worker.finish(UINT64_MAX);
+    middleWaiter.join();
+    newestWaiter.join();
+    expect(middle == VK_SUCCESS && newest == VK_SUCCESS,
+        "a joined wait returned before its own real was presented");
+    expect(presentedIds() == std::vector<uint64_t>{ids[0], ids[1], ids[2]},
+        "three overlapping identified batches were presented out of order");
+    expect(joinedMiddle.has_value() && joinedMiddle->calls[0].imageIndex == 1 &&
+            joinedNewest.has_value() && joinedNewest->calls[0].imageIndex == 2,
+        "the remaining batches did not complete in order");
+    expect(worker.takeCompletionPacingWait().finished != DeferredPresent::Clock::time_point{},
+        "the newest record's wait did not set completion pacing");
+
+    // All three are delivered and joined, so a fourth identified batch drops the oldest one.
+    const std::array<uint64_t, 1> fourth{414};
+    VkPresentIdKHR fourthNode{.sType = VK_STRUCTURE_TYPE_PRESENT_ID_KHR,
+        .swapchainCount = 1, .pPresentIds = &fourth[0]};
+    VkPresentInfoKHR fourthInfo{.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, .pNext = &fourthNode,
+        .waitSemaphoreCount = 1, .pWaitSemaphores = &wait,
+        .swapchainCount = 1, .pSwapchains = &swapchain, .pImageIndices = &images[0]};
+    expect(worker.beginBatch(1, {.overlap = true}) && worker.enqueue(fourthInfo, DeferredPresent::Clock::now()),
+        "an identified batch was refused after the earlier records were delivered");
+    worker.closeBatch();
+    expect(DeferredPresent::waitForPresent(device, swapchain, ids[0], 0, [](uint64_t) { return VK_SUCCESS; }) == VK_SUCCESS,
+        "a dropped record did not go straight to the driver");
+    expect(worker.finish(UINT64_MAX).has_value(), "the later identified batch did not complete");
+}
+
+// The timing request of a VKD3D-Proton present is copied at admission and rebuilt on the real.
+void timingRequestIsCopiedAndRebuilt() {
+#if defined(VK_EXT_present_timing)
+    auto queue = std::make_shared<DeferredPresentQueue>();
+    queue->queue = handle<VkQueue>(7);
+    const auto device = handle<VkDevice>(42);
+    const auto swapchain = handle<VkSwapchainKHR>(43);
+    VkSemaphore wait = handle<VkSemaphore>(44);
+    uint32_t image = 0;
+    uint64_t id = 421;
+    VkPresentIdKHR ids{.sType = VK_STRUCTURE_TYPE_PRESENT_ID_KHR, .swapchainCount = 1, .pPresentIds = &id};
+    VkPresentTimingInfoEXT timing{.sType = VK_STRUCTURE_TYPE_PRESENT_TIMING_INFO_EXT, .targetTime = 12345};
+    VkPresentTimingsInfoEXT timings{.sType = VK_STRUCTURE_TYPE_PRESENT_TIMINGS_INFO_EXT,
+        .pNext = &ids, .swapchainCount = 1, .pTimingInfos = &timing};
+    VkPresentInfoKHR info{.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, .pNext = &timings,
+        .waitSemaphoreCount = 1, .pWaitSemaphores = &wait,
+        .swapchainCount = 1, .pSwapchains = &swapchain, .pImageIndices = &image};
+    expect(DeferredPresent::supportsChain(&timings), "a VKD3D-Proton timing request was not accepted");
+
+    // An inner pNext of its own, or a second swapchain, keeps the present synchronous.
+    VkPresentTimingInfoEXT chained = timing;
+    chained.pNext = &ids;
+    VkPresentTimingsInfoEXT chainedTimings = timings;
+    chainedTimings.pTimingInfos = &chained;
+    expect(!DeferredPresent::supportsChain(&chainedTimings), "a timing info with its own pNext was accepted");
+    VkPresentTimingsInfoEXT twoSwapchains = timings;
+    twoSwapchains.swapchainCount = 2;
+    expect(!DeferredPresent::supportsChain(&twoSwapchains), "a timing request for two swapchains was accepted");
+
+    DeferredPresent worker(queue, present, device);
+    clearPresentLog();
+    lowerResult = VK_SUCCESS;
+    expect(worker.beginBatch(1) && worker.enqueue(info, DeferredPresent::Clock::now() + 20ms),
+        "a timing request was not admitted to the worker");
+    // The worker keeps its own copy: the application's struct may change after admission.
+    timing.targetTime = 999;
+    worker.closeBatch();
+    expect(worker.finish(UINT64_MAX).has_value(), "the timed batch did not complete");
+    expect(observedTimingNodes == 1 && observedTargetTime == 12345,
+        "the real present did not carry the copied timing request");
+#endif
+}
+
+// A VKD3D-Proton chain of six known nodes, each kind once, is still admitted; a seventh is not.
+void sixKnownNodesAreAccepted() {
+#if defined(VK_EXT_present_timing) && defined(VK_KHR_present_id2) && defined(VK_NV_present_metering)
+    uint64_t id = 431, id2 = 432;
+    VkFence fenceHandle = handle<VkFence>(0x51);
+    VkPresentModeKHR modeValue = VK_PRESENT_MODE_FIFO_KHR;
+    VkPresentTimingInfoEXT timing{.sType = VK_STRUCTURE_TYPE_PRESENT_TIMING_INFO_EXT};
+    VkPresentTimingsInfoEXT timings{.sType = VK_STRUCTURE_TYPE_PRESENT_TIMINGS_INFO_EXT,
+        .swapchainCount = 1, .pTimingInfos = &timing};
+    VkSwapchainPresentModeInfoEXT mode{.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_MODE_INFO_EXT,
+        .swapchainCount = 1, .pPresentModes = &modeValue};
+    VkPresentId2KHR ids2{.sType = VK_STRUCTURE_TYPE_PRESENT_ID_2_KHR, .swapchainCount = 1, .pPresentIds = &id2};
+    VkPresentIdKHR ids{.sType = VK_STRUCTURE_TYPE_PRESENT_ID_KHR, .swapchainCount = 1, .pPresentIds = &id};
+    VkSwapchainPresentFenceInfoEXT fences{.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_FENCE_INFO_EXT,
+        .swapchainCount = 1, .pFences = &fenceHandle};
+    VkSetPresentConfigNV metering{.sType = VK_STRUCTURE_TYPE_SET_PRESENT_CONFIG_NV, .numFramesPerBatch = 2};
+    timings.pNext = &mode;
+    mode.pNext = &ids2;
+    ids2.pNext = &ids;
+    ids.pNext = &fences;
+    fences.pNext = &metering;
+    expect(DeferredPresent::supportsChain(&timings), "six known present nodes were not accepted");
+    // A seventh node, here a repeated fence, is beyond the bound.
+    VkSwapchainPresentFenceInfoEXT extra = fences;
+    extra.pNext = nullptr;
+    metering.pNext = &extra;
+    expect(!DeferredPresent::supportsChain(&timings), "a seventh present node was accepted");
+#endif
+}
+
 void crossBatchChaining() {
     auto queue = std::make_shared<DeferredPresentQueue>();
     queue->queue = handle<VkQueue>(7);
@@ -3241,7 +3510,9 @@ int main(int argc, char** argv) {
     waitForRetainedId(); observeCopiesWithoutChangingDelivery(); observerLifetimeAndForwarding();
     releasedBatchBoundsAndExpedites(); overlappingBatchRetainsOlder(); nonOverlappableDoesNotRetain();
     overlapAcquireDoesNotDrainFutureOutputs();
-    overlapRingOfThree(); overlapRejectsPresentId(); overlapAcceptsOwnedPresentId(); crossBatchChaining();
+    overlapRingOfThree(); overlapAcceptsPresentId(); overlapAcceptsOwnedPresentId(); crossBatchChaining();
+    twoIdentifiedBatchesJoinTheirOwnRecords(); threeIdentifiedBatchesJoinInAnyOrder();
+    timingRequestIsCopiedAndRebuilt(); sixKnownNodesAreAccepted();
     overlappedChainShiftsLaterOutputs(); expeditedOutputAnchorsNextBatch();
     generatedCopyPresentsAcquiredImage(); generatedCopySkipsWithoutImage(); generatedCopySkipsOutOfRangeImage();
     generatedCopyNeedsOpenBatch(); generatedCopyAddsPrivateTail(); generatedSkipAddsPrivateTail();

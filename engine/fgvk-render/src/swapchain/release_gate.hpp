@@ -30,6 +30,11 @@ namespace fgvk::layer {
 // successful wait for that value until the deadline. A swapchain owner only
 // stops holding its present after such waits have been observed; an
 // application that never waits keeps the ordinary present hold.
+//
+// A present that carries an application present ID (VKD3D-Proton with VSync on)
+// is released the same way through that ID: the token is the present itself, and
+// the application's successful wait on the ID (its frame-latency thread) is held to
+// the deadline. Tokens of the two kinds never match each other.
 class ReleaseGate {
 public:
     using Clock = std::chrono::steady_clock;
@@ -94,8 +99,17 @@ public:
             return;
         const auto& signal = submit.pSignalSemaphoreInfos[0];
         if (!signal.semaphore || signal.value == 0) return;
-        record(reinterpret_cast<uint64_t>(signal.semaphore), signal.value,
+        record(Kind::Semaphore, reinterpret_cast<uint64_t>(signal.semaphore), signal.value,
             slot.deadline, std::move(slot.owner), now);
+    }
+
+    // A present with a non-zero application present ID: the token is that ID on
+    // the swapchain. The caller records it when the present returns, so the
+    // application's own wait for the ID is the release wait.
+    void recordPresentId(std::shared_ptr<Owner> owner, VkSwapchainKHR swapchain, uint64_t presentId,
+            Clock::time_point deadline, Clock::time_point now = Clock::now()) {
+        record(Kind::PresentId, reinterpret_cast<uint64_t>(swapchain), presentId, deadline,
+            std::move(owner), now);
     }
 
     [[nodiscard]] bool empty() const noexcept {
@@ -110,37 +124,30 @@ public:
         if (empty() || (info.flags & VK_SEMAPHORE_WAIT_ANY_BIT) ||
                 !info.pSemaphores || !info.pValues)
             return std::nullopt;
-        const std::lock_guard lock(mutex);
-        std::optional<Clock::time_point> latest;
-        const auto satisfied = [&](const Entry& entry) {
+        return releaseSatisfied(now, limit, [&](const Entry& entry) {
+            if (entry.kind != Kind::Semaphore) return false;
             for (uint32_t i = 0; i < info.semaphoreCount; ++i)
                 if (reinterpret_cast<uint64_t>(info.pSemaphores[i]) == entry.key &&
                         entry.value <= info.pValues[i])
                     return true;
             return false;
-        };
-        for (const auto& entry : entries) {
-            if (!satisfied(entry) || now - entry.registered > maxAge) continue;
-            const auto owner = entry.owner.lock();
-            if (!owner || !owner->alive.load(std::memory_order_relaxed)) continue;
-            const auto deadline = std::min(entry.deadline, now + maxDelay);
-            latest = latest ? std::max(*latest, deadline) : deadline;
-        }
-        if (latest && *latest > limit)
-            return Release{*latest, false};
-        bool any = false;
-        std::erase_if(entries, [&](const Entry& entry) {
-            if (!satisfied(entry)) return false;
-            if (const auto owner = entry.owner.lock()) {
-                release(*owner);
-                owner->consumedRun.fetch_add(1, std::memory_order_relaxed);
-            }
-            any = true;
-            return true;
         });
-        count.store(entries.size(), std::memory_order_release);
-        if (!any) return std::nullopt;
-        return latest ? std::optional{Release{*latest, true}} : std::nullopt;
+    }
+
+    // After a successful wait on a present ID of swapchain. The wait satisfies
+    // every present ID token on that swapchain at or below presentId.
+    [[nodiscard]] std::optional<Release> releasedPresent(VkSwapchainKHR swapchain, uint64_t presentId,
+            Clock::time_point now, Clock::time_point limit) {
+        if (empty()) return std::nullopt;
+        const auto key = reinterpret_cast<uint64_t>(swapchain);
+        return releaseSatisfied(now, limit, [&](const Entry& entry) {
+            return entry.kind == Kind::PresentId && entry.key == key && entry.value <= presentId;
+        });
+    }
+
+    // Present ID tokens consumed by the application's waits, process-wide.
+    [[nodiscard]] uint64_t presentIdReleases() const noexcept {
+        return presentIdConsumed.load(std::memory_order_relaxed);
     }
 
     // Swapchain teardown: forget its tokens so drains never sleep for it.
@@ -154,11 +161,13 @@ public:
     }
 
 private:
+    enum class Kind : uint8_t { Semaphore, PresentId };
     struct Entry {
         uint64_t key{};
         uint64_t value{};
         Clock::time_point deadline{}, registered{};
         std::weak_ptr<Owner> owner;
+        Kind kind{Kind::Semaphore};
     };
     struct Pending {
         std::shared_ptr<Owner> owner;
@@ -181,14 +190,49 @@ private:
         entries.erase(entry);
     }
 
-    void record(uint64_t key, uint64_t value, Clock::time_point deadline,
+    // Consumes every live token that satisfied(entry) accepts. Returns the latest
+    // deadline among them, or nothing when none is affected. A deadline after limit
+    // keeps the tokens and reports it unconsumed.
+    template<typename Satisfied>
+    std::optional<Release> releaseSatisfied(Clock::time_point now, Clock::time_point limit,
+            Satisfied&& satisfied) {
+        const std::lock_guard lock(mutex);
+        std::optional<Clock::time_point> latest;
+        for (const auto& entry : entries) {
+            if (!satisfied(entry) || now - entry.registered > maxAge) continue;
+            const auto owner = entry.owner.lock();
+            if (!owner || !owner->alive.load(std::memory_order_relaxed)) continue;
+            const auto deadline = std::min(entry.deadline, now + maxDelay);
+            latest = latest ? std::max(*latest, deadline) : deadline;
+        }
+        if (latest && *latest > limit)
+            return Release{*latest, false};
+        bool any = false;
+        std::erase_if(entries, [&](const Entry& entry) {
+            if (!satisfied(entry)) return false;
+            if (const auto owner = entry.owner.lock()) {
+                release(*owner);
+                owner->consumedRun.fetch_add(1, std::memory_order_relaxed);
+            }
+            if (entry.kind == Kind::PresentId)
+                presentIdConsumed.fetch_add(1, std::memory_order_relaxed);
+            any = true;
+            return true;
+        });
+        count.store(entries.size(), std::memory_order_release);
+        if (!any) return std::nullopt;
+        return latest ? std::optional{Release{*latest, true}} : std::nullopt;
+    }
+
+    void record(Kind kind, uint64_t key, uint64_t value, Clock::time_point deadline,
             std::shared_ptr<Owner> owner, Clock::time_point now) {
         if (!owner) return;
         const std::lock_guard lock(mutex);
-        // A value at or below an existing token means the handle was reused
-        // or the counter restarted; older tokens can no longer be matched.
+        // A value at or below an existing token of the same kind and handle means the
+        // handle was reused or the counter restarted; older tokens can no longer be matched.
         for (auto entry = entries.begin(); entry != entries.end();) {
-            if ((entry->key == key && entry->value >= value) || now - entry->registered > maxAge) {
+            if ((entry->kind == kind && entry->key == key && entry->value >= value) ||
+                    now - entry->registered > maxAge) {
                 const auto offset = entry - entries.begin();
                 eraseEntry(entry);
                 entry = entries.begin() + offset;
@@ -208,7 +252,7 @@ private:
         }
         if (entries.size() >= capacity) eraseEntry(entries.begin());
         try {
-            entries.push_back({key, value, deadline, now, owner});
+            entries.push_back({key, value, deadline, now, owner, kind});
             owner->outstanding.fetch_add(1, std::memory_order_relaxed);
         } catch (...) {}
         count.store(entries.size(), std::memory_order_release);
@@ -217,6 +261,7 @@ private:
     std::mutex mutex;
     std::vector<Entry> entries;
     std::atomic<size_t> count{0};
+    std::atomic<uint64_t> presentIdConsumed{0};
 };
 
 // One swapchain context's identity in the gate. Destruction retires its
@@ -239,6 +284,10 @@ public:
     [[nodiscard]] bool active() const noexcept { return owner && owner->active(); }
     void arm(VkQueue queue, ReleaseGate::Clock::time_point deadline) const {
         if (owner) ReleaseGate::arm(owner, queue, deadline);
+    }
+    void recordPresentId(VkSwapchainKHR swapchain, uint64_t presentId,
+            ReleaseGate::Clock::time_point deadline) const {
+        if (owner) ReleaseGate::global().recordPresentId(owner, swapchain, presentId, deadline);
     }
 
 private:
