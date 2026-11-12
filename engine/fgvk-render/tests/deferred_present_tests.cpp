@@ -3099,6 +3099,70 @@ static_assert([] {
         if (controller.step(i == 0 ? -10ms : 0ms, 2ms) > 500us) return false;
     return controller.step(0ms, 0ms) == 0ns && controller.bias == 0ns;
 }());
+
+// S8b: markers of real k-1, generated k, real k at a 13 ms source period. The generated
+// output lands `bias` after the midpoint of the unmoved reals; each real lands at its slot
+// plus the controller's current offset (its response). Noise moves reals in pairs and the
+// generated output alternately, so the midpoint itself moves.
+constexpr bool realOffsetSimulation(std::chrono::nanoseconds bias, bool noisy = false) {
+    using namespace std::chrono_literals;
+    RealOffsetController controller;
+    constexpr std::chrono::nanoseconds period = 13ms; // nanoseconds: half of it is exact
+    const auto realAt = [&](int k) {
+        return period * k + controller.offset + (noisy ? ((k / 2) % 2 ? 500us : -500us) : 0us);
+    };
+    (void)controller.observe(false, 0, realAt(0));
+    for (int k = 1; k <= 400; ++k) {
+        const auto generated = period * k - period / 2 + bias + (noisy ? (k % 2 ? 300us : -300us) : 0us);
+        (void)controller.observe(true, static_cast<uint64_t>(k), generated);
+        if (!controller.observe(false, static_cast<uint64_t>(k), realAt(k))) return false;
+        if (controller.offset > RealOffsetController::limit || controller.offset < -RealOffsetController::limit)
+            return false;
+    }
+    const auto miss = controller.offset - bias;
+    return controller.accepted == 400 && miss <= 50us && miss >= -50us;
+}
+static_assert(realOffsetSimulation(500us));
+static_assert(realOffsetSimulation(-500us));
+static_assert(realOffsetSimulation(0us));
+static_assert(realOffsetSimulation(400us, true));
+static_assert(realOffsetSimulation(-600us, true));
+static_assert([] {
+    using namespace std::chrono_literals;
+    using C = RealOffsetController;
+    C c;
+    // A sample needs real k-1, generated k, real k in that order (midpoint = real k-1 + 6.5 ms).
+    (void)c.observe(false, 1, 13ms);
+    if (c.observe(false, 2, 26ms)) return false;                     // no generated
+    (void)c.observe(true, 3, 32ms);
+    if (c.observe(false, 4, 39ms)) return false;                     // generated of another source
+    (void)c.observe(true, 6, 45ms);
+    if (c.observe(false, 6, 52ms)) return false;                     // source gap 4 -> 6
+    (void)c.observe(true, 7, 70ms);
+    if (c.observe(false, 7, 78ms)) return false;                     // step 26 ms > 25
+    (void)c.observe(true, 8, 81ms);
+    if (c.observe(false, 8, 85ms)) return false;                     // step 7 ms < 8
+    (void)c.observe(true, 9, 85ms + 6500us + 3500us);
+    if (c.observe(false, 9, 98ms)) return false;                     // error +3.5 ms
+    (void)c.observe(true, 10, 98ms + 6500us - 3500us);
+    if (c.observe(false, 10, 111ms)) return false;                   // error -3.5 ms
+    (void)c.observe(true, 11, 112ms);
+    if (c.observe(false, 11, 111ms)) return false;                   // real not after generated
+    if (c.offset != 0ns || c.accepted != 0) return false;
+    (void)c.observe(true, 12, 111ms + 6500us + 3ms);
+    if (!c.observe(false, 12, 124ms)) return false;                  // error +3 ms, clamped to 1 ms
+    if (c.offset != C::Duration{1ms} / C::gain || c.lastError != 3ms) return false;
+    c.forget();
+    (void)c.observe(true, 13, 130ms);
+    if (c.observe(false, 13, 137ms)) return false;                   // history dropped
+    if (c.offset != C::Duration{1ms} / C::gain) return false;                     // offset kept
+    for (int k = 14; k < 400; ++k) {                                 // +1 ms each: saturates
+        const auto previous = 137ms + 13ms * (k - 14);
+        (void)c.observe(true, static_cast<uint64_t>(k), previous + 6500us + 1ms);
+        if (!c.observe(false, static_cast<uint64_t>(k), previous + 13ms)) return false;
+    }
+    return c.offset == C::limit;
+}());
 }
 
 int main(int argc, char** argv) {

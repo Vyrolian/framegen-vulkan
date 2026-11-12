@@ -2,7 +2,9 @@
 #pragma once
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -94,5 +96,73 @@ template <typename TimePoint, typename Duration>
     }();
     return offset;
 }
+
+// S8b: FGVK_REAL_OFFSET_US=auto derives the S7 offset at run time from the GPU present
+// marker: the start of the private queue's next GPU work after each lower present, which is
+// when that present reaches the screen up to a constant. Read once per process.
+[[nodiscard]] inline bool realOffsetAuto() noexcept {
+    static const bool enabled = [] {
+        const char* text = std::getenv("FGVK_REAL_OFFSET_US");
+        const bool on = text && std::strcmp(text, "auto") == 0;
+        if (on) std::fprintf(stderr, "framegen-vulkan: real offset: auto\n");
+        return on;
+    }();
+    return enabled;
+}
+// S8b diagnostics only: the last worker's current auto offset and accepted samples.
+inline std::atomic<int64_t> realOffsetAutoNs{0};
+inline std::atomic<uint64_t> realOffsetAutoSamples{0};
+
+/// S8b: integrates the generated output's distance from the midpoint of its two reals,
+/// measured on the private queue's GPU clock, into the real offset. A positive error
+/// (generated late) moves the reals later. Only the mean is corrected: the per-frame
+/// GPU-turn wait is decided after the present call. Worker thread only.
+struct RealOffsetController {
+    using Duration = std::chrono::nanoseconds;
+    static constexpr Duration limit = std::chrono::microseconds{1000};
+    static constexpr Duration errorClamp = std::chrono::milliseconds{1};
+    static constexpr Duration errorReject = std::chrono::milliseconds{3};
+    static constexpr Duration minStep = std::chrono::milliseconds{8};
+    static constexpr Duration maxStep = std::chrono::milliseconds{25};
+    static constexpr int64_t gain = 64;
+    Duration offset{};
+    Duration lastError{};
+    uint64_t accepted{};
+    bool haveReal{}, haveGenerated{};
+    uint64_t realSource{}, generatedSource{};
+    Duration realAt{}, generatedAt{};
+
+    /// One finished marker, in present order. Returns true when it completed an accepted sample.
+    constexpr bool observe(const bool generated, const uint64_t source, const Duration at) noexcept {
+        if (generated) {
+            generatedSource = source;
+            generatedAt = at;
+            haveGenerated = true;
+            return false;
+        }
+        bool used = false;
+        if (haveReal && haveGenerated && generatedSource == source && realSource + 1 == source &&
+                realAt < generatedAt && generatedAt < at) {
+            const auto step = at - realAt;
+            if (step >= minStep && step <= maxStep) {
+                const auto error = generatedAt - (realAt + step / 2);
+                if (error <= errorReject && error >= -errorReject) {
+                    offset = std::clamp(offset + std::clamp(error, -errorClamp, errorClamp) / gain,
+                        -limit, limit);
+                    lastError = error;
+                    ++accepted;
+                    used = true;
+                }
+            }
+        }
+        haveReal = true;
+        realSource = source;
+        realAt = at;
+        haveGenerated = false;
+        return used;
+    }
+    /// Drops the pending markers; the offset is kept.
+    constexpr void forget() noexcept { haveReal = haveGenerated = false; }
+};
 
 }

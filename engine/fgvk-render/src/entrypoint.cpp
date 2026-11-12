@@ -1189,11 +1189,14 @@ namespace {
                           << " acquire_tail=" << (privateQueue->tail != VK_NULL_HANDLE ? 1 : 0)
                           << " host_acquire=" << (hostAcquireAvailable ? 1 : 0)
                           << '\n';
-                // T4, GPU split profile only: the marker after each observed lower present.
+                // T4, GPU split profile, and S8b auto real offset: the marker after each lower present.
                 if (privateQueue->queue) {
                     privateQueue->marker = createPresentMarker(wrapper->second,
                         instance_info->copyCalibrationDevices.contains(*device));
-                    if (privateQueue->marker) privateQueue->markAfterPresent = &presentMarkerAfterPresent;
+                    if (privateQueue->marker) {
+                        privateQueue->markAfterPresent = &presentMarkerAfterPresent;
+                        if (realOffsetAuto()) privateQueue->readMarkerSamples = &readPresentMarkerSamples;
+                    }
                 }
                 if (privateQueue->queue)
                     instance_info->deferredPresentQueues.emplace(*device, std::move(privateQueue));
@@ -1468,6 +1471,7 @@ namespace {
                 owned != instance_info->deferredPresentQueues.end()) {
             const std::lock_guard lock(owned->second->mutex);
             owned->second->markAfterPresent = nullptr;
+            owned->second->readMarkerSamples = nullptr;
             owned->second->marker.reset();
         }
         instance_info->deferredPresentQueues.erase(device);

@@ -1,22 +1,28 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "swapchain/present_marker.hpp"
 #include "present_diagnostics.hpp"
+#include "swapchain/output_margin.hpp"
 #include "fgvk-common/vulkan/command_buffer.hpp"
 #include "fgvk-common/vulkan/fence.hpp"
 #include "fgvk-common/vulkan/gpu_clock.hpp"
 #include "fgvk-common/vulkan/timestamp_query_pool.hpp"
 #include "fgvk-common/vulkan/vulkan.hpp"
 
+#include <algorithm>
 #include <array>
+#include <cstddef>
 #include <chrono>
+#include <cstdio>
 #include <exception>
 #include <optional>
 #include <stdexcept>
+#include <utility>
 
 namespace fgvk::layer {
 namespace {
 
 constexpr size_t markerSlots = 32;
+constexpr size_t sampleCount = 64;
 
 struct MarkerSlot {
     std::optional<vk::CommandBuffer> command;
@@ -24,6 +30,7 @@ struct MarkerSlot {
     std::optional<vk::Fence> fence;
     bool busy{};
     uint64_t context{}, source{}, feedback{};
+    uint64_t sequence{}; // S8b: submit order; slots are reused in array order, not present order.
     bool generated{};
 };
 
@@ -36,10 +43,20 @@ struct PresentMarker {
     std::array<MarkerSlot, markerSlots> slots;
     std::optional<vk::CalibratedClock> clock;
     present_diagnostics::Clock::time_point calibratedAt{};
+    // Records go to the pacing profile only when its GPU split gate created the marker, and
+    // only for presents with a feedback id (the same set as before S8b).
+    bool log{};
+    // S8b, FGVK_REAL_OFFSET_US=auto only: finished markers, sampleNext % sampleCount.
+    bool keep{};
+    double periodNs{};
+    std::array<PresentMarkerSample, sampleCount> samples{};
+    uint64_t sampleNext{};
+    uint64_t submitted{};
 
     void emit(const MarkerSlot& slot, const bool available, const int64_t startNs, const int64_t endNs) noexcept {
-        present_diagnostics::logPacingPresentMarkerGpu(slot.context, slot.source, slot.feedback,
-            slot.generated, available, startNs, endNs);
+        if (log && slot.feedback != 0)
+            present_diagnostics::logPacingPresentMarkerGpu(slot.context, slot.source, slot.feedback,
+                slot.generated, available, startNs, endNs);
     }
 
     void collect() noexcept {
@@ -48,6 +65,10 @@ struct PresentMarker {
             calibratedAt = now;
             static_cast<void>(clock->recalibrate());
         }
+        // S8b: one queue completes in submit order, so sorting what one poll finds by submit
+        // order keeps the ring in present order.
+        std::array<std::pair<uint64_t, PresentMarkerSample>, markerSlots> found;
+        size_t foundCount = 0;
         for (auto& slot : slots) {
             if (!slot.busy) continue;
             const VkFence fence = slot.fence->handle();
@@ -56,11 +77,18 @@ struct PresentMarker {
             int64_t startNs{}, endNs{};
             try {
                 // The fence proved this submission's reset and writes done, so the values are its own.
-                if (const auto ticks = slot.queries->tryTimestamps(2); ticks && clock && clock->calibrated()) {
+                const auto ticks = slot.queries->tryTimestamps(2);
+                if (ticks && log && clock && clock->calibrated()) {
                     startNs = clock->monotonicNanoseconds(ticks->at(0));
                     endNs = clock->monotonicNanoseconds(ticks->at(1));
                     available = startNs != 0 && endNs != 0;
                 }
+                if (ticks && keep)
+                    found[foundCount++] = {slot.sequence, PresentMarkerSample{
+                        .context = slot.context, .source = slot.source,
+                        .gpuNs = static_cast<int64_t>(static_cast<double>(ticks->at(0)) * periodNs),
+                        .generated = slot.generated,
+                    }};
             } catch (const std::exception&) {
             }
             emit(slot, available, startNs, endNs);
@@ -70,16 +98,23 @@ struct PresentMarker {
             }
             slot.busy = false;
         }
+        std::sort(found.begin(), found.begin() + static_cast<std::ptrdiff_t>(foundCount),
+            [](const auto& a, const auto& b) { return a.first < b.first; });
+        for (size_t i = 0; i < foundCount; ++i) samples[sampleNext++ % sampleCount] = found[i].second;
     }
 };
 
 }
 
 std::shared_ptr<void> createPresentMarker(const vk::Vulkan& vk, const bool calibration) noexcept {
-    if (!present_diagnostics::pacingProfileEnabled() || !present_diagnostics::pacingGpuSplitProfileEnabled())
-        return nullptr;
+    const bool log = present_diagnostics::pacingProfileEnabled() &&
+        present_diagnostics::pacingGpuSplitProfileEnabled();
+    const bool keep = realOffsetAuto();
+    if (!log && !keep) return nullptr;
     try {
         auto marker = std::make_shared<PresentMarker>();
+        marker->log = log;
+        marker->keep = keep;
         marker->device = vk.dev();
         marker->submit = vk.df().QueueSubmit;
         marker->fenceStatus = vk.df().GetFenceStatus;
@@ -96,8 +131,9 @@ std::shared_ptr<void> createPresentMarker(const vk::Vulkan& vk, const bool calib
             slot.queries->write(slot.command->handle(), VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 1);
             slot.command->end(vk);
         }
+        marker->periodNs = marker->slots[0].queries->timestampPeriodNanoseconds();
         const auto get = [&](const char* name) { return vk.fi().GetDeviceProcAddr(vk.dev(), name); };
-        auto calibrate = calibration
+        auto calibrate = log && calibration
             ? reinterpret_cast<PFN_vkGetCalibratedTimestampsKHR>(get("vkGetCalibratedTimestampsKHR")) : nullptr;
         if (calibration && !calibrate)
             calibrate = reinterpret_cast<PFN_vkGetCalibratedTimestampsKHR>(get("vkGetCalibratedTimestampsEXT"));
@@ -106,11 +142,24 @@ std::shared_ptr<void> createPresentMarker(const vk::Vulkan& vk, const bool calib
                 marker->slots[0].queries->timestampPeriodNanoseconds());
         return marker;
     } catch (const std::exception& error) {
-        present_diagnostics::reportPacingGpuSplitUnavailable("present-marker", error.what());
+        if (log) present_diagnostics::reportPacingGpuSplitUnavailable("present-marker", error.what());
+        if (keep) std::fprintf(stderr, "framegen-vulkan: real offset: auto unavailable reason=%s\n", error.what());
     } catch (...) {
-        present_diagnostics::reportPacingGpuSplitUnavailable("present-marker", "unknown error");
+        if (log) present_diagnostics::reportPacingGpuSplitUnavailable("present-marker", "unknown error");
+        if (keep) std::fprintf(stderr, "framegen-vulkan: real offset: auto unavailable reason=unknown\n");
     }
     return nullptr;
+}
+
+size_t readPresentMarkerSamples(void* const owner, uint64_t* const cursor, PresentMarkerSample* const out,
+        const size_t max) noexcept {
+    auto& marker = *static_cast<PresentMarker*>(owner);
+    if (!marker.keep) return 0;
+    if (marker.sampleNext - *cursor > sampleCount) *cursor = marker.sampleNext - sampleCount;
+    size_t count = 0;
+    for (; *cursor < marker.sampleNext && count < max; ++*cursor)
+        out[count++] = marker.samples[*cursor % sampleCount];
+    return count;
 }
 
 void presentMarkerAfterPresent(void* const owner, const VkQueue queue, const uint64_t context,
@@ -123,6 +172,7 @@ void presentMarkerAfterPresent(void* const owner, const VkQueue queue, const uin
         slot.source = source;
         slot.feedback = feedback;
         slot.generated = generated;
+        slot.sequence = marker.submitted++;
         const VkCommandBuffer command = slot.command->handle();
         const VkSubmitInfo submit{
             .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,

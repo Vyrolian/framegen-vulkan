@@ -3,6 +3,7 @@
 
 #include "generated_frame_plan.hpp"
 #include "swapchain/output_margin.hpp"
+#include "swapchain/present_marker.hpp"
 #include "swapchain/create_policy.hpp"
 #include "present_diagnostics.hpp"
 
@@ -139,13 +140,21 @@ struct DeferredPresentQueue {
     // T4, GPU split profile only: a GPU marker submitted on queue right after each observed
     // lower present, under mutex. Set once at device creation before any present, released at
     // device destruction; null otherwise.
+    // S8b: also set with FGVK_REAL_OFFSET_US=auto; readMarkerSamples then returns finished markers.
     std::shared_ptr<void> marker;
     void (*markAfterPresent)(void*, VkQueue, uint64_t, uint64_t, uint64_t, bool) noexcept {};
-    // Caller holds mutex. A present without a feedback id cannot be joined and is not marked.
+    size_t (*readMarkerSamples)(void*, uint64_t*, PresentMarkerSample*, size_t) noexcept {};
+    // Caller holds mutex. A present without a feedback id cannot be joined in the profile and is
+    // not marked, unless the auto real offset needs every present.
     void markPresentLocked(const uint64_t context, const uint64_t source, const uint64_t feedback,
             const bool generated) noexcept {
-        if (marker && markAfterPresent && feedback != 0)
+        if (marker && markAfterPresent && (feedback != 0 || readMarkerSamples))
             markAfterPresent(marker.get(), queue, context, source, feedback, generated);
+    }
+    // Caller holds mutex. S8b: finished markers newer than *cursor; 0 without the auto offset.
+    size_t readMarkerSamplesLocked(uint64_t* const cursor, PresentMarkerSample* const out,
+            const size_t max) noexcept {
+        return marker && readMarkerSamples ? readMarkerSamples(marker.get(), cursor, out, max) : 0;
     }
 
     // The queue and lock for an acquire submit. F10: the emulated acquire no longer calls
@@ -463,6 +472,7 @@ public:
         // Initialize and report the setting before the worker can use it.
         static_cast<void>(outputMargin());
         static_cast<void>(realOffset());
+        static_cast<void>(realOffsetAuto());
         worker = std::thread([this] { run(); });
     }
     DeferredPresent(const DeferredPresent&) = delete;
@@ -952,6 +962,31 @@ private:
     std::condition_variable changed;
     bool stopping{};
     OutputMarginController marginController; // Worker thread only.
+    // S8b, FGVK_REAL_OFFSET_US=auto: worker thread only; the cursor is used under queue->mutex.
+    RealOffsetController realOffsetController;
+    uint64_t markerCursor{};
+    // Caller holds queue->mutex, right after a worker present was marked.
+    void observeRealOffsetLocked(const uint64_t context) noexcept {
+        if (!realOffsetAuto()) return;
+        std::array<PresentMarkerSample, 16> samples;
+        for (;;) {
+            const auto count = queue->readMarkerSamplesLocked(&markerCursor, samples.data(), samples.size());
+            for (size_t i = 0; i < count; ++i) {
+                const auto& sample = samples[i];
+                if (sample.context != context) continue;
+                if (realOffsetController.observe(sample.generated, sample.source,
+                        std::chrono::nanoseconds{sample.gpuNs})) {
+                    realOffsetAutoNs.store(realOffsetController.offset.count(), std::memory_order_relaxed);
+                    realOffsetAutoSamples.fetch_add(1, std::memory_order_relaxed);
+                }
+            }
+            if (count < samples.size()) return;
+        }
+    }
+    [[nodiscard]] Clock::duration currentRealOffset() const noexcept {
+        return realOffsetAuto()
+            ? std::chrono::duration_cast<Clock::duration>(realOffsetController.offset) : realOffset();
+    }
     std::thread worker;
 
     [[nodiscard]] size_t slotAt(size_t offset) const { return (head + offset) % slots; }
@@ -1231,6 +1266,7 @@ private:
         queue->endCall();
         result.finished = Clock::now();
         queue->markPresentLocked(ready.context, ready.source, result.feedback, job.generated);
+        observeRealOffsetLocked(ready.context);
         // D7d: the lower present is noted with its source, only when history is set.
         if (queue->history)
             queue->noteLower(lowerOpPresentReal, job.swapchain, lowerIndex, result.result, ready.source,
@@ -1342,8 +1378,10 @@ private:
             const auto current = batch.jobs[index];
             const bool first = index == 0;
             if (first && (lastBatchFinished != Clock::time_point{} &&
-                    Clock::now() - lastBatchFinished > std::chrono::milliseconds{250}))
+                    Clock::now() - lastBatchFinished > std::chrono::milliseconds{250})) {
                 marginController.reset();
+                realOffsetController.forget();
+            }
             const auto ready = batch.readiness;
             const size_t limit = batch.limit;
             const bool copyTail = index > 0 && batch.jobs[index - 1].copyActive &&
@@ -1368,7 +1406,7 @@ private:
                 // S7: the optional real offset, never closer than a quarter interval.
                 if (ready.overlap && batch.jobs[index - 1].copy.internalImages) {
                     const auto moved = realDeadlineWithOffset(deadline,
-                        batch.aggregate.calls[index - 1].started, ready.outputInterval, realOffset());
+                        batch.aggregate.calls[index - 1].started, ready.outputInterval, currentRealOffset());
                     appliedRealOffset = moved - deadline;
                     deadline = moved;
                 }
@@ -1384,7 +1422,10 @@ private:
                 readinessShift = {};
                 readyAt = {};
                 slack = marginStep = marginBias = {};
-                if (!ready.overlap) marginController.reset();
+                if (!ready.overlap) {
+                    marginController.reset();
+                    realOffsetController.forget();
+                }
                 batchShift = {};
                 readinessMiss = false;
                 lateReadiness = false;
@@ -1694,6 +1735,7 @@ private:
                         queue->endCall();
                         result.finished = Clock::now();
                         queue->markPresentLocked(ready.context, ready.source, result.feedback, job.generated);
+                        observeRealOffsetLocked(ready.context);
                         // D7d: the generated lower present, noted only with history.
                         if (queue->history)
                             queue->noteLower(lowerOpPresentGenerated, job.swapchain, job.image, result.result,
