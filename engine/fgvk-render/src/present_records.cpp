@@ -619,9 +619,9 @@ void formatReflexSleep(const ReflexSleepPayload& payload, std::ostream& line) {
 }
 
 void formatReflexMode(const ReflexModePayload& payload, std::ostream& line) {
-    line << "framegen-vulkan: present diagnostics: operation=pacing-profile-reflex-mode version=1"
-         << " low_latency=" << payload.lowLatency << " boost=" << payload.boost
-         << " min_interval_us=" << payload.minimumIntervalUs << '\n';
+    line << "framegen-vulkan: present diagnostics: operation=pacing-profile-reflex-mode version=2"
+         << " pid=" << getpid() << " low_latency=" << payload.lowLatency << " boost=" << payload.boost
+         << " min_interval_us=" << payload.minimumIntervalUs << " result=" << payload.result << '\n';
 }
 
 void formatWaylandSample(const WaylandSamplePayload& payload, std::ostream& out) {

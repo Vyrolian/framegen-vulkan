@@ -586,7 +586,7 @@ namespace fgvk::layer::present_diagnostics {
     /// Reflex markers and mode calls, recorded only with the pacing profile.
     void recordReflexMarker(uint64_t presentId, VkLatencyMarkerNV marker, Clock::time_point at) noexcept;
     void recordReflexSleep(Clock::time_point entered, Clock::time_point exited, VkResult result) noexcept;
-    void recordReflexMode(VkBool32 lowLatency, VkBool32 boost, uint32_t minimumIntervalUs) noexcept;
+    void recordReflexMode(VkBool32 lowLatency, VkBool32 boost, uint32_t minimumIntervalUs, VkResult result) noexcept;
 
     /// Bounded CPU observations at the application's layer entrypoints. These
     /// include intentional pacing, unlike the private-work present timer.

@@ -1721,9 +1721,10 @@ namespace {
         const auto next = lower.get(device, [&] {
             return instance_info->funcs.GetDeviceProcAddr(device, "vkSetLatencySleepModeNV"); });
         if (!next) return VK_ERROR_EXTENSION_NOT_PRESENT;
+        const auto result = next(device, swapchain, info);
         if (info) present_diagnostics::recordReflexMode(info->lowLatencyMode, info->lowLatencyBoost,
-            info->minimumIntervalUs);
-        return next(device, swapchain, info);
+            info->minimumIntervalUs, result);
+        return result;
     }
 
     VkResult VKAPI_CALL myvkLatencySleepNV(VkDevice device, VkSwapchainKHR swapchain,

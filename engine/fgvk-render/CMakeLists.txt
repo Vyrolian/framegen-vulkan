@@ -419,6 +419,9 @@ if(BUILD_TESTING)
     add_test(NAME analyze-hitches
         COMMAND "${FGVK_PYTHON3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_analyze_hitches.py")
     set_tests_properties(analyze-hitches PROPERTIES LABELS "portable-policy")
+    add_test(NAME analyze-latency
+        COMMAND "${FGVK_PYTHON3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_analyze_latency.py")
+    set_tests_properties(analyze-latency PROPERTIES LABELS "portable-policy")
 
     add_executable(fgvk-release-gate-tests "tests/release_gate_tests.cpp")
     target_include_directories(fgvk-release-gate-tests PRIVATE "src")

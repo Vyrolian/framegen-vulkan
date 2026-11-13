@@ -259,6 +259,7 @@ struct ReflexModePayload {
     VkBool32 lowLatency{};
     VkBool32 boost{};
     uint32_t minimumIntervalUs{};
+    VkResult result{};
 };
 
 struct WaylandSamplePayload {

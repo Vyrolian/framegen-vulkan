@@ -877,10 +877,10 @@ void recordReflexSleep(const Clock::time_point entered, const Clock::time_point 
 }
 
 void recordReflexMode(const VkBool32 lowLatency, const VkBool32 boost,
-        const uint32_t minimumIntervalUs) noexcept {
+        const uint32_t minimumIntervalUs, const VkResult result) noexcept {
     if (!pacingProfileEnabled()) return;
     present_records::enqueue(trace_recorder::RecordKind::ReflexMode, present_records::ReflexModePayload{
-        lowLatency, boost, minimumIntervalUs});
+        lowLatency, boost, minimumIntervalUs, result});
 }
 
 bool recordWaylandSample(const uint64_t token, const WaylandSample& sample) noexcept {
