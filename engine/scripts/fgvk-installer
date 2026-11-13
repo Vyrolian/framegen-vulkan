@@ -220,6 +220,13 @@ finish_install() {
         [[ -n "$directory" ]] || continue
         rm -rf -- "$directory" || printf 'framegen-vulkan: could not remove staging directory %s\n' "$directory" >&2
     done
+    # Obsolete payload files were deleted above; drop the directories they leave empty.
+    if [[ "$install_committed" == 1 ]]; then
+        for destination in "${install_destinations[@]}"; do
+            [[ -e "$destination" || -L "$destination" ]] ||
+                remove_empty_parent_directories "$destination" "$install_prefix"
+        done
+    fi
     if ((status != 0)); then
         if ((restore_failed)); then
             fail "The Renderer update failed and some files could not be restored. Recovery backups were retained beside the affected files. Check destination permissions and free space before retrying."

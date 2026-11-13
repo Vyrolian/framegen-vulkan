@@ -174,10 +174,13 @@ FGVK_INSTALLER_ASSUME_YES=1 \
 rollback_prefix="$test_root/rollback"
 export FGVK_INSTALL_PREFIX="$rollback_prefix" FGVK_INSTALLER_ASSUME_YES=1
 printf 'obsolete payload\n' > "$package_root/bin/obsolete"
+mkdir -p "$package_root/share/framegen-vulkan/obsolete-dir/nested"
+printf 'obsolete nested payload\n' > "$package_root/share/framegen-vulkan/obsolete-dir/nested/old.txt"
 write_manifest
 "$package_root/Install framegen-vulkan" --install >/dev/null
 cp "$rollback_prefix/share/framegen-vulkan/installer/installed-files.sha256" "$test_root/before.sha256"
 rm "$package_root/bin/obsolete"
+rm -r "$package_root/share/framegen-vulkan/obsolete-dir"
 printf 'new payload\n' > "$package_root/bin/new-file"
 printf '%s\n' '#!/usr/bin/env bash' 'exit 77' > "$package_root/bin/fgvk-cli"
 write_manifest
@@ -244,6 +247,8 @@ fi
 "$package_root/Install framegen-vulkan" --install >/dev/null
 [[ ! -e "$rollback_prefix/bin/obsolete" && -f "$rollback_prefix/bin/new-file" ]] ||
     fail "successful retry did not update the obsolete and new payloads"
+[[ ! -e "$rollback_prefix/share/framegen-vulkan/obsolete-dir" && -d "$rollback_prefix/share/framegen-vulkan" ]] ||
+    fail "successful retry left the obsolete payload's empty directories or removed their parent"
 (
     cd "$rollback_prefix"
     sha256sum --check --status share/framegen-vulkan/installer/installed-files.sha256
