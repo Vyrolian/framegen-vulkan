@@ -206,7 +206,7 @@ build_layer() {
 
     if [[ "$architecture" == "64-bit" ]]; then
         build_cli=ON
-        build_targets+=(fgvk-cli fgvk-remote-play-sdr)
+        build_targets+=(fgvk-cli)
     else
         install_libdir=lib32
     fi

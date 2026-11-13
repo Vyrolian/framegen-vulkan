@@ -296,12 +296,6 @@ required_paths=(
     "bin/fgvk-diagnostics" \
     "bin/fgvk-installer" \
     "libexec/framegen-vulkan/fgvk-launch" \
-    "bin/fgvk-remote-play" \
-    "share/framegen-vulkan/fgvk_remote_play/libfgvk-remote-play-sdr.so" \
-    "share/framegen-vulkan/fgvk_remote_play/__init__.py" \
-    "share/framegen-vulkan/fgvk_remote_play/remote_play_core.py" \
-    "share/framegen-vulkan/fgvk_remote_play/remote_play_launch.py" \
-    "share/framegen-vulkan/fgvk_remote_play/managed_files.py" \
     "bin/fgvk-vrr-lease" \
     "lib/libfgvk-render.so" \
     "lib/libfgvk-render-scaling.so" \

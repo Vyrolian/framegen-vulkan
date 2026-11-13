@@ -196,7 +196,6 @@ def render_config(global_dll: str) -> str:
     """Return the session conf.toml text for the single latency-probe profile."""
     lines = [
         "version = 2",
-        f"current_profile = {toml_string(PROFILE_NAME)}",
         "",
         "[global]",
         "allow_fp16 = false",

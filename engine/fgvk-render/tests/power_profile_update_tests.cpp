@@ -80,7 +80,6 @@ int main() {
     file.profiles() = {base};
     file.write(path);
     auto config = ls::ConfigFile(path);
-    config.current_profile = "game";
 
     for (const auto source : {ls::PowerSource::Unknown,
             ls::PowerSource::Handheld, ls::PowerSource::Docked}) {
@@ -89,13 +88,12 @@ int main() {
             : source == ls::PowerSource::Handheld ? handheld : docked;
         expected.power_profiles.clear();
         const auto expectedText = serialized(expected, comparison);
-        std::vector<ls::Identification> identities(6);
+        std::vector<ls::Identification> identities(5);
         identities[0].override = "game";
         identities[1].executable = "/games/Game.exe";
         identities[2].wine_executable = "/games/Game.exe";
         identities[3].process_name = "Game.exe";
         identities[4].fallback = "game";
-        identities[5].follow_current_profile = true;
         for (const auto& identity : identities) {
             const auto match = ls::findProfile(config, identity, false);
             expect(match && match->second.power_profiles.empty() &&
@@ -193,23 +191,21 @@ int main() {
             plan.appliedProfile.target_fps == 100,
         "A power switch must not invent FG resources omitted at startup");
 
-    // Saving a clone during a stream changes identity through the same matcher
+    // Saving a clone under a new name changes identity through the same matcher
     // and live planner, including power modes and startup-only projections.
     config.profiles() = {base, base};
     auto& clone = config.profiles()[1];
     clone.name = "Future streams";
     for (auto& mode : clone.power_profiles)
         mode.name = clone.name;
-    config.current_profile = clone.name;
     config.write(path);
     config = ls::ConfigFile(path);
     config.power_source = ls::PowerSource::Docked;
-    ls::Identification streamIdentity;
-    streamIdentity.override = "game";
-    streamIdentity.follow_current_profile = true;
-    auto streamProfile = ls::findProfile(config, streamIdentity, false)->second;
+    ls::Identification cloneIdentity;
+    cloneIdentity.override = "Future streams";
+    auto cloneProfile = ls::findProfile(config, cloneIdentity, false)->second;
     applied = ls::profileForPowerSource(base, ls::PowerSource::Docked);
-    plan = planProfileUpdate(applied, streamProfile, 3, true, true, true);
+    plan = planProfileUpdate(applied, cloneProfile, 3, true, true, true);
     expect(plan.appliedProfile.name == "Future streams" &&
             plan.decision.action == ProfileUpdateAction::NoRuntimeChange,
         "Saving identical settings under a new name must update identity without resetting policy");
@@ -220,14 +216,14 @@ int main() {
     config.write(path);
     config = ls::ConfigFile(path);
     config.power_source = ls::PowerSource::Docked;
-    streamProfile = ls::findProfile(config, streamIdentity, false)->second;
-    const auto streamProjection = projectProcessStaticProfileForLiveUpdate(
-        applied, streamProfile, true, true, false);
-    plan = planProfileUpdate(applied, streamProjection.runtimeProfile, 3, true, true, true);
-    expect(streamProjection.restartRequired() &&
+    cloneProfile = ls::findProfile(config, cloneIdentity, false)->second;
+    const auto cloneProjection = projectProcessStaticProfileForLiveUpdate(
+        applied, cloneProfile, true, true, false);
+    plan = planProfileUpdate(applied, cloneProjection.runtimeProfile, 3, true, true, true);
+    expect(cloneProjection.restartRequired() &&
             plan.appliedProfile.target_fps == 120 && plan.appliedProfile.gpu == applied.gpu &&
             plan.decision.action == ProfileUpdateAction::ApplyLive,
-        "Edits to the new stream profile must apply live fields and retain startup boundaries");
+        "Edits to the renamed profile must apply live fields and retain startup boundaries");
 
     std::filesystem::remove_all(directory);
     std::cout << "power-profile live-update integration tests passed\n";

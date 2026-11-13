@@ -54,7 +54,6 @@ mkdir -p \
     "$package_root/usr/libexec/framegen-vulkan" \
     "$package_root/usr/lib" \
     "$package_root/usr/lib32" \
-    "$package_root/usr/share/framegen-vulkan/fgvk_remote_play" \
     "$package_root/usr/share/doc/framegen-vulkan-bin"
 touch \
     "$package_root/usr/bin/fgvk" \
@@ -71,15 +70,15 @@ for binary_path in \
     usr/lib/libfgvk-render.so \
     usr/lib/libfgvk-render-scaling.so \
     usr/lib32/libfgvk-render.so \
-    usr/lib32/libfgvk-render-scaling.so \
-    usr/share/framegen-vulkan/fgvk_remote_play/libfgvk-remote-play-sdr.so; do
+    usr/lib32/libfgvk-render-scaling.so; do
     printf '\177ELF' > "$package_root/$binary_path"
 done
 if [[ "${FGVK_TEST_ADD_NEW_ELF:-0}" == 1 ]]; then
     printf '\177ELF' > "$package_root/usr/lib/libfuture.so"
 fi
 if [[ "${FGVK_TEST_ADD_UNREVIEWED_SHARED_ELF:-0}" == 1 ]]; then
-    printf '\177ELF' > "$package_root/usr/share/framegen-vulkan/fgvk_remote_play/libfuture.so"
+    mkdir -p "$package_root/usr/share/framegen-vulkan"
+    printf '\177ELF' > "$package_root/usr/share/framegen-vulkan/libfuture.so"
 fi
 printf '%s\n' install-script > "$package_root/.INSTALL"
 printf '%s\n' \
@@ -107,11 +106,6 @@ cat > "$fake_tools/readelf" <<'EOF'
 set -eu
 case "$1" in
     -h)
-        if [ "${FGVK_TEST_WRONG_HELPER_CLASS:-0}" = 1 ] &&
-                [ "${2##*/}" = libfgvk-remote-play-sdr.so ]; then
-            printf '  Class:                             ELF32\n'
-            exit 0
-        fi
         case "$2" in
             */lib32/*) printf '  Class:                             ELF32\n' ;;
             *) printf '  Class:                             ELF64\n' ;;
@@ -180,16 +174,15 @@ if FGVK_TEST_PKGVER="$current_pkgver" \
     echo "Arch release package skipped an added ELF file" >&2
     exit 1
 fi
-for rejected_case in FGVK_TEST_ADD_UNREVIEWED_SHARED_ELF FGVK_TEST_WRONG_HELPER_CLASS; do
-    if env FGVK_TEST_PKGVER="$current_pkgver" \
-            FGVK_TEST_PKGREL="$current_pkgrel" \
-            "$rejected_case=1" PATH="$fake_tools:/usr/bin:/bin" \
-            "$script_dir/verify-release-package.sh" "$fake_archive" \
-            >/dev/null 2>&1; then
-        echo "Arch release package accepted invalid Remote Play helper layout: $rejected_case" >&2
-        exit 1
-    fi
-done
+if FGVK_TEST_PKGVER="$current_pkgver" \
+        FGVK_TEST_PKGREL="$current_pkgrel" \
+        FGVK_TEST_ADD_UNREVIEWED_SHARED_ELF=1 \
+        PATH="$fake_tools:/usr/bin:/bin" \
+        "$script_dir/verify-release-package.sh" "$fake_archive" \
+        >/dev/null 2>&1; then
+    echo "Arch release package accepted an ELF file under /usr/share" >&2
+    exit 1
+fi
 if FGVK_TEST_PKGVER="$current_pkgver" \
         FGVK_TEST_PKGREL="$current_pkgrel" \
         FGVK_TEST_OMIT_LIB32_GLIBC=1 \

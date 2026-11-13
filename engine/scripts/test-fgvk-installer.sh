@@ -269,39 +269,4 @@ XDG_CONFIG_HOME="$purge_config_home" \
 [[ ! -e "$purge_config_home/framegen-vulkan" ]] ||
     fail "explicit configuration purge left profiles or diagnostics behind"
 
-# Remote Play restoration must precede every payload/configuration removal.
-remote_prefix="$test_root/remote-install"
-remote_config="$test_root/remote-config"
-FGVK_INSTALL_PREFIX="$remote_prefix" XDG_CONFIG_HOME="$remote_config" \
-    "$package_root/Install framegen-vulkan" --install >/dev/null
-mkdir -p "$remote_config/framegen-vulkan"
-printf '%s\n' '{}' > "$remote_config/framegen-vulkan/native-remote-play.json"
-if FGVK_INSTALL_PREFIX="$remote_prefix" XDG_CONFIG_HOME="$remote_config" \
-        "$remote_prefix/bin/fgvk-installer" --uninstall --purge-configuration >"$test_root/remote-blocked.log" 2>&1; then
-    fail "older Renderer uninstall ignored an existing Remote Play override"
-fi
-[[ -f "$remote_prefix/bin/fgvk-cli" && -f "$remote_config/framegen-vulkan/native-remote-play.json" ]] ||
-    fail "blocked restoration removed Renderer or configuration"
-# The shared override record remains under HOME even with a custom XDG path.
-mkdir -p "$HOME/.config/framegen-vulkan"
-mv "$remote_config/framegen-vulkan/native-remote-play.json" "$HOME/.config/framegen-vulkan/"
-if FGVK_INSTALL_PREFIX="$remote_prefix" XDG_CONFIG_HOME="$remote_config" \
-        "$remote_prefix/bin/fgvk-installer" --uninstall >"$test_root/remote-home-blocked.log" 2>&1; then
-    fail "older Renderer uninstall ignored the shared HOME override record"
-fi
-mv "$HOME/.config/framegen-vulkan/native-remote-play.json" "$remote_config/framegen-vulkan/"
-printf '%s\n' '#!/bin/sh' 'exit 1' > "$remote_prefix/bin/fgvk-remote-play"
-chmod 0755 "$remote_prefix/bin/fgvk-remote-play"
-if FGVK_INSTALL_PREFIX="$remote_prefix" XDG_CONFIG_HOME="$remote_config" \
-        "$remote_prefix/bin/fgvk-installer" --uninstall --purge-configuration >"$test_root/remote-failed.log" 2>&1; then
-    fail "Renderer uninstall ignored a restoration failure"
-fi
-[[ -f "$remote_prefix/bin/fgvk-cli" && -f "$remote_config/framegen-vulkan/native-remote-play.json" ]] ||
-    fail "failed restoration removed Renderer or configuration"
-printf '%s\n' '#!/bin/sh' 'test "$1" = restore-before-uninstall' > "$remote_prefix/bin/fgvk-remote-play"
-FGVK_INSTALL_PREFIX="$remote_prefix" XDG_CONFIG_HOME="$remote_config" \
-    "$remote_prefix/bin/fgvk-installer" --uninstall --purge-configuration >/dev/null
-[[ ! -e "$remote_prefix/bin/fgvk-cli" && ! -e "$remote_config/framegen-vulkan" ]] ||
-    fail "successful restoration did not allow uninstall"
-
 printf '%s\n' 'fgvk-installer contract test passed'

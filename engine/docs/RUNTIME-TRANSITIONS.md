@@ -6,7 +6,7 @@ This guide defines how a saved profile becomes running Renderer state. The [conf
 
 A setting belongs to the earliest boundary that can safely establish all state it affects.
 
-Native Remote Play follows the ordinary saved `current_profile` selection through the existing configuration watcher when its launcher sets `FGVK_FOLLOW_CURRENT_PROFILE=1`. Saving a clone under a new name changes the runtime profile identity without resetting unchanged live policy. Subsequent edits and power-source changes use the same projection and live-update planner as local games; selecting a new profile does not bypass startup resources, private handoffs, or restart requirements. Ordinary local matching remains unchanged.
+Saving a clone under a new name changes the runtime profile identity without resetting unchanged live policy. Subsequent edits and power-source changes use the same projection and live-update planner for every profile; selecting a new profile does not bypass startup resources, private handoffs, or restart requirements. Ordinary local matching remains unchanged.
 
 | Boundary | State | Completion |
 | --- | --- | --- |

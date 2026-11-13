@@ -60,8 +60,6 @@ If no profile matches, framegen-vulkan stays inactive.
 
 ### Other launch types
 
-For native Steam Remote Play, close streams and run `~/.local/bin/fgvk-remote-play status` on the receiving x86_64 Linux device to check the override. `~/.local/bin/fgvk-remote-play restore-before-uninstall` removes it while retaining profiles; run it before removing a system package or manually deleting Renderer files. Requires system Python 3.11 or newer. See [Configuration](docs/CONFIGURATION.md#native-steam-remote-play) for the saved-profile behaviour.
-
 | Game or application | How to start it |
 | --- | --- |
 | Direct desktop command | `~/.local/bin/fgvk "/path/to/program"` |

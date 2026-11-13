@@ -147,14 +147,11 @@ namespace {
         game.scaling_enabled = true;
         game.scaling_method = ls::ScalingMethod::Fgvk;
         fixture.profiles() = {game};
-        fixture.current_profile = game.name;
         fixture.write(path);
         for (const bool installed : {false, true, false}) {
             if (installed) writeText(dll, "synthetic input");
             else std::filesystem::remove(dll);
             ls::ConfigFile parsed(path);
-            expect(parsed.current_profile == game.name,
-                "The editor selection must survive native configuration round trips");
             expect(parsed.global().dll == dll.string() && sameGameConf(parsed.profiles().front(), game),
                 "DLL removal must not invalidate or reset open-scaling profiles");
             parsed.write(path);
@@ -267,6 +264,38 @@ target_fps = 144
             catch (const std::exception&) { rejected = true; }
             expect(rejected, "Invalid power profiles must be rejected");
         }
+    }
+
+    // Native Remote Play used to write a root selection key. Files that still
+    // contain it must load, and matching must ignore it.
+    void testLegacyRootSelectionIsIgnored(const std::filesystem::path& directory) {
+        const auto path = directory / "legacy-root-selection.toml";
+        writeText(path, R"(version = 2
+current_profile = "fgvk"
+
+[[profile]]
+name = "fgvk"
+
+[[profile]]
+name = "captured"
+active_in = "CoolGame.exe"
+)");
+        const ls::ConfigFile legacy(path);
+        expect(legacy.profiles().size() == 2,
+            "A legacy root current_profile key must not reject the configuration");
+        ls::Identification game;
+        game.executable = "/games/CoolGame.exe";
+        game.process_name = "CoolGame.exe";
+        const auto captured = ls::findProfile(legacy, game, false);
+        expect(captured && captured->first == ls::IdentType::EXECUTABLE &&
+                captured->second.name == "captured",
+            "A legacy root current_profile key must not change active_in matching");
+        ls::Identification fallback;
+        fallback.fallback = "fgvk";
+        const auto defaulted = ls::findProfile(legacy, fallback, false);
+        expect(defaulted && defaulted->first == ls::IdentType::FALLBACK &&
+                defaulted->second.name == "fgvk",
+            "A legacy root current_profile key must not select the fallback profile");
     }
 
     constexpr std::string_view validConfiguration = R"(version = 2
@@ -401,6 +430,7 @@ int main() {
     testGpuHeadroom(directory);
     testOptionalLosslessScaling(directory);
     testPowerProfiles(directory);
+    testLegacyRootSelectionIsIgnored(directory);
 
     const auto defaultPath = directory / "default.toml";
     ls::ConfigFile::createDefaultConfigFile(defaultPath);
@@ -763,13 +793,6 @@ scaling_sharpness = 0.5
             environmentIdentification.override.value() == "captured",
         "FGVK_PROFILE must populate the explicit profile override");
     unsetenv("FGVK_PROFILE");
-    setenv("FGVK_FOLLOW_CURRENT_PROFILE", "1", 1);
-    expect(ls::identify().follow_current_profile,
-        "The streaming launcher must opt in to the saved selection");
-    setenv("FGVK_FOLLOW_CURRENT_PROFILE", "0", 1);
-    expect(!ls::identify().follow_current_profile,
-        "A disabled selection-following flag must preserve normal matching");
-    unsetenv("FGVK_FOLLOW_CURRENT_PROFILE");
 
     ls::Identification identification{
         .fallback = "fgvk",
@@ -799,42 +822,6 @@ scaling_sharpness = 0.5
             detectedProfile->second.name == "fgvk",
         "An explicit caller profile must remain a hard override");
 
-    detectionConfig.current_profile = "captured";
-    identification.follow_current_profile = true;
-    detectedProfile = ls::findProfile(detectionConfig, identification);
-    expect(detectedProfile && detectedProfile->second.name == "captured",
-        "Opted-in clients must follow the current selection over their startup override");
-    detectionConfig.current_profile = "missing";
-    detectedProfile = ls::findProfile(detectionConfig, identification);
-    expect(detectedProfile && detectedProfile->second.name == "fgvk",
-        "An unavailable current selection must retain the startup profile");
-    detectionConfig.current_profile = "captured";
-    identification.follow_current_profile = false;
-    expect(ls::findProfile(detectionConfig, identification)->second.name == "fgvk",
-        "Ordinary explicit launch profiles must ignore editor selection changes");
-
-    const auto selectionPath = directory / "selection-following.toml";
-    detectionConfig.current_profile = "fgvk";
-    detectionConfig.write(selectionPath);
-    std::optional<std::string> previousConfiguration;
-    if (const auto* previous = std::getenv("FGVK_CONFIG"))
-        previousConfiguration = previous;
-    setenv("FGVK_CONFIG", selectionPath.c_str(), 1);
-    ls::WatchedConfig selectionWatcher(directory / "unused-power-supplies");
-    auto streamIdentity = identification;
-    streamIdentity.follow_current_profile = true;
-    const auto selectionTimestamp = std::filesystem::last_write_time(selectionPath);
-    detectionConfig.current_profile = "captured";
-    detectionConfig.write(selectionPath);
-    std::filesystem::last_write_time(selectionPath, selectionTimestamp + std::chrono::seconds(1));
-    expect(selectionWatcher.update() &&
-            ls::findProfile(selectionWatcher.get(), streamIdentity)->second.name == "captured",
-        "The existing watcher must follow selection-only edits with unchanged profile settings");
-    if (previousConfiguration)
-        setenv("FGVK_CONFIG", previousConfiguration->c_str(), 1);
-    else
-        unsetenv("FGVK_CONFIG");
-
     // Launchers inherit exactly the same profile environment as their game.
     // Neither that environment nor an older captured launcher alias may make
     // framegen-vulkan change the launcher's Vulkan device or presentation resources.
@@ -856,7 +843,6 @@ scaling_sharpness = 0.5
             .executable = "/proton/files/bin/wine64-preloader",
             .wine_executable = std::string("C:\\Launcher\\") + launcher,
             .process_name = "GameThread",
-            .follow_current_profile = true,
         };
         expect(!ls::findProfile(detectionConfig, launcherIdentification),
             "An excluded launcher must stay native despite an inherited override");

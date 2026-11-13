@@ -16,7 +16,7 @@ The installer prepares replacement files separately from their destination and r
 | Configuration | Installation leaves configuration alone |
 | Durability | No explicit fsync or durable transaction journal |
 
-The transaction does not provide automatic recovery after power loss, `SIGKILL`, or another termination that prevents cleanup from running. It does not acquire a shared installation lock across the installer, the configuration writers, and Remote Play. Run one installer at a time with games using framegen-vulkan closed and configuration edits stopped.
+The transaction does not provide automatic recovery after power loss, `SIGKILL`, or another termination that prevents cleanup from running. It does not acquire a shared installation lock across the installer and the configuration writers. Run one installer at a time with games using framegen-vulkan closed and configuration edits stopped.
 
 The rollback set consists of explicit file paths. It does not restore the directory tree, undo unrelated writes, or coordinate with another process. Directories created during preparation can remain after failure. Temporary files and backups normally disappear on completion; cleanup errors are reported and can leave artifacts.
 
@@ -25,7 +25,6 @@ The rollback set consists of explicit file paths. It does not restore the direct
 | Owner | Responsibility |
 | --- | --- |
 | [fgvk-installer](engine/scripts/fgvk-installer) | Standalone manifest validation, staging, destination preparation, commit, rollback and uninstall |
-| [fgvk-remote-play](engine/scripts/fgvk-remote-play) and [`fgvk_remote_play/`](engine/scripts/fgvk_remote_play/) | Native Remote Play override, its atomic file helpers, and its restoration command |
 | [package-local.sh](engine/scripts/package-local.sh) | Standalone archive layout, version file, checksummed payload manifest, private/public Vulkan manifests and package verification |
 
 ## Shared native selection and identity
@@ -46,14 +45,6 @@ The installer creates each staged replacement beside its destination with the re
 For each existing destination, the installer allocates an adjacent `.fgvk-install-*` directory. A regular file is copied into it, and a symlink is preserved as a symlink. An absent path is recorded without a backup file. Every replacement uses rename, never an in-place write, so backups remain intact.
 
 On failure, the installer restores backups with `mv -fT` in reverse order and removes paths that were originally absent. It attempts every restoration even if one fails. A failed restoration retains its available backup beside the destination and reports where it is.
-
-## Native Remote Play override
-
-The override is a separate, opt-in Steam transaction, not an additional Renderer payload destination. `engine/scripts/fgvk_remote_play/remote_play_core.py` owns Steam's native x86_64 `streaming_client`, its `.fgvk-original` backup and `.fgvk-original.sha256` checksum, and `~/.config/framegen-vulkan/native-remote-play.json`. The shared command snapshots those paths before it changes them and restores the previous state when an installation fails.
-
-A nonblocking exclusive lease rejects mutations during a stream or another mutation. The self-contained launch payload keeps a shared lease across the exec chain; exact executable detection also guards streams launched before installation. Native ELF identity, executable mode, user ownership, checksum, and symlink checks precede replacement. An intact installed wrapper is idempotent. After launcher migrations, changed packaged payload content is refreshed only for an existing intact enabled override, using the verified original's ownership and permissions; the refresh defers during a stream and retains profiles and power tables.
-
-Removal checks the stored wrapper hash and original checksum. It restores the original only when the managed wrapper remains installed. If Steam already replaced it with a native client, removal retires the stale backup and state without overwriting that client. The standalone archive uninstaller invokes the shared restoration command before removing payloads or configuration and stops on failure. An older install without that command refuses cleanup when override bookkeeping or backups exist. System-package removal and manual deletion require prior restoration with `fgvk-remote-play restore-before-uninstall`.
 
 ## Standalone sequence
 
@@ -77,15 +68,13 @@ Before replacement starts, failure only needs staging cleanup. During replacemen
 
 | Portable evidence | Covered behavior |
 | --- | --- |
-| [test-fgvk-installer.sh](engine/scripts/test-fgvk-installer.sh) | Manifest validation, corrupt late payload before replacement, injected final identity-rename failure, restored payload, ownership and identity records, new-file removal, staging cleanup, permission failures, uninstall preservation, and Remote Play restoration ordering |
-| [test-fgvk-remote-play.py](engine/scripts/test-fgvk-remote-play.py) | Override install, refresh, restore, lock, and refusal behavior against temporary Steam files |
+| [test-fgvk-installer.sh](engine/scripts/test-fgvk-installer.sh) | Manifest validation, corrupt late payload before replacement, injected final identity-rename failure, restored payload, ownership and identity records, new-file removal, staging cleanup, permission failures, uninstall preservation |
 | [test-fgvk-launch.sh](engine/scripts/test-fgvk-launch.sh) | Standalone launcher discovery and activation from the installed prefix |
 
 Run the focused installer checks from the repository root:
 
 ```bash
 bash engine/scripts/test-fgvk-installer.sh
-python3 engine/scripts/test-fgvk-remote-play.py
 ```
 
 These use temporary files and synthetic payloads; they do not install into the user's active environment. Permission cases in the standalone script require a non-root test process. The suites exercise specific injected failures, not every syscall, signal timing, or filesystem.

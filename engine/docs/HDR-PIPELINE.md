@@ -41,8 +41,6 @@ The layer manifest declares `VK_EXT_swapchain_colorspace`. The connected HDR bri
 
 With HDR exposure disabled, the isolated bridge rejects HDR swapchain creation. On other surface paths, framegen-vulkan retains the existing disabled-HDR policy: no generation for an explicit HDR swapchain, with real-frame passthrough.
 
-Native Steam Remote Play additionally enforces SDL3 sRGB renderer creation through its process-scoped packaged helper. `FGVK_DISABLE_HDR_EXPOSURE` is framegen-vulkan policy and does not itself override an application's SDL colourspace selection. The shared Remote Play owner supplies that startup policy; it does not relabel HDR pixels or change the Renderer colour classifier. HDR stream input and SDL tone mapping still require independent hardware validation.
-
 ## Gamescope application-HDR evidence
 
 The isolated bridge uses the original application colour space, without compositor-wide reclassification or periodic HDR reads. Its background reader still monitors extent, refresh, VRR and focus; the on-demand capability fallback leaves cached application-HDR state unchanged. The legacy full-WSI path uses `GamescopeHdrFeedbackReader` for compositor colour properties and accepts server-zero fallback only within the same Gamescope process. The following evidence order and stabilization rules apply to that legacy path.

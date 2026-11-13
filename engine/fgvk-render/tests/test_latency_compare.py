@@ -167,7 +167,6 @@ class ConfigAndManifestTests(unittest.TestCase):
         data = tomllib.loads(compare.render_config(dll))
         expected = {
             "version": 2,
-            "current_profile": "latency probe",
             "global": {"allow_fp16": False, "dll": dll},
             "profile": [{
                 "name": "latency probe",

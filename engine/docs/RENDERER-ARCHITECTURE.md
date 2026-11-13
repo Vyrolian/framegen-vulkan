@@ -16,7 +16,6 @@ This map identifies code owners and call boundaries. The behavior contracts rema
 | Swapchain state and transitions | `fgvk-render/src/swapchain/` | Owns the applied profile, private resources, recovery state, and game-owned swapchain boundary. |
 | Spatial reconstruction | `fgvk-render/src/spatial_scaler.*` and `spatial_scaling_policy.hpp` | Chooses geometry and records private scaling work without changing scheduler evidence. |
 | Model execution | `fgvk-backend/` | Owns LSFG and LS1 resources and compute work behind the Renderer context. |
-| Native Steam Remote Play | `scripts/fgvk_remote_play/` and `scripts/fgvk-remote-play` | One Python owner handles Steam file safety. The packaged command is the only entry point. Existing launchers and Renderer configuration owners retain feature and live-update policy. |
 
 Full trace additionally observes instance/device/surface/swapchain setup in `present_diagnostics.*`, called from the existing creation entrypoints. It pairs incoming and forwarded requests without mutating them or making Vulkan queries. `scripts/analyze-vulkan-setup.py` owns offline inspection/comparison; enabled setup never feeds runtime policy or establishes actual extension use. The Wayland companion keeps strict commit adjacency and separately qualifies consecutive attachment pairs across commits without a new attachment.
 

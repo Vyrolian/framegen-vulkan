@@ -191,10 +191,6 @@ Set `disable_hdr_exposure = 0` in `launcher.conf`, restart the game, then enable
 
 `hdr_quality` defaults to `'performance'`. `'quality'` retains full precision and full motion analysis; `'balanced'` uses compact shader and scaling buffers while retaining linear-light Frame Generation and full motion analysis; `'performance'` also uses approximate HDR10 generation and coarser motion analysis. Output resolution stays unchanged. Changes apply live with a brief hitch; lower precision may add banding or motion artifacts. See the [HDR pipeline](HDR-PIPELINE.md) for details.
 
-## Native Steam Remote Play
-
-Native Remote Play is an opt-in override for the receiving device. Use `fgvk-remote-play status` to inspect it and `fgvk-remote-play restore-before-uninstall` before removing the Renderer. See [Renderer usage](../README.md#usage) for the complete command set and limits.
-
 ## Advanced configuration
 
 For every TOML field, its default, and the environment variables, see the [configuration reference](CONFIGURATION-REFERENCE.md). For problems, see [troubleshooting](TROUBLESHOOTING.md) or [collect diagnostics](COLLECT_DIAGNOSTICS.md).

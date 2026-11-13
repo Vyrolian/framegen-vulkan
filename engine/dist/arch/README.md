@@ -66,8 +66,6 @@ This package is not currently published through an official pacman repository or
 
 ## Remove
 
-If native Remote Play is enabled, run `fgvk-remote-play restore-before-uninstall` before removing the package.
-
 ```bash
 sudo pacman -R framegen-vulkan-bin
 ```
@@ -98,7 +96,7 @@ The release workflow publishes packages on GitHub, not the AUR. AUR publication 
 
 ## Verification
 
-The package is checked against the host archive's checksums, required files, architectures, dependencies and Vulkan manifests. The native Remote Play SDR helper is the only reviewed ELF under `/usr/share`; it retains the same 64-bit and dependency checks as the host tools. The installed checksum manifest is `/usr/share/doc/framegen-vulkan-bin/framegen-vulkan-install-manifest.txt`. See [maintainer verification](../../docs/BUILDING-FROM-SOURCE.md#verification) for the complete contract.
+The package is checked against the host archive's checksums, required files, architectures, dependencies and Vulkan manifests. It may contain no ELF file under `/usr/share`. The installed checksum manifest is `/usr/share/doc/framegen-vulkan-bin/framegen-vulkan-install-manifest.txt`. See [maintainer verification](../../docs/BUILDING-FROM-SOURCE.md#verification) for the complete contract.
 
 ## Links
 

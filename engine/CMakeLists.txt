@@ -21,11 +21,6 @@ install(PROGRAMS "${CMAKE_CURRENT_SOURCE_DIR}/../scripts/fgvk-diagnostics"
     DESTINATION "${CMAKE_INSTALL_BINDIR}")
 install(PROGRAMS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/fgvk-installer"
     DESTINATION "${CMAKE_INSTALL_BINDIR}")
-install(PROGRAMS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/fgvk-remote-play"
-    DESTINATION "${CMAKE_INSTALL_BINDIR}")
-install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/scripts/fgvk_remote_play/"
-    DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/framegen-vulkan/fgvk_remote_play"
-    FILES_MATCHING PATTERN "*.py" PATTERN "__pycache__" EXCLUDE)
 
 file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION" FGVK_VERSION LIMIT_COUNT 1)
 string(STRIP "${FGVK_VERSION}" FGVK_VERSION)
@@ -123,9 +118,6 @@ if(BUILD_TESTING AND UNIX)
         COMMAND "${FGVK_PYTHON3_EXECUTABLE}"
             "${CMAKE_CURRENT_SOURCE_DIR}/scripts/test-fgvk-launch-mangohud.py")
     set_tests_properties(standalone-mangohud PROPERTIES LABELS "portable-policy")
-    add_test(NAME remote-play-command
-        COMMAND "${FGVK_PYTHON3_EXECUTABLE}"
-            "${CMAKE_CURRENT_SOURCE_DIR}/scripts/test-fgvk-remote-play.py")
     set_tests_properties(standalone-launcher PROPERTIES
         LABELS "portable-policy")
 
@@ -270,19 +262,4 @@ if(FGVK_BUILD_VK_LAYER OR FGVK_BUILD_CLI OR BUILD_TESTING)
 endif()
 if(FGVK_BUILD_CLI)
     add_subdirectory(fgvk-cli)
-endif()
-add_subdirectory(scripts/fgvk_remote_play)
-if(BUILD_TESTING AND TARGET fgvk-remote-play-sdr)
-    set(remote_play_test_environment "FGVK_TEST_SDR_NATIVE_HELPER=$<TARGET_FILE:fgvk-remote-play-sdr>;FGVK_TEST_SDR_CLIENT=$<TARGET_FILE:fgvk-remote-play-sdr-tests>;FGVK_TEST_SDL_FIXTURE_DIR=$<TARGET_FILE_DIR:fgvk-remote-play-sdl-fixture>")
-    if(FGVK_ENABLE_SANITIZERS)
-        # Match the SDL helper tests: the real launcher preloads the instrumented
-        # helper ahead of DT_NEEDED entries using the same sanitizer runtime.
-        list(APPEND remote_play_test_environment "ASAN_OPTIONS=verify_asan_link_order=0")
-    else()
-        # Instrumented Clang DSOs need the executable's ASan runtime. The
-        # SDL client below supplies it; /usr/bin/env environment fixtures do not.
-        list(APPEND remote_play_test_environment "FGVK_TEST_SDR_HELPER=$<TARGET_FILE:fgvk-remote-play-sdr>")
-    endif()
-    set_tests_properties(remote-play-command PROPERTIES LABELS "portable-policy"
-        ENVIRONMENT "${remote_play_test_environment}")
 endif()
