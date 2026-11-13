@@ -569,7 +569,6 @@ namespace fgvk::layer {
             SpatialCommandRecording recording;
         };
         std::optional<SpatialScaler> spatialScaler;
-        std::optional<bool> shaderHdrReducedPrecision;
         std::vector<SpatialScalingPass> spatialScalingPasses;
         SpatialFramePipelinePlacement spatialFramePipelinePlacement{
             SpatialFramePipelinePlacement::PreFrameGeneration

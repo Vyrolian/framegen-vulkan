@@ -13,7 +13,7 @@ from typing import Iterator, Sequence, TypedDict
 
 import logging
 from .remote_play_launch import (
-    launch_settings, open_regular, selected_profile, check_sdr_helper, SDR_HELPER_RELATIVE_PATH,
+    launch_settings, selected_profile, check_sdr_helper, SDR_HELPER_RELATIVE_PATH,
 )
 from .managed_files import (
     copy_managed_file_atomically, managed_install_transaction,
@@ -270,8 +270,7 @@ class RemotePlayOverride:
                 return self._digest(path) in expected
             except (OSError, ValueError):
                 return False
-        paths = [self.client, self.backup, self.checksum, self.state,
-                 self.config_file_path.parent / 'vkbasalt/current-profile.conf', *extra_paths]
+        paths = [self.client, self.backup, self.checksum, self.state, *extra_paths]
         with managed_install_transaction(paths, self.log, rollback_guard=owned):
             yield
 
@@ -345,18 +344,8 @@ class RemotePlayOverride:
             raise ValueError("Install the current framegen-vulkan Remote Play SDR helper") from error
 
     def _commit_wrapper(self, payload: str, previous_hash: str, permissions: os.stat_result) -> None:
-        profile = selected_profile(self.config_file_path)
-        default_shader = Path(os.environ.get('XDG_CONFIG_HOME') or self.user_home / '.config') / 'vkBasalt/vkBasalt.conf'
-        settings = launch_settings(profile, self.config_file_path, default_shader=default_shader)
-        content = 'effects = none\n'
-        if settings['FGVK_LAUNCH_VKBASALT_CONFIG']:
-            source = Path(settings['FGVK_LAUNCH_VKBASALT_CONFIG'])
-            if source.exists() or source.is_symlink():
-                with open_regular(source) as stream:
-                    content = stream.read().decode('utf-8')
-        write_managed_text_atomically(
-            self.config_file_path.parent / 'vkbasalt/current-profile.conf', content, 0o644,
-            self.log, owner=(permissions.st_uid, permissions.st_gid))
+        # Reject an unusable profile or wrapper setting before exposing the wrapper.
+        launch_settings(selected_profile(self.config_file_path), self.config_file_path)
         state = RemotePlayOverrideState(
             version=3, enabled=True,
             wrapper_sha256=hashlib.sha256(payload.encode()).hexdigest(),

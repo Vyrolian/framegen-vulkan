@@ -12,13 +12,6 @@ fi
 if [[ "$build_work_root" != /* ]]; then
     build_work_root="$repo_root/$build_work_root"
 fi
-local_vkbasalt_archive="${FGVK_VKBASALT_LOCAL_ARCHIVE:-}"
-if [[ -n "$local_vkbasalt_archive" ]]; then
-    if [[ "$local_vkbasalt_archive" == /* || "$local_vkbasalt_archive" == *..* || ! -f "$monorepo_root/$local_vkbasalt_archive" ]]; then
-        echo "FGVK_VKBASALT_LOCAL_ARCHIVE must be an existing repository-relative archive." >&2
-        exit 1
-    fi
-fi
 version="$(tr -d '[:space:]' < "$repo_root/VERSION")"
 default_output="$repo_root/out/framegen-vulkan-v$version-flatpaks.tar.xz"
 output_path="${1:-$default_output}"
@@ -70,7 +63,6 @@ if [[ "$containerized_build" != "1" && "$needs_container" == true ]]; then
         -e FGVK_FLATPAK_CONTAINERIZED=1 \
         -e FGVK_FLATPAK_CACHE_ROOT=/cache \
         -e FGVK_FLATPAK_WORK_ROOT=/cache \
-        -e FGVK_VKBASALT_LOCAL_ARCHIVE="$local_vkbasalt_archive" \
         -v "$monorepo_root:/workspace" \
         -w /workspace/engine \
         ubuntu:24.04 \
@@ -100,10 +92,6 @@ done
 
 python3 "$monorepo_root/scripts/generate-flatpak-runtimes.py" --check
 python3 "$repo_root/scripts/generate-flatpak-vulkan-headers.py" --check
-python3 "$repo_root/scripts/manage-vkbasalt-release.py" \
-    --check \
-    --check-flatpak-module \
-    "$repo_root/dist/flatpak/fgvk-render/vkbasalt-module.json"
 
 verify_elf_class() {
     local path="$1"
@@ -170,12 +158,6 @@ repo_dir="$build_root/repo"
 mkdir -p "$bundle_dir" "$repo_dir"
 
 manifest_root="$repo_root/dist/flatpak/fgvk-render"
-if [[ -n "$local_vkbasalt_archive" ]]; then
-    manifest_root="$build_root/local-manifests"
-    python3 "$repo_root/scripts/manage-vkbasalt-release.py" \
-        --local-archive "$monorepo_root/$local_vkbasalt_archive" \
-        --prepare-local-flatpak "$manifest_root"
-fi
 extension_id="org.freedesktop.Platform.VulkanLayer.fgvkrender"
 runtime_versions_file="$repo_root/dist/flatpak/fgvk-render/runtime-versions.txt"
 runtime_count=0
@@ -210,21 +192,13 @@ while IFS= read -r runtime_version || [[ -n "$runtime_version" ]]; do
         "files/share/framegen-vulkan/vulkan/implicit_layer.d/VkLayer_FGVK_render.x86.json" \
         "files/share/framegen-vulkan/vulkan/spatial_scaling.d/VkLayer_FGVK_spatial_scaling.json" \
         "files/share/framegen-vulkan/vulkan/spatial_scaling.d/VkLayer_FGVK_spatial_scaling.x86.json" \
-        "files/share/vulkan/implicit_layer.d/vkBasalt.json" \
-        "files/share/vulkan/implicit_layer.d/vkBasalt.x86.json" \
         "files/share/doc/framegen-vulkan/ASSET_PROVENANCE.md" \
         "files/share/doc/framegen-vulkan/LICENSE.md" \
         "files/share/doc/framegen-vulkan/THIRD_PARTY_NOTICES.md" \
-        "files/share/doc/framegen-vulkan/vkbasalt/LICENSE" \
-        "files/share/doc/framegen-vulkan/vkbasalt/RESHade-LICENSE.md" \
-        "files/share/doc/framegen-vulkan/vkbasalt/SOURCE" \
-        "files/share/doc/framegen-vulkan/vkbasalt/framegen-vulkan-PIN.json" \
         "files/lib64/libfgvk-render.so" \
         "files/lib64/libfgvk-render-scaling.so" \
-        "files/lib64/vkbasalt/libvkbasalt.so" \
         "files/lib/i386-linux-gnu/libfgvk-render.so" \
-        "files/lib/i386-linux-gnu/libfgvk-render-scaling.so" \
-        "files/lib/i386-linux-gnu/vkbasalt/libvkbasalt.so"; do
+        "files/lib/i386-linux-gnu/libfgvk-render-scaling.so"; do
         if [[ ! -f "$build_dir/$required_path" ]]; then
             echo "Flatpak packaging failed: missing $required_path for $runtime_version" >&2
             exit 1
@@ -233,21 +207,8 @@ while IFS= read -r runtime_version || [[ -n "$runtime_version" ]]; do
 
     verify_elf_class "$build_dir/files/lib64/libfgvk-render.so" 2
     verify_elf_class "$build_dir/files/lib64/libfgvk-render-scaling.so" 2
-    verify_elf_class "$build_dir/files/lib64/vkbasalt/libvkbasalt.so" 2
     verify_elf_class "$build_dir/files/lib/i386-linux-gnu/libfgvk-render.so" 1
     verify_elf_class "$build_dir/files/lib/i386-linux-gnu/libfgvk-render-scaling.so" 1
-    verify_elf_class "$build_dir/files/lib/i386-linux-gnu/vkbasalt/libvkbasalt.so" 1
-    for vkbasalt_library in \
-            "$build_dir/files/lib64/vkbasalt/libvkbasalt.so" \
-            "$build_dir/files/lib/i386-linux-gnu/vkbasalt/libvkbasalt.so"; do
-        if ! strings "$vkbasalt_library" |
-                grep -Fx "vkBasalt_GetInstanceProcAddr" >/dev/null ||
-                ! strings "$vkbasalt_library" |
-                    grep -Fx "vkBasalt_GetDeviceProcAddr" >/dev/null; then
-            echo "Flatpak packaging failed: invalid vkBasalt entry point in $vkbasalt_library" >&2
-            exit 1
-        fi
-    done
 
     for layer_binary in \
             "$build_dir/files/lib64/libfgvk-render.so" \
@@ -274,8 +235,6 @@ while IFS= read -r runtime_version || [[ -n "$runtime_version" ]]; do
     manifest32="$build_dir/files/share/vulkan/implicit_layer.d/VkLayer_FGVK_render.x86.json"
     scaling_manifest64="$build_dir/files/share/vulkan/implicit_layer.d/VkLayer_FGVK_spatial_scaling.json"
     scaling_manifest32="$build_dir/files/share/vulkan/implicit_layer.d/VkLayer_FGVK_spatial_scaling.x86.json"
-    vkbasalt_manifest64="$build_dir/files/share/vulkan/implicit_layer.d/vkBasalt.json"
-    vkbasalt_manifest32="$build_dir/files/share/vulkan/implicit_layer.d/vkBasalt.x86.json"
 
     if ! grep -Fq "/usr/lib/extensions/vulkan/fgvkrender/lib64/libfgvk-render.so" \
         "$manifest64"; then
@@ -325,27 +284,6 @@ while IFS= read -r runtime_version || [[ -n "$runtime_version" ]]; do
             exit 1
         fi
     done
-    if ! grep -Fq "/usr/lib/extensions/vulkan/fgvkrender/lib64/vkbasalt/libvkbasalt.so" \
-            "$vkbasalt_manifest64" ||
-            ! grep -Fq '"library_arch": "64"' "$vkbasalt_manifest64"; then
-        echo "Flatpak packaging failed: 64-bit vkBasalt manifest is incorrect for $runtime_version" >&2
-        exit 1
-    fi
-    if ! grep -Fq "/usr/lib/extensions/vulkan/fgvkrender/lib/i386-linux-gnu/vkbasalt/libvkbasalt.so" \
-            "$vkbasalt_manifest32" ||
-            ! grep -Fq '"library_arch": "32"' "$vkbasalt_manifest32"; then
-        echo "Flatpak packaging failed: 32-bit vkBasalt manifest is incorrect for $runtime_version" >&2
-        exit 1
-    fi
-    for manifest in "$vkbasalt_manifest64" "$vkbasalt_manifest32"; do
-        if ! grep -Fq '"name": "VK_LAYER_VKBASALT_post_processing"' "$manifest" ||
-                ! grep -Fq '"ENABLE_VKBASALT": "1"' "$manifest" ||
-                ! grep -Fq '"DISABLE_VKBASALT": "1"' "$manifest"; then
-            echo "Flatpak packaging failed: vkBasalt gating is incorrect for $runtime_version" >&2
-            exit 1
-        fi
-    done
-
     flatpak build-bundle "$repo_dir" "$bundle" "$extension_id" "$runtime_version" --runtime
 
     if [[ ! -s "$bundle" ]]; then
@@ -377,23 +315,6 @@ while IFS= read -r runtime_version || [[ -n "$runtime_version" ]]; do
         echo "Flatpak packaging failed: deployed spatial-layer library is missing for $runtime_version" >&2
         exit 1
     fi
-    if [[ ! -f "$deployed_dir/files/lib64/vkbasalt/libvkbasalt.so" ||
-          ! -f "$deployed_dir/files/lib/i386-linux-gnu/vkbasalt/libvkbasalt.so" ]]; then
-        echo "Flatpak packaging failed: deployed vkBasalt libraries are missing for $runtime_version" >&2
-        exit 1
-    fi
-    for deployed_vkbasalt_file in \
-            "share/vulkan/implicit_layer.d/vkBasalt.json" \
-            "share/vulkan/implicit_layer.d/vkBasalt.x86.json" \
-            "share/doc/framegen-vulkan/vkbasalt/LICENSE" \
-            "share/doc/framegen-vulkan/vkbasalt/RESHade-LICENSE.md" \
-            "share/doc/framegen-vulkan/vkbasalt/SOURCE" \
-            "share/doc/framegen-vulkan/vkbasalt/framegen-vulkan-PIN.json"; do
-        if [[ ! -f "$deployed_dir/files/$deployed_vkbasalt_file" ]]; then
-            echo "Flatpak packaging failed: deployed vkBasalt file is missing: $deployed_vkbasalt_file" >&2
-            exit 1
-        fi
-    done
     for legal_file in ASSET_PROVENANCE.md LICENSE.md THIRD_PARTY_NOTICES.md; do
         if [[ ! -f "$deployed_dir/files/share/doc/framegen-vulkan/$legal_file" ]]; then
             echo "Flatpak packaging failed: deployed legal file $legal_file is missing for $runtime_version" >&2
@@ -403,21 +324,8 @@ while IFS= read -r runtime_version || [[ -n "$runtime_version" ]]; do
 
     verify_elf_class "$deployed_dir/files/lib64/libfgvk-render.so" 2
     verify_elf_class "$deployed_dir/files/lib64/libfgvk-render-scaling.so" 2
-    verify_elf_class "$deployed_dir/files/lib64/vkbasalt/libvkbasalt.so" 2
     verify_elf_class "$deployed_dir/files/lib/i386-linux-gnu/libfgvk-render.so" 1
     verify_elf_class "$deployed_dir/files/lib/i386-linux-gnu/libfgvk-render-scaling.so" 1
-    verify_elf_class "$deployed_dir/files/lib/i386-linux-gnu/vkbasalt/libvkbasalt.so" 1
-    for vkbasalt_library in \
-            "$deployed_dir/files/lib64/vkbasalt/libvkbasalt.so" \
-            "$deployed_dir/files/lib/i386-linux-gnu/vkbasalt/libvkbasalt.so"; do
-        if ! strings "$vkbasalt_library" |
-                grep -Fx "vkBasalt_GetInstanceProcAddr" >/dev/null ||
-                ! strings "$vkbasalt_library" |
-                    grep -Fx "vkBasalt_GetDeviceProcAddr" >/dev/null; then
-            echo "Flatpak packaging failed: invalid deployed vkBasalt entry point in $vkbasalt_library" >&2
-            exit 1
-        fi
-    done
 
     for layer_binary in \
             "$deployed_dir/files/lib64/libfgvk-render.so" \

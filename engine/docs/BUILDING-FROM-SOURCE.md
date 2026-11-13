@@ -84,13 +84,7 @@ The fast builder caches a release tag under `engine/build/cache/vulkan-headers/`
 
 The sanitizer CI job also fetches this pin and compiles its policy tests against the same headers; manual portable-policy runs can still exercise distribution headers for compatibility coverage. To update the baseline, change this file and qualify the resulting packages under the tester/release build-alignment requirements above.
 
-The Vulkan layer manifests' `api_version` describes the layer's supported API and is maintained separately; it must not automatically follow header updates. framegen-vulkan’s pinned vkBasalt release records its Vulkan-Headers revision and resolved commit; its header revision must match the Renderer pin, and its reviewed API declaration must match both Renderer layer manifests. `manage-vkbasalt-release.py` rejects drift and verifies archive provenance. After downloading and verifying a new public vkBasalt asset, use `python3 engine/scripts/manage-vkbasalt-release.py --update-from-archive /path/to/asset.tar.xz` from the repository root, then `just generate-vkbasalt-release`; the latter generates the Flatpak dependency and both architecture manifests from the verified pin.
-
-### vkBasalt
-
-[`engine/vkbasalt-release.json`](../vkbasalt-release.json) owns framegen-vulkan's runtime vkBasalt dependency. The pin identifies an immutable tag and source commit in framegen-vulkan's maintained fork, the exact dual-architecture release asset, its upstream baseline, and its SHA-256. `scripts/manage-vkbasalt-release.py` validates the pin, release provenance, internal checksums, both ELF classes, Vulkan layer entry points, manifests, and activation gates. Native packaging stages the verified libraries under `lib/vkbasalt` and `lib32/vkbasalt`; the generated Flatpak module stages the same release inside each runtime extension. Neither path installs vkBasalt system-wide. The cached download lives under `build/cache/vkbasalt` and can be relocated with `FGVK_BUILD_CACHE_ROOT` through the package scripts.
-
-To update vkBasalt, merge the intended upstream baseline into the maintained fork, increment the fork release revision, run its dual-architecture release workflow, and retain the successful workflow and artifact attestations. Then update `vkbasalt-release.json`, regenerate `dist/flatpak/fgvk-render/vkbasalt-module.json` with `just generate-vkbasalt-release`, and run `just check-vkbasalt-release`. Never retag or replace a pinned asset: publish a new fork tag and change the framegen-vulkan pin. A released framegen-vulkan archive contains the verified libraries, manifests, licenses, source record, and pin, so an installed or downloaded framegen-vulkan release does not depend on the upstream vkBasalt repository remaining available. Rebuilding the same framegen-vulkan source from an empty cache still requires the pinned fork release asset.
+The Vulkan layer manifests' `api_version` describes the layer's supported API and is maintained separately; it must not automatically follow header updates.
 
 Distributable archives and Flatpak extensions include the project license, third-party notices, and asset-provenance record. Packaging fails if those files or another required payload entry is missing.
 
@@ -237,11 +231,7 @@ The default and Vulkan-layer builds check `fgvk-render/src/**/*.cpp` against the
 sudo cmake --install build
 ```
 
-Start a native game with `fgvk <command>`. The helper selects the install prefix's private manifests, activates framegen-vulkan for that child, excludes competing frame generation and Gamescope WSI, and defaults to SDR. Enable HDR through the [HDR setup](CONFIGURATION.md#hdr) when needed. A directly installed CMake build does not fetch the optional vkBasalt payload; use `scripts/package-local.sh` for the complete archive that supports `ENABLE_VKBASALT=1 fgvk <command>`. Read [WSI isolation](WSI-ISOLATION.md) and [Optional graphics integrations](LAYER-CHAINING.md#standalone-fgvk-renderer-with-vkbasalt) before changing manifests or launch variables.
-
-### Local vkBasalt candidates
-
-Build and verify both architectures with the sibling vkBasalt fork’s `scripts/package-fgvk-release.sh`, then place the archive under ignored `engine/out/`. Set `FGVK_VKBASALT_LOCAL_ARCHIVE=engine/out/vkBasalt-hdr-local.tar.xz` for tester builds or native development deployment. Paths must be repository-relative without `..`. Native and Flatpak builds validate checksums, architecture, provenance, headers and layer entrypoints; cache identity includes the archive checksum. Local manifests and metadata identify the candidate without changing tracked pins. Publication rejects the override; unset it to use the public dependency.
+Start a native game with `fgvk <command>`. The helper selects the install prefix's private manifests, activates framegen-vulkan for that child, excludes competing frame generation and Gamescope WSI, and defaults to SDR. Enable HDR through the [HDR setup](CONFIGURATION.md#hdr) when needed. Read [WSI isolation](WSI-ISOLATION.md) and [Optional graphics integrations](LAYER-CHAINING.md) before changing manifests or launch variables.
 
 ## Arch package maintenance
 
@@ -256,7 +246,6 @@ The package installs:
 - the 64-bit Vulkan layers into `/usr/lib` and the 32-bit layers into `/usr/lib32`.
 - the public implicit-layer manifests into `/usr/share/vulkan/implicit_layer.d`, gated by `ENABLE_FGVK` and `ENABLE_FGVK_SPATIAL_SCALING`.
 - the private manifests used by `fgvk` into `/usr/share/framegen-vulkan/vulkan/implicit_layer.d` and `/usr/share/framegen-vulkan/vulkan/spatial_scaling.d`.
-- any checksum-manifested private integration shipped by the pinned archive, including framegen-vulkan's private 64-bit and 32-bit vkBasalt libraries, manifests, licences, and provenance when present in that Renderer release.
 - license texts into `/usr/share/licenses/framegen-vulkan-bin`.
 - `ASSET_PROVENANCE.md`, the version file, and the upstream checksum manifest into `/usr/share/doc/framegen-vulkan-bin`.
 
@@ -284,7 +273,7 @@ This repository owns the reviewed `PKGBUILD` and publishes its verified binary p
 - `makepkg` verifies the release archive against `sha256sums` before packaging.
 - Renderer publication runs `verify-release-package.sh` after synchronizing the recipe, uploads that exact verified package, records its checksum in release metadata, and refuses to consider the release complete if the asset is missing or differs from the recorded checksum.
 - The build wrapper rejects a stale or renamed package unless its filename, `.PKGINFO` name/version/architecture, embedded `framegen-vulkan-version.txt`, synchronized recipe, and source archive checksum all agree.
-- The build wrapper rejects a new or undeclared ELF dependency in the CLI, either Renderer role, or the private 64-bit and 32-bit vkBasalt libraries. It also rejects an ELF with the wrong 32-bit or 64-bit class for its package path.
+- The build wrapper rejects a new or undeclared ELF dependency in the CLI or either Renderer role. It also rejects an ELF with the wrong 32-bit or 64-bit class for its package path.
 - Every payload file this package installs has the same SHA-256 as its entry in `framegen-vulkan-install-manifest.txt`. The recipe verifies the complete archive manifest, packages every supported entry instead of maintaining a second payload allowlist, and fails on unsafe or unsupported paths. The manifest is installed unchanged at `/usr/share/doc/framegen-vulkan-bin/framegen-vulkan-install-manifest.txt` so the claim can be re-checked. The only manifest entries without a matching installed file are `bin/fgvk-installer` and desktop entries, both excluded by design.
 - A Vulkan loader run with `VK_IMPLICIT_LAYER_PATH` pointed at each packaged manifest directory discovers and activates `VK_LAYER_FGVK_render` and `VK_LAYER_FGVK_spatial_scaling` for the public set, and the matching layer for each private directory, with the relative `library_path` values resolving to `/usr/lib` and `/usr/lib32`.
 - `bash -n PKGBUILD`, `sh -n framegen-vulkan-bin.install`, and `./check-release-pin.sh` all pass.

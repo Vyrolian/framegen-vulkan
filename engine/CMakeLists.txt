@@ -21,8 +21,6 @@ install(PROGRAMS "${CMAKE_CURRENT_SOURCE_DIR}/../scripts/fgvk-diagnostics"
     DESTINATION "${CMAKE_INSTALL_BINDIR}")
 install(PROGRAMS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/fgvk-installer"
     DESTINATION "${CMAKE_INSTALL_BINDIR}")
-install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/vkbasalt-shaders/"
-    DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/framegen-vulkan/vkbasalt-shaders")
 install(PROGRAMS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/fgvk-remote-play"
     DESTINATION "${CMAKE_INSTALL_BINDIR}")
 install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/scripts/fgvk_remote_play/"
@@ -185,18 +183,6 @@ if(BUILD_TESTING AND UNIX)
             "${CMAKE_CURRENT_SOURCE_DIR}/scripts/test-flatpak-vulkan-headers.py")
     set_tests_properties(flatpak-vulkan-headers-freshness
         flatpak-vulkan-headers-contract PROPERTIES LABELS "portable-policy")
-
-    add_test(NAME vkbasalt-release-contract
-        COMMAND "${FGVK_PYTHON3_EXECUTABLE}"
-            "${CMAKE_CURRENT_SOURCE_DIR}/scripts/manage-vkbasalt-release.py"
-            --check
-            --check-flatpak-module
-            "${CMAKE_CURRENT_SOURCE_DIR}/dist/flatpak/fgvk-render/vkbasalt-module.json")
-    add_test(NAME vkbasalt-release-validator
-        COMMAND "${FGVK_PYTHON3_EXECUTABLE}"
-            "${CMAKE_CURRENT_SOURCE_DIR}/scripts/test-vkbasalt-release.py")
-    set_tests_properties(vkbasalt-release-contract
-        vkbasalt-release-validator PROPERTIES LABELS "portable-policy")
 
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         add_test(NAME arch-package-release-pin

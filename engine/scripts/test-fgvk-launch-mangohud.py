@@ -190,8 +190,8 @@ class MangoHudLauncherTests(unittest.TestCase):
             self.assertEqual(result.get("MANGOHUD"), "1")
         self.assertEqual(len(list(self.private.iterdir())), 2)
 
-    def test_invalid_requests_and_shader_conflict_fail_before_game_exec(self):
-        for options in ({"MANGOHUD": "yes"}, {"MANGOHUD": "1", "ENABLE_VKBASALT": "1"}):
+    def test_invalid_mangohud_request_fails_before_game_exec(self):
+        for options in ({"MANGOHUD": "yes"},):
             result = self.run_launcher("/usr/bin/env", **options)
             self.assertEqual(result.returncode, 2)
             self.assertEqual(result.stdout, "")

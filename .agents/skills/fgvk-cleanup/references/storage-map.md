@@ -6,13 +6,13 @@ Re-read current owning scripts on each run; environment overrides and layouts ca
 
 | Storage | Reason to retain |
 | --- | --- |
-| `engine/build/cache/` | Flatpak data, `vulkan-headers`, `ccache`, `vkbasalt`, and `lsfg-fp16-tools`; preserve the whole cache |
+| `engine/build/cache/` | Flatpak data, `vulkan-headers`, `ccache`, and `lsfg-fp16-tools`; preserve the whole cache |
 | `FGVK_BUILD_CACHE_ROOT` and `FGVK_FLATPAK_CACHE_ROOT` override paths | Relocated dependencies; resolve relative bases from the owning scripts |
 | Docker/Podman `fgvk-flatpak-cache` volume, other verified build-cache volumes, and builder images | Portable Flatpak packaging mounts `/cache`; cache and work roots can both point there, so the name `work` does not make it disposable |
 | `.flatpak-builder` directories, Flatpak installations, SDKs, runtimes, and downloads | Warm build environment, including `engine/.flatpak-builder` |
 | Host compilers, multilib, shader tools, Vulkan headers, container runtime, Node/npm/Python and shared environments | Regular build and release tooling; distinguish these from task-private experiment environments |
 | Regular build/test `node_modules`, pnpm/npm stores, shared virtual environments, compiler/download caches, third-party sources and SDKs | Reusable dependencies; dependencies private to a completed disposable experiment are eligible with that environment |
-| Actively used candidates and dependency overrides | `FGVK_VKBASALT_LOCAL_ARCHIVE`, for example, can point inside `engine/out`; inspect consumers before deletion |
+| Actively used candidates and dependency overrides | Local candidate archives named by an override variable, for example, can point inside `engine/out`; inspect consumers before deletion |
 
 Owners: `engine/docs/BUILDING-FROM-SOURCE.md`, `engine/scripts/package-local.sh`, `engine/scripts/package-flatpaks.sh`, `engine/scripts/build-steamos-dev.sh`, and `HOW_TO_RELEASE.md`. Inspect only relevant environment variables; do not dump the environment or secret-bearing config.
 
@@ -23,7 +23,7 @@ Owners: `engine/docs/BUILDING-FROM-SOURCE.md`, `engine/scripts/package-local.sh`
 | Area | Potentially disposable material | Required distinction |
 | --- | --- | --- |
 | Renderer | Incremental CMake trees, `engine/build/work`, binaries, packages and staging in `engine/out`, reviewed `engine/build-*` trees | Enumerate around caches; inspect nested dependencies and active candidate references |
-| vkBasalt | Meson/CMake output and completed package archives | Read its packaging scripts and ignore rules; keep downloaded source/toolchains |
+| Obsolete bundled-vkBasalt leftovers | `share/framegen-vulkan/vkbasalt-shaders` and `~/.config/framegen-vulkan/vkbasalt/` | Obsolete and safe to delete: framegen-vulkan no longer bundles vkBasalt. The config directory is user data, so delete it by hand |
 | Other/experimental sibling repositories | Verified builds, packages, coverage, logs, temporary captures, abandoned task-private environments | Discover every checkout; retain source, Git history, regular build/test environments, and build caches |
 | fgvk Gym | Completed run logs, QA images, obsolete extracted candidates, dated reports in `out`, and one-off test environments | Keep tools such as `out/renderer-comparison/tools`, SDK/runtime caches, workloads, and emulator environments when reused by the regular QA workflow. Include recent completed results and disposable experiment environments too, but disclose the loss of historical evidence and preserve active investigations |
 | Codex | framegen-vulkan archived threads, unused images/charts/attachments, completed disposable worktrees | Follow the Codex procedure; establish ownership and lack of remaining consumers |

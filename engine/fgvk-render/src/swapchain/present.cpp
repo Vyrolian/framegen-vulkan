@@ -214,19 +214,6 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
                      "transport=VK_EXT_present_timing; reason=feedback-or-clock-unavailable\n";
 #endif
     this->applyPendingSpatialScaler(vk);
-    if (hdrShaderPrecisionSupported(this->colorPipeline, this->hdrExposureDisabled) &&
-            this->shaderHdrReducedPrecision != ls::hdrCompactBuffers(this->profile.hdr_quality)) {
-        using SetHdrPrecision = VkBool32 (VKAPI_PTR *)(
-            VkDevice, VkSwapchainKHR, VkBool32);
-        const auto setHdrPrecision = reinterpret_cast<SetHdrPrecision>(
-            vk.fi().GetDeviceProcAddr(vk.dev(), "makoSetSwapchainHdrPrecisionV1"));
-        const bool accepted = setHdrPrecision &&
-            setHdrPrecision(vk.dev(), swapchain, ls::hdrCompactBuffers(this->profile.hdr_quality));
-        std::clog << "framegen-vulkan: HDR shader precision: reduced="
-                  << ls::hdrCompactBuffers(this->profile.hdr_quality)
-                  << "; request_accepted=" << accepted << '\n';
-        this->shaderHdrReducedPrecision = ls::hdrCompactBuffers(this->profile.hdr_quality);
-    }
     if (presentDiagnosticsEnabled()) {
         const auto requested = present_diagnostics::applicationPresentMode(
             this->info.incomingPresentMode, nextChain);

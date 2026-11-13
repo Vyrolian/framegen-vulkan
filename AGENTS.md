@@ -26,7 +26,7 @@ Boundary docs (`engine/docs/`): `RENDERER-ARCHITECTURE`, `CONFIGURATION` / `CONF
 
 ## Generated files and protected inputs
 
-- Never hand-edit generated output; change the source and run its generator, then the `just check-*` gate: SPIR-V headers (`engine/scripts/generate-*-spirv.py`), launcher exclusions (`just generate-launcher-exclusions`), Flatpak runtimes/headers (`just generate-flatpak-runtimes`, `just generate-flatpak-headers`), vkBasalt release (`just generate-vkbasalt-release`), Arch pin (`just sync-arch-package`).
+- Never hand-edit generated output; change the source and run its generator, then the `just check-*` gate: SPIR-V headers (`engine/scripts/generate-*-spirv.py`), launcher exclusions (`just generate-launcher-exclusions`), Flatpak runtimes/headers (`just generate-flatpak-runtimes`, `just generate-flatpak-headers`), Arch pin (`just sync-arch-package`).
 - Build dirs (`engine/build/`, `engine/out/`, `target/`) are local data; never commit them.
 - `Lossless.dll` is a licensed user input: never commit, package or upload it.
 - The lsfg-vk repository relaunched on 27 August 2026 is CC BY-NC-ND 4.0: never copy its code, docs or assets here. Keep copyright and licence lines intact.

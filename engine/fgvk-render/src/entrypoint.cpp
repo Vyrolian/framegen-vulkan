@@ -3125,34 +3125,6 @@ namespace {
                         }
                         createdSwapchain = *swapchain;
                         lowerSwapchainCreated = true;
-                        // Optional private ABI: no change to application or WSI
-                        // formats. Supply the initial shader choice before images.
-                        using SetHdrPrecision = VkBool32 (VKAPI_PTR *)(
-                            VkDevice, VkSwapchainKHR, VkBool32);
-                        const auto setHdrPrecision = reinterpret_cast<SetHdrPrecision>(
-                            instance_info->funcs.GetDeviceProcAddr(device,
-                                "makoSetSwapchainHdrPrecisionV1"));
-                        if (setHdrPrecision)
-                            setHdrPrecision(device, *swapchain,
-                                layer_info->root.hdrCompactBuffersEnabled());
-                        if (driverInfo.imageColorSpace != newInfo->imageColorSpace) {
-                            // vkBasalt sees the driver's SRGB transport pair. Supply
-                            // the original colour space before it exposes images or
-                            // builds an effect graph; never infer HDR from bit depth.
-                            using SetColorSpace = VkBool32 (VKAPI_PTR *)(
-                                VkDevice, VkSwapchainKHR, VkColorSpaceKHR);
-                            const auto setColorSpace = reinterpret_cast<SetColorSpace>(
-                                instance_info->funcs.GetDeviceProcAddr(device,
-                                    "makoSetSwapchainColorSpaceV1"));
-                            if (setColorSpace) {
-                                if (!setColorSpace(device, *swapchain, newInfo->imageColorSpace))
-                                    throw ls::vulkan_error(VK_ERROR_FORMAT_NOT_SUPPORTED,
-                                        "shader layer rejected the HDR colour-space handoff");
-                            } else if (environmentFlagEnabled(std::getenv("ENABLE_VKBASALT"))) {
-                                throw ls::vulkan_error(VK_ERROR_FORMAT_NOT_SUPPORTED,
-                                    "HDR shaders require the colour-aware framegen-vulkan vkBasalt build");
-                            }
-                        }
                     }
                 );
             const auto lowerCreateRelay = lowerCreateRelayState.consume();
@@ -3324,31 +3296,6 @@ namespace {
                     );
                 }
             };
-
-            // The internal HDR resize must not shrink CAS/DLS from one source
-            // pixel to one display pixel. Hand off admitted source geometry
-            // before vkBasalt exposes images and builds its immutable graph.
-            if (hdrBridgeSharpenSourceRequired(
-                    modification.hdrDisplayResize,
-                    modification.spatialScalingActive,
-                    modification.applicationExtent,
-                    modification.presentationExtent)) {
-                using SetSharpenSource = VkBool32 (VKAPI_PTR *)(
-                    VkDevice, VkSwapchainKHR, uint32_t, uint32_t);
-                const auto setSharpenSource = reinterpret_cast<SetSharpenSource>(
-                    instance_info->funcs.GetDeviceProcAddr(device,
-                        "makoSetSwapchainSharpenSourceExtentV1"));
-                if (setSharpenSource) {
-                    const auto source = modification.applicationExtent;
-                    const auto accepted = setSharpenSource(
-                        device, *swapchain, source.width, source.height);
-                    std::cerr << "framegen-vulkan: HDR shader source footprint: "
-                              << "source=" << source.width << 'x' << source.height
-                              << "; output=" << modification.presentationExtent.width
-                              << 'x' << modification.presentationExtent.height
-                              << "; accepted=" << accepted << '\n';
-                }
-            }
 
             // get all swapchain images
             uint32_t imageCount{};

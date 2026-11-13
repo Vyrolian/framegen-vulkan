@@ -56,14 +56,6 @@ generate-flatpak-headers:
 check-flatpak-headers:
     python3 engine/scripts/generate-flatpak-vulkan-headers.py --check
 
-# Generate Flatpak's runtime vkBasalt module from the pinned framegen-vulkan fork release.
-generate-vkbasalt-release:
-    python3 engine/scripts/manage-vkbasalt-release.py --check --generate-flatpak-module engine/dist/flatpak/fgvk-render/vkbasalt-module.json
-
-# Reject an invalid vkBasalt pin or stale generated Flatpak module.
-check-vkbasalt-release:
-    python3 engine/scripts/manage-vkbasalt-release.py --check --check-flatpak-module engine/dist/flatpak/fgvk-render/vkbasalt-module.json
-
 # Sync the Arch package recipe to the checksum-pinned Renderer release.
 sync-arch-package:
     python3 engine/dist/arch/sync-release-pin.py engine/renderer-release.json engine/dist/arch/PKGBUILD

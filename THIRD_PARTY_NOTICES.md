@@ -52,20 +52,6 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 The optional native FP16 experiment statically links official [SPIRV-Tools at commit `33e02568181e3312f49a3cf33df470bf96ef293a`](https://github.com/KhronosGroup/SPIRV-Tools/tree/33e02568181e3312f49a3cf33df470bf96ef293a), copyright © 2015–2025 The Khronos Group Inc. and its contributors, under the Apache License 2.0. Its generated tables use [SPIRV-Headers at commit `2a611a970fdbc41ac2e3e328802aed9985352dca`](https://github.com/KhronosGroup/SPIRV-Headers/tree/2a611a970fdbc41ac2e3e328802aed9985352dca), under the Khronos permissive terms recorded in that repository. The experimental CMake install includes their complete license files under `share/doc/mako-render/spirv-tools/` and `share/doc/mako-render/spirv-headers/`. The checksum-pinned source preparation is owned by `engine/scripts/prepare-lsfg-fp16-tools.sh`; ordinary builds do not include this optimizer. Neither this dependency nor conversion redistributes Lossless Scaling resources.
 
-## Bundled vkBasalt Vulkan layer
-
-MAKO Renderer native archives and Flatpak extensions include 64-bit and 32-bit vkBasalt libraries from [MAKO's maintained fork](https://github.com/eugeniosegala/vkBasalt), based on [upstream vkBasalt](https://github.com/DadSchoorse/vkBasalt). [`engine/vkbasalt-release.json`](engine/vkbasalt-release.json) records the current release tag, source and upstream commits, immutable asset URL, and checksum used by packaging.
-
-vkBasalt is copyright © 2019–2022 Georg Lehmann and is distributed under the zlib License. Its bundled ReShade shader headers are copyright © 2014 Patrick Mours and distributed under the BSD 3-Clause License. MAKO packages the complete notices as `share/doc/mako-render/vkbasalt/LICENSE` and `share/doc/mako-render/vkbasalt/RESHade-LICENSE.md`, plus exact source provenance and the MAKO pin. Those files remain part of every archive and runtime extension containing vkBasalt.
-
-## Bundled vkBasalt shader presets
-
-MAKO Renderer includes `Vibrance.fx`, `Curves.fx`, `Technicolor.fx`, `Sepia.fx`, `Monochrome.fx`, `Vignette.fx`, `FakeHDR.fx`, `Technicolor2.fx`, `DPX.fx`, `FilmGrain.fx`, `Cartoon.fx`, `Nostalgia.fx`, and `ChromaticAberration.fx` derived from [CeeJayDK/SweetFX commit `407c11562950195c1b45461fbb59f4bd6bbe7ba4`](https://github.com/CeeJayDK/SweetFX/commit/407c11562950195c1b45461fbb59f4bd6bbe7ba4) and distributed under that repository's MIT License. Upstream author credits remain in the source files. MAKO replaces the shaders' `ReShadeUI.fxh` UI macros with equivalent explicit annotations. Defaults and algorithms are otherwise unchanged except for the bounded FakeHDR sampling optimization documented in [shader provenance](engine/vkbasalt-shaders/SOURCE.md).
-
-`Colourfulness.fx` is copied from [crosire/reshade-shaders commit `4fee10cdac28f0a6d4fa5ddd778faf0016ab7b91`](https://github.com/crosire/reshade-shaders/commit/4fee10cdac28f0a6d4fa5ddd778faf0016ab7b91). It is copyright © 2016–2018 bacondither and is redistributed under the permissive BSD-style terms preserved in its header and in `LICENSE-Colourfulness`. MAKO changes only the optional `ReShadeUI.fxh` UI annotation macro. `BleachBypass.fx` and `Noir.fx` are original MAKO GPL-3.0-or-later shaders.
-
-MAKO also includes `ReShade.fxh` from [crosire/reshade-shaders `slim` commit `6db142b4b1a05c764222e5b0bd9a644b7ccfe1dc`](https://github.com/crosire/reshade-shaders/commit/6db142b4b1a05c764222e5b0bd9a644b7ccfe1dc), which declares [CC0-1.0](https://creativecommons.org/publicdomain/zero/1.0/legalcode). MAKO's Clarity and Levels Plus are original GPL-3.0-or-later effects with comparable purposes to third-party effects, not redistributed copies. Exact provenance and complete SweetFX and Colourfulness license texts are kept with the canonical sources under `engine/vkbasalt-shaders/` and installed with MAKO Renderer under `share/mako-render/vkbasalt-shaders/`.
-
 ## Project artwork
 
 framegen-vulkan's project artwork and the provenance limits recorded for it are documented in [ASSET_PROVENANCE.md](ASSET_PROVENANCE.md). Third-party brand assets are not relicensed by framegen-vulkan.

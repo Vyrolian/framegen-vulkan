@@ -28,7 +28,6 @@ class LaunchSettings(TypedDict):
     FGVK_LAUNCH_SPATIAL_REQUIRED: str
     FGVK_LAUNCH_WSI_REQUIRED: str
     FGVK_LAUNCH_EXTERNAL_LAYER: str
-    FGVK_LAUNCH_VKBASALT_CONFIG: str
 
 
 # Native streaming uses Vulkan. Never inherit a launcher's OpenGL/Zink override.
@@ -114,8 +113,7 @@ def selected_profile(config: Path) -> dict:
                 next((profile for profile in profiles if profile["name"] == "fgvk"), profiles[0]))
 
 
-def launch_settings(profile: dict, config: Path, *, default_shader: Path | None = None,
-                    follow_current: bool = False) -> LaunchSettings:
+def launch_settings(profile: dict, config: Path) -> LaunchSettings:
     """Read only process-start discovery inputs; Renderer owns actual settings."""
     modes = [profile]
     for mode in ('handheld', 'docked'):
@@ -139,38 +137,20 @@ def launch_settings(profile: dict, config: Path, *, default_shader: Path | None 
         if not isinstance(settings, dict):
             raise ValueError('invalid profile wrapper settings')
     external = settings.get('external_vulkan_layer', '')
-    if external not in ('', 'vkbasalt', 'mangohud'):
+    if external == 'vkbasalt':
+        # vkBasalt is no longer bundled; an old saved choice means no external layer.
+        external = ''
+    if external not in ('', 'mangohud'):
         raise ValueError('unsupported external layer')
     wsi = settings.get('gamescope_wsi_compatibility', False)
     if type(wsi) is not bool:
         raise ValueError('invalid WSI setting')
     scaling = required('scaling_enabled', False)
-    shader_name = 'profile-' + hashlib.sha256(profile['name'].encode()).hexdigest()[:12] + '.conf'
-    metadata = config.parent / 'profile-metadata.json'
-    if metadata.exists() or metadata.is_symlink():
-        with open_regular(metadata) as stream:
-            root = json.load(stream)
-        if not isinstance(root, dict) or root.get('version') != 1 or not isinstance(root.get('profiles'), dict):
-            raise ValueError('invalid profile metadata')
-        entry = root['profiles'].get(profile['name'], {})
-        if not isinstance(entry, dict):
-            raise ValueError('invalid profile metadata entry')
-        app_id = entry.get('steam_app_id')
-        if isinstance(app_id, str) and app_id.isascii() and app_id.isdigit():
-            shader_name = 'steam-' + app_id + '.conf'
-    shader = config.parent / 'vkbasalt' / shader_name
-    if profile['name'] == 'fgvk':
-        shader = default_shader if default_shader is not None else config.parent.parent / 'vkBasalt' / 'vkBasalt.conf'
-    if follow_current:
-        # Editors replace this cache when saving/selecting an ordinary profile.
-        # vkBasalt can keep its startup filename and reload the selected content.
-        shader = config.parent / 'vkbasalt' / 'current-profile.conf'
     return LaunchSettings(
         FGVK_LAUNCH_RENDERER_REQUIRED='1' if required('frame_generation_provisioned', True) or scaling else '0',
         FGVK_LAUNCH_SPATIAL_REQUIRED='1' if scaling and wsi else '0',
         FGVK_LAUNCH_WSI_REQUIRED='1' if wsi else '0',
         FGVK_LAUNCH_EXTERNAL_LAYER=external,
-        FGVK_LAUNCH_VKBASALT_CONFIG=str(shader) if external == 'vkbasalt' else '',
     )
 
 
@@ -194,7 +174,7 @@ def launch(paths: LaunchPaths, arguments: list[str], execute: Callable,
             if layer not in MANAGED_LAYERS
         )
     for key in ('FGVK_LAUNCH_RENDERER_REQUIRED', 'FGVK_LAUNCH_SPATIAL_REQUIRED', 'FGVK_LAUNCH_WSI_REQUIRED',
-                'FGVK_LAUNCH_EXTERNAL_LAYER', 'FGVK_LAUNCH_VKBASALT_CONFIG'):
+                'FGVK_LAUNCH_EXTERNAL_LAYER'):
         clean.pop(key, None)
     original = paths["original"]
     try:
@@ -223,28 +203,14 @@ def launch(paths: LaunchPaths, arguments: list[str], execute: Callable,
         if not paths["runner"].is_file() or not os.access(paths["runner"], os.X_OK):
             raise ValueError("framegen-vulkan launcher unavailable")
         check_sdr_helper(paths['sdr_helper'])
-        default_shader = None
-        if paths['runner'].name == 'fgvk-launch':
-            if clean.get('XDG_CONFIG_HOME'):
-                default_shader = Path(clean['XDG_CONFIG_HOME']) / 'vkBasalt' / 'vkBasalt.conf'
-            elif clean.get('HOME'):
-                default_shader = Path(clean['HOME']) / '.config/vkBasalt/vkBasalt.conf'
-            else:
-                default_shader = Path('/etc/vkBasalt.conf')
-        settings = launch_settings(profile, paths['config'], default_shader=default_shader,
-                                   follow_current=True)
+        settings = launch_settings(profile, paths['config'])
         active = dict(clean)
         active.pop("DISABLE_FGVK", None)
         active.pop("DISABLE_FGVK_SPATIAL_SCALING", None)
         active["FGVK_PROFILE"] = profile_name
         active["FGVK_FOLLOW_CURRENT_PROFILE"] = '1'
         active['FGVK_CONFIG'] = str(paths['config'])
-        if paths['runner'].name == 'fgvk-launch':
-            if settings['FGVK_LAUNCH_EXTERNAL_LAYER'] == 'vkbasalt':
-                active['ENABLE_VKBASALT'] = '1'
-                active.pop('DISABLE_VKBASALT', None)
-                active['VKBASALT_CONFIG_FILE'] = settings['FGVK_LAUNCH_VKBASALT_CONFIG']
-        else:
+        if paths['runner'].name != 'fgvk-launch':
             active.update(settings)
         # Existing launchers own layer setup and disabled-feature passthrough;
         # the Renderer owns settings, model availability, and power selection.

@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 """Exercise the shared command in temporary native Steam trees, without Vulkan."""
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -75,11 +74,12 @@ class RemotePlayCommandTests(unittest.TestCase):
         self.assertEqual(ELF, self.client.read_bytes())
         self.assertEqual(0o750, self.client.stat().st_mode & 0o7777)
 
-    def test_standalone_shader_launch_and_custom_config_are_used(self):
+    def test_standalone_retired_vkbasalt_choice_is_inert(self):
         self.client.write_bytes(Path('/usr/bin/env').read_bytes())
         config = self.home / 'other config/conf.toml'
         config.parent.mkdir()
         config.write_text(self.config.read_text())
+        # An old saved vkBasalt choice must behave as no external layer.
         settings = {'version': 1, 'profiles': {'stream-quality': {'external_vulkan_layer': 'vkbasalt'}}}
         (config.parent / 'profile-wrapper-settings.json').write_text(json.dumps(settings))
         self.command('install', config=config)
@@ -88,13 +88,13 @@ class RemotePlayCommandTests(unittest.TestCase):
         values = dict(item.decode().split('=', 1) for item in result.stdout.split(b'\0') if item)
         self.assertEqual(str(config), values['FGVK_CONFIG'])
         self.assertEqual('stream-quality', values['FGVK_PROFILE'])
-        self.assertEqual('1', values['ENABLE_VKBASALT'])
-        expected = config.parent / 'vkbasalt/current-profile.conf'
-        self.assertEqual(str(expected), values['VKBASALT_CONFIG_FILE'])
+        self.assertNotIn('ENABLE_VKBASALT', values)
+        self.assertNotIn('VKBASALT_CONFIG_FILE', values)
+        self.assertEqual('1', values['DISABLE_VKBASALT'])
+        self.assertFalse((config.parent / 'vkbasalt').exists())
         self.assertEqual('1', values['FGVK_FOLLOW_CURRENT_PROFILE'])
         self.assertEqual('1', values['FGVK_REMOTE_PLAY_SDR'])
         self.assertEqual(str(self.prefix / SDR_HELPER_RELATIVE_PATH), values['LD_PRELOAD'])
-        self.assertEqual('effects = none\n', expected.read_text())
         self.assertNotIn('GALLIUM_DRIVER', values)
         # The stored path survives calls made by the default config.
         self.assertEqual(str(config), self.command('status')['configuration_path'])
@@ -129,7 +129,7 @@ class RemotePlayCommandTests(unittest.TestCase):
         self.assertNotIn('result=sRGB', result.stderr.decode())
         self.command('remove')
 
-    def test_real_standalone_launcher_uses_current_shader_settings(self):
+    def test_real_standalone_launcher_ignores_retired_vkbasalt_choice(self):
         self.client.write_bytes(Path('/usr/bin/env').read_bytes())
         shutil.copyfile(ROOT / 'fgvk-launch', self.launcher)
         # Native config overrides must not change the standalone owner's global
@@ -140,20 +140,17 @@ class RemotePlayCommandTests(unittest.TestCase):
         configuration.write_text(self.config.read_text())
         self.config = configuration
         prefix = self.prefix
+        # A leftover vkBasalt payload must never join a launch, even when an old setting selects it.
         for relative in ('share/framegen-vulkan/vulkan/vkbasalt.d/vkBasalt.json',
                          'share/framegen-vulkan/vulkan/vkbasalt.d/vkBasalt.x86.json',
                          'lib/vkbasalt/libvkbasalt.so', 'lib32/vkbasalt/libvkbasalt.so'):
             path = prefix / relative
             path.parent.mkdir(parents=True, exist_ok=True)
             path.touch()
-        # Use the same profile identity calculation as both editors.
-        shader = self.config.parent / 'vkbasalt' / ('profile-' + hashlib.sha256(b'stream-quality').hexdigest()[:12] + '.conf')
-        shader.parent.mkdir()
-        shader.write_text('effects=cas\n')
         self.command('install')
-        for enabled in (False, True, False):
+        for external in ('', 'vkbasalt', ''):
             settings = {'version': 1, 'profiles': {'stream-quality': {
-                'external_vulkan_layer': 'vkbasalt' if enabled else ''}}}
+                'external_vulkan_layer': external}}}
             (self.config.parent / 'profile-wrapper-settings.json').write_text(json.dumps(settings))
             self.command('remove')
             self.command('install')
@@ -162,37 +159,14 @@ class RemotePlayCommandTests(unittest.TestCase):
             values = dict(item.decode().split('=', 1) for item in result.stdout.split(b'\0') if item)
             self.assertEqual('stream-quality', values['FGVK_PROFILE'])
             self.assertEqual(str(self.config), values['FGVK_CONFIG'])
-            self.assertEqual(enabled, 'VK_LAYER_VKBASALT_post_processing' in values.get('VK_INSTANCE_LAYERS', ''))
+            self.assertNotIn('VK_LAYER_VKBASALT_post_processing', values.get('VK_INSTANCE_LAYERS', ''))
+            self.assertNotIn('ENABLE_VKBASALT', values)
+            self.assertNotIn('VKBASALT_CONFIG_FILE', values)
+            self.assertEqual('1', values['DISABLE_VKBASALT'])
             self.assertEqual('1', values['DISABLE_GAMESCOPE_WSI'])
             self.assertEqual('alsa', values['SDL_AUDIODRIVER'])
             self.assertNotIn('GALLIUM_DRIVER', values)
-            if enabled:
-                self.assertEqual(str(self.config.parent / 'vkbasalt/current-profile.conf'), values['VKBASALT_CONFIG_FILE'])
-                self.assertEqual(shader.read_bytes(), Path(values['VKBASALT_CONFIG_FILE']).read_bytes())
-
-        # Default uses the standalone global shader path even with an alternate TOML.
-        for xdg in (None, self.home / 'custom-xdg'):
-            with self.subTest(xdg=xdg):
-                if xdg is None:
-                    self.environment.pop('XDG_CONFIG_HOME', None)
-                else:
-                    self.environment['XDG_CONFIG_HOME'] = str(xdg)
-                default_shader = (xdg or self.home / '.config') / 'vkBasalt/vkBasalt.conf'
-                default_shader.parent.mkdir(parents=True, exist_ok=True)
-                default_shader.write_text('effects=cas\n')
-                self.config.write_text('version=2\ncurrent_profile="fgvk"\n[[profile]]\nname="fgvk"\n')
-                (self.config.parent / 'profile-wrapper-settings.json').write_text(json.dumps(
-                    {'version': 1, 'profiles': {'fgvk': {'external_vulkan_layer': 'vkbasalt'}}}))
-                self.command('remove')
-                self.command('install')
-                result = subprocess.run([str(self.client), '-0'], env=self.environment,
-                                        capture_output=True, timeout=5)
-                self.assertEqual(0, result.returncode, result.stderr.decode())
-                values = dict(item.decode().split('=', 1) for item in result.stdout.split(b'\0') if item)
-                self.assertEqual('fgvk', values['FGVK_PROFILE'])
-                self.assertEqual(str(self.config.parent / 'vkbasalt/current-profile.conf'), values['VKBASALT_CONFIG_FILE'])
-                self.assertEqual(default_shader.read_bytes(), Path(values['VKBASALT_CONFIG_FILE']).read_bytes())
-
+        self.assertFalse((self.config.parent / 'vkbasalt').exists())
 
 
 if __name__ == '__main__':

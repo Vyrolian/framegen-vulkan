@@ -30,8 +30,7 @@ depends=(
     'gcc-libs'
     # libGLX.so.0, libOpenGL.so.0
     'libglvnd'
-    # libX11.so.6, used directly by the bundled private vkBasalt layer in
-    # releases that include it
+    # libX11.so.6, dlopened by the Gamescope HDR feedback reader
     'libx11'
     # The Vulkan loader dlopens the layers. It is not a DT_NEEDED entry, but the
     # implicit layers are unusable without it.
@@ -42,7 +41,7 @@ depends=(
     'lib32-gcc-libs'
     # 32-bit Vulkan loader for the lib32 layers
     'lib32-vulkan-icd-loader'
-    # 32-bit libX11.so.6 for the bundled private vkBasalt layer
+    # 32-bit libX11.so.6 for the Gamescope HDR feedback reader
     'lib32-libx11'
 )
 
@@ -93,9 +92,6 @@ _fgvk_install_payload_file() {
             ;;
         share/doc/framegen-vulkan/LICENSE.md | share/doc/framegen-vulkan/THIRD_PARTY_NOTICES.md)
             destination_path="$pkgdir/usr/share/licenses/$pkgname/${relative_path##*/}"
-            ;;
-        share/doc/framegen-vulkan/vkbasalt/LICENSE | share/doc/framegen-vulkan/vkbasalt/RESHade-LICENSE.md)
-            destination_path="$pkgdir/usr/share/licenses/$pkgname/vkbasalt/${relative_path##*/}"
             ;;
         share/doc/framegen-vulkan/*)
             destination_path="$pkgdir/usr/share/doc/$pkgname/${relative_path#share/doc/framegen-vulkan/}"

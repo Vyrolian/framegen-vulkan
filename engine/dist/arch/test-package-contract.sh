@@ -53,9 +53,7 @@ mkdir -p \
     "$package_root/usr/bin" \
     "$package_root/usr/libexec/framegen-vulkan" \
     "$package_root/usr/lib" \
-    "$package_root/usr/lib/vkbasalt" \
     "$package_root/usr/lib32" \
-    "$package_root/usr/lib32/vkbasalt" \
     "$package_root/usr/share/framegen-vulkan/fgvk_remote_play" \
     "$package_root/usr/share/doc/framegen-vulkan-bin"
 touch \
@@ -65,19 +63,15 @@ touch \
     "$package_root/usr/libexec/framegen-vulkan/fgvk-launch" \
     "$package_root/usr/lib/libfgvk-render.so" \
     "$package_root/usr/lib/libfgvk-render-scaling.so" \
-    "$package_root/usr/lib/vkbasalt/libvkbasalt.so" \
     "$package_root/usr/lib32/libfgvk-render.so" \
-    "$package_root/usr/lib32/libfgvk-render-scaling.so" \
-    "$package_root/usr/lib32/vkbasalt/libvkbasalt.so"
+    "$package_root/usr/lib32/libfgvk-render-scaling.so"
 for binary_path in \
     usr/bin/fgvk \
     usr/bin/fgvk-cli \
     usr/lib/libfgvk-render.so \
     usr/lib/libfgvk-render-scaling.so \
-    usr/lib/vkbasalt/libvkbasalt.so \
     usr/lib32/libfgvk-render.so \
     usr/lib32/libfgvk-render-scaling.so \
-    usr/lib32/vkbasalt/libvkbasalt.so \
     usr/share/framegen-vulkan/fgvk_remote_play/libfgvk-remote-play-sdr.so; do
     printf '\177ELF' > "$package_root/$binary_path"
 done
@@ -245,20 +239,13 @@ mapping_pkgdir="$work_dir/mapping-package"
 mkdir -p \
     "$mapping_root/bin" \
     "$mapping_root/libexec/framegen-vulkan" \
-    "$mapping_root/lib/vkbasalt" \
-    "$mapping_root/lib32/vkbasalt" \
     "$mapping_root/share/applications" \
-    "$mapping_root/share/doc/framegen-vulkan/vkbasalt" \
     "$mapping_root/share/framegen-vulkan/future"
 printf '%s\n' tool > "$mapping_root/bin/future-tool"
 printf '%s\n' installer > "$mapping_root/bin/fgvk-installer"
 printf '%s\n' fgvk > "$mapping_root/bin/fgvk"
 printf '%s\n' launcher > "$mapping_root/libexec/framegen-vulkan/fgvk-launch"
-printf '%s\n' library > "$mapping_root/lib/vkbasalt/libvkbasalt.so"
-printf '%s\n' library32 > "$mapping_root/lib32/vkbasalt/libvkbasalt.so"
 printf '%s\n' entry > "$mapping_root/share/applications/legacy-entry"
-printf '%s\n' license > "$mapping_root/share/doc/framegen-vulkan/vkbasalt/LICENSE"
-printf '%s\n' provenance > "$mapping_root/share/doc/framegen-vulkan/vkbasalt/SOURCE"
 printf '%s\n' future > "$mapping_root/share/framegen-vulkan/future/payload.dat"
 (
     # shellcheck disable=SC1091
@@ -269,11 +256,7 @@ printf '%s\n' future > "$mapping_root/share/framegen-vulkan/future/payload.dat"
     _fgvk_install_payload_file bin/fgvk
     _fgvk_install_payload_file bin/fgvk-installer
     _fgvk_install_payload_file libexec/framegen-vulkan/fgvk-launch
-    _fgvk_install_payload_file lib/vkbasalt/libvkbasalt.so
-    _fgvk_install_payload_file lib32/vkbasalt/libvkbasalt.so
     _fgvk_install_payload_file share/applications/legacy-entry
-    _fgvk_install_payload_file share/doc/framegen-vulkan/vkbasalt/LICENSE
-    _fgvk_install_payload_file share/doc/framegen-vulkan/vkbasalt/SOURCE
     _fgvk_install_payload_file share/framegen-vulkan/future/payload.dat
     if _fgvk_install_payload_file ../escape 2>/dev/null; then
         echo "Arch package accepted an unsafe manifest path" >&2
@@ -283,10 +266,6 @@ printf '%s\n' future > "$mapping_root/share/framegen-vulkan/future/payload.dat"
 [[ -x "$mapping_pkgdir/usr/bin/future-tool" ]]
 [[ -x "$mapping_pkgdir/usr/bin/fgvk" ]]
 [[ -x "$mapping_pkgdir/usr/libexec/framegen-vulkan/fgvk-launch" ]]
-[[ -x "$mapping_pkgdir/usr/lib/vkbasalt/libvkbasalt.so" ]]
-[[ -x "$mapping_pkgdir/usr/lib32/vkbasalt/libvkbasalt.so" ]]
-[[ -f "$mapping_pkgdir/usr/share/licenses/framegen-vulkan-bin/vkbasalt/LICENSE" ]]
-[[ -f "$mapping_pkgdir/usr/share/doc/framegen-vulkan-bin/vkbasalt/SOURCE" ]]
 [[ -f "$mapping_pkgdir/usr/share/framegen-vulkan/future/payload.dat" ]]
 [[ ! -e "$mapping_pkgdir/usr/bin/fgvk-installer" ]]
 [[ ! -e "$mapping_pkgdir/usr/share/applications/legacy-entry" ]]

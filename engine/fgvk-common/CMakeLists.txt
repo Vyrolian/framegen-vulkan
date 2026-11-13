@@ -3,7 +3,6 @@ set(COMMON_SOURCES
     "src/configuration/detection.cpp"
     "src/configuration/launch.cpp"
     "src/configuration/power_source.cpp"
-    "src/configuration/vkbasalt.cpp"
     "src/helpers/errors.cpp"
     "src/helpers/paths.cpp"
     "src/quality/image_quality.cpp"

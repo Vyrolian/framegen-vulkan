@@ -2,27 +2,9 @@
 
 Use the launch options below. Restart the game after changing layer activation.
 
-## Standalone framegen-vulkan with vkBasalt
+## vkBasalt
 
-vkBasalt is bundled; no separate installation is needed. Set the effects in a vkBasalt configuration file as described in [Shaders](CONFIGURATION.md#shaders).
-
-For native or Proton activation, add this to the game's Steam launch options:
-
-```text
-ENABLE_VKBASALT=1 ~/.local/bin/fgvk %command%
-```
-
-To choose an advanced vkBasalt configuration:
-
-```text
-ENABLE_VKBASALT=1 VKBASALT_CONFIG_FILE="$HOME/.config/vkBasalt/game-name.conf" ~/.local/bin/fgvk %command%
-```
-
-Flatpak apps require [Flatpak shader setup](FLATPAK-GUIDE.md#optional-private-vkbasalt-chain). To disable Shaders, remove `ENABLE_VKBASALT=1` from the launch option:
-
-```text
-~/.local/bin/fgvk %command%
-```
+fgvk blocks a system vkBasalt in its launches.
 
 ## Standalone framegen-vulkan with MangoHud
 
@@ -32,7 +14,7 @@ Install host MangoHud and Python 3 first. For native or Proton activation, add `
 MANGOHUD=1 ~/.local/bin/fgvk %command%
 ```
 
-The launcher places MangoHud above framegen-vulkan, so it sees only the application's own presents: its FPS counter and frame-time graph show source frames, not generated output, and its overlay is part of the image framegen-vulkan interpolates. Below framegen-vulkan, MangoHud drew on every output inside the private present queue lock, which delayed outputs by about 1.3 ms and lengthened the game's acquires on a busy GPU. MangoHud and Shaders are mutually exclusive: a command requesting both is rejected. Host MangoHud is not enabled inside Flatpak or for a direct `flatpak run` command.
+The launcher places MangoHud above framegen-vulkan, so it sees only the application's own presents: its FPS counter and frame-time graph show source frames, not generated output, and its overlay is part of the image framegen-vulkan interpolates. Below framegen-vulkan, MangoHud drew on every output inside the private present queue lock, which delayed outputs by about 1.3 ms and lengthened the game's acquires on a busy GPU. Host MangoHud is not enabled inside Flatpak or for a direct `flatpak run` command.
 
 `fgvk --check-mangohud` reports availability as JSON without writing files. Native launch checks only the named `MangoHud.x86_64.json` and `MangoHud.x86.json` manifests in the standard XDG configuration/data locations. It verifies each layer's identity, architecture, library path and activation gates, resolves relative library paths, and stages only validated manifests under `$XDG_CACHE_HOME/framegen-vulkan/mangohud` (normally `~/.cache/framegen-vulkan/mangohud`). The directory is private to the user; concurrent launches are serialized during staging and unchanged files are not rewritten. Missing or invalid installations leave the game running without MangoHud and produce a diagnostic. The launcher never adds the host's full implicit-layer directory.
 
@@ -56,15 +38,14 @@ The shared file replaces any inherited `MANGOHUD_CONFIGFILE`, including Gaming M
 MANGOHUD=1 ~/.local/bin/fgvk env MANGOHUD_CONFIGFILE=/absolute/path/to/game.conf %command%
 ```
 
-Use this form for each game that needs its own file. Quote paths containing spaces. The shared file does not enable MangoHud by itself or add Flatpak or simultaneous Shader support. Choosing a layout adds no framegen-vulkan per-frame work. MangoHud's own cost depends on its metrics, and its FPS counter is not a guaranteed measurement of pre-generation game FPS; that depends on the active layer chain.
+Use this form for each game that needs its own file. Quote paths containing spaces. The shared file does not enable MangoHud by itself or add Flatpak support. Choosing a layout adds no framegen-vulkan per-frame work. MangoHud's own cost depends on its metrics, and its FPS counter is not a guaranteed measurement of pre-generation game FPS; that depends on the active layer chain.
 
 ## Support boundaries
 
 | Integration | Support |
 | --- | --- |
 | Steam Vulkan FPS overlay | Desktop Mode native/Proton launches with **Disable Steam Overlay** off |
-| MangoHud | Host games; cannot run with framegen-vulkan Shaders |
-| vkBasalt | Bundled for native/Proton and prepared Flatpak apps |
+| MangoHud | Host games |
 | XR Gaming / Breezy | Compatibility unvalidated |
 | ReShade / OptiScaler through Proton | Game-specific; disable their Frame Generation |
 | RenderDoc | Developer diagnostics only |

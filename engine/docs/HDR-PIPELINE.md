@@ -4,7 +4,7 @@ This guide defines framegen-vulkan's colour handling and its Gamescope HDR bound
 
 <!-- prettier-ignore -->
 > [!IMPORTANT]
-> HDR is experimental and disabled by default. Enable it through framegen-vulkan’s isolated Gamescope bridge with **Gamescope WSI** off. HDR10/PQ and linear scRGB support Scaling, Frame Generation and Shaders; display accuracy, game compatibility and performance require [hardware qualification](#hardware-qualification).
+> HDR is experimental and disabled by default. Enable it through framegen-vulkan’s isolated Gamescope bridge with **Gamescope WSI** off. HDR10/PQ and linear scRGB support Scaling and Frame Generation; display accuracy, game compatibility and performance require [hardware qualification](#hardware-qualification).
 
 ## Separate colour and presentation decisions
 
@@ -107,7 +107,7 @@ The isolated HDR bridge retains `OrderedSdr` and its Fixed/Adaptive scheduling; 
 
 Stable SDR/HDR feedback may rebuild private exchange images, backend resources, and colour conversions. It cannot recreate the game swapchain or change its transport. The replacement waits for framegen-vulkan-owned completion evidence, retains real-frame passthrough on failure, and retries on the bounded private-resource schedule described in [Runtime configuration transitions](RUNTIME-TRANSITIONS.md).
 
-## Scaling and shaders
+## Scaling
 
 Full-precision HDR scaling uses RGBA16F boundaries. Native Resolution and framegen-vulkan Scaler preserve source encoding. LS1 caches a high-precision reconstruction shader while retaining model-defined feature formats. For linear scRGB, it converts to bounded PQ BT.2020 before reconstruction and back afterwards; only this path needs extra storage/sampling usages. Where available, the final conversion writes directly into FG input, avoiding a full-resolution copy. Private output remains available for FG-off and transitions. Scaling retains RGBA16F FG transport so live scaler changes preserve compatible bindings.
 
@@ -121,11 +121,9 @@ In Performance, HDR10 Frame Generation interpolates PQ BT.2020 values directly, 
 
 Precision is selected per private context, adding no per-frame branch, allocation or format query. Live FG changes use prepare/drain/commit independently of Scaling. Each owner tracks its committed precision so another owner’s commit or unrelated edit cannot cancel pending work. Reverting discards the candidate; preparation failure retains old resources and uses bounded retries.
 
-Balanced and Performance request compact shader buffers; Quality requests full precision. The optional `makoSetSwapchainHdrPrecisionV1(VkDevice, VkSwapchainKHR, VkBool32) -> VkBool32` hook receives the setting at creation and on changes. It validates ownership and Boolean values, then queues a live graph transaction. Supported HDR graphs use RGB10A2 PQ intermediates and ReShade backbuffers after format validation; a missing hook or unsupported format retains full precision. scRGB keeps its boundary conversions. Application images, output encoding, explicitly declared custom textures and shader arithmetic retain their formats and behavior. Compact storage clips overshoot and has two-bit alpha, which can change blending and multi-effect chains or add banding.
+Balanced and Performance request compact shader buffers; Quality requests full precision. Supported HDR paths use RGB10A2 PQ intermediates after format validation; an unsupported format retains full precision. scRGB keeps its boundary conversions. Application images, output encoding and shader arithmetic retain their formats and behavior. Compact storage clips overshoot and has two-bit alpha, which can change blending or add banding.
 
-When the graph format matches HDR10 output exactly, the final effect writes directly to output, removing a copy and one image per swapchain slot. Format fallback and alternate packed channel order retain the copy; scRGB retains its conversion.
-
-Shader precision changes prepare a complete graph, drain the queue and retire the old graph only on success. Failure preserves old resources; an uncertain final drain retains the candidate until safe retirement. Unchanged requests add no per-frame work. Scaling follows its own private-resource transition. Runtime records distinguish requested/applied precision; HDR diagnostics retain scaler formats and shader-handoff acceptance, and vkBasalt logs the graph’s `working_format`. `HDR generation precision` reports `pq-code-values` and `pq_conversion=0` for approximate interpolation, plus `requested_flow_scale`, `motion_flow_scale`, `motion_width` and `motion_height` for the actual motion grid. Profile Flow Scale diagnostics remain the requested value after presets; memory admission retains its conservative full-flow envelope. Validate transitions, fallback, rollback, pixels and GPU time separately.
+Precision changes prepare complete private resources, drain the queue and retire the old resources only on success. Failure preserves old resources; an uncertain final drain retains the candidate until safe retirement. Unchanged requests add no per-frame work. Scaling follows its own private-resource transition. Runtime records distinguish requested/applied precision; HDR diagnostics retain scaler formats. `HDR generation precision` reports `pq-code-values` and `pq_conversion=0` for approximate interpolation, plus `requested_flow_scale`, `motion_flow_scale`, `motion_width` and `motion_height` for the actual motion grid. Profile Flow Scale diagnostics remain the requested value after presets; memory admission retains its conservative full-flow envelope. Validate transitions, fallback, rollback, pixels and GPU time separately.
 
 ### Performance boundaries
 
@@ -133,17 +131,11 @@ Allowing HDR can provision the bridge even if the game selects SDR. In-game HDR 
 
 Storage precision is separate from arithmetic: SDR exchange uses RGBA8 (four bytes per pixel), full-precision HDR scaling uses RGBA16F (eight), and supported FG-only HDR10 exchange uses packed 10-bit (four). framegen-vulkan Scaler and LSFG retain selected FP16/FP32 arithmetic; LS1 remains FP32. HDR does not require RGBA32F.
 
-Native Resolution and framegen-vulkan Scaler add no transfer-function pass; linear-scRGB LS1 adds two. Quality and Balanced HDR10 FG convert PQ↔linear; Performance omits those passes. Shader cost applies to every real and generated output; empty chains add no conversion. HDR10 chains starting with CAS, DLS or ReShade skip the input copy; chains ending with CAS or DLS skip the output copy. Either sharpener alone needs neither an intermediate image nor a copy. Linear-scRGB shader chains require two boundary conversions. Bandwidth, conversions, resolution and effect selection can still lower FPS; measure GPU cost and delivered cadence on the intended hardware.
-
-Before exposing images, the colour-aware vkBasalt fork receives the original colour space through `makoSetSwapchainColorSpaceV1(VkDevice, VkSwapchainKHR, VkColorSpaceKHR) -> VkBool32`. Full-precision graphs use RGBA16F PQ BT.2020 intermediates; reduced precision can use packed 10-bit. Every real/generated frame uses the same chain. Older binaries without the colour-space handoff reject isolated HDR. Custom shaders may remap or clip colours or declare low-precision textures, so their appearance needs separate testing.
-
-CAS and DLS apply HDR contrast and denoise limits in an sRGB-like signal referenced to 203 nits, retaining BT.2020 primaries. A reversible RGB-wide scale places bright neighbourhoods at a 0.5 local maximum, matching the filters' SDR midrange response without mistaking HDR detail for clipped white. Darker neighbourhoods retain their original range, and the scale is reversed before PQ output to preserve HDR brightness. This correction stays within the existing pass; CAS reuses neighbourhood extrema to reduce work. SDR math is unchanged. The fork owns transfer-approximation accuracy and SDR contrast-equivalence tests; compare visual sharpening at matched game settings.
-
-For the internal HDR display resize, framegen-vulkan supplies the admitted source extent to `makoSetSwapchainSharpenSourceExtentV1` before image exposure. CAS/DLS keep a one-source-pixel sampling footprint instead of shrinking to one output pixel; shader-only, native-size HDR, explicit Scaling and SDR retain their existing footprint. The optional hook rejects invalid ownership, late calls, aspect changes and extents beyond the existing 2× bound. Missing support retains the old sampling. Live effect and precision graph replacements reuse the swapchain-owned extent; a new swapchain starts without it. This adds no pass, image, synchronization or per-frame update.
+Native Resolution and framegen-vulkan Scaler add no transfer-function pass; linear-scRGB LS1 adds two. Quality and Balanced HDR10 FG convert PQ↔linear; Performance omits those passes. Bandwidth, conversions and resolution can still lower FPS; measure GPU cost and delivered cadence on the intended hardware.
 
 ## Hardware qualification
 
-Test Steam Deck OLED and external HDR displays with HDR10/scRGB, HDR on/off, SDR games, HDR-only, and Scaling/FG/Shaders individually and combined. Verify display mode, highlight/black levels, extents, real/generated delivery, metadata, recreation and shutdown. Include LCD/SDR displays and missing-capability cases. Switching HDR/SDR outputs requires a new surface or restart; startup tests do not qualify live docking.
+Test Steam Deck OLED and external HDR displays with HDR10/scRGB, HDR on/off, SDR games, HDR-only, and Scaling/FG individually and combined. Verify display mode, highlight/black levels, extents, real/generated delivery, metadata, recreation and shutdown. Include LCD/SDR displays and missing-capability cases. Switching HDR/SDR outputs requires a new surface or restart; startup tests do not qualify live docking.
 
 Required real-hardware evidence includes native Vulkan, DXVK, and VKD3D-Proton; explicit HDR10 and scRGB; Gamescope-normalized colour recovery and metadata; packed and RGBA16F transport; FP32 and FP16; Fixed and Adaptive scheduling; focus, overlay, resolution, recreation, metadata transition, hitch, and shutdown paths; and each claimed Steam Runtime, Flatpak, architecture, GPU, and driver boundary. Unit tests and loader discovery do not establish colour correctness or pacing.
 

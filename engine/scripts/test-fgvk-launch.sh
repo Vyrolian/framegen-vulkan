@@ -246,13 +246,17 @@ printf '%s\n' 'effects = cas' > "$vkbasalt_config"
 touch "$steam_overlay_dir/steamoverlay_x86_64.json"
 touch "$steam_overlay_dir/steamoverlay_i386.json"
 
-vkbasalt_output="$({
+# vkBasalt is no longer bundled. A leftover private payload, a vkBasalt config
+# path and an ENABLE_VKBASALT=1 launch option must never join the launch: the
+# request is ignored with one notice, and DISABLE_VKBASALT=1 stays exported.
+ignored_vkbasalt_stderr="$test_root/ignored-vkbasalt.stderr"
+ignored_vkbasalt_output="$(
+    env -u GAMESCOPE_WAYLAND_DISPLAY -u WAYLAND_DISPLAY \
     FGVK_LAUNCH_CONFIG="$overlay_enabled_config" \
     ENABLE_VK_LAYER_VALVE_steam_overlay_1=1 \
         ENABLE_VKBASALT=1 \
-        DISABLE_VKBASALT=1 \
         VKBASALT_CONFIG_FILE="$vkbasalt_config" \
-        VK_INSTANCE_LAYERS="VK_LAYER_existing:VK_LAYER_VKBASALT_post_processing:VK_LAYER_FGVK_render" \
+        VK_INSTANCE_LAYERS="VK_LAYER_existing:VK_LAYER_VKBASALT_post_processing" \
         VK_IMPLICIT_LAYER_PATH="/caller/override" \
         VK_ADD_IMPLICIT_LAYER_PATH="/caller/additional" \
         XDG_DATA_HOME="$test_data_home" \
@@ -266,51 +270,18 @@ vkbasalt_output="$({
                 "${VK_INSTANCE_LAYERS:-unset}" \
                 "${VK_IMPLICIT_LAYER_PATH:-unset}" \
                 "${VK_ADD_IMPLICIT_LAYER_PATH:-unset}"
-        '
-} 2>&1)" || fail "private vkBasalt launch failed: $vkbasalt_output"
-expected_vkbasalt="$(printf 'unset\nunset\nunset\n%s\n1\nVK_LAYER_FGVK_render:VK_LAYER_VKBASALT_post_processing:VK_LAYER_VALVE_steam_overlay_64:VK_LAYER_VALVE_steam_overlay_32:VK_LAYER_existing\n%s:%s\nunset' \
-    "$vkbasalt_config" "$private_fgvk_layer_dir" "$private_vkbasalt_layer_dir")"
-if [[ "$vkbasalt_output" != "$expected_vkbasalt" ]]; then
-    fail "private vkBasalt order or isolation changed:\n$vkbasalt_output"
+        ' 2> "$ignored_vkbasalt_stderr"
+)" || fail "ignored ENABLE_VKBASALT request stopped the launch"
+expected_ignored_vkbasalt="$(printf 'unset\nunset\n1\nunset\nunset\nVK_LAYER_FGVK_render:VK_LAYER_VALVE_steam_overlay_64:VK_LAYER_VALVE_steam_overlay_32:VK_LAYER_existing\n%s\nunset' \
+    "$private_fgvk_layer_dir")"
+if [[ "$ignored_vkbasalt_output" != "$expected_ignored_vkbasalt" ]]; then
+    fail "ignored ENABLE_VKBASALT request changed the launch environment:\n$ignored_vkbasalt_output"
+fi
+if [[ "$(cat "$ignored_vkbasalt_stderr")" != "fgvk-launch: vkBasalt is no longer bundled; ENABLE_VKBASALT ignored." ]]; then
+    fail "ignored ENABLE_VKBASALT notice was not printed exactly once:\n$(cat "$ignored_vkbasalt_stderr")"
 fi
 rm -f "$steam_overlay_dir/steamoverlay_x86_64.json"
 rm -f "$steam_overlay_dir/steamoverlay_i386.json"
-
-rm -f -- "$private_vkbasalt_library32"
-missing_vkbasalt_output="$({
-    ENABLE_VKBASALT=1 \
-        VKBASALT_CONFIG_FILE="$vkbasalt_config" \
-        XDG_DATA_HOME="$test_data_home" \
-        "$private_launcher" bash -c '
-            printf "FGVK=%s VKBASALT=%s CONFIG=%s INSTANCE=%s\n" \
-                "${ENABLE_FGVK:-unset}" \
-                "${DISABLE_VKBASALT:-unset}" \
-                "${VKBASALT_CONFIG_FILE:-unset}" \
-                "${VK_INSTANCE_LAYERS:-unset}"
-        '
-} 2>&1)" || fail "missing private vkBasalt did not continue with framegen-vulkan"
-if [[ "$missing_vkbasalt_output" != *"private 64-bit/32-bit vkBasalt payload is unavailable"* ||
-        "$missing_vkbasalt_output" != *"FGVK=1 VKBASALT=1 CONFIG=unset INSTANCE=unset"* ]]; then
-    fail "missing private vkBasalt did not fail closed:\n$missing_vkbasalt_output"
-fi
-
-touch "$private_vkbasalt_library32"
-unreadable_vkbasalt_output="$({
-    ENABLE_VKBASALT=1 \
-        VKBASALT_CONFIG_FILE="$test_root/missing-vkBasalt.conf" \
-        XDG_DATA_HOME="$test_data_home" \
-        "$private_launcher" bash -c '
-            printf "FGVK=%s VKBASALT=%s CONFIG=%s INSTANCE=%s\n" \
-                "${ENABLE_FGVK:-unset}" \
-                "${DISABLE_VKBASALT:-unset}" \
-                "${VKBASALT_CONFIG_FILE:-unset}" \
-                "${VK_INSTANCE_LAYERS:-unset}"
-        '
-} 2>&1)" || fail "unreadable vkBasalt config did not continue with framegen-vulkan"
-if [[ "$unreadable_vkbasalt_output" != *"vkBasalt config is not readable"* ||
-        "$unreadable_vkbasalt_output" != *"FGVK=1 VKBASALT=1 CONFIG=unset INSTANCE=unset"* ]]; then
-    fail "unreadable vkBasalt config did not fail closed:\n$unreadable_vkbasalt_output"
-fi
 
 launch_config="$test_config_home/framegen-vulkan/launcher.conf"
 mkdir -p "$(dirname -- "$launch_config")"
@@ -362,8 +333,6 @@ no_command_output="$({ "$launcher"; } 2>&1)"
 no_command_status=$?
 invalid_flag_output="$({ FGVK_ALLOW_COMPETING_LAYERS=yes "$launcher" true; } 2>&1)"
 invalid_flag_status=$?
-invalid_vkbasalt_output="$({ ENABLE_VKBASALT=yes "$launcher" true; } 2>&1)"
-invalid_vkbasalt_status=$?
 "$launcher" bash -c 'exit 23'
 forwarded_status=$?
 set -e
@@ -373,9 +342,6 @@ if [[ $no_command_status -ne 2 || "$no_command_output" != *"requires a command"*
 fi
 if [[ $invalid_flag_status -ne 2 || "$invalid_flag_output" != *"must be 0 or 1"* ]]; then
     fail "invalid escape-hatch validation changed"
-fi
-if [[ $invalid_vkbasalt_status -ne 2 || "$invalid_vkbasalt_output" != *"ENABLE_VKBASALT must be 0 or 1"* ]]; then
-    fail "invalid vkBasalt activation was not rejected"
 fi
 if [[ $forwarded_status -ne 23 ]]; then
     fail "child exit status was not forwarded: $forwarded_status"

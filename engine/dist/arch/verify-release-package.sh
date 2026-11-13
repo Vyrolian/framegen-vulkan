@@ -165,10 +165,8 @@ for required_entry in \
     usr/libexec/framegen-vulkan/fgvk-launch \
     usr/lib/libfgvk-render.so \
     usr/lib/libfgvk-render-scaling.so \
-    usr/lib/vkbasalt/libvkbasalt.so \
     usr/lib32/libfgvk-render.so \
-    usr/lib32/libfgvk-render-scaling.so \
-    usr/lib32/vkbasalt/libvkbasalt.so; do
+    usr/lib32/libfgvk-render-scaling.so; do
     if ! grep -Fqx "$required_entry" <<< "$package_entries"; then
         echo "Built Arch package is missing $required_entry" >&2
         exit 1

@@ -37,16 +37,6 @@ namespace fgvk::layer {
         std::string_view reason{};
     };
 
-    /// Shader storage is independent of whether an FG backend was provisioned.
-    [[nodiscard]] constexpr bool hdrShaderPrecisionSupported(
-            const SwapchainColorPipeline& pipeline,
-            const bool hdrExposureDisabled) noexcept {
-        return !hdrExposureDisabled && pipeline.hdr &&
-            (pipeline.encoding == backend::FrameEncoding::Hdr10Pq ||
-             pipeline.encoding == backend::FrameEncoding::Hdr10PqPacked ||
-             pipeline.encoding == backend::FrameEncoding::ScRgbLinear);
-    }
-
     /// Scaling preserves the classified encoding in high-precision exchange
     /// images. Unsupported format/colour-space pairs must fail closed.
     [[nodiscard]] constexpr bool spatialScalingColorSupported(

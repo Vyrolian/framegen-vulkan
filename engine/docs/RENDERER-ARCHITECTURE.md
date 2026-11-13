@@ -16,7 +16,6 @@ This map identifies code owners and call boundaries. The behavior contracts rema
 | Swapchain state and transitions | `fgvk-render/src/swapchain/` | Owns the applied profile, private resources, recovery state, and game-owned swapchain boundary. |
 | Spatial reconstruction | `fgvk-render/src/spatial_scaler.*` and `spatial_scaling_policy.hpp` | Chooses geometry and records private scaling work without changing scheduler evidence. |
 | Model execution | `fgvk-backend/` | Owns LSFG and LS1 resources and compute work behind the Renderer context. |
-| Shader effects | The optional vkBasalt layer selected by `fgvk` | Runs as a separate Vulkan layer; Renderer scaling and Frame Generation do not own its effect chain. |
 | Native Steam Remote Play | `scripts/fgvk_remote_play/` and `scripts/fgvk-remote-play` | One Python owner handles Steam file safety. The packaged command is the only entry point. Existing launchers and Renderer configuration owners retain feature and live-update policy. |
 
 Full trace additionally observes instance/device/surface/swapchain setup in `present_diagnostics.*`, called from the existing creation entrypoints. It pairs incoming and forwarded requests without mutating them or making Vulkan queries. `scripts/analyze-vulkan-setup.py` owns offline inspection/comparison; enabled setup never feeds runtime policy or establishes actual extension use. The Wayland companion keeps strict commit adjacency and separately qualifies consecutive attachment pairs across commits without a new attachment.
@@ -43,7 +42,7 @@ Keep new policy decisions in their existing policy or scheduler owner, and let `
 
 `adaptive_scheduler.cpp` keeps cadence observation, workload probes, promotion, and output planning in one scheduler state owner. Its stage methods are forced inline into `planFrame()` in optimized builds. Splitting them across translation units would need the same hot-path property or measured CPU evidence. The scheduler returns a plan; it does not acquire images or own Gamescope feedback.
 
-`entrypoint.cpp` holds the Vulkan loader entrypoints and the per-layer registries for instances, devices, surfaces, queues, swapchains, and retirement. Both compiled layer roles use that dispatch boundary. A future split must first give those registries an explicit lifetime owner and preserve lower-layer forwarding, surface provenance, and retirement under the existing WSI contracts. Splitting the file by function length while sharing anonymous global state would obscure those invariants. Keep optional vkBasalt shader configuration in the launcher and wrapper boundary; effect ordering and execution belong to that layer.
+`entrypoint.cpp` holds the Vulkan loader entrypoints and the per-layer registries for instances, devices, surfaces, queues, swapchains, and retirement. Both compiled layer roles use that dispatch boundary. A future split must first give those registries an explicit lifetime owner and preserve lower-layer forwarding, surface provenance, and retirement under the existing WSI contracts. Splitting the file by function length while sharing anonymous global state would obscure those invariants.
 
 ## Internal application images (F5)
 

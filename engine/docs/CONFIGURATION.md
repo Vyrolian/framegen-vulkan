@@ -35,7 +35,7 @@ framegen-vulkan activates on the next launch of a matched process. If nothing ma
 
 ### Lossless Scaling availability
 
-**framegen-vulkan Scaler and Shaders work without Lossless Scaling.** Frame Generation and LS1 require it. If framegen-vulkan reports it missing, install Lossless Scaling or set `dll` to the correct `Lossless.dll` path, then restart the game.
+**The framegen-vulkan Scaler works without Lossless Scaling.** Frame Generation and LS1 require it. If framegen-vulkan reports it missing, install Lossless Scaling or set `dll` to the correct `Lossless.dll` path, then restart the game.
 
 ## Settings window
 
@@ -136,26 +136,7 @@ Set `gpu_headroom_percent` to 5, 10, 15, or 20 to reserve that share of GPU capa
 
 framegen-vulkan smooths readings and gradually reduces real FPS when usage stays high. Adaptive can use more generated frames within its qualified multiplier ceiling; Fixed keeps its multiplier, so output FPS can fall too. Adaptive is preferable when you want to regain real FPS as scenes become lighter. Brief spikes can still reach 100%, and the reserve is not a power or temperature limit.
 
-Supported AMD telemetry must be readable for the game's GPU; Gamescope is optional. Missing readings restore ordinary pacing. Existing caps and a minimum real-frame rate limit how much load framegen-vulkan can remove. GPU Headroom does not independently control scaling or shaders, and it is mutually exclusive with `dynamic_cadence_recovery`. See the [setting reference](CONFIGURATION-REFERENCE.md#gpu-headroom) for floors and compatibility limits.
-
-## Shaders
-
-Shaders use bundled vkBasalt. Add `ENABLE_VKBASALT=1` to the launch option, then select effects in a vkBasalt configuration file referenced by `VKBASALT_CONFIG_FILE`. Effects run in the order listed in `effects`, separated by colons; more effects cost more GPU time. The bundled effect sources are in `engine/vkbasalt-shaders/`, and their provenance is in [third-party notices](../../THIRD_PARTY_NOTICES.md).
-
-```text
-ENABLE_VKBASALT=1 VKBASALT_CONFIG_FILE="$HOME/.config/vkBasalt/game-name.conf" ~/.local/bin/fgvk %command%
-```
-
-```ini
-effects = makoClarity:smaa
-```
-
-- **Sharpening:** list `cas` or `dls` in `effects`, then set `casSharpness` or `dlsSharpness`. `dlsDenoise` limits sharpening of grain and noise.
-- **Anti-aliasing:** list `fxaa` or `smaa` in `effects`.
-- **HDR Look (SDR):** `makoHDRLook` changes appearance without enabling HDR.
-- **Crop & Stretch:** `makoCropStretch` has four crop parameters, each limited to 49%, declared in [`CropStretch.fx`](../vkbasalt-shaders/CropStretch.fx). Cropping affects the whole game image, including HUD elements and subtitles. Place it before other effects when those effects should use the stretched image.
-
-Only framegen-vulkan's private bundled vkBasalt is used; a system installation is ignored. Adding a custom effect requires a vkBasalt-compatible ReShade `.fx` file and its includes and textures reachable by the game; see [optional graphics integrations](LAYER-CHAINING.md) for the supported setup and limits. Restart the game after changing shader activation or configuration.
+Supported AMD telemetry must be readable for the game's GPU; Gamescope is optional. Missing readings restore ordinary pacing. Existing caps and a minimum real-frame rate limit how much load framegen-vulkan can remove. GPU Headroom does not independently control scaling, and it is mutually exclusive with `dynamic_cadence_recovery`. See the [setting reference](CONFIGURATION-REFERENCE.md#gpu-headroom) for floors and compatibility limits.
 
 ## Compatibility
 
@@ -200,11 +181,11 @@ force_alsa_audio = 0
 - `enable_zink`: runs OpenGL through Vulkan.
 - `force_alsa_audio`: changes the audio path for compatibility problems.
 
-To use a shared MangoHud layout, create `~/.config/framegen-vulkan/mangohud.conf` and enable MangoHud for a game with `MANGOHUD=1` in its launch option. Shaders and MangoHud are mutually exclusive; a manual command requesting both is rejected. Install host MangoHud and Python 3 first, and check availability with `fgvk --check-mangohud`. Flatpak games are unsupported. See the [shared MangoHud layout](LAYER-CHAINING.md#shared-mangohud-layout).
+To use a shared MangoHud layout, create `~/.config/framegen-vulkan/mangohud.conf` and enable MangoHud for a game with `MANGOHUD=1` in its launch option. Install host MangoHud and Python 3 first, and check availability with `fgvk --check-mangohud`. Flatpak games are unsupported. See the [shared MangoHud layout](LAYER-CHAINING.md#shared-mangohud-layout).
 
 ## HDR
 
-**HDR is experimental and disabled by default.** It works with Scaling, Frame Generation and Shaders in Gaming Mode on Steam Deck OLED or an HDR-capable external display, with HDR allowed in Gamescope. The Steam Deck LCD's built-in display is SDR.
+**HDR is experimental and disabled by default.** It works with Scaling and Frame Generation in Gaming Mode on Steam Deck OLED or an HDR-capable external display, with HDR allowed in Gamescope. The Steam Deck LCD's built-in display is SDR.
 
 Set `disable_hdr_exposure = 0` in `launcher.conf`, restart the game, then enable HDR in its own settings. Restart after changing HDR exposure or switching between HDR and SDR displays.
 

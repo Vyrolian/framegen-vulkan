@@ -14,12 +14,7 @@ directory for reliable swapchain ownership.
 Set environment variables before fgvk to pass them to the game:
   FGVK_PROFILE=my-profile fgvk COMMAND [ARG ...]
 
-Enable framegen-vulkan's private bundled vkBasalt after the Renderer:
-  ENABLE_VKBASALT=1 fgvk COMMAND [ARG ...]
-
-VKBASALT_CONFIG_FILE=/absolute/path/vkBasalt.conf selects an optional config.
-
-Enable installed host MangoHud (exclusive with Shaders; requires Python 3):
+Enable installed host MangoHud (requires Python 3):
   MANGOHUD=1 fgvk COMMAND [ARG ...]
 
 A readable ~/.config/framegen-vulkan/mangohud.conf supplies the shared HUD layout.
@@ -321,29 +316,19 @@ if [[ "$fgvk_launch_force_alsa_audio" == 1 ]]; then
 fi
 unset fgvk_launch_enable_zink fgvk_launch_force_alsa_audio
 
-# Treat vkBasalt as an explicit standalone opt-in. Consume its upstream enable
-# gate here so the child can receive one ordered explicit chain instead of
-# discovering the same layer through both explicit and implicit activation.
-fgvk_vkbasalt_requested="${ENABLE_VKBASALT:-0}"
-case "$fgvk_vkbasalt_requested" in
-    0|1) ;;
-    *)
-        echo "ENABLE_VKBASALT must be 0 or 1 when used with fgvk-launch." >&2
-        exit 2
-        ;;
-esac
+# vkBasalt is no longer bundled. An ENABLE_VKBASALT request is ignored with one
+# notice. The variables are removed here, and DISABLE_VKBASALT=1 keeps any
+# foreign or system vkBasalt layer inactive in every launch.
+if [[ "${ENABLE_VKBASALT:-0}" != 0 ]]; then
+    echo "fgvk-launch: vkBasalt is no longer bundled; ENABLE_VKBASALT ignored." >&2
+fi
 fgvk_mangohud_requested="${MANGOHUD:-0}"
 case "$fgvk_mangohud_requested" in
     0|1) ;;
     *) echo "framegen-vulkan: MANGOHUD must be 0 or 1." >&2; exit 2 ;;
 esac
-if [[ "$fgvk_mangohud_requested" == 1 && "$fgvk_vkbasalt_requested" == 1 ]]; then
-    echo "framegen-vulkan: MangoHud and Shaders cannot be enabled together; select one." >&2
-    exit 2
-fi
 unset MANGOHUD
 export DISABLE_MANGOHUD=1
-fgvk_vkbasalt_config="${VKBASALT_CONFIG_FILE:-}"
 unset ENABLE_VKBASALT VKBASALT_CONFIG_FILE VKBASALT_CONFIG_RELOAD
 export DISABLE_VKBASALT=1
 
@@ -418,9 +403,9 @@ if [[ "$fgvk_disable_steam_overlay" != 1 &&
     fi
 fi
 
-# Remove any inherited vkBasalt request before deciding whether the private
-# bundled layer can join. This prevents a system-wide manifest or duplicate
-# caller entry from bypassing the standalone launcher's ownership boundary.
+# Remove any inherited vkBasalt layer so a system-wide manifest or duplicate
+# caller entry cannot put it in the chain. The exported DISABLE_VKBASALT=1 keeps
+# any implicit vkBasalt manifest inactive.
 fgvk_existing_instance_layers=":${VK_INSTANCE_LAYERS:-}:"
 while [[ "$fgvk_existing_instance_layers" == *":VK_LAYER_VKBASALT_post_processing:"* ]]; do
     fgvk_existing_instance_layers="${fgvk_existing_instance_layers/:VK_LAYER_VKBASALT_post_processing:/:}"
@@ -440,61 +425,19 @@ fi
 fgvk_existing_instance_layers="${fgvk_existing_instance_layers#:}"
 fgvk_existing_instance_layers="${fgvk_existing_instance_layers%:}"
 
-fgvk_vkbasalt_enabled=0
-fgvk_vkbasalt_layer_path="$fgvk_install_prefix/share/framegen-vulkan/vulkan/vkbasalt.d"
-fgvk_vkbasalt_library64="$fgvk_install_prefix/lib/vkbasalt/libvkbasalt.so"
-fgvk_vkbasalt_library32="$fgvk_install_prefix/lib32/vkbasalt/libvkbasalt.so"
-if [[ ! -r "$fgvk_vkbasalt_layer_path/vkBasalt.json" ||
-        ! -r "$fgvk_vkbasalt_layer_path/vkBasalt.x86.json" ||
-        ! -r "$fgvk_vkbasalt_library64" ||
-        ! -r "$fgvk_vkbasalt_library32" ]]; then
-    fgvk_vkbasalt_layer_path="$fgvk_data_home/framegen-vulkan/vulkan/vkbasalt.d"
-    fgvk_vkbasalt_library64="$fgvk_data_home/../lib/vkbasalt/libvkbasalt.so"
-    fgvk_vkbasalt_library32="$fgvk_data_home/../lib32/vkbasalt/libvkbasalt.so"
-fi
-if [[ "$fgvk_vkbasalt_requested" == 1 && "${DISABLE_FGVK:-0}" != 1 ]]; then
-    if [[ ! -r "$fgvk_vkbasalt_layer_path/vkBasalt.json" ||
-            ! -r "$fgvk_vkbasalt_layer_path/vkBasalt.x86.json" ||
-            ! -r "$fgvk_vkbasalt_library64" ||
-            ! -r "$fgvk_vkbasalt_library32" ]]; then
-        echo "fgvk-launch: private 64-bit/32-bit vkBasalt payload is unavailable; continuing with framegen-vulkan only." >&2
-    elif [[ -n "$fgvk_vkbasalt_config" && ! -r "$fgvk_vkbasalt_config" ]]; then
-        echo "fgvk-launch: vkBasalt config is not readable: $fgvk_vkbasalt_config; continuing with framegen-vulkan only." >&2
-    else
-        fgvk_existing_instance_layers=":$fgvk_existing_instance_layers:"
-        while [[ "$fgvk_existing_instance_layers" == *":VK_LAYER_FGVK_render:"* ]]; do
-            fgvk_existing_instance_layers="${fgvk_existing_instance_layers/:VK_LAYER_FGVK_render:/:}"
-        done
-        fgvk_existing_instance_layers="${fgvk_existing_instance_layers#:}"
-        fgvk_existing_instance_layers="${fgvk_existing_instance_layers%:}"
-        if [[ -n "$fgvk_existing_instance_layers" ]]; then
-            export VK_INSTANCE_LAYERS="VK_LAYER_FGVK_render:VK_LAYER_VKBASALT_post_processing${fgvk_steam_overlay_layers:+:$fgvk_steam_overlay_layers}:$fgvk_existing_instance_layers"
-        else
-            export VK_INSTANCE_LAYERS="VK_LAYER_FGVK_render:VK_LAYER_VKBASALT_post_processing${fgvk_steam_overlay_layers:+:$fgvk_steam_overlay_layers}"
-        fi
-        fgvk_implicit_layer_path="$fgvk_implicit_layer_path:$fgvk_vkbasalt_layer_path"
-        unset DISABLE_VKBASALT
-        if [[ -n "$fgvk_vkbasalt_config" ]]; then
-            export VKBASALT_CONFIG_FILE="$fgvk_vkbasalt_config"
-            export VKBASALT_CONFIG_RELOAD=1
-        fi
-        fgvk_vkbasalt_enabled=1
-    fi
-fi
-if [[ "$fgvk_vkbasalt_enabled" != 1 && -n "$fgvk_steam_overlay_layers" &&
-        "${DISABLE_FGVK:-0}" != 1 ]]; then
+if [[ -n "$fgvk_steam_overlay_layers" && "${DISABLE_FGVK:-0}" != 1 ]]; then
     if [[ -n "$fgvk_existing_instance_layers" ]]; then
         export VK_INSTANCE_LAYERS="VK_LAYER_FGVK_render:$fgvk_steam_overlay_layers:$fgvk_existing_instance_layers"
     else
         export VK_INSTANCE_LAYERS="VK_LAYER_FGVK_render:$fgvk_steam_overlay_layers"
     fi
-elif [[ "$fgvk_vkbasalt_enabled" != 1 && -n "$fgvk_steam_overlay_layers" ]]; then
+elif [[ -n "$fgvk_steam_overlay_layers" ]]; then
     if [[ -n "$fgvk_existing_instance_layers" ]]; then
         export VK_INSTANCE_LAYERS="$fgvk_steam_overlay_layers:$fgvk_existing_instance_layers"
     else
         export VK_INSTANCE_LAYERS="$fgvk_steam_overlay_layers"
     fi
-elif [[ "$fgvk_vkbasalt_enabled" != 1 ]]; then
+else
     unset VKBASALT_CONFIG_RELOAD
     if [[ -n "$fgvk_existing_instance_layers" ]]; then
         export VK_INSTANCE_LAYERS="$fgvk_existing_instance_layers"
@@ -585,9 +528,7 @@ fi
 unset fgvk_steam_overlay_preload_removed
 unset fgvk_steam_overlay_preload_filter_requested fgvk_disable_steam_overlay
 unset fgvk_launcher_dir fgvk_data_home fgvk_implicit_layer_path
-unset fgvk_existing_instance_layers fgvk_vkbasalt_layer_path
-unset fgvk_vkbasalt_library64 fgvk_vkbasalt_library32
-unset fgvk_vkbasalt_requested fgvk_vkbasalt_config
+unset fgvk_existing_instance_layers
 unset fgvk_steam_overlay_layer_dir fgvk_steam_overlay_layer
 unset fgvk_steam_overlay_layers fgvk_gamescope_session fgvk_flatpak_launch
 
@@ -607,13 +548,12 @@ else
     unset DXVK_HDR
 fi
 unset fgvk_disable_hdr_exposure
-if [[ "$fgvk_vkbasalt_enabled" == 1 || -n "${VK_INSTANCE_LAYERS:-}" &&
+if [[ -n "${VK_INSTANCE_LAYERS:-}" &&
         ":${VK_INSTANCE_LAYERS}:" == *":VK_LAYER_FGVK_render:"* ]]; then
     unset ENABLE_FGVK
 else
     export ENABLE_FGVK=1
 fi
-unset fgvk_vkbasalt_enabled
 
 if [[ -n "${GAMESCOPE_WAYLAND_DISPLAY:-}" &&
         ( -z "${WAYLAND_DISPLAY:-}" ||

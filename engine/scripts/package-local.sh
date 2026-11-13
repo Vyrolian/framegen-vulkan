@@ -11,13 +11,6 @@ fi
 if [[ "$build_work_root" != /* ]]; then
     build_work_root="$repo_root/$build_work_root"
 fi
-local_vkbasalt_archive="${FGVK_VKBASALT_LOCAL_ARCHIVE:-}"
-if [[ -n "$local_vkbasalt_archive" ]]; then
-    if [[ "$local_vkbasalt_archive" == /* || "$local_vkbasalt_archive" == *..* || ! -f "$monorepo_root/$local_vkbasalt_archive" ]]; then
-        echo "FGVK_VKBASALT_LOCAL_ARCHIVE must be an existing repository-relative archive." >&2
-        exit 1
-    fi
-fi
 version="$(tr -d '[:space:]' < "$repo_root/VERSION")"
 default_output="$repo_root/out/framegen-vulkan-v$version-linux.tar.xz"
 output_path=""
@@ -137,7 +130,6 @@ if [[ "$containerized_build" != "1" && ( "$(uname -s)" != "Linux" || "$portable_
         -e FGVK_PACKAGE_CONTAINERIZED=1 \
         -e FGVK_VULKAN_HEADERS_REVISION="$vulkan_headers_revision" \
         -e FGVK_RELEASE_SKIP_TESTS="${FGVK_RELEASE_SKIP_TESTS:-0}" \
-        -e FGVK_VKBASALT_LOCAL_ARCHIVE="$local_vkbasalt_archive" \
         -e FGVK_PREBUILT_FGVK=/prebuilt/fgvk \
         -v "$fgvk_ui_binary:/prebuilt/fgvk:ro" \
         -v "$monorepo_root:/workspace" \
@@ -287,19 +279,6 @@ if [[ "$build_32_bit" == true ]]; then
     cmake --install "$build32_dir" --strip
 fi
 
-vkbasalt_stage_args=(
-    --stage-native "$install_dir"
-    --cache-dir "$build_cache_root/vkbasalt"
-)
-if [[ "$build_32_bit" == false ]]; then
-    vkbasalt_stage_args+=(--64-bit-only)
-fi
-if [[ -n "$local_vkbasalt_archive" ]]; then
-    vkbasalt_stage_args+=(--local-archive "$monorepo_root/$local_vkbasalt_archive")
-fi
-python3 "$repo_root/scripts/manage-vkbasalt-release.py" \
-    "${vkbasalt_stage_args[@]}"
-
 # The settings window and `fgvk <command>` entry point. Built above with host cargo; the
 # staged copy is stripped like the other native tools in this archive.
 install -Dm755 "$fgvk_ui_binary" "$install_dir/bin/fgvk"
@@ -326,23 +305,11 @@ required_paths=(
     "bin/fgvk-vrr-lease" \
     "lib/libfgvk-render.so" \
     "lib/libfgvk-render-scaling.so" \
-    "lib/vkbasalt/libvkbasalt.so" \
     "share/doc/framegen-vulkan/ASSET_PROVENANCE.md" \
     "share/doc/framegen-vulkan/LICENSE.md" \
     "share/doc/framegen-vulkan/THIRD_PARTY_NOTICES.md" \
     "share/framegen-vulkan/vulkan/implicit_layer.d/VkLayer_FGVK_render.json" \
     "share/framegen-vulkan/vulkan/spatial_scaling.d/VkLayer_FGVK_spatial_scaling.json" \
-    "share/framegen-vulkan/vulkan/vkbasalt.d/vkBasalt.json" \
-    "share/framegen-vulkan/vkbasalt-shaders/Clarity.fx" \
-    "share/framegen-vulkan/vkbasalt-shaders/CropStretch.fx" \
-    "share/framegen-vulkan/vkbasalt-shaders/LevelsPlus.fx" \
-    "share/framegen-vulkan/vkbasalt-shaders/SOURCE.md" \
-    "share/framegen-vulkan/vkbasalt-shaders/Vibrance.fx" \
-    "share/framegen-vulkan/vkbasalt-shaders/LICENSE-SweetFX" \
-    "share/doc/framegen-vulkan/vkbasalt/LICENSE" \
-    "share/doc/framegen-vulkan/vkbasalt/RESHade-LICENSE.md" \
-    "share/doc/framegen-vulkan/vkbasalt/SOURCE" \
-    "share/doc/framegen-vulkan/vkbasalt/framegen-vulkan-PIN.json" \
     "share/vulkan/implicit_layer.d/VkLayer_FGVK_spatial_scaling.json" \
     "share/vulkan/implicit_layer.d/VkLayer_FGVK_render.json"
 )
@@ -350,12 +317,10 @@ if [[ "$build_32_bit" == true ]]; then
     required_paths+=(
         "lib32/libfgvk-render.so"
         "lib32/libfgvk-render-scaling.so"
-        "lib32/vkbasalt/libvkbasalt.so"
         "share/framegen-vulkan/vulkan/implicit_layer.d/VkLayer_FGVK_render.x86.json"
         "share/vulkan/implicit_layer.d/VkLayer_FGVK_render.x86.json"
         "share/framegen-vulkan/vulkan/spatial_scaling.d/VkLayer_FGVK_spatial_scaling.x86.json"
         "share/vulkan/implicit_layer.d/VkLayer_FGVK_spatial_scaling.x86.json"
-        "share/framegen-vulkan/vulkan/vkbasalt.d/vkBasalt.x86.json"
     )
 fi
 for required_path in "${required_paths[@]}"; do
@@ -380,7 +345,6 @@ if [[ ! -s "$standalone_readme" ]]; then
 fi
 cp "$standalone_readme" "$install_dir/README.txt"
 if ! grep -Fq '~/.local/bin/fgvk %command%' "$install_dir/README.txt" ||
-        ! grep -Fq 'ENABLE_VKBASALT=1' "$install_dir/README.txt" ||
         ! grep -Fq '~/.local/bin/fgvk-installer --uninstall' "$install_dir/README.txt" ||
         ! grep -Fq 'profiles, settings, and diagnostics' "$install_dir/README.txt"; then
     echo "Packaging failed: standalone Renderer README is incomplete" >&2
@@ -435,46 +399,10 @@ verify_elf_class() {
 verify_elf_class "$install_dir/bin/fgvk" 2
 verify_elf_class "$install_dir/lib/libfgvk-render.so" 2
 verify_elf_class "$install_dir/lib/libfgvk-render-scaling.so" 2
-verify_elf_class "$install_dir/lib/vkbasalt/libvkbasalt.so" 2
+verify_elf_class "$install_dir/lib/libfgvk-render-scaling.so" 2
 if [[ "$build_32_bit" == true ]]; then
     verify_elf_class "$install_dir/lib32/libfgvk-render.so" 1
     verify_elf_class "$install_dir/lib32/libfgvk-render-scaling.so" 1
-    verify_elf_class "$install_dir/lib32/vkbasalt/libvkbasalt.so" 1
-fi
-for vkbasalt_library in "$install_dir/lib/vkbasalt/libvkbasalt.so"; do
-    if ! strings "$vkbasalt_library" |
-            grep -Fx "vkBasalt_GetInstanceProcAddr" >/dev/null ||
-            ! strings "$vkbasalt_library" |
-                grep -Fx "vkBasalt_GetDeviceProcAddr" >/dev/null; then
-        echo "Packaging failed: invalid bundled vkBasalt entry point in $vkbasalt_library" >&2
-        exit 1
-    fi
-done
-if [[ "$build_32_bit" == true ]] &&
-        { ! strings "$install_dir/lib32/vkbasalt/libvkbasalt.so" |
-            grep -Fx "vkBasalt_GetInstanceProcAddr" >/dev/null ||
-          ! strings "$install_dir/lib32/vkbasalt/libvkbasalt.so" |
-            grep -Fx "vkBasalt_GetDeviceProcAddr" >/dev/null; }; then
-    echo "Packaging failed: invalid bundled 32-bit vkBasalt entry point" >&2
-    exit 1
-fi
-
-vkbasalt_manifest64="$install_dir/share/framegen-vulkan/vulkan/vkbasalt.d/vkBasalt.json"
-if ! grep -Fq '"name": "VK_LAYER_VKBASALT_post_processing"' "$vkbasalt_manifest64" ||
-        ! grep -Fq '"library_arch": "64"' "$vkbasalt_manifest64" ||
-        ! grep -Fq '../../../../lib/vkbasalt/libvkbasalt.so' "$vkbasalt_manifest64" ||
-        ! grep -Fq '"ENABLE_VKBASALT": "1"' "$vkbasalt_manifest64" ||
-        ! grep -Fq '"DISABLE_VKBASALT": "1"' "$vkbasalt_manifest64"; then
-    echo "Packaging failed: bundled 64-bit vkBasalt manifest is incorrect" >&2
-    exit 1
-fi
-if [[ "$build_32_bit" == true ]]; then
-    vkbasalt_manifest32="$install_dir/share/framegen-vulkan/vulkan/vkbasalt.d/vkBasalt.x86.json"
-    if ! grep -Fq '"library_arch": "32"' "$vkbasalt_manifest32" ||
-            ! grep -Fq '../../../../lib32/vkbasalt/libvkbasalt.so' "$vkbasalt_manifest32"; then
-        echo "Packaging failed: bundled 32-bit vkBasalt manifest is incorrect" >&2
-        exit 1
-    fi
 fi
 
 scaling_manifest64="$install_dir/share/vulkan/implicit_layer.d/VkLayer_FGVK_spatial_scaling.json"

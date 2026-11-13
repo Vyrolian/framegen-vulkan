@@ -305,7 +305,7 @@ namespace {
         };
 
         // Availability belongs to LSFG/LS1 loading, not profile validity.
-        // Preserve missing paths so open scaling and shaders remain usable.
+        // Preserve missing paths so open scaling remains usable.
         return conf;
     }
     /// parse a game profile configuration

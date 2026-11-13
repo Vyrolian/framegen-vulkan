@@ -1,9 +1,5 @@
 #!/usr/bin/env bash
 set -euo pipefail
-if [[ -n "${FGVK_VKBASALT_LOCAL_ARCHIVE:-}" ]]; then
-    echo "Local vkBasalt candidates cannot be published; verify and pin a public dependency first." >&2
-    exit 1
-fi
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 repository_root="$(cd "$repo_root/.." && pwd)"
@@ -205,7 +201,7 @@ $manual_release_notes
 > [!TIP]
 > **Try the game’s V-Sync setting both on and off.** Neither setting is universally best: the result depends on the game, its FPS cap, VRR, and the compositor. Keep whichever option feels smoother and more responsive for that game.
 
-Every game, renderer, and display setup behaves differently. Compare Fixed Frame Generation, Adaptive Frame Generation, and scaling-only operation one setting at a time. If Frame Generation, Scaling, or Shaders do not work, test Fullscreen, Borderless Fullscreen, and Windowed; none is universally best. For Scaling, also test in-game resolutions and verify that the input is smaller than the display. Changing display mode can change GPU cost. Restart after changing a setting labelled **(Restart)**. Flow Scale and Lighter FG Model normally apply live and may cause one brief hitch while framegen-vulkan replaces their private resources.
+Every game, renderer, and display setup behaves differently. Compare Fixed Frame Generation, Adaptive Frame Generation, and scaling-only operation one setting at a time. If Frame Generation or Scaling does not work, test Fullscreen, Borderless Fullscreen, and Windowed; none is universally best. For Scaling, also test in-game resolutions and verify that the input is smaller than the display. Changing display mode can change GPU cost. Restart after changing a setting labelled **(Restart)**. Flow Scale and Lighter FG Model normally apply live and may cause one brief hitch while framegen-vulkan replaces their private resources.
 
 - **Adaptive target behaviour:** Adaptive varies the generated-frame count toward an average target. It cannot reduce a native frame rate already above that target, and the result still depends on the selected multiplier plus available GPU and compositor capacity.
 - **Quality and latency tuning:** Higher multipliers and lower real-frame rates can increase ghosting and input latency. Smooth Cadence may improve motion consistency while reducing responsiveness, so compare the available choices per game.

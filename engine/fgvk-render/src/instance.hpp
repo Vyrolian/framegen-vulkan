@@ -105,11 +105,6 @@ namespace fgvk::layer {
             return !this->presentationEnvironment.hdrExposureDisabled;
         }
 
-        [[nodiscard]] bool hdrCompactBuffersEnabled() const {
-            return hdrExposureEnabled() && this->active_profile &&
-                ls::hdrCompactBuffers(this->active_profile->hdr_quality);
-        }
-
         [[nodiscard]] std::optional<bool> queryGamescopeOutputHdr(uint32_t gamescopePid) {
             return this->hdrFeedbackReader.queryOutputHdrEnabled(gamescopePid);
         }

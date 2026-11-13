@@ -22,7 +22,6 @@ build-options:
 
 modules:
   - vulkan-headers.json
-  - vkbasalt-module.json
   - name: fgvk
     buildsystem: cmake-ninja
     subdir: engine

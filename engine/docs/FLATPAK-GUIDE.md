@@ -6,7 +6,7 @@ Complete the steps below for each app. Installing the native Renderer or creatin
 
 In `~/.config/framegen-vulkan/conf.toml`, set `active_in` to the game's executable, such as `Game.exe` or `dolphin-emu`, and enable the features you want. Match the executable, not the Flatpak application ID.
 
-Frame Generation and LS1 require Lossless Scaling's default Steam version: set `dll` to its absolute `Lossless.dll` path. Without it, turn Frame Generation off and choose the framegen-vulkan Scaler and/or Shaders.
+Frame Generation and LS1 require Lossless Scaling's default Steam version: set `dll` to its absolute `Lossless.dll` path. Without it, turn Frame Generation off and choose the framegen-vulkan Scaler.
 
 ## Identify the application and runtime
 
@@ -72,7 +72,6 @@ flatpak override --user --env=DISABLE_LSFGVK=1 "$appid"
 flatpak override --user --env=DISABLE_GAMESCOPE_WSI=1 "$appid"
 flatpak override --user --env=DISABLE_VKBASALT=1 "$appid"
 flatpak override --user --unset-env=ENABLE_GAMESCOPE_WSI "$appid"
-flatpak override --user --unset-env=ENABLE_VKBASALT "$appid"
 flatpak override --user --env=FGVK_DISABLE_HDR_EXPOSURE=1 "$appid"
 flatpak override --user --unset-env=DXVK_HDR "$appid"
 flatpak override --user --env=VK_IMPLICIT_LAYER_PATH=/usr/lib/extensions/vulkan/fgvkrender/share/vulkan/implicit_layer.d "$appid"
@@ -101,37 +100,6 @@ flatpak override --user --unset-env=DXVK_HDR "$appid"
 ```
 
 These app-wide overrides affect every game launched by that Flatpak.
-
-## Optional private vkBasalt chain
-
-To add bundled Shaders after the setup above:
-
-```bash
-flatpak override --user --unset-env=ENABLE_FGVK "$appid"
-flatpak override --user --unset-env=DISABLE_FGVK "$appid"
-flatpak override --user --unset-env=ENABLE_VKBASALT "$appid"
-flatpak override --user --unset-env=DISABLE_VKBASALT "$appid"
-flatpak override --user --env=VK_INSTANCE_LAYERS=VK_LAYER_FGVK_render:VK_LAYER_VKBASALT_post_processing "$appid"
-```
-
-Create a vkBasalt configuration at the path below, then enable live reload:
-
-```bash
-flatpak override --user --env=VKBASALT_CONFIG_FILE="$HOME/.config/framegen-vulkan/vkBasalt.conf" "$appid"
-flatpak override --user --env=VKBASALT_CONFIG_RELOAD=1 "$appid"
-```
-
-Shader files, includes, and textures must be accessible inside the sandbox. Restart after changing activation. To return to framegen-vulkan without Shaders:
-
-```bash
-flatpak override --user --unset-env=VK_INSTANCE_LAYERS "$appid"
-flatpak override --user --unset-env=VKBASALT_CONFIG_FILE "$appid"
-flatpak override --user --unset-env=VKBASALT_CONFIG_RELOAD "$appid"
-flatpak override --user --unset-env=ENABLE_VKBASALT "$appid"
-flatpak override --user --env=DISABLE_VKBASALT=1 "$appid"
-flatpak override --user --unset-env=DISABLE_FGVK "$appid"
-flatpak override --user --env=ENABLE_FGVK=1 "$appid"
-```
 
 ## Launch and verify
 

@@ -4,7 +4,7 @@ For normal setup, use the [configuration guide](CONFIGURATION.md). This page cov
 
 ## Format compatibility
 
-Only `version = 2` is supported. Unknown keys are ignored. Launcher compatibility options belong in `launcher.conf`, shader selection in the vkBasalt configuration, and HDR buffer precision is a native profile field.
+Only `version = 2` is supported. Unknown keys are ignored. Launcher compatibility options belong in `launcher.conf`, and HDR buffer precision is a native profile field.
 
 ## Profiles
 
@@ -33,7 +33,7 @@ scaling_sharpness = 0.8
 
 ### AC and battery settings
 
-Both optional `handheld` and `docked` tables must exist when enabled. They inherit omitted Renderer values from the preceding profile and cannot override its name or matches. DLL, FP16, Shaders, and launcher settings stay shared.
+Both optional `handheld` and `docked` tables must exist when enabled. They inherit omitted Renderer values from the preceding profile and cannot override its name or matches. DLL, FP16, and launcher settings stay shared.
 
 ```toml
 [[profile]]
@@ -118,7 +118,7 @@ Changes apply live while Frame Generation is active. Off stops Headroom sampling
 
 Fixed retains its selected multiplier, so reserving capacity may lower both real and output FPS. Releasing Headroom does not force a native-frame probe: ordinary Fixed/FIFO pacing can retain that generated workload after the scene becomes lighter, including with Headroom Off. Use Adaptive when restoring a higher real-frame rate after load changes is important. Adaptive can use more generated frames within its configured ceiling and existing qualification rules. Neither policy changes model quality, Flow Scale or clocks. The controller never deliberately caps below 20 real FPS; Adaptive additionally respects `Target FPS / available maximum multiplier`. For example, a 90 FPS target with a 2× ceiling cannot trade away real frames below 45 FPS. A higher permitted multiplier allows more room but can increase interpolation artifacts and input latency. The utilization target is not guaranteed when generation is expensive, another process consumes the GPU, or the floor is reached.
 
-GPU Headroom is dormant with Frame Generation disabled or refresh-paused, during confirmed Steam-menu suspension, and during ordered-acquire recovery. It does not independently control scaling or shaders. Dynamic Cadence Recovery is mutually exclusive: enabling Headroom disables Recovery; enabling Recovery clears Headroom. Profile and separate power-mode settings preserve the reserve. Live Status distinguishes unavailable telemetry and a reached real-frame floor; diagnostics record decisions independently of the saved setting.
+GPU Headroom is dormant with Frame Generation disabled or refresh-paused, during confirmed Steam-menu suspension, and during ordered-acquire recovery. It does not independently control scaling. Dynamic Cadence Recovery is mutually exclusive: enabling Headroom disables Recovery; enabling Recovery clears Headroom. Profile and separate power-mode settings preserve the reserve. Live Status distinguishes unavailable telemetry and a reached real-frame floor; diagnostics record decisions independently of the saved setting.
 
 See [Adaptive validation](ADAPTIVE-VALIDATION.md#gpu-headroom) for controller sampling and recovery, and [Runtime transitions](RUNTIME-TRANSITIONS.md) for when edits take effect.
 
