@@ -10,6 +10,8 @@ active_renderer_state="$install_prefix/share/framegen-vulkan/active-renderer.jso
 config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/framegen-vulkan"
 payload_manifest="$script_dir/framegen-vulkan-install-manifest.txt"
 version_file="$script_dir/framegen-vulkan-version.txt"
+# Generated at install time (it names this prefix's fgvk), owned through the state manifest.
+desktop_entry_path="share/applications/framegen-vulkan.desktop"
 dialog_title="framegen-vulkan"
 
 kdialog_fgvk() {
@@ -144,6 +146,24 @@ write_active_renderer_state() {
     mv -fT -- "$temporary_path" "$output_state"
 }
 
+# The settings-window menu entry. A prefix the Exec key cannot carry plainly gets no entry.
+write_desktop_entry() {
+    local output="$1"
+    case "$install_prefix" in
+        *[\"\`\$\\%]* | *$'\n'*) return 1 ;;
+    esac
+    mkdir -p -- "$(dirname -- "$output")"
+    printf '%s\n' \
+        '[Desktop Entry]' \
+        'Type=Application' \
+        'Name=framegen-vulkan' \
+        'Comment=Frame generation settings' \
+        "Exec=\"$install_prefix/bin/fgvk\"" \
+        'Terminal=false' \
+        'Categories=Settings;Game;' > "$output"
+    chmod 0644 "$output"
+}
+
 remove_if_managed() {
     local path="$1"
     local expected_hash="$2"
@@ -265,17 +285,30 @@ install_payload() {
     done < "$payload_manifest"
 
     write_installed_state_manifest "$install_staging/payload" "$install_staging/installed-files.sha256"
+    local desktop_entry=0
+    if write_desktop_entry "$install_staging/payload/$desktop_entry_path"; then
+        desktop_entry=1
+        printf '%s  %s\n' "$(hash_file "$install_staging/payload/$desktop_entry_path")" \
+            "$desktop_entry_path" >> "$install_staging/installed-files.sha256"
+    else
+        printf 'framegen-vulkan installer: no menu entry for prefix %s\n' "$install_prefix" >&2
+    fi
     write_active_renderer_state "$version" "$install_staging/active-renderer.json"
 
     while IFS= read -r line || [[ -n "$line" ]]; do
         parse_manifest_line "$line"
         prepare_install_destination "$install_prefix/$manifest_path" "$install_staging/payload/$manifest_path"
     done < "$payload_manifest"
+    if ((desktop_entry)); then
+        prepare_install_destination "$install_prefix/$desktop_entry_path" \
+            "$install_staging/payload/$desktop_entry_path"
+    fi
     if [[ -f "$state_manifest" ]]; then
         while IFS= read -r line || [[ -n "$line" ]]; do
             parse_manifest_line "$line"
             old_path="$manifest_path"
             old_hash="$manifest_hash"
+            [[ "$desktop_entry" == 1 && "$old_path" == "$desktop_entry_path" ]] && continue
             if ! manifest_contains_path "$payload_manifest" "$old_path"; then
                 if [[ -f "$install_prefix/$old_path" && "$(hash_file "$install_prefix/$old_path")" == "$old_hash" ]]; then
                     prepare_install_destination "$install_prefix/$old_path"

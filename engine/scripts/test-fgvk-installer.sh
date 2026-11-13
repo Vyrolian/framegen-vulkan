@@ -54,8 +54,15 @@ grep -Fq "\"$install_prefix/bin/fgvk\" %command%" \
     fail "installer completion did not show the selected prefix's fgvk entry point"
 grep -Fq "$config_home/framegen-vulkan/conf.toml" "$test_root/install.log" ||
     fail "installer completion did not name the configuration file"
-[[ ! -e "$install_prefix/share/applications" && ! -e "$install_prefix/share/icons" ]] ||
-    fail "installer wrote desktop entries or icons"
+desktop_entry="$install_prefix/share/applications/framegen-vulkan.desktop"
+[[ -f "$desktop_entry" ]] || fail "installer did not write the settings menu entry"
+grep -Fxq "Exec=\"$install_prefix/bin/fgvk\"" "$desktop_entry" ||
+    fail "menu entry does not open this prefix's fgvk"
+grep -Fxq "share/applications/framegen-vulkan.desktop" \
+    <(sed 's/^[0-9a-f]*  //' "$install_prefix/share/framegen-vulkan/installer/installed-files.sha256") ||
+    fail "menu entry is not in the installer's ownership record"
+[[ "$(find "$install_prefix/share/applications" -type f | wc -l)" == 1 && ! -e "$install_prefix/share/icons" ]] ||
+    fail "installer wrote other desktop entries or icons"
 
 dialog_bin="$test_root/dialog-bin"
 dialog_capture="$test_root/kdialog.log"
@@ -119,6 +126,7 @@ FGVK_INSTALLER_ASSUME_YES=1 \
 
 [[ ! -e "$install_prefix/bin/fgvk-cli" ]] || fail "uninstaller left the managed CLI"
 [[ ! -e "$install_prefix/bin/fgvk" ]] || fail "uninstaller left the managed fgvk entry point"
+[[ ! -e "$desktop_entry" ]] || fail "uninstaller left the settings menu entry"
 [[ ! -e "$install_prefix/libexec/framegen-vulkan/fgvk-launch" ]] ||
     fail "uninstaller left the private launch helper"
 [[ ! -e "$install_prefix/share/framegen-vulkan/active-renderer.json" ]] ||
