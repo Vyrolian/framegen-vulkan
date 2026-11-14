@@ -18,7 +18,6 @@ set(BACKEND_SOURCES
     "src/shaderchains/alpha1.cpp"
     "src/shaderchains/beta0.cpp"
     "src/shaderchains/beta1.cpp"
-    "src/shaderchains/color_conversion.cpp"
     "src/shaderchains/delta0.cpp"
     "src/shaderchains/delta1.cpp"
     "src/shaderchains/gamma0.cpp"
@@ -81,9 +80,6 @@ if(BUILD_TESTING)
     add_test(NAME backend-output-split COMMAND fgvk-backend-output-split-tests)
     set_tests_properties(backend-output-split PROPERTIES LABELS "portable-policy")
 
-    add_executable(fgvk-frame-color-policy-tests "tests/frame_color_policy_tests.cpp")
-    target_include_directories(fgvk-frame-color-policy-tests PRIVATE src include)
-    add_test(NAME backend-frame-color-policy COMMAND fgvk-frame-color-policy-tests)
     if(FGVK_EXPERIMENTAL_LSFG_FP16)
         add_executable(fgvk-backend-fp16-conversion-tests "tests/spirv_fp16_tests.cpp")
         target_include_directories(fgvk-backend-fp16-conversion-tests PRIVATE src)

@@ -38,9 +38,7 @@ namespace fgvk::backend {
         VkExtent2D sourceExtent;
         VkExtent2D flowExtent;
 
-        std::optional<vk::Shader> packedPqOutputShader; //!< context-only approximate PQ output
         bool highPrecision; //!< model output is backed by an rgba16f image
-        bool hdr; //!< model constants select linear HDR/scRGB semantics
         float flow;
         bool perf;
         size_t count;
@@ -52,7 +50,7 @@ namespace fgvk::backend {
         uint32_t firstIter;
         uint32_t firstIterS;
         uint32_t advancedColorKind;
-        uint32_t hdrSupport;
+        uint32_t hdrSupport; // Shader ABI field; always zero for SDR.
         float resolutionInvScale;
         float timestamp;
         float uiThreshold;
@@ -62,11 +60,10 @@ namespace fgvk::backend {
     /// get a prefilled constant buffer
     /// @param index timestamp index
     /// @param total total amount of images
-    /// @param hdr whether the model receives linear HDR/scRGB data
     /// @param invFlow inverted flow scale value
     /// @return prefilled constant buffer
     ConstantBuffer getDefaultConstantBuffer(
-        size_t index, size_t total, bool hdr, float invFlow
+        size_t index, size_t total, float invFlow
     );
 
     /// round down a VkExtent2D

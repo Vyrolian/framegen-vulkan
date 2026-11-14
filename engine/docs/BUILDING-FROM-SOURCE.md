@@ -231,7 +231,7 @@ The default and Vulkan-layer builds check `fgvk-render/src/**/*.cpp` against the
 sudo cmake --install build
 ```
 
-Start a native game with `fgvk <command>`. The helper selects the install prefix's private manifests, activates framegen-vulkan for that child, excludes competing frame generation and Gamescope WSI, and defaults to SDR. Enable HDR through the [HDR setup](CONFIGURATION.md#hdr) when needed. Read [WSI isolation](WSI-ISOLATION.md) and [Optional graphics integrations](LAYER-CHAINING.md) before changing manifests or launch variables.
+Start a native game with `fgvk <command>`. The helper selects the install prefix's private manifests, activates framegen-vulkan for that child, excludes competing frame generation and Gamescope WSI, and defaults to SDR. Read [WSI isolation](WSI-ISOLATION.md) and [Optional graphics integrations](LAYER-CHAINING.md) before changing manifests or launch variables.
 
 ## Arch package maintenance
 

@@ -237,16 +237,13 @@ namespace {
         std::optional<std::string> previousValue;
     };
 
-    std::string hdrFeedbackDiagnosticKey(
-            const GamescopeHdrFeedbackSample& sample) {
+    std::string gamescopeFeedbackDiagnosticKey(
+            const GamescopeFeedbackSample& sample) {
         const auto booleanToken = [](const std::optional<bool> value) {
             return value ? (*value ? "1" : "0") : "unknown";
         };
         return sample.status + '\n' + sample.display + '\n' +
-            sample.activationSource + '\n' +
             sample.resolverStatus + '\n' + sample.resolverCandidates + '\n' +
-            (sample.active
-                ? (*sample.active ? "active" : "inactive") : "unknown") + '\n' +
             std::to_string(sample.gamescopePid.value_or(UINT32_MAX)) + '\n' +
             std::to_string(sample.xwaylandServerId.value_or(UINT32_MAX)) + '\n' +
             std::to_string(sample.outputWidth.value_or(0)) + 'x' +
@@ -255,16 +252,12 @@ namespace {
             booleanToken(sample.presentation.vrrEnabled) + '\n' +
             booleanToken(sample.presentation.vrrCapable) + '\n' +
             booleanToken(sample.presentation.vrrActive) + '\n' +
-            booleanToken(sample.presentation.allowTearing) + '\n' +
-            (sample.outputHdrEnabled
-                ? (*sample.outputHdrEnabled ? "output-hdr" : "output-sdr")
-                : "output-unknown") + '\n' +
-            (sample.appHdrMetadataPresent ? "metadata" : "no-metadata");
+            booleanToken(sample.presentation.allowTearing);
     }
 
-    void logHdrFeedbackDiagnostic(
+    void logGamescopeFeedbackDiagnostic(
             const char* prefix,
-            const GamescopeHdrFeedbackSample& sample) {
+            const GamescopeFeedbackSample& sample) {
         std::cerr << prefix << sample.status
                   << "; display="
                   << (sample.display.empty() ? "(unset)" : sample.display)
@@ -280,21 +273,7 @@ namespace {
                   << "; presentation_target="
                   << sample.outputWidth.value_or(0) << 'x'
                   << sample.outputHeight.value_or(0)
-                  << "; active=";
-        if (sample.active)
-            std::cerr << (*sample.active ? 1 : 0);
-        else
-            std::cerr << "unknown";
-        std::cerr
-                  << "; activation_source="
-                  << (sample.activationSource.empty()
-                        ? "unavailable" : sample.activationSource)
-                  << "; output_hdr=";
-        if (sample.outputHdrEnabled)
-            std::cerr << (*sample.outputHdrEnabled ? 1 : 0);
-        else
-            std::cerr << "unknown";
-        std::cerr << "; vrr_enabled=";
+                  << "; vrr_enabled=";
         if (sample.presentation.vrrEnabled)
             std::cerr << (*sample.presentation.vrrEnabled ? 1 : 0);
         else
@@ -315,8 +294,6 @@ namespace {
         else
             std::cerr << "unknown";
         std::cerr
-                  << "; app_hdr_metadata="
-                  << (sample.appHdrMetadataPresent ? 1 : 0)
                   << "; candidates="
                   << (sample.resolverCandidates.empty()
                         ? "(none)" : sample.resolverCandidates)
@@ -349,12 +326,6 @@ void Root::publishSurfaceScalingPolicy() noexcept {
         ? this->active_profile->scaling_factor : 1.0F;
     const bool supersampling = this->active_profile &&
         this->active_profile->scaling_supersampling;
-    const bool processSupported = spatialScalingProcessSupported(
-        this->gamescopeEnvironmentDetected,
-        this->gamescopeDetected,
-        this->presentationEnvironment.hdrExposureDisabled,
-        this->presentationEnvironment.gamescopeWsiDisabled
-    );
     const uint64_t packedFactor = static_cast<uint64_t>(
         std::bit_cast<uint32_t>(factor)
     ) << 32U;
@@ -362,8 +333,7 @@ void Root::publishSurfaceScalingPolicy() noexcept {
         (enabled ? spatialScalingEnabledBit : uint64_t{0}) |
         (supersampling
             ? spatialScalingSupersamplingBit : uint64_t{0}) |
-        (processSupported
-            ? spatialScalingProcessSupportedBit : uint64_t{0});
+        spatialScalingProcessSupportedBit;
     const uint64_t observedSequence =
         this->surfaceScalingPolicySequence.load(std::memory_order_acquire);
     if ((observedSequence & uint64_t{1}) == 0 &&
@@ -421,12 +391,9 @@ SpatialScalingPolicySnapshot Root::surfaceScalingPolicySnapshot()
 
 Root::Root() :
     presentationEnvironment(resolvePresentationEnvironmentPolicy(
-        std::getenv("FGVK_DISABLE_HDR_EXPOSURE"),
-        std::getenv("DXVK_HDR"),
         std::getenv("DISABLE_GAMESCOPE_WSI")
     )),
-    gamescopeEnvironmentDetected(gamescopeProcessEnvironmentHint()),
-    hdrFeedbackReader(this->presentationEnvironment) {
+    gamescopeEnvironmentDetected(gamescopeProcessEnvironmentHint()) {
     this->fp16AtStartup = this->config.get().global().allow_fp16;
     // S8b: restart-bound, before any device or worker reads realOffsetAuto().
     fgvk::layer::realOffsetAutoConfigured.store(this->config.get().global().pacing_correction,
@@ -436,86 +403,30 @@ Root::Root() :
     std::cerr << "framegen-vulkan: presentation policy: gamescope_wsi="
               << (this->presentationEnvironment.gamescopeWsiDisabled
                     ? "isolated" : "allowed")
-              << "; hdr_exposure="
-              << (this->presentationEnvironment.hdrExposureDisabled
-                    ? "disabled" : "allowed")
               << "; gamescope_process_hint="
               << (this->gamescopeEnvironmentDetected ? "present" : "absent")
               << '\n';
 
-    const auto initialHdrFeedback =
-        this->hdrFeedbackReader.diagnosticSample();
-    this->lastHdrFeedbackSample = initialHdrFeedback.active;
-    this->lastHdrActivationSource = initialHdrFeedback.activationSource;
-    this->gamescopeDetected = initialHdrFeedback.gamescopeDetected;
+    const auto initialGamescopeFeedback =
+        this->gamescopeFeedbackReader.diagnosticSample();
+    this->gamescopeDetected = initialGamescopeFeedback.gamescopeDetected;
     if (const auto target = confirmedGamescopePresentationTarget(
-            initialHdrFeedback)) {
+            initialGamescopeFeedback)) {
         this->gamescopePresentationTarget = VkExtent2D{
             .width = target->width,
             .height = target->height,
         };
     }
-    this->lastGamescopeRefreshHz = initialHdrFeedback.refreshHz;
-    this->gamescopeRefreshHz = initialHdrFeedback.refreshHz;
-    this->gamescopePresentationFeedback = initialHdrFeedback.presentation;
-    this->lastHdrFeedbackDiagnosticKey = hdrFeedbackDiagnosticKey(
-        initialHdrFeedback
+    this->lastGamescopeRefreshHz = initialGamescopeFeedback.refreshHz;
+    this->gamescopeRefreshHz = initialGamescopeFeedback.refreshHz;
+    this->gamescopePresentationFeedback = initialGamescopeFeedback.presentation;
+    this->lastGamescopeFeedbackDiagnosticKey = gamescopeFeedbackDiagnosticKey(
+        initialGamescopeFeedback
     );
-    // Gamescope's per-application root properties can still describe the
-    // previous held commit while a new process creates its first swapchain, so
-    // those values retain the settling window. Output HDR capability is logged
-    // separately and never promoted to application HDR intent.
-    this->gamescopeHdrActive = initialGamescopeHdrActivation(
-        initialHdrFeedback
-    );
-    this->hdrFeedback.seed(this->gamescopeHdrActive);
-    this->lastHdrFeedbackPoll = std::chrono::steady_clock::now();
-    if (this->gamescopeHdrActive) {
-        std::cerr << "framegen-vulkan: Gamescope application HDR feedback initialized: active="
-                  << *this->gamescopeHdrActive
-                  << "; display=" << initialHdrFeedback.display
-                  << "; refresh_hz="
-                  << initialHdrFeedback.refreshHz.value_or(0)
-                  << "; presentation_target="
-                  << initialHdrFeedback.outputWidth.value_or(0) << 'x'
-                  << initialHdrFeedback.outputHeight.value_or(0)
-                  << "; activation_source="
-                  << (initialHdrFeedback.activationSource.empty()
-                        ? "unavailable" : initialHdrFeedback.activationSource)
-                  << '\n';
-    } else {
-        std::cerr << "framegen-vulkan: Gamescope application HDR feedback provisional; "
-                     "normalized 10-bit swapchains use real-frame passthrough until confirmed; "
-                  << "reason=" << initialHdrFeedback.status
-                  << " display="
-                  << (initialHdrFeedback.display.empty()
-                        ? "(unset)" : initialHdrFeedback.display)
-                  << "; resolver=" << initialHdrFeedback.resolverStatus
-                  << "; activation_source="
-                  << (initialHdrFeedback.activationSource.empty()
-                        ? "unavailable" : initialHdrFeedback.activationSource)
-                  << "; output_hdr=";
-        if (initialHdrFeedback.outputHdrEnabled)
-            std::cerr << (*initialHdrFeedback.outputHdrEnabled ? 1 : 0);
-        else
-            std::cerr << "unknown";
-        std::cerr << "; app_hdr_metadata="
-                  << (initialHdrFeedback.appHdrMetadataPresent ? 1 : 0)
-                  << "; gamescope_pid="
-                  << initialHdrFeedback.gamescopePid.value_or(UINT32_MAX)
-                  << "; server_id="
-                  << initialHdrFeedback.xwaylandServerId.value_or(UINT32_MAX)
-                  << "; presentation_target="
-                  << initialHdrFeedback.outputWidth.value_or(0) << 'x'
-                  << initialHdrFeedback.outputHeight.value_or(0)
-                  << "; candidates="
-                  << (initialHdrFeedback.resolverCandidates.empty()
-                        ? "(none)" : initialHdrFeedback.resolverCandidates)
-                  << '\n';
-    }
-    logHdrFeedbackDiagnostic(
+    this->lastGamescopeFeedbackPoll = std::chrono::steady_clock::now();
+    logGamescopeFeedbackDiagnostic(
         "framegen-vulkan: Gamescope presentation feedback initialized: ",
-        initialHdrFeedback
+        initialGamescopeFeedback
     );
 
     // find active profile
@@ -605,23 +516,21 @@ Root::Root() :
 ConfigurationUpdateResult Root::update(const bool forceConfigurationPoll) {
     ConfigurationUpdateResult result;
     const auto now = std::chrono::steady_clock::now();
-    constexpr auto hdrFeedbackPollInterval = std::chrono::milliseconds(250);
-    if (!this->lastHdrFeedbackPoll ||
-            now - *this->lastHdrFeedbackPoll >= hdrFeedbackPollInterval) {
-        const auto hdrFeedbackSample =
-            this->hdrFeedbackReader.diagnosticSample();
-        this->gamescopeFocus = hdrFeedbackSample.focus;
+    constexpr auto gamescopeFeedbackPollInterval = std::chrono::milliseconds(250);
+    if (!this->lastGamescopeFeedbackPoll ||
+            now - *this->lastGamescopeFeedbackPoll >= gamescopeFeedbackPollInterval) {
+        const auto gamescopeFeedbackSample =
+            this->gamescopeFeedbackReader.diagnosticSample();
+        this->gamescopeFocus = gamescopeFeedbackSample.focus;
         for (auto& [swapchain, context] : this->swapchains) {
             static_cast<void>(swapchain);
             context.updateGamescopeFocus(this->gamescopeFocus);
         }
-        this->lastHdrFeedbackSample = hdrFeedbackSample.active;
-        this->lastHdrActivationSource = hdrFeedbackSample.activationSource;
-        this->gamescopeDetected = hdrFeedbackSample.gamescopeDetected;
+        this->gamescopeDetected = gamescopeFeedbackSample.gamescopeDetected;
         const auto presentationFeedback =
             mergeGamescopePresentationFeedback(
                 this->gamescopePresentationFeedback,
-                hdrFeedbackSample.presentation
+                gamescopeFeedbackSample.presentation
             );
         if (presentationFeedback != this->gamescopePresentationFeedback) {
             this->gamescopePresentationFeedback = presentationFeedback;
@@ -634,51 +543,30 @@ ConfigurationUpdateResult Root::update(const bool forceConfigurationPoll) {
         }
         this->gamescopePresentationTarget.reset();
         if (const auto target = confirmedGamescopePresentationTarget(
-                hdrFeedbackSample)) {
+                gamescopeFeedbackSample)) {
             this->gamescopePresentationTarget = VkExtent2D{
                 .width = target->width,
                 .height = target->height,
             };
         }
-        if (hdrFeedbackSample.refreshHz != this->lastGamescopeRefreshHz) {
-            this->lastGamescopeRefreshHz = hdrFeedbackSample.refreshHz;
-            this->gamescopeRefreshHz = hdrFeedbackSample.refreshHz;
+        if (gamescopeFeedbackSample.refreshHz != this->lastGamescopeRefreshHz) {
+            this->lastGamescopeRefreshHz = gamescopeFeedbackSample.refreshHz;
+            this->gamescopeRefreshHz = gamescopeFeedbackSample.refreshHz;
             result.refreshRateChanged = true;
             for (auto& [swapchain, context] : this->swapchains) {
                 static_cast<void>(swapchain);
                 context.updateGamescopeRefreshRate(this->gamescopeRefreshHz);
             }
         }
-        const auto diagnosticKey = hdrFeedbackDiagnosticKey(hdrFeedbackSample);
-        if (diagnosticKey != this->lastHdrFeedbackDiagnosticKey) {
-            this->lastHdrFeedbackDiagnosticKey = diagnosticKey;
-            logHdrFeedbackDiagnostic(
-                "framegen-vulkan: Gamescope application HDR feedback status: ",
-                hdrFeedbackSample
+        const auto diagnosticKey = gamescopeFeedbackDiagnosticKey(gamescopeFeedbackSample);
+        if (diagnosticKey != this->lastGamescopeFeedbackDiagnosticKey) {
+            this->lastGamescopeFeedbackDiagnosticKey = diagnosticKey;
+            logGamescopeFeedbackDiagnostic(
+                "framegen-vulkan: Gamescope presentation feedback status: ",
+                gamescopeFeedbackSample
             );
         }
-        this->lastHdrFeedbackPoll = now;
-    }
-
-    if (const auto changed = this->hdrFeedback.observe(
-            this->lastHdrFeedbackSample, now)) {
-        this->gamescopeHdrActive = changed;
-        this->runtimeStateRevision++;
-        result.hdrFeedbackChanged = true;
-        for (auto& [swapchain, context] : this->swapchains) {
-            static_cast<void>(swapchain);
-            if (!this->presentationEnvironment.gamescopeWsiDisabled &&
-                    context.updateGamescopeHdrState(
-                    *changed, this->runtimeStateRevision))
-                result.hdrContextsDeferred++;
-        }
-        std::cerr << "framegen-vulkan: Gamescope application HDR feedback stabilized: active="
-                  << *changed
-                  << "; activation_source="
-                  << (this->lastHdrActivationSource.empty()
-                        ? "unavailable" : this->lastHdrActivationSource)
-                  << "; contexts_pending_private_transition="
-                  << result.hdrContextsDeferred << '\n';
+        this->lastGamescopeFeedbackPoll = now;
     }
 
     this->publishSurfaceScalingPolicy();
@@ -1073,22 +961,9 @@ SwapchainCreateModification Root::modifySwapchainCreateInfo(const vk::Vulkan& vk
         liveMemoryBudgetAvailable ? &liveMemoryBudget : nullptr
     );
     const auto colorPipeline = classifySwapchainColor(
-        createInfo.imageFormat, createInfo.imageColorSpace,
-        (!this->presentationEnvironment.gamescopeWsiDisabled &&
-            this->gamescopeHdrActive.value_or(false))
+        createInfo.imageFormat, createInfo.imageColorSpace
     );
     const auto contextProfile = profileForLayerContext(*this->active_profile);
-    const auto hdrResizePolicyForSource = [&](const VkExtent2D source) {
-        return hdrBridgeDisplayResizePolicy(
-            contextProfile,
-            gamescopeScalingSurface && modification.variableSurface &&
-                spatialScalingOwnedByLayer() && spatialScalingCapabilityOwnedByLayer(),
-            colorPipeline.hdr, !this->presentationEnvironment.hdrExposureDisabled,
-            frameGenerationInteropForLayer(vk.frameGenerationInteropEnabled()),
-            source, this->gamescopePresentationTarget
-        );
-    };
-    const auto hdrResizePolicy = hdrResizePolicyForSource(createInfo.imageExtent);
     // Window-mode changes can briefly request the display's native extent.
     // Keep the smaller, already allocated split across that exact-output
     // hop so returning to it is not priced as a cold allocation. Never invent
@@ -1096,9 +971,8 @@ SwapchainCreateModification Root::modifySwapchainCreateInfo(const vk::Vulkan& vk
     modification.retainVariableSurfacePresentationProof =
         spatialSurfaceScalingSupported && modification.variableSurface &&
         previousVariableExtents && this->gamescopePresentationTarget &&
-        ((ls::spatialScalingRequested(contextProfile) &&
-            !contextProfile.scaling_supersampling) ||
-            hdrResizePolicyForSource(previousVariableExtents->source).has_value()) &&
+        ls::spatialScalingRequested(contextProfile) &&
+        !contextProfile.scaling_supersampling &&
         sameExtent(previousVariableExtents->presentation,
             *this->gamescopePresentationTarget) &&
         sameExtent(createInfo.imageExtent, *this->gamescopePresentationTarget);
@@ -1109,17 +983,12 @@ SwapchainCreateModification Root::modifySwapchainCreateInfo(const vk::Vulkan& vk
         contextProfile,
         caps.maxImageCount,
         prospectiveCreateInfo,
-        (!this->presentationEnvironment.gamescopeWsiDisabled &&
-            this->gamescopeHdrActive.value_or(false)),
         this->gamescopeDetected,
-        this->presentationEnvironment,
         frameGenerationInteropForLayer(vk.frameGenerationInteropEnabled()),
-        hdrResizePolicy.has_value(),
+        false,
         caps.minImageCount
     ));
     auto policySnapshot = this->surfaceScalingPolicySnapshot();
-    if (hdrResizePolicy)
-        policySnapshot.policy = *hdrResizePolicy;
     const auto postFrameGenerationAdmission =
         variablePresentationResourceAdmission(
             memoryAdmission,
@@ -1176,13 +1045,6 @@ SwapchainCreateModification Root::modifySwapchainCreateInfo(const vk::Vulkan& vk
             .inactiveReason = SpatialScalingInactiveReason::
                 GamescopeWsiSurfaceUnproven,
         };
-    if (hdrResizePolicy && scalingDecision.extents && !sameExtent(
-            scalingDecision.extents->presentation, *this->gamescopePresentationTarget)) {
-        // Do not substitute a partial resize when the display-sized request
-        // exceeds the existing surface or memory envelope.
-        scalingDecision.extents.reset();
-        scalingDecision.inactiveReason = SpatialScalingInactiveReason::VariableSurfaceNoHeadroom;
-    }
     const auto& scalingExtents = scalingDecision.extents;
     modification.variableFeedbackSuppressed =
         scalingDecision.inactiveReason ==
@@ -1193,8 +1055,7 @@ SwapchainCreateModification Root::modifySwapchainCreateInfo(const vk::Vulkan& vk
         fixedSurfaceExtent(caps.currentExtent) &&
         !sameExtent(createInfo.imageExtent, caps.currentExtent);
     const bool supportedScalingEncoding =
-        spatialScalingColorSupported(colorPipeline) &&
-        !(colorPipeline.hdr && this->presentationEnvironment.hdrExposureDisabled);
+        spatialScalingColorSupported(colorPipeline);
     VkBool32 queueFamilySupportsPresentation = VK_FALSE;
     const bool queueSurfaceSupportChecked =
         scalingExtents && vk.fi().GetPhysicalDeviceSurfaceSupportKHR;
@@ -1262,7 +1123,6 @@ SwapchainCreateModification Root::modifySwapchainCreateInfo(const vk::Vulkan& vk
                     ? SpatialScalingInactiveReason::QueueCommandsUnsupported
                     : SpatialScalingInactiveReason::SwapchainFormatUnsupported));
     }
-    modification.hdrDisplayResize = hdrResizePolicy.has_value();
     modification.spatialScalingInactiveReason = inactiveReason;
     modification.spatialScalingAdmissionRetryEligible =
         spatialScalingAdmissionRetryEligible(
@@ -1308,7 +1168,7 @@ SwapchainCreateModification Root::modifySwapchainCreateInfo(const vk::Vulkan& vk
         scalingExtents.has_value(),
         fixedSurfaceExtent(caps.currentExtent)
     );
-    if ((this->active_profile->scaling_enabled || hdrResizePolicy) &&
+    if (this->active_profile->scaling_enabled &&
             (spatialResourceOwner || spatialExtentOwner) &&
             !awaitingLowerCreateRelay) {
         const auto advertised = scalingDecision.fixedContract;
@@ -1508,10 +1368,7 @@ SwapchainCreateModification Root::modifySwapchainCreateInfo(const vk::Vulkan& vk
         contextProfile,
         caps.maxImageCount,
         createInfo,
-        (!this->presentationEnvironment.gamescopeWsiDisabled &&
-            this->gamescopeHdrActive.value_or(false)),
         this->gamescopeDetected,
-        this->presentationEnvironment,
         frameGenerationInteropForLayer(vk.frameGenerationInteropEnabled()),
         modification.spatialScalingActive,
         caps.minImageCount
@@ -1523,8 +1380,7 @@ SwapchainCreateModification Root::modifySwapchainCreateInfo(const vk::Vulkan& vk
     // it attached makes the create description inconsistent and has surfaced
     // as a Wine vkCreateSwapchainKHR assertion. Remove only the outer node from
     // our lower-facing chain. Copy a known prefix so neither the immutable mode
-    // array nor any caller-owned pNext link is ever rewritten. The Gamescope
-    // HDR transport preserves the complete compositor contract.
+    // array nor any caller-owned pNext link is ever rewritten.
     const FilteredSwapchainCreatePNextChain presentModes(
         createInfo.pNext,
         VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_MODES_CREATE_INFO_EXT,
@@ -1714,7 +1570,7 @@ void Root::createSwapchainContext(const vk::Vulkan& vk,
     const auto& global = this->config.get().global();
 
     std::optional<std::filesystem::path> scalingShaderDll;
-    if (info.spatialScalingActive && !info.hdrDisplayResize) {
+    if (info.spatialScalingActive) {
         try {
             scalingShaderDll = global.dll.has_value()
                 ? std::filesystem::path(*global.dll)
@@ -1839,10 +1695,7 @@ void Root::createSwapchainContext(const vk::Vulkan& vk,
     const bool inserted = this->swapchains.emplace(swapchain,
         Swapchain(vk, frameGenerationBackend, std::move(contextProfile), info,
             std::move(scalingShaderDll), this->fp16AtStartup,
-            this->presentationEnvironment.gamescopeWsiDisabled
-                ? std::optional<bool>{false} : this->gamescopeHdrActive,
             this->gamescopeDetected,
-            this->presentationEnvironment.hdrExposureDisabled,
             this->gamescopeRefreshHz,
             this->gamescopePresentationFeedback,
             this->runtimeStateRevision,

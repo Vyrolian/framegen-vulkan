@@ -27,8 +27,6 @@ class MangoHudLauncherTests(unittest.TestCase):
         self.manifests = self.root / "system/vulkan/implicit_layer.d"
         self.manifests.mkdir(parents=True)
         self.private = self.root / "cache/framegen-vulkan/mangohud"
-        self.shared = Path(self.environment["XDG_CONFIG_HOME"]) / "framegen-vulkan/mangohud.conf"
-        self.shared.parent.mkdir(parents=True)
 
     def manifest(self, bits="64", **updates):
         suffix = "x86_64" if bits == "64" else "x86"
@@ -57,27 +55,17 @@ class MangoHudLauncherTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         return dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
 
-    def test_availability_check_is_read_only(self):
-        result = self.run_launcher("--check-mangohud")
-        self.assertEqual(json.loads(result.stdout), {"available": False})
-        self.manifest()
-        result = self.run_launcher("--check-mangohud")
-        self.assertEqual(json.loads(result.stdout), {"available": True})
-        self.assertFalse(self.private.exists())
-        self.assertFalse(self.shared.exists())
-
-    def test_native_order_and_configuration_precedence_for_both_architectures(self):
+    def test_native_order_for_both_architectures(self):
         for bits in ("64", "32"):
             with self.subTest(bits=bits):
                 for path in self.manifests.iterdir():
                     path.unlink()
                 self.manifest(bits)
-                self.shared.write_text("fps\nframetime\n")
                 for inherited in ("", "/run/gamescope/mangohud.conf", "/custom.conf"):
                     env = self.game(MANGOHUD="1", MANGOHUD_CONFIGFILE=inherited,
                                     MANGOHUD_CONFIG="read_cfg,fps", DISABLE_MANGOHUD="1",
                                     VK_INSTANCE_LAYERS="VK_LAYER_MANGOHUD_overlay_x86:VK_LAYER_TEST:VK_LAYER_MANGOHUD_overlay_x86_64:VK_LAYER_FGVK_render")
-                    self.assertEqual(env["MANGOHUD_CONFIGFILE"], str(self.shared))
+                    self.assertEqual(env["MANGOHUD_CONFIGFILE"], inherited)
                     self.assertEqual(env["MANGOHUD_CONFIG"], "read_cfg,fps")
                     self.assertEqual(env["MANGOHUD"], "1")
                     self.assertNotIn("DISABLE_MANGOHUD", env)
@@ -91,32 +79,7 @@ class MangoHudLauncherTests(unittest.TestCase):
                 self.assertEqual(len(staged), 1)
                 self.assertEqual(json.loads(staged[0].read_text())["layer"]["library_arch"], bits)
 
-    def test_missing_or_invalid_shared_file_preserves_inheritance(self):
-        self.manifest()
-        for kind in ("missing", "directory", "fifo", "dangling"):
-            with self.subTest(kind=kind):
-                if kind == "directory": self.shared.mkdir()
-                elif kind == "fifo": os.mkfifo(self.shared)
-                elif kind == "dangling": self.shared.symlink_to(self.root / "absent")
-                env = self.game(MANGOHUD="1", MANGOHUD_CONFIGFILE="/previous.conf")
-                self.assertEqual(env["MANGOHUD_CONFIGFILE"], "/previous.conf")
-                if kind == "directory": self.shared.rmdir()
-                elif kind != "missing": self.shared.unlink()
-
-    def test_live_file_changes_and_per_game_override_do_not_regenerate_profiles(self):
-        self.manifest()
-        self.assertNotIn("MANGOHUD_CONFIGFILE", self.game(MANGOHUD="1"))
-        self.shared.write_text("fps\n$(touch should-not-exist)\n")
-        self.assertEqual(self.game(MANGOHUD="1")["MANGOHUD_CONFIGFILE"], str(self.shared))
-        result = self.run_launcher("env", "MANGOHUD_CONFIGFILE=/game.conf", "/usr/bin/env", MANGOHUD="1")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("MANGOHUD_CONFIGFILE=/game.conf\n", result.stdout)
-        self.assertFalse((self.root / "should-not-exist").exists())
-        self.shared.unlink()
-        self.assertNotIn("MANGOHUD_CONFIGFILE", self.game(MANGOHUD="1"))
-
     def test_inactive_unavailable_disabled_and_flatpak_are_isolated(self):
-        self.shared.write_text("fps\n")
         for extra in ({}, {"MANGOHUD": "0"}, {"MANGOHUD": "1"},
                       {"MANGOHUD": "1", "DISABLE_FGVK": "1"}):
             with self.subTest(extra=extra):
@@ -135,7 +98,6 @@ class MangoHudLauncherTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotIn("MANGOHUD=1", result.stdout.splitlines())
         self.assertFalse(self.private.exists())
-        self.assertEqual(json.loads(self.run_launcher("--check-mangohud", FLATPAK_ID="test.app").stdout), {"available": False})
 
     def test_invalid_manifest_shapes_and_gates_are_rejected(self):
         for updates in ({"name": "VK_LAYER_TEST"}, {"type": "INSTANCE"},
@@ -150,10 +112,10 @@ class MangoHudLauncherTests(unittest.TestCase):
         for content in ("[]", "null", "{bad", "x" * 65537,
                         '{"layers":[{"name":"VK_LAYER_TEST"}]}'):
             path.write_text(content)
-            self.assertFalse(json.loads(self.run_launcher("--check-mangohud").stdout)["available"])
+            self.assertNotIn("MANGOHUD", self.game(MANGOHUD="1"))
         path.unlink()
         os.mkfifo(path)
-        self.assertFalse(json.loads(self.run_launcher("--check-mangohud").stdout)["available"])
+        self.assertNotIn("MANGOHUD", self.game(MANGOHUD="1"))
 
     def test_relative_library_is_resolved_and_foreign_layers_are_not_staged(self):
         (self.manifests / "libMangoHud.so").write_bytes(b"fixture")

@@ -132,19 +132,15 @@ namespace fgvk::layer {
     /// fail closed before X11 feedback can confirm compositor identity.
     [[nodiscard]] bool gamescopeProcessEnvironmentHint();
 
-    struct GamescopeHdrFeedbackSample {
-        std::optional<bool> active;
+    struct GamescopeFeedbackSample {
         std::optional<uint32_t> refreshHz;
         GamescopePresentationFeedback presentation;
-        std::optional<bool> outputHdrEnabled;
-        bool appHdrMetadataPresent{false};
         bool gamescopeDetected{false};
         std::optional<uint32_t> gamescopePid;
         std::optional<uint32_t> xwaylandServerId;
         std::optional<uint32_t> outputWidth;
         std::optional<uint32_t> outputHeight;
         std::string status;
-        std::string activationSource;
         std::string display;
         std::string resolverStatus;
         std::string resolverCandidates;
@@ -160,10 +156,10 @@ namespace fgvk::layer {
 
     /// Server zero owns Gamescope's real presentation dimensions. Treat the
     /// X11 root geometry as an output ceiling only after the same resolver
-    /// that owns HDR and refresh feedback has proven Gamescope identity.
+    /// that owns refresh feedback has proven Gamescope identity.
     [[nodiscard]] inline std::optional<GamescopePresentationTarget>
     confirmedGamescopePresentationTarget(
-            const GamescopeHdrFeedbackSample& sample) {
+            const GamescopeFeedbackSample& sample) {
         if (!sample.gamescopeDetected || !sample.xwaylandServerId ||
                 *sample.xwaylandServerId != 0 || !sample.outputWidth ||
                 !sample.outputHeight || *sample.outputWidth == 0 ||
@@ -187,55 +183,6 @@ namespace fgvk::layer {
         return environmentHint || gamescopeDetected
             ? std::chrono::milliseconds{250}
             : std::chrono::milliseconds{1'000};
-    }
-
-    struct GamescopeHdrActivationEvidence {
-        std::optional<bool> appWantsHdr;
-        std::optional<bool> outputHdrEnabled;
-        bool appHdrMetadataPresent{false};
-        bool hdrExposureDisabled{false};
-        bool gamescopeDetected{false};
-    };
-
-    struct GamescopeHdrActivationDecision {
-        std::optional<bool> active;
-        std::string_view source{"unavailable"};
-    };
-
-    /// Resolve application HDR only from application-owned evidence. The
-    /// compositor output being HDR-capable is deliberately diagnostic only:
-    /// it tells us Gamescope may expose HDR formats, not that this game selected
-    /// one. Treating output capability as application intent caused 10-bit SDR
-    /// swapchains to enter the HDR pipeline before the game opted into HDR.
-    [[nodiscard]] inline GamescopeHdrActivationDecision
-    decideGamescopeHdrActivation(
-            const GamescopeHdrActivationEvidence& evidence) {
-        if (evidence.hdrExposureDisabled)
-            return {.active = false, .source = "hdr-exposure-disabled"};
-        if (evidence.appWantsHdr)
-            return {
-                .active = evidence.appWantsHdr,
-                .source = "gamescope-app-colorspace",
-            };
-        if (evidence.appHdrMetadataPresent)
-            return {.active = true, .source = "gamescope-app-hdr-metadata"};
-        return {};
-    }
-
-    /// Decide which feedback can safely select the colour pipeline before the
-    /// first swapchain is created. Gamescope's per-application properties can
-    /// still describe the previously held commit during process startup, so
-    /// Gamescope-managed values retain the normal settling delay. Explicitly
-    /// blocked exposure is conclusively SDR; non-Gamescope explicit HDR colour
-    /// spaces remain directly classifiable from VkSwapchainCreateInfoKHR.
-    [[nodiscard]] inline std::optional<bool>
-    initialGamescopeHdrActivation(
-            const GamescopeHdrFeedbackSample& sample) {
-        if (sample.status == "hdr-exposure-disabled")
-            return sample.active;
-        if (!sample.gamescopeDetected)
-            return sample.active;
-        return std::nullopt;
     }
 
     struct GamescopeXwaylandDisplay {
@@ -264,32 +211,21 @@ namespace fgvk::layer {
         return candidate->display;
     }
 
-    /// Monitors Gamescope's application-HDR feedback without adding a
+    /// Monitors Gamescope refresh, focus and presentation feedback without a
     /// mandatory X11 link-time dependency or an X11 round trip to the frame
     /// presentation path.
-    class GamescopeHdrFeedbackReader {
+    class GamescopeFeedbackReader {
     public:
-        explicit GamescopeHdrFeedbackReader(
-            const PresentationEnvironmentPolicy& presentationEnvironment
-        );
-        ~GamescopeHdrFeedbackReader();
+        GamescopeFeedbackReader();
+        ~GamescopeFeedbackReader();
 
-        GamescopeHdrFeedbackReader(const GamescopeHdrFeedbackReader&) = delete;
-        GamescopeHdrFeedbackReader& operator=(const GamescopeHdrFeedbackReader&) = delete;
-        GamescopeHdrFeedbackReader(GamescopeHdrFeedbackReader&&) noexcept;
-        GamescopeHdrFeedbackReader& operator=(GamescopeHdrFeedbackReader&&) noexcept;
+        GamescopeFeedbackReader(const GamescopeFeedbackReader&) = delete;
+        GamescopeFeedbackReader& operator=(const GamescopeFeedbackReader&) = delete;
+        GamescopeFeedbackReader(GamescopeFeedbackReader&&) noexcept;
+        GamescopeFeedbackReader& operator=(GamescopeFeedbackReader&&) noexcept;
 
-        /// Return the latest sample collected by the background monitor.
-        [[nodiscard]] std::optional<bool> sample() const;
-
-        /// Return the value plus a stable diagnostic reason. This makes an
-        /// unavailable feedback path distinguishable from confirmed SDR.
-        [[nodiscard]] GamescopeHdrFeedbackSample diagnosticSample() const;
-
-        /// Surface-creation fallback for game Xwayland servers that lack the
-        /// output property. Reuse the root resolver and revalidate identity;
-        /// never infer capability from another compositor or application HDR.
-        [[nodiscard]] std::optional<bool> queryOutputHdrEnabled(uint32_t gamescopePid);
+        /// Return the cached compositor state and its diagnostic reason.
+        [[nodiscard]] GamescopeFeedbackSample diagnosticSample() const;
 
     private:
         struct Impl;

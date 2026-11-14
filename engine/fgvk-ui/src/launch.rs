@@ -143,8 +143,8 @@ mod tests {
     }
 
     #[test]
-    fn help_and_check_flags_are_forwarded_not_parsed() {
-        for flag in ["--help", "-h", "--check-mangohud"] {
+    fn help_flags_are_forwarded_not_parsed() {
+        for flag in ["--help", "-h"] {
             let action = plan(argv(&["fgvk", flag]), no_environment, exe("/opt/fgvk/bin/fgvk"));
             assert_eq!(
                 action,

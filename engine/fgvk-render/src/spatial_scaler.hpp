@@ -31,9 +31,7 @@ namespace fgvk::layer {
             VkFormat workingFormat, ls::ScalingMethod requestedMethod,
             float sharpness,
             const std::optional<std::filesystem::path>& shaderDllPath,
-            bool fp16Requested,
-            backend::FrameEncoding encoding = backend::FrameEncoding::Sdr8,
-            bool hdrReducedPrecision = false);
+            bool fp16Requested);
         ~SpatialScaler();
 
         SpatialScaler(const SpatialScaler&) = delete;

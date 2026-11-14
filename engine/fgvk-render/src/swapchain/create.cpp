@@ -68,25 +68,16 @@ std::optional<uint64_t> Swapchain::generatedImageAcquireTimeoutNs() {
 
 bool layer::context_ModifySwapchainCreateInfo(const ls::GameConf& profile,
         uint32_t maxImages,
-        VkSwapchainCreateInfoKHR& createInfo, const bool gamescopeHdrActive,
+        VkSwapchainCreateInfoKHR& createInfo,
         const bool gamescopeDetected,
-        const PresentationEnvironmentPolicy& presentationEnvironment,
         const bool frameGenerationInteropEnabled,
         const bool spatialScalingActive,
         const uint32_t surfaceMinImages) {
     const auto colorPipeline = classifySwapchainColor(
-        createInfo.imageFormat, createInfo.imageColorSpace,
-        gamescopeHdrActive
+        createInfo.imageFormat, createInfo.imageColorSpace
     );
-    const bool frameGenerationSupported =
-        colorPipeline.generationSupported &&
-        !(presentationEnvironment.hdrExposureDisabled && colorPipeline.hdr);
     const bool frameGenerationProvisioned =
-        frameGenerationInteropEnabled && frameGenerationSupported;
-    const bool hdrCapableSwapchain =
-        !presentationEnvironment.hdrExposureDisabled &&
-        (colorPipeline.hdr ||
-            colorPipeline.encoding == backend::FrameEncoding::SdrHighPrecision);
+        frameGenerationInteropEnabled && colorPipeline.generationSupported;
     // P1: the application's per-present mode reaches the lower driver. A create
     // chain whose present-mode group can switch to an unthrottled mode (VKD3D-Proton
     // creates FIFO with {FIFO, IMMEDIATE} and sends IMMEDIATE per present with VSync
@@ -94,11 +85,7 @@ bool layer::context_ModifySwapchainCreateInfo(const ls::GameConf& profile,
     const auto group = presentModeGroup(createInfo.pNext, gamescopeDetected);
     const bool orderedSdrCandidate =
         frameGenerationProvisioned &&
-        !directUnthrottledPresentation(gamescopeDetected, createInfo.presentMode) &&
-        selectPresentationTransport(
-            gamescopeDetected, hdrCapableSwapchain,
-            presentationEnvironment
-        ) == PresentationTransport::OrderedSdr;
+        !directUnthrottledPresentation(gamescopeDetected, createInfo.presentMode);
     const bool orderedFrameGenerationTransport = orderedSdrCandidate && !group.unthrottled;
 
     return applySwapchainCreateProvisioning(
@@ -115,9 +102,7 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance* backend,
             ls::GameConf profile, SwapchainInfo info,
             const std::optional<std::filesystem::path> scalingShaderDll,
             const bool fp16Requested,
-            const std::optional<bool> gamescopeHdrActive,
             const bool gamescopeDetected,
-            const bool hdrExposureDisabled,
             const std::optional<uint32_t> gamescopeRefreshHz,
             GamescopePresentationFeedback gamescopePresentationFeedback,
             const uint64_t runtimeStateRevision,
@@ -129,11 +114,7 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance* backend,
         gamescopeRefreshHz(gamescopeRefreshHz),
         gamescopePresentationFeedback(
             std::move(gamescopePresentationFeedback)),
-        colorPipeline(initialColorPipeline(
-            info.format, info.colorSpace, gamescopeHdrActive, gamescopeDetected,
-            hdrExposureDisabled
-        )),
-        hdrExposureDisabled(hdrExposureDisabled),
+        colorPipeline(classifySwapchainColor(info.format, info.colorSpace)),
         scalingShaderDll(scalingShaderDll),
         fp16Requested(fp16Requested),
         profile(std::move(profile)), info(std::move(info)) {
@@ -209,19 +190,16 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance* backend,
         this->spatialFramePipelinePlacement =
             combinedSpatialFramePipelineOwnedByLayer()
             ? selectSpatialFramePipelinePlacement(
-                this->info.applicationExtent, this->info.extent,
-                this->info.hdrDisplayResize
+                this->info.applicationExtent, this->info.extent
             )
             : SpatialFramePipelinePlacement::PostFrameGeneration;
 
         this->spatialScaler.emplace(
             vk, this->info.applicationExtent, this->info.extent,
             this->colorPipeline.exchangeFormat,
-            this->info.hdrDisplayResize ? ls::ScalingMethod::Native
-                : ls::effectiveScalingMethod(this->profile),
+            ls::effectiveScalingMethod(this->profile),
             this->profile.scaling_sharpness,
-            scalingShaderDll, this->fp16Requested, this->colorPipeline.encoding,
-            ls::hdrCompactBuffers(this->profile.hdr_quality)
+            scalingShaderDll, this->fp16Requested
         );
         this->spatialScalingPasses.reserve(this->info.images.size());
         for (size_t i = 0; i < this->info.images.size(); ++i) {
@@ -297,15 +275,6 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance* backend,
             this->spatialScaler.has_value()
         );
 
-    bool applicationPackedHdr10Supported = false;
-    bool backendPackedHdr10Supported = false;
-    if (backend && !this->spatialScaler) {
-        selectPackedHdr10Transport(
-            vk, *backend, this->colorPipeline,
-            applicationPackedHdr10Supported, backendPackedHdr10Supported
-        );
-    }
-
     const auto initialGenerationPolicy = generationSchedulerPolicy(
         this->profile, this->gamescopeRefreshHz
     );
@@ -362,7 +331,7 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance* backend,
                   << '\n';
     }
 
-    if (!backend) {
+    if (!backend && this->colorPipeline.generationSupported) {
         this->colorPipeline.generationSupported = false;
         this->colorPipeline.reason =
             "the frame-generation backend is unavailable";
@@ -372,14 +341,9 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance* backend,
               << static_cast<int>(this->info.format)
               << "; color-space=" << static_cast<int>(this->info.colorSpace)
               << "; mode=" << this->colorPipeline.name
-              << "; source="
-              << (this->colorPipeline.gamescopeColorSpaceRecovered
-                    ? "gamescope-normalized" : "application")
               << "; transport="
-              << (this->colorPipeline.packedHdr10Transport
-                    ? "packed-hdr10-32-bit"
-                    : (transportBytesPerPixel(this->colorPipeline.encoding) == 8
-                        ? "rgba16f-64-bit" : "rgba8-32-bit"))
+              << (transportBytesPerPixel(this->colorPipeline.encoding) == 8
+                    ? "rgba16f-64-bit" : "rgba8-32-bit")
               << "; frame-generation="
               << (this->colorPipeline.generationSupported ? "supported" : "passthrough")
               << '\n';
@@ -388,30 +352,6 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance* backend,
                      "mode=fifo-ordered; source=fork-develop; "
                      "dynamic-mode-switch=filtered\n";
     }
-    if (this->colorPipeline.encoding == backend::FrameEncoding::Hdr10Pq ||
-            this->colorPipeline.encoding ==
-                backend::FrameEncoding::Hdr10PqPacked) {
-        const uint64_t transportImageCount = 2 +
-            generatedFrameCapacityForProfile(this->profile);
-        const uint64_t floatTransportBytes =
-            static_cast<uint64_t>(extent.width) * extent.height *
-            transportImageCount * 8;
-        const uint64_t selectedTransportBytes =
-            static_cast<uint64_t>(extent.width) * extent.height *
-            transportImageCount *
-            transportBytesPerPixel(this->colorPipeline.encoding);
-        std::cerr << "framegen-vulkan: HDR10 transport: mode="
-                  << (this->colorPipeline.packedHdr10Transport
-                        ? "packed-10-bit" : "rgba16f")
-                  << "; nominal_bytes=" << selectedTransportBytes
-                  << "; nominal_bytes_saved="
-                  << (floatTransportBytes - selectedTransportBytes)
-                  << "; application_device_supported="
-                  << applicationPackedHdr10Supported
-                  << "; backend_device_supported="
-                  << backendPackedHdr10Supported << '\n';
-    }
-
     if (!this->colorPipeline.generationSupported) {
         std::cerr << "framegen-vulkan: frame generation disabled for this swapchain: "
                   << this->colorPipeline.reason << '\n';
@@ -463,8 +403,7 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance* backend,
                     generationExtent.width, generationExtent.height,
                     this->colorPipeline.encoding,
                     1.0F / ls::effectiveFlowScale(this->profile),
-                    ls::effectivePerformanceMode(this->profile),
-                    ls::hdrApproximateGeneration(this->profile.hdr_quality)
+                    ls::effectivePerformanceMode(this->profile)
                 )),
                 [backend](ls::R<backend::Context>& ctx) {
                     backend->closeContext(ctx);
@@ -477,7 +416,6 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance* backend,
             // combinations where destroying it during layer unload is unsafe.
             // This is process-lifetime retention, not active GPU work; see the
             // backend API contract before changing the teardown policy.
-            this->frameGenerationHdrReducedPrecision = ls::hdrApproximateGeneration(this->profile.hdr_quality);
             backend::makeLeaking();
         } catch (const std::exception& e) {
             throw ls::error("failed to create swapchain context", e);
@@ -527,13 +465,8 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance* backend,
                     ).count());
             }
         }
-        if (this->gamescopeDetected && !this->privateOrderedTransport) {
-            std::cerr << "framegen-vulkan: Gamescope HDR generated-image admission is "
-                         "nonblocking; native presentation is never held for "
-                         "a synthetic destination\n";
-        } else if (this->gamescopeDetected) {
-            std::cerr << "framegen-vulkan: Gamescope SDR uses the fork's ordered "
-                         "presentation path\n";
+        if (this->gamescopeDetected) {
+            std::cerr << "framegen-vulkan: Gamescope uses the ordered presentation path\n";
         }
         if (configuredAcquireTimeout) {
             std::cerr << "framegen-vulkan: generated-image acquire timeout requested at "

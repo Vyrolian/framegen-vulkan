@@ -16,29 +16,9 @@ MANGOHUD=1 ~/.local/bin/fgvk %command%
 
 The launcher places MangoHud above framegen-vulkan, so it sees only the application's own presents: its FPS counter and frame-time graph show source frames, not generated output, and its overlay is part of the image framegen-vulkan interpolates. Below framegen-vulkan, MangoHud drew on every output inside the private present queue lock, which delayed outputs by about 1.3 ms and lengthened the game's acquires on a busy GPU. Host MangoHud is not enabled inside Flatpak or for a direct `flatpak run` command.
 
-`fgvk --check-mangohud` reports availability as JSON without writing files. Native launch checks only the named `MangoHud.x86_64.json` and `MangoHud.x86.json` manifests in the standard XDG configuration/data locations. It verifies each layer's identity, architecture, library path and activation gates, resolves relative library paths, and stages only validated manifests under `$XDG_CACHE_HOME/framegen-vulkan/mangohud` (normally `~/.cache/framegen-vulkan/mangohud`). The directory is private to the user; concurrent launches are serialized during staging and unchanged files are not rewritten. Missing or invalid installations leave the game running without MangoHud and produce a diagnostic. The launcher never adds the host's full implicit-layer directory.
+Native launch checks only the named `MangoHud.x86_64.json` and `MangoHud.x86.json` manifests in the standard XDG configuration/data locations. It verifies each layer's identity, architecture, library path and activation gates, resolves relative library paths, and stages only validated manifests under `$XDG_CACHE_HOME/framegen-vulkan/mangohud` (normally `~/.cache/framegen-vulkan/mangohud`). The directory is private to the user; concurrent launches are serialized during staging and unchanged files are not rewritten. Missing or invalid installations leave the game running without MangoHud and produce a diagnostic. The launcher never adds the host's full implicit-layer directory.
 
-## Shared MangoHud layout
-
-Create the configuration file manually; enabling MangoHud does not create it.
-
-To use one custom MangoHud layout across your games, create `~/.config/framegen-vulkan/mangohud.conf` with ordinary MangoHud options, for example:
-
-```ini
-fps
-frametime
-position=top-right
-```
-
-Add `MANGOHUD=1` to the launch option of each game that should use it. The launcher respects `XDG_CONFIG_HOME` for the shared file location. On each supported host launch, framegen-vulkan selects this file if it is a readable regular file. Creating or removing it takes effect on the next game launch without resaving profiles. Missing, unreadable, or non-file paths leave the inherited configuration unchanged. framegen-vulkan does not create, edit, or execute the file.
-
-The shared file replaces any inherited `MANGOHUD_CONFIGFILE`, including Gaming Mode's Gamescope preset file. This changes only the launched game's MangoHud configuration; Steam's separate performance overlay remains under Steam's control. Existing `MANGOHUD_CONFIG` values retain MangoHud's precedence: without `read_cfg`, that variable can bypass file loading; with `read_cfg`, its options override file values. For a per-game file exception, apply the override after framegen-vulkan's wrapper:
-
-```text
-MANGOHUD=1 ~/.local/bin/fgvk env MANGOHUD_CONFIGFILE=/absolute/path/to/game.conf %command%
-```
-
-Use this form for each game that needs its own file. Quote paths containing spaces. The shared file does not enable MangoHud by itself or add Flatpak support. Choosing a layout adds no framegen-vulkan per-frame work. MangoHud's own cost depends on its metrics, and its FPS counter is not a guaranteed measurement of pre-generation game FPS; that depends on the active layer chain.
+MangoHud reads its own configuration, normally `~/.config/MangoHud/MangoHud.conf`. Inherited `MANGOHUD_CONFIGFILE` and `MANGOHUD_CONFIG` values pass through unchanged.
 
 ## Support boundaries
 

@@ -472,21 +472,18 @@ namespace {
                 const VkExtent2D sourceExtent,
                 const VkExtent2D presentationExtent,
                 const fgvk::backend::Ls1ShaderSet& payloads,
-                const VkFormat workingFormat, const bool shaderBoundary = false,
-                const VkFormat inputFormat = VK_FORMAT_UNDEFINED) :
+                const VkFormat workingFormat) :
             sourceSize(sourceExtent),
             presentationSize(presentationExtent),
             performance(payloads.mode == fgvk::backend::Ls1Mode::Performance),
             variant(payloads.modelVariant),
             sourceImage(vk, sourceExtent,
-                inputFormat == VK_FORMAT_UNDEFINED ? workingFormat : inputFormat,
-                VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
-                    (shaderBoundary ? VK_IMAGE_USAGE_STORAGE_BIT : 0U)),
+                workingFormat,
+                VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT),
             featureImage(vk, doubledExtent(sourceExtent), VK_FORMAT_R8_SNORM,
                 VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT),
             reconstructedImage(vk, presentationExtent, workingFormat,
-                VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
-                    (shaderBoundary ? VK_IMAGE_USAGE_SAMPLED_BIT : 0U)),
+                VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT),
             stage1(vk, payloads.stage1, 1, 1, 1, 0),
             reconstruction(vk, payloads.reconstruction, 2, 1, 1, 1),
             descriptorPool(vk, {
@@ -646,12 +643,6 @@ namespace {
         void recordCompute(const vk::Vulkan& vk,
                 const VkCommandBuffer commandBuffer,
                 const VkImage directOutput) const override {
-            recordWithInput(vk, commandBuffer, directOutput, false);
-        }
-        void recordWithInput(const vk::Vulkan& vk,
-                const VkCommandBuffer commandBuffer,
-                const VkImage directOutput, const bool shaderInput,
-                const bool shaderOutput = false) const {
             const auto directIndex = directOutput == VK_NULL_HANDLE
                 ? std::optional<size_t>{}
                 : directOutputIndex(this->directOutputs, directOutput);
@@ -664,9 +655,9 @@ namespace {
             size_t initialBarrierCount = 0;
             initialBarriers.at(initialBarrierCount++) = imageBarrier(
                 this->sourceImage.handle(),
-                shaderInput ? VK_ACCESS_SHADER_WRITE_BIT : VK_ACCESS_TRANSFER_WRITE_BIT,
+                VK_ACCESS_TRANSFER_WRITE_BIT,
                 VK_ACCESS_SHADER_READ_BIT,
-                shaderInput ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                 VK_IMAGE_LAYOUT_GENERAL
             );
             initialBarriers.at(initialBarrierCount++) = imageBarrier(
@@ -693,7 +684,7 @@ namespace {
             }
             vk.df().CmdPipelineBarrier(
                 commandBuffer,
-                shaderInput ? VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT : VK_PIPELINE_STAGE_TRANSFER_BIT,
+                VK_PIPELINE_STAGE_TRANSFER_BIT,
                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
                 0, nullptr, 0, nullptr,
                 static_cast<uint32_t>(initialBarrierCount),
@@ -730,13 +721,13 @@ namespace {
 
             const auto outputBarrier = imageBarrier(
                 outputImage, VK_ACCESS_SHADER_WRITE_BIT,
-                shaderOutput ? VK_ACCESS_SHADER_READ_BIT : VK_ACCESS_TRANSFER_READ_BIT,
+                VK_ACCESS_TRANSFER_READ_BIT,
                 VK_IMAGE_LAYOUT_GENERAL,
-                shaderOutput ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL
+                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL
             );
             vk.df().CmdPipelineBarrier(
                 commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                shaderOutput ? VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT : VK_PIPELINE_STAGE_TRANSFER_BIT,
+                VK_PIPELINE_STAGE_TRANSFER_BIT,
                 0, 0, nullptr, 0, nullptr,
                 1, &outputBarrier
             );
@@ -780,125 +771,6 @@ namespace {
         std::vector<vk::DescriptorSet> directDescriptorSets;
         std::vector<VkImage> directOutputs;
     };
-    // LS1's feature network operates on bounded display code values. Keep its
-    // HDR input/output at RGBA16F precision and convert linear scRGB around the
-    // network instead of clipping highlights into an SDR UNORM image.
-    class ScRgbLs1Pipeline final : public Pipeline {
-    public:
-        ScRgbLs1Pipeline(const vk::Vulkan& vk, VkExtent2D source,
-                VkExtent2D presentation, const fgvk::backend::Ls1ShaderSet& payloads) :
-            sourceSize(source), presentationSize(presentation),
-            inner(vk, source, presentation, payloads, VK_FORMAT_R16G16B16A16_SFLOAT, true),
-            sourceImage(vk, source, VK_FORMAT_R16G16B16A16_SFLOAT,
-                VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT),
-            outputImage(vk, presentation, VK_FORMAT_R16G16B16A16_SFLOAT,
-                VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT),
-            encode(vk, fgvk::backend::hdrColorConversionShader(true), 1, 1, 0, 1),
-            decode(vk, fgvk::backend::hdrColorConversionShader(false), 1, 1, 0, 1),
-            pool(vk, {.sets = 2, .samplers = 2, .sampled_images = 2, .storage_images = 2}),
-            sampler(vk, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, VK_COMPARE_OP_NEVER, false),
-            encodeSet(vk, pool, encode,
-                {std::cref(sourceImage)}, {std::cref(inner.input())}, {std::cref(sampler)}, {}),
-            decodeSet(vk, pool, decode,
-                {std::cref(inner.output())}, {std::cref(outputImage)}, {std::cref(sampler)}, {}) {}
-
-        const vk::Image& input() const override { return sourceImage; }
-        const vk::Image& output() const override { return outputImage; }
-        uint32_t modelVariant() const override { return inner.modelVariant(); }
-        void configureDirectOutputs(const vk::Vulkan& vk,
-                std::span<const std::reference_wrapper<const vk::Image>> outputs) override {
-            std::optional<vk::DescriptorPool> replacementPool;
-            std::vector<vk::DescriptorSet> replacementSets;
-            std::vector<VkImage> replacementHandles;
-            if (!outputs.empty()) {
-                const auto count = static_cast<uint32_t>(outputs.size());
-                replacementPool.emplace(vk, vk::Limits{
-                    .sets = count, .samplers = count,
-                    .sampled_images = count, .storage_images = count,
-                });
-                replacementSets.reserve(outputs.size());
-                replacementHandles.reserve(outputs.size());
-                for (const auto& output : outputs) {
-                    replacementSets.emplace_back(vk, *replacementPool, decode,
-                        std::vector<ls::R<const vk::Image>>{std::cref(inner.output())},
-                        std::vector<ls::R<const vk::Image>>{std::cref(output.get())},
-                        std::vector<ls::R<const vk::Sampler>>{std::cref(sampler)},
-                        std::vector<ls::R<const vk::Buffer>>{});
-                    replacementHandles.push_back(output.get().handle());
-                }
-            }
-            clearDirectOutputs();
-            directDescriptorPool = std::move(replacementPool);
-            directDescriptorSets = std::move(replacementSets);
-            directOutputs = std::move(replacementHandles);
-        }
-        void clearDirectOutputs() override {
-            directDescriptorSets.clear();
-            directDescriptorPool.reset();
-            directOutputs.clear();
-        }
-        size_t directOutputCount() const override { return directOutputs.size(); }
-        bool hasDirectOutput(VkImage image) const override {
-            return directOutputIndex(directOutputs, image).has_value();
-        }
-
-        void recordCompute(const vk::Vulkan& vk, VkCommandBuffer commandBuffer,
-                VkImage directOutput) const override {
-            const auto directIndex = directOutputIndex(directOutputs, directOutput);
-            const auto destination = directIndex ? directOutput : outputImage.handle();
-            const auto& descriptors = directIndex ? directDescriptorSets.at(*directIndex) : decodeSet;
-            const std::array inputBarriers{
-                imageBarrier(sourceImage.handle(), VK_ACCESS_TRANSFER_WRITE_BIT,
-                    VK_ACCESS_SHADER_READ_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                    VK_IMAGE_LAYOUT_GENERAL),
-                imageBarrier(inner.input().handle(), VK_ACCESS_NONE,
-                    VK_ACCESS_SHADER_WRITE_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
-                    VK_IMAGE_LAYOUT_GENERAL),
-            };
-            vk.df().CmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 0, nullptr,
-                inputBarriers.size(), inputBarriers.data());
-            dispatch(vk, commandBuffer, encode, encodeSet, sourceSize);
-            inner.recordWithInput(vk, commandBuffer, VK_NULL_HANDLE, true, true);
-            const auto outputBarrier = imageBarrier(destination, VK_ACCESS_NONE,
-                VK_ACCESS_SHADER_WRITE_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
-                VK_IMAGE_LAYOUT_GENERAL);
-            vk.df().CmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 0, nullptr,
-                1, &outputBarrier);
-            // Decode directly into the exported source when provisioned, just
-            // like the other scalers. The normal fallback image remains owned
-            // for FG-off and resource-replacement transitions.
-            dispatch(vk, commandBuffer, decode, descriptors, presentationSize);
-            const auto finalBarrier = imageBarrier(destination, VK_ACCESS_SHADER_WRITE_BIT,
-                VK_ACCESS_TRANSFER_READ_BIT, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-            vk.df().CmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &finalBarrier);
-        }
-    private:
-        static void dispatch(const vk::Vulkan& vk, VkCommandBuffer commandBuffer,
-                const vk::Shader& shader, const vk::DescriptorSet& set, VkExtent2D extent) {
-            vk.df().CmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, shader.pipeline());
-            const auto descriptor = set.handle();
-            vk.df().CmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
-                shader.pipelinelayout(), 0, 1, &descriptor, 0, nullptr);
-            vk.df().CmdDispatch(commandBuffer, (extent.width + 7) / 8, (extent.height + 7) / 8, 1);
-        }
-        VkExtent2D sourceSize;
-        VkExtent2D presentationSize;
-        Ls1Pipeline inner;
-        vk::Image sourceImage;
-        vk::Image outputImage;
-        vk::Shader encode;
-        vk::Shader decode;
-        vk::DescriptorPool pool;
-        vk::Sampler sampler;
-        vk::DescriptorSet encodeSet;
-        vk::DescriptorSet decodeSet;
-        std::optional<vk::DescriptorPool> directDescriptorPool;
-        std::vector<vk::DescriptorSet> directDescriptorSets;
-        std::vector<VkImage> directOutputs;
-    };
 }
 
 class SpatialScaler::Implementation {
@@ -910,28 +782,11 @@ public:
             const ls::ScalingMethod requested,
             const float sharpness,
             const std::optional<std::filesystem::path>& shaderDllPath,
-            const bool fp16Requested, const fgvk::backend::FrameEncoding encoding,
-            const bool hdrReducedPrecision) :
+            const bool fp16Requested) :
         sourceSize(sourceExtent),
         presentationSize(presentationExtent),
         requested(requested),
         active(requested) {
-        const bool packedSupported = hdrReducedPrecision &&
-            (encoding == fgvk::backend::FrameEncoding::Hdr10Pq ||
-             encoding == fgvk::backend::FrameEncoding::Hdr10PqPacked) &&
-            vk.supportsOptimalTilingFormatFeatures(
-                VK_FORMAT_A2B10G10R10_UNORM_PACK32,
-                VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_BLIT_DST_BIT |
-                    VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
-                    VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT);
-        const auto inputFormat = hdrScalingInputFormat(
-            encoding, workingFormat, hdrReducedPrecision, packedSupported);
-        if (encoding == fgvk::backend::FrameEncoding::Hdr10Pq ||
-                encoding == fgvk::backend::FrameEncoding::Hdr10PqPacked) {
-            std::clog << "framegen-vulkan: HDR scaling precision: input_format="
-                      << inputFormat << "; output_format=" << workingFormat
-                      << "; compact_input=" << (inputFormat != workingFormat) << '\n';
-        }
         // The spatial role is constructed at the scaling-engine startup
         // boundary, while model selection remains live. Prime the immutable
         // DLL archive here so the first later LS1 selection does not place
@@ -948,7 +803,7 @@ public:
         }
         if (requested == ls::ScalingMethod::Native) {
             this->pipeline = std::make_unique<NativeResolutionPipeline>(
-                vk, sourceExtent, presentationExtent, workingFormat, inputFormat
+                vk, sourceExtent, presentationExtent, workingFormat, workingFormat
             );
             return;
         }
@@ -967,14 +822,8 @@ public:
                 this->translatorPath = payloads.translator;
                 this->dllSha256 = payloads.dllSha256;
                 this->resourceLayoutSha256 = payloads.resourceLayoutSha256;
-                if (encoding == fgvk::backend::FrameEncoding::ScRgbLinear) {
-                    this->pipeline = std::make_unique<ScRgbLs1Pipeline>(
-                        vk, sourceExtent, presentationExtent, payloads);
-                } else {
-                    this->pipeline = std::make_unique<Ls1Pipeline>(
-                        vk, sourceExtent, presentationExtent, payloads, workingFormat,
-                        false, inputFormat);
-                }
+                this->pipeline = std::make_unique<Ls1Pipeline>(
+                    vk, sourceExtent, presentationExtent, payloads, workingFormat);
                 return;
             } catch (const std::exception& error) {
                 this->fallback = error.what();
@@ -990,12 +839,12 @@ public:
             // Preserve reconstruction of the source rectangle rather than
             // exposing an incomplete real frame or substituting FP32 compute.
             this->pipeline = std::make_unique<NativeResolutionPipeline>(
-                vk, sourceExtent, presentationExtent, workingFormat, inputFormat);
+                vk, sourceExtent, presentationExtent, workingFormat, workingFormat);
             return;
         }
         this->fp16 = fp16Requested;
         this->pipeline = std::make_unique<FgvkPipeline>(
-            vk, sourceExtent, presentationExtent, workingFormat, sharpness, fp16Requested, inputFormat
+            vk, sourceExtent, presentationExtent, workingFormat, sharpness, fp16Requested, workingFormat
         );
     }
 
@@ -1018,11 +867,10 @@ SpatialScaler::SpatialScaler(const vk::Vulkan& vk,
         const ls::ScalingMethod requestedMethod,
         const float sharpness,
         const std::optional<std::filesystem::path>& shaderDllPath,
-        const bool fp16Requested, const fgvk::backend::FrameEncoding encoding,
-        const bool hdrReducedPrecision) :
+        const bool fp16Requested) :
     implementation(std::make_unique<Implementation>(
         vk, sourceExtent, presentationExtent, workingFormat,
-        requestedMethod, sharpness, shaderDllPath, fp16Requested, encoding, hdrReducedPrecision
+        requestedMethod, sharpness, shaderDllPath, fp16Requested
     )) {}
 
 SpatialScaler::~SpatialScaler() = default;

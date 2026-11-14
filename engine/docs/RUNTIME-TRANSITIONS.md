@@ -1,6 +1,6 @@
 # Runtime configuration transitions
 
-This guide defines how a saved profile becomes running Renderer state. The [configuration reference](CONFIGURATION-REFERENCE.md) defines fields, [Adaptive validation](ADAPTIVE-VALIDATION.md) owns scheduling, [Spatial scaling architecture](SCALING.md) owns extent policy, [HDR pipeline architecture](HDR-PIPELINE.md) owns colour transitions, and [WSI isolation](WSI-ISOLATION.md) owns process-start discovery. [Memory management](MEMORY-MANAGEMENT.md) explains allocation ownership, replacement peaks, and accounting.
+This guide defines how a saved profile becomes running Renderer state. The [configuration reference](CONFIGURATION-REFERENCE.md) defines fields, [Adaptive validation](ADAPTIVE-VALIDATION.md) owns scheduling, [Spatial scaling architecture](SCALING.md) owns extent policy, [WSI isolation](WSI-ISOLATION.md) owns process-start discovery. [Memory management](MEMORY-MANAGEMENT.md) explains allocation ownership, replacement peaks, and accounting.
 
 ## Lifetime boundaries
 
@@ -10,13 +10,13 @@ Saving a clone under a new name changes the runtime profile identity without res
 
 | Boundary | State | Completion |
 | --- | --- | --- |
-| Process start | Frame Generation provisioning, Scaling enablement, Game Swapchain Images compatibility, layer membership and order, Gamescope WSI isolation, HDR exposure, Zink, audio compatibility, and the shared FP16 precision choice | Start a new game process |
+| Process start | Frame Generation provisioning, Scaling enablement, Game Swapchain Images compatibility, layer membership and order, Gamescope WSI isolation, Zink, audio compatibility, and the shared FP16 precision choice | Start a new game process |
 | Process-wide backend | DLL, GPU, and Ultra Performance policy | Construct a new backend, normally by restarting the process |
 | Game-owned swapchain | Spatial extents and pacing shape | Natural recreation, or one eligible maintenance1-backed extent request |
-| Private spatial context | Scaling method, sharpness and HDR10 input precision | Prepare, drain framegen-vulkan-owned work, and atomically replace |
+| Private spatial context | Scaling method, sharpness | Prepare, drain framegen-vulkan-owned work, and atomically replace |
 | Private FG context | Flow Scale, lighter model, and generated-output capacity | Prepare, drain framegen-vulkan-owned work, and atomically replace |
 | Live policy | Frame Generation `0x`/active execution state, refresh guard, Fixed/Adaptive policy, target, caps, and cadence controls | Next successful reload and application present; policy edits received during confirmed Steam UI focus coalesce until gameplay returns |
-| Compositor feedback | Confirmed refresh, explicit VRR/tearing state, and application HDR state | Background sample, independent of profile reload |
+| Compositor feedback | Confirmed refresh, explicit VRR/tearing state and focus | Background sample, independent of profile reload |
 | Dormant value | A setting for an inactive mode or unavailable private resource | Save now; apply when its owning mode or resource becomes active |
 
 The process-wide backend is created lazily when the first active swapchain needs it. FP16 is captured at process start even when the backend is still dormant, so framegen-vulkan Scaler and a later FG backend cannot disagree after a config reload. LS1 always uses FP32 independently of that baseline. Once built, pending DLL, GPU, and Ultra changes are compared with the actual construction baseline, not merely the previous file.
@@ -25,7 +25,7 @@ The process-wide backend is created lazily when the first active swapchain needs
 
 `Root::update()` is reached from application presentation, but work is bounded and change-driven:
 
-1. Compositor refresh, presentation, and HDR feedback update their owned state independently.
+1. Compositor refresh, focus, and presentation feedback update their owned state independently.
 2. Configuration is checked at most every 250 ms. When any saved profile has AC/battery sets, the watcher requests a background system-supply reading at most every two seconds and consumes the last confirmed source through an atomic cache. Startup allows up to 50 ms for the first reading, then uses Base if it is still unavailable. No power-supply I/O or worker join runs in presentation; a stalled read retains confirmed state and cannot accumulate requests or workers. Watchers without power sets create no sampler. Removing the sets leaves an existing worker idle after its outstanding read; re-enabling them requests a fresh sample. The worker is joined at watcher teardown before its code and state can be unloaded; that lifetime join can wait for an outstanding driver read to return. An unchanged file is not reparsed.
 3. A changed file is parsed and profile matching is repeated. A confirmed power-source change repeats matching against the existing configuration, without a file write or parse. The resolved power set retains the profile identity and enters the same transition planner.
 4. Process-static fields are projected back to their applied values while compatible fields continue.
@@ -71,15 +71,13 @@ For example, a write that changes Base FPS Cap and Flow Scale applies the cap wh
 | Game Swapchain Images compatibility | Restart | Existing contexts retain the process-start WSI image-count policy. |
 | Scaling method | Private spatial replacement when active; dormant otherwise | Applies at the next present, retains extents and WSI objects, and keeps the old method on failure. |
 | Scaling sharpness | Private spatial replacement when active; dormant otherwise | Coalesces edits for 500 ms before replacement. |
-| HDR Quality | Private FG and spatial replacements for HDR10; live shader graph replacement | Defaults to Performance. Quality/Balanced retain full HDR10 motion analysis and linear-light generation; Balanced/Performance share compact buffers. Only affected owners rebuild, tracking committed precision independently. Reverting cancels its candidate; failed preparation retains old resources. SDR, scRGB FG and WSI formats are unchanged. See [HDR precision](HDR-PIPELINE.md#hdr-quality). |
 | Scale Factor | Extent no-op or game-owned recreation | Applies immediately when effective extents stay identical. Otherwise, an eligible spatial owner may request one recreation after a retirement-fenced present; other paths wait for natural recreation. |
 | Quality Supersampling | Extent no-op or game-owned recreation | Uses the same extent boundary as Scale Factor on a variable managed Gamescope surface; fixed and direct geometry are unaffected. |
 | Flow Scale and Lighter FG Model | Private FG replacement | Coalesces for 500 ms, prepares a complete candidate, drains framegen-vulkan-owned work, switches atomically, and warms history. |
 | Generated-output capacity | Private FG replacement when the current WSI pool fits; otherwise recreation | Keeps the old active policy until enough resources and WSI headroom exist. Managed Gamescope waits for natural recreation; a compatible non-Gamescope maintenance1 context may request one. |
 | Pacing | Natural recreation | Does not change a live swapchain or its transport. |
 | DLL, FP16, GPU, and Ultra Performance | Restart | Existing contexts retain the actual backend baseline. |
-| Steam overlay removal, WSI compatibility, external layer, HDR exposure, Zink, and ALSA | Restart | These affect discovery or application initialization. |
-| Stable HDR application feedback | Private colour transition | May rebuild framegen-vulkan-owned colour and backend resources, never the game-owned transport. |
+| Steam overlay removal, WSI compatibility, external layer, Zink, and ALSA | Restart | These affect discovery or application initialization. |
 | Active profile match | Live for compatible fields | Losing the match disables generation immediately; static differences remain pending. |
 
 Normal profiles reserve capacity for the larger configured Fixed or Adaptive ceiling. Ultra Performance reserves only its startup-active policy. A later capacity increase can still use private replacement when the lower WSI pool has `application minimum + generated capacity` images; otherwise it remains pending for recreation.
@@ -88,7 +86,7 @@ Scaling with Gamescope WSI off provisions the optional surface association at pr
 
 ## Private replacement contract
 
-Private spatial, FG, and colour changes use one last-value-wins coordinator:
+Private spatial and FG changes use one last-value-wins coordinator:
 
 1. Coalesce the request when required.
 2. Construct a complete candidate while the old resources remain usable.
@@ -105,7 +103,7 @@ On the managed Gamescope split, a Scale Factor or Quality Supersampling extent c
 
 The surface owner accepts recovery authority only from explicit Gamescope focus transitions, live generation-policy transitions, and generated-image acquire outcomes measured against the configured transport budget. Entering confirmed Steam UI focus clears incomplete ordered-acquire retry state across exact Fixed, Fixed + Dynamic Cadence Recovery, Fractional Adaptive, and Smooth/Steady Adaptive. A confirmed return or live mode, multiplier, cap, target, Smooth Cadence, or Dynamic Cadence Recovery change starts fresh history and arms one recreation permission. Policy edits received while confirmed Steam UI focus already suspends generation are last-value-wins: they do not repeatedly rebuild the scheduler or arm parallel permissions, and the final scheduler policy is constructed once when gameplay returns. The return event supplies the single transport permission. The first generated-image acquire batch completed within its configured budget consumes that permission without action; `VK_TIMEOUT`, `VK_NOT_READY`, budget exhaustion, or a cumulative acquire-deadline overrun may instead consume it by requesting one retirement-protected recreation. There is no seconds-long event window, failure-count qualifier, output-FPS comparison, or surface cooldown. Replacement contexts initialize from the current Gamescope return sequence, preventing the same old event from rearming a recreation loop. Ordinary gameplay FPS, cadence loss, scaling cost, post-processing cost, target deficit, and slow successful lower presents cannot obtain transport-recovery authority or request recreation; exact Fixed never launches a cadence-collapse probe. Backend/fence and acquire safety remain independent. [Adaptive validation](ADAPTIVE-VALIDATION.md) owns the direct-outcome state machines and negative cases.
 
-Presentation retirement is provisioned for Frame Generation, scaling, and the isolated bridge, including HDR with Scaling disabled and shader-only bridge use. It follows owned resources and transport rather than the Scaling toggle. Supported maintenance1 devices supply per-image fences; unsupported devices retain natural recreation and cannot use guarded retries. Natural and requested recreation remove the old context from live updates immediately. Lower WSI destruction waits for same-surface replacement progress, a 50 ms compositor grace, and retirement fences. When an application or upper layer passes a null `oldSwapchain` after destroying its predecessor, framegen-vulkan completes the exact retained same-device, same-surface retirement before querying the replacement memory budget or selecting scaling extents, then forwards replacement creation. The memory query must follow completed cleanup rather than charge old WSI/private buffers against their replacement; the compositor grace and retirement fences remain mandatory. Non-null `oldSwapchain` contexts retain their application-owned lifetime. Surface destruction is the terminal same-surface boundary.
+Presentation retirement is provisioned for Frame Generation, scaling, and the isolated bridge. It follows owned resources and transport rather than the Scaling toggle. Supported maintenance1 devices supply per-image fences; unsupported devices retain natural recreation and cannot use guarded retries. Natural and requested recreation remove the old context from live updates immediately. Lower WSI destruction waits for same-surface replacement progress, a 50 ms compositor grace, and retirement fences. When an application or upper layer passes a null `oldSwapchain` after destroying its predecessor, framegen-vulkan completes the exact retained same-device, same-surface retirement before querying the replacement memory budget or selecting scaling extents, then forwards replacement creation. The memory query must follow completed cleanup rather than charge old WSI/private buffers against their replacement; the compositor grace and retirement fences remain mandatory. Non-null `oldSwapchain` contexts retain their application-owned lifetime. Surface destruction is the terminal same-surface boundary.
 
 A scaled null-old replacement presents its first acquired application image directly before private spatial work. On the isolated Gamescope scaling surface, every replacement also creates a fresh compositor protocol object and publishes the replacement's actual image count and format before its first present; the old compositor pacing lifetime is not reused. A known replacement with Frame Generation active then presents real frames for 250 ms and warms three new history frames inside scheduler stabilization. A replacement created while Frame Generation is Off does not arm that FG-only interval.
 
@@ -132,7 +130,7 @@ A broad “configuration changed” reset would discard validated cadence after 
 
 ## Frame Generation provisioning, 0x, and Ultra Performance
 
-Disabling Frame Generation provisioning before launch omits LSFG device interop and backend/private generation ownership. A Scaling-only profile still loads the combined Renderer because it owns reconstruction, but it creates no Frame Generation resources. The launcher can omit the Renderer layer when Frame Generation provisioning, Scaling and HDR exposure are all off; a selected post-processing layer remains independent. HDR-only launches retain the Renderer for its surface bridge without provisioning FG or scaling resources.
+Disabling Frame Generation provisioning before launch omits LSFG device interop and backend/private generation ownership. A Scaling-only profile still loads the combined Renderer because it owns reconstruction, but it creates no Frame Generation resources. The Renderer remains dormant when Frame Generation provisioning and Scaling are both off.
 
 The `0x` execution state submits no LSFG model work, generated-image acquisition, or generated presents. The saved cap is dormant. When provisioning is on, the process retains interop, backend, private images, and synchronization so `0x` can return to an active factor live. Failed provisioning leaves real-frame or independent scaling active and reports restart pending.
 
@@ -144,7 +142,7 @@ With diagnostics enabled, `runtime-transition-pending`, `runtime-transition-prep
 
 Each context also publishes an atomic schema-5 requested-versus-applied record under the configuration directory's `runtime-state/`. It includes process identity, transition phase, pending boundaries, effective generation and scaling state, extents, method, factor, placement, fallback, and active constraint. Context teardown removes its own record and lock.
 
-`spatial_scaling.active` requires both private spatial work and Scaling enabled in the applied profile. HDR's internal display-size resize does not activate the user-facing Scaling feature, including across window-mode replacements. A requested toggle waiting for restart does not change the applied state. Extents and pipeline details retain the actual transport geometry even when the Scaling feature is off.
+`spatial_scaling.active` requires both private spatial work and Scaling enabled in the applied profile. A requested toggle waiting for restart does not change the applied state. Extents and pipeline details retain the actual transport geometry even when the Scaling feature is off.
 
 Before the first primary context publishes, one process-wide pass removes only unlocked stale framegen-vulkan runtime files from that exact directory. It is non-recursive and best-effort; held locks, unrelated names, symlinks, ownership uncertainty, and failures are preserved and never block startup. Status I/O is observational and cannot change presentation.
 

@@ -298,7 +298,7 @@ namespace {
         Harness(const uint32_t targetFps, const size_t maximumMultiplier,
                 const bool stableCadence = false,
                 const AdaptiveRecoveryPolicy recoveryPolicy =
-                    AdaptiveRecoveryPolicy::ConservativeHdr,
+                    AdaptiveRecoveryPolicy::Conservative,
                 const bool dynamicCadenceRecovery = false,
                 const std::chrono::milliseconds dynamicCadenceProbeInterval =
                     ls::dynamicCadenceProbeIntervalDuration(
@@ -505,7 +505,7 @@ namespace {
             );
         }
         const auto disruptions = characterizeTrace(
-            120, 4, true, AdaptiveRecoveryPolicy::ConservativeHdr,
+            120, 4, true, AdaptiveRecoveryPolicy::Conservative,
             disruptionTrace
         );
 
@@ -2455,7 +2455,7 @@ namespace {
 
     void testUnconfirmedCadenceDropRetainsSlowSamples() {
         for (const auto recovery : {AdaptiveRecoveryPolicy::OrderedSdr,
-                AdaptiveRecoveryPolicy::ConservativeHdr}) {
+                AdaptiveRecoveryPolicy::Conservative}) {
             Harness harness(150, 3, false, recovery);
             harness.start();
             harness.runAtFps(75.0, 7s);
@@ -2493,7 +2493,7 @@ namespace {
 
     void testBurstySourceCadenceDoesNotLockOntoFastSamples() {
         for (const auto recovery : {AdaptiveRecoveryPolicy::OrderedSdr,
-                AdaptiveRecoveryPolicy::ConservativeHdr}) {
+                AdaptiveRecoveryPolicy::Conservative}) {
             for (const bool automaticCap : {false, true}) {
                 for (const bool stableCadence : {false, true}) {
                     Harness harness(150, 3, stableCadence, recovery, false, 2s,
@@ -2904,7 +2904,7 @@ namespace {
             for (const size_t multiplier : {3U, 4U, 5U}) {
                 for (const bool smooth : {false, true}) {
                     for (const auto policy : {AdaptiveRecoveryPolicy::OrderedSdr,
-                            AdaptiveRecoveryPolicy::ConservativeHdr}) {
+                            AdaptiveRecoveryPolicy::Conservative}) {
                         Harness harness(target, multiplier, smooth, policy,
                             false, 2s, target, false);
                         harness.start();
@@ -3231,7 +3231,7 @@ namespace {
 
     void testHigherPromotionWaitsForSettledDemandAcrossModes() {
         for (const auto recovery : {AdaptiveRecoveryPolicy::OrderedSdr,
-                AdaptiveRecoveryPolicy::ConservativeHdr}) {
+                AdaptiveRecoveryPolicy::Conservative}) {
             for (const bool steady : {false, true}) {
                 for (const bool smooth : {false, true}) {
                     for (const size_t multiplier : {3u, 4u, 5u}) {
@@ -3451,7 +3451,7 @@ namespace {
 
     void testFocusReturnRetainsConservativeFallbacks() {
         for (const auto policy : {AdaptiveRecoveryPolicy::OrderedSdr,
-                AdaptiveRecoveryPolicy::ConservativeHdr}) {
+                AdaptiveRecoveryPolicy::Conservative}) {
             Harness harness(120, 3, false, policy);
             harness.start();
             harness.runAtFps(40.0, 15s);
@@ -3459,7 +3459,7 @@ namespace {
             // Ordered SDR with uncertain focus and unsupported HDR with a
             // claimed return must both retain the ordinary stabilization.
             harness.scheduler.resumeAfterExternalInterruption(harness.now,
-                policy == AdaptiveRecoveryPolicy::ConservativeHdr);
+                policy == AdaptiveRecoveryPolicy::Conservative);
             const auto* settling = harness.diagnostics.last("stabilization");
             require(settling && settling->duration == 1s,
                 "unconfirmed/unsupported return enabled fast settling");
@@ -3661,7 +3661,7 @@ namespace {
             "mismatched display refresh allowed a 2x convergence probe");
 
         Harness hdr(
-            120, 2, true, AdaptiveRecoveryPolicy::ConservativeHdr, false,
+            120, 2, true, AdaptiveRecoveryPolicy::Conservative, false,
             ls::dynamicCadenceProbeIntervalDuration(
                 ls::GameConfDefaults::dynamicCadenceProbeIntervalSeconds
             ),
@@ -5207,7 +5207,7 @@ namespace {
 
     void testSmoothCadenceDownshiftProbeIsOrderedSdrOnly() {
         Harness harness(
-            120, 3, true, AdaptiveRecoveryPolicy::ConservativeHdr
+            120, 3, true, AdaptiveRecoveryPolicy::Conservative
         );
         harness.start();
         harness.runAtFps(40.0, 30s);
@@ -5848,7 +5848,7 @@ namespace {
             "default Adaptive policy performed a native-cadence probe");
 
         Harness hdr(
-            60, 2, false, AdaptiveRecoveryPolicy::ConservativeHdr, true
+            60, 2, false, AdaptiveRecoveryPolicy::Conservative, true
         );
         hdr.start();
         hdr.runAtFps(30.0, 12s);

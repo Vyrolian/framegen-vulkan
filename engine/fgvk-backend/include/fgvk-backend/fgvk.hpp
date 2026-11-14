@@ -21,14 +21,7 @@ namespace fgvk::backend {
     enum class FrameEncoding : uint8_t {
         Sdr8,
         SdrHighPrecision,
-        ScRgbLinear,
-        Hdr10Pq,
-        Hdr10PqPacked,
     };
-
-    /// Shared colour-conversion shaders for Renderer-owned HDR image stages.
-    /// The returned bytes are copied only during private-resource construction.
-    [[nodiscard]] std::vector<uint8_t> hdrColorConversionShader(bool linearToPq);
 
     class [[gnu::visibility("default")]] ContextImpl;
     class [[gnu::visibility("default")]] InstanceImpl;
@@ -123,8 +116,7 @@ namespace fgvk::backend {
         ///
         /// The VkFormat of the exchanged images is inferred from encoding:
         /// - Sdr8: VK_FORMAT_R8G8B8A8_UNORM
-        /// - Hdr10PqPacked: VK_FORMAT_A2B10G10R10_UNORM_PACK32
-        /// - all other encodings: VK_FORMAT_R16G16B16A16_SFLOAT
+        /// - SdrHighPrecision: VK_FORMAT_R16G16B16A16_SFLOAT
         ///
         /// The application and library must keep track of the frame index. When the next frame
         /// is ready, signal the syncFd with one increment (with the first trigger being 1).
@@ -156,11 +148,6 @@ namespace fgvk::backend {
         /// @param encoding Colour encoding of the exchanged images.
         /// @param flow Inverse motion Flow Scale after profile presets (1..4).
         /// @param perf Whether to enable performance mode.
-        /// @param reducedHdrPrecision Approximate HDR10 interpolation in PQ code values
-        ///        with half-size motion analysis, bounded at quarter Flow Scale.
-        ///        Source/output extents and the selected model/arithmetic stay unchanged.
-        ///        scRGB and SDR retain their existing model path.
-        ///
         /// @throws backend::error on failure
         ///
         Context& openContext(
@@ -168,13 +155,8 @@ namespace fgvk::backend {
             const std::vector<int>& destFds,
             int syncFd,
             uint32_t width, uint32_t height,
-            FrameEncoding encoding, float flow, bool perf,
-            bool reducedHdrPrecision = false
+            FrameEncoding encoding, float flow, bool perf
         );
-
-        /// Return whether the backend device can import and write the packed
-        /// RGB10A2 images used by the low-bandwidth HDR10 transport path.
-        [[nodiscard]] bool supportsPackedHdr10Transport() const;
 
         /// Retain read-only atomic memory accounting without retaining or
         /// calling the private Vulkan device from a diagnostic worker.

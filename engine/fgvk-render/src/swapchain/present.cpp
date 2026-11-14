@@ -237,9 +237,8 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         }
     }
     // Match the immutable create-time choice. Ordered SDR filters Gamescope's
-    // dynamic MAILBOX override so the private transport stays ordered. HDR
-    // preserves it. A feedback transition cannot change the game-owned
-    // VkSwapchainKHR's creation contract.
+    // dynamic MAILBOX override so the private transport stays ordered.
+    // Feedback cannot change the game-owned swapchain's creation contract.
     // Application damage rectangles are expressed in the virtual source
     // coordinate space. The scaler rewrites the whole native WSI image, so a
     // lower incremental-present region would incorrectly leave most of that
@@ -385,8 +384,6 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
 #if defined(VK_EXT_present_timing) && defined(VK_KHR_present_id2)
     this->presentTiming.observePresentMode(lowerNextChain);
 #endif
-    const bool gamescopeHdrTransport =
-        this->gamescopeDetected && !this->privateOrderedTransport;
 
     const auto limiterArrival = DiagnosticsClock::now();
     this->applyGamescopeFocus(limiterArrival);
@@ -896,8 +893,6 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         );
     }
 
-    if (!this->applyPendingColorPipeline(vk))
-        return this->presentNativeFrame(invocation);
     if (!this->applyPendingFrameGenerationResources(vk))
         return this->presentNativeFrame(invocation);
 
@@ -1035,17 +1030,6 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
     );
     plan.boundedOrderedAcquireProbe = boundedOrderedAcquireProbe;
 
-    // The Gamescope HDR bridge remains native-first. Normal fixed-refresh
-    // Adaptive ordered SDR retains the 3.3 bounded sequential acquisition.
-    // Requested VRR uses the same finite application-present ceiling because
-    // its lower-image release is not fixed to an output-period ladder; a
-    // timeout moves later frames to zero-wait pressure preflight. Fixed and
-    // undersized-pool contracts remain unchanged.
-    if (!this->generationPipelineReady(
-            vk, gamescopeHdrTransport, plan, presentNow)) {
-        return this->presentNativeFrame(invocation);
-    }
-
     if (plan.historyWarmupActive && !this->adaptiveScheduler)
         this->diagnosticsState.fixedSkippedFrames +=
             plan.requestedGeneratedFrames.size();
@@ -1089,7 +1073,7 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
     plan.adaptiveOrderedDeliveryPolicy =
         selectAdaptiveOrderedDeliveryPolicy(
             this->profile.adaptive, this->privateOrderedTransport,
-            orderedAcquireRecoveryProbe, gamescopeHdrTransport,
+            orderedAcquireRecoveryProbe,
             headroomTightOrderedBatch,
             this->gamescopePresentationFeedback,
             plan.requestedGeneratedFrames.size()
@@ -1123,7 +1107,7 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
                   << " acquire_timeout_ns=0"
                   << " action=native-first\n";
     }
-    if (gamescopeHdrTransport || nativeFirstOrderedBatch ||
+    if (nativeFirstOrderedBatch ||
             adaptivePressureRetry) {
         this->preacquireGeneratedImages(
             invocation, plan, true, !adaptivePressureRetry, 0,
@@ -1355,6 +1339,6 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         return this->presentHistoryOnly(invocation, plan);
     this->bridgeOutputBatchSize = plan.scheduledGeneratedFrames.size() + 1;
     return this->presentGeneratedFrames(
-        invocation, plan, gamescopeHdrTransport
+        invocation, plan
     );
 }

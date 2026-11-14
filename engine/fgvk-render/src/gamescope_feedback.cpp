@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 
-#include "gamescope_hdr_feedback.hpp"
+#include "gamescope_feedback.hpp"
 #include <chrono>
 #include <condition_variable>
 #include <filesystem>
@@ -24,19 +24,13 @@
 using namespace fgvk::layer;
 
 namespace {
-    bool gamescopeHdrFeedbackMayChange() {
+    bool gamescopeFeedbackMayChange() {
         const char* display = std::getenv("DISPLAY");
         return display && *display;
     }
 
     constexpr char gamescopePidProperty[] = "GAMESCOPE_PID";
     constexpr char gamescopeServerIdProperty[] = "GAMESCOPE_XWAYLAND_SERVER_ID";
-    constexpr char gamescopeHdrProperty[] =
-        "GAMESCOPE_COLOR_APP_WANTS_HDR_FEEDBACK";
-    constexpr char gamescopeHdrMetadataProperty[] =
-        "GAMESCOPE_COLOR_APP_HDR_METADATA_FEEDBACK";
-    constexpr char gamescopeHdrOutputProperty[] =
-        "GAMESCOPE_HDR_OUTPUT_FEEDBACK";
     constexpr char gamescopeRefreshProperty[] =
         "GAMESCOPE_DISPLAY_REFRESH_RATE_FEEDBACK";
     constexpr char gamescopeVrrEnabledProperty[] = "GAMESCOPE_VRR_ENABLED";
@@ -55,15 +49,10 @@ bool fgvk::layer::gamescopeProcessEnvironmentHint() {
         environmentFlagEnabled(std::getenv("STEAM_GAMESCOPE_HDR_SUPPORTED"));
 }
 
-struct GamescopeHdrFeedbackReader::Impl {
-    explicit Impl(
-            const PresentationEnvironmentPolicy& presentationEnvironment) :
-        presentationEnvironment(presentationEnvironment) {}
-
-    const PresentationEnvironmentPolicy presentationEnvironment;
+struct GamescopeFeedbackReader::Impl {
     std::mutex displayMutex;
     std::mutex sampleMutex;
-    GamescopeHdrFeedbackSample latestSample;
+    GamescopeFeedbackSample latestSample;
     std::jthread monitor;
     std::mutex monitorWaitMutex;
     std::condition_variable monitorWake;
@@ -83,14 +72,8 @@ struct GamescopeHdrFeedbackReader::Impl {
     }();
 
 #if defined(__linux__)
-    bool readsHdrFeedback() const {
-        return !this->presentationEnvironment.hdrExposureDisabled &&
-            !this->presentationEnvironment.gamescopeWsiDisabled;
-    }
-
     void* library{nullptr};
     Display* display{nullptr};
-    Atom feedbackAtom{None};
     Window root{None};
     std::string selectedDisplayName;
     std::string resolverStatus{"not-attempted"};
@@ -140,31 +123,6 @@ struct GamescopeHdrFeedbackReader::Impl {
         if (data)
             this->freeData(data);
         return value;
-    }
-
-    bool hasCardinalData(Display* sourceDisplay,
-            const Window sourceRoot, const char* propertyName) {
-        const Atom property = this->internAtom(
-            sourceDisplay, propertyName, True
-        );
-        if (property == None)
-            return false;
-
-        Atom actualType{None};
-        int actualFormat{};
-        unsigned long itemCount{};
-        unsigned long bytesAfter{};
-        unsigned char* data{nullptr};
-        const int result = this->getWindowProperty(
-            sourceDisplay, sourceRoot, property, 0, 64, False, XA_CARDINAL,
-            &actualType, &actualFormat, &itemCount, &bytesAfter, &data
-        );
-        const bool present = result == Success &&
-            actualType == XA_CARDINAL && actualFormat == 32 &&
-            itemCount > 0 && data;
-        if (data)
-            this->freeData(data);
-        return present;
     }
 
     GamescopeXwaylandDisplay identifyDisplay(
@@ -249,7 +207,6 @@ struct GamescopeHdrFeedbackReader::Impl {
             this->closeDisplay(this->display);
         this->display = nullptr;
         this->root = None;
-        this->feedbackAtom = None;
         this->selectedDisplayName.clear();
     }
 
@@ -400,25 +357,17 @@ struct GamescopeHdrFeedbackReader::Impl {
         } else {
             this->resolverStatus = "current-display-selected";
         }
-        if (this->readsHdrFeedback())
-            this->feedbackAtom = this->internAtom(
-                this->display, gamescopeHdrProperty, True
-            );
         return this->root != None;
     }
 
-    GamescopeHdrFeedbackSample sampleOnce() {
+    GamescopeFeedbackSample sampleOnce() {
         const char* displayName = std::getenv("DISPLAY");
-        GamescopeHdrFeedbackSample sample{.display = displayName ? displayName : ""};
+        GamescopeFeedbackSample sample{.display = displayName ? displayName : ""};
         if (!displayName || !*displayName) {
             sample.status = "display-environment-missing";
             return sample;
         }
 
-        // DXVK_HDR is an exposure/capability signal, not an active-HDR
-        // signal. A false capability does conclusively mean the game is SDR,
-        // but still resolve Gamescope first: its identity, refresh budget and
-        // WSI ownership remain relevant to SDR presentation.
         if (!this->initialize()) {
             sample.gamescopePid = this->observedGamescopePid;
             sample.xwaylandServerId = this->observedServerId;
@@ -502,86 +451,11 @@ struct GamescopeHdrFeedbackReader::Impl {
                 sample.focus.gameFocused = classifyGamescopeFocus(
                     this->applicationId, input, graphics);
         }
-        if (!this->readsHdrFeedback()) {
-            // The isolated bridge classifies each original swapchain pair;
-            // compositor-wide colour state cannot change that interpretation.
-            // Retain refresh/focus/VRR monitoring without any HDR atom/query.
-            sample.active = false;
-            sample.activationSource = this->presentationEnvironment.hdrExposureDisabled
-                ? "hdr-exposure-disabled" : "isolated-swapchain-colorspace";
-            sample.status = sample.activationSource;
-            return sample;
-        }
-
-        if (const auto outputHdr = this->readCardinal(
-                this->display, this->root, gamescopeHdrOutputProperty)) {
-            sample.outputHdrEnabled = *outputHdr != 0;
-        }
-        sample.appHdrMetadataPresent = this->hasCardinalData(
-            this->display, this->root, gamescopeHdrMetadataProperty
-        );
-
-        std::optional<bool> appWantsHdr;
-        if (this->feedbackAtom == None) {
-            this->feedbackAtom = this->internAtom(
-                this->display,
-                gamescopeHdrProperty,
-                True
-            );
-            if (this->feedbackAtom == None) {
-                sample.status = "feedback-atom-unavailable";
-            }
-        }
-
-        if (this->feedbackAtom != None) {
-            Atom actualType{None};
-            int actualFormat{};
-            unsigned long itemCount{};
-            unsigned long bytesAfter{};
-            unsigned char* data{nullptr};
-            const int result = this->getWindowProperty(
-                this->display,
-                this->root,
-                this->feedbackAtom,
-                0,
-                1,
-                False,
-                XA_CARDINAL,
-                &actualType,
-                &actualFormat,
-                &itemCount,
-                &bytesAfter,
-                &data
-            );
-
-            if (result == Success && actualType == XA_CARDINAL &&
-                    actualFormat == 32 && itemCount == 1 && data) {
-                const auto raw = *reinterpret_cast<const unsigned long*>(data);
-                appWantsHdr = raw != 0;
-                sample.status = "confirmed";
-            } else if (result != Success) {
-                sample.status = "property-read-failed";
-            } else if (actualType == None || itemCount == 0) {
-                sample.status = "feedback-property-unset";
-            } else {
-                sample.status = "feedback-property-invalid";
-            }
-            if (data)
-                this->freeData(data);
-        }
-
-        const auto decision = decideGamescopeHdrActivation({
-            .appWantsHdr = appWantsHdr,
-            .outputHdrEnabled = sample.outputHdrEnabled,
-            .appHdrMetadataPresent = sample.appHdrMetadataPresent,
-            .gamescopeDetected = sample.gamescopeDetected,
-        });
-        sample.active = decision.active;
-        sample.activationSource = decision.source;
+        sample.status = sample.gamescopeDetected ? "confirmed" : "not-gamescope";
         return sample;
     }
 #else
-    GamescopeHdrFeedbackSample sampleOnce() {
+    GamescopeFeedbackSample sampleOnce() {
         return {
             .status = "unsupported-platform",
         };
@@ -611,11 +485,11 @@ struct GamescopeHdrFeedbackReader::Impl {
     }
 
     void start() {
-        // One synchronous startup read lets the first swapchain use the right
-        // colour pipeline. All later X11 round trips stay off the presentation
+        // One startup read supplies the initial compositor state. All later
+        // X11 round trips stay off the presentation
         // thread.
         this->refresh();
-        if (!gamescopeHdrFeedbackMayChange())
+        if (!gamescopeFeedbackMayChange())
             return;
 
         this->monitor = std::jthread([this](const std::stop_token stop) {
@@ -646,48 +520,19 @@ struct GamescopeHdrFeedbackReader::Impl {
     }
 };
 
-GamescopeHdrFeedbackReader::GamescopeHdrFeedbackReader(
-        const PresentationEnvironmentPolicy& presentationEnvironment) :
-    impl(std::make_unique<Impl>(presentationEnvironment)) {
+GamescopeFeedbackReader::GamescopeFeedbackReader() :
+    impl(std::make_unique<Impl>()) {
     this->impl->start();
 }
 
-GamescopeHdrFeedbackReader::~GamescopeHdrFeedbackReader() = default;
-GamescopeHdrFeedbackReader::GamescopeHdrFeedbackReader(
-    GamescopeHdrFeedbackReader&&) noexcept = default;
-GamescopeHdrFeedbackReader& GamescopeHdrFeedbackReader::operator=(
-    GamescopeHdrFeedbackReader&&) noexcept = default;
+GamescopeFeedbackReader::~GamescopeFeedbackReader() = default;
+GamescopeFeedbackReader::GamescopeFeedbackReader(
+    GamescopeFeedbackReader&&) noexcept = default;
+GamescopeFeedbackReader& GamescopeFeedbackReader::operator=(
+    GamescopeFeedbackReader&&) noexcept = default;
 
-std::optional<bool> GamescopeHdrFeedbackReader::sample() const {
-    std::scoped_lock lock(this->impl->sampleMutex);
-    return this->impl->latestSample.active;
-}
-
-GamescopeHdrFeedbackSample
-GamescopeHdrFeedbackReader::diagnosticSample() const {
+GamescopeFeedbackSample
+GamescopeFeedbackReader::diagnosticSample() const {
     std::scoped_lock lock(this->impl->sampleMutex);
     return this->impl->latestSample;
-}
-
-std::optional<bool> GamescopeHdrFeedbackReader::queryOutputHdrEnabled(
-        const uint32_t gamescopePid) {
-    if (this->impl->presentationEnvironment.hdrExposureDisabled || gamescopePid == 0)
-        return std::nullopt;
-#if defined(__linux__)
-    const std::lock_guard lock(this->impl->displayMutex);
-    if (!this->impl->initialize())
-        return std::nullopt;
-    const auto matches = [&] {
-        const auto identity = this->impl->identifyDisplay(
-            this->impl->selectedDisplayName, this->impl->display);
-        return identity.gamescopePid == gamescopePid && identity.serverId == 0;
-    };
-    if (!matches())
-        return std::nullopt;
-    const auto value = gamescopeBooleanFeedback(this->impl->readCardinal(
-        this->impl->display, this->impl->root, gamescopeHdrOutputProperty));
-    return matches() ? value : std::nullopt;
-#else
-    return std::nullopt;
-#endif
 }

@@ -106,8 +106,6 @@ SUBCOMMAND OPTIONS:
             --profile                  Separate CPU/GPU diagnostic mode; ignores duration
             --profile-samples <INT>     Measured iterations, 1-10000 (default 200)
             --profile-warmup <INT>      Warm-up iterations, 6-10000 (default 200)
-            --profile-hdr10             Profile packed HDR10 inputs; requires --profile
-            --profile-hdr-reduced-precision  Approximate PQ generation; requires --profile-hdr10
 
     debug
         <folder>                        Path to the debug frames
@@ -121,9 +119,6 @@ SUBCOMMAND OPTIONS:
         -s, --scene <NAME>              Procedural scene name
             --sequence-plan <PLAN>     Long temporal sequence; semicolon-separated frames
             --width/--height <PIXELS>   Temporal sequence extents (default 321x181)
-            --hdr10                    Single-pair packed HDR10 quality probe
-            --hdr-reduced-precision    Approximate PQ generation; requires --hdr10
-            --hdr-white-nits <NITS>    HDR fixture white (default 203, max 10000)
         -t, --interpolation <FLOAT>     Generated timestamp between 0 and 1
         -f, --flow <FLOAT>              Flow scale from 0.25 to 1.0
         -p, --performance-mode          Use the lighter LSFG model
@@ -266,7 +261,7 @@ SUBCOMMAND OPTIONS:
         benchmark::Options opts{};
         bool profileControlsExplicit{false};
 
-        const std::array<option, 16> GETOPT {{
+        const std::array<option, 14> GETOPT {{
             { "dll",              required_argument, nullptr, 'd' },
             { "allow-fp16",       no_argument,       nullptr, 'a' },
             { "no-fp16",          no_argument,       nullptr, 'A' },
@@ -280,8 +275,6 @@ SUBCOMMAND OPTIONS:
             { "profile",          no_argument,       nullptr, 1000 },
             { "profile-samples",  required_argument, nullptr, 1001 },
             { "profile-warmup",   required_argument, nullptr, 1002 },
-            { "profile-hdr10",    no_argument,       nullptr, 1003 },
-            { "profile-hdr-reduced-precision", no_argument, nullptr, 1004 },
             { nullptr,                  no_argument, nullptr,  0  }
         }};
 
@@ -331,14 +324,6 @@ SUBCOMMAND OPTIONS:
                     opts.profile_warmup = numericArgument<int>(optarg, "--profile-warmup");
                     profileControlsExplicit = true;
                     break;
-                case 1003:
-                    opts.profile_hdr10 = true;
-                    profileControlsExplicit = true;
-                    break;
-                case 1004:
-                    opts.profile_hdr_reduced_precision = true;
-                    profileControlsExplicit = true;
-                    break;
                 case '?':
                 default:
                     usage(program);
@@ -351,8 +336,7 @@ SUBCOMMAND OPTIONS:
             std::exit(EXIT_FAILURE);
         }
 
-        if ((opts.profile_hdr_reduced_precision && !opts.profile_hdr10) ||
-                (profileControlsExplicit && !opts.profile) || opts.profile_samples < 1 ||
+        if ((profileControlsExplicit && !opts.profile) || opts.profile_samples < 1 ||
                 opts.profile_samples > 10000 || opts.profile_warmup < 6 || opts.profile_warmup > 10000) {
             std::cerr << "Frame profiling requires --profile, 1-10000 samples and 6-10000 warm-up iterations\n";
             std::exit(EXIT_FAILURE);
@@ -431,10 +415,7 @@ SUBCOMMAND OPTIONS:
     [[noreturn]] void on_quality_regression(int argc, char** argv,
             const std::string& program) {
         quality::Options opts{};
-        const std::array<option, 16> GETOPT {{
-            { "hdr10", no_argument, nullptr, 1003 },
-            { "hdr-reduced-precision", no_argument, nullptr, 1004 },
-            { "hdr-white-nits", required_argument, nullptr, 1005 },
+        const std::array<option, 13> GETOPT {{
             { "width",            required_argument, nullptr, 1001 },
             { "height",           required_argument, nullptr, 1002 },
             { "sequence-plan",    required_argument, nullptr, 1000 },
@@ -454,9 +435,6 @@ SUBCOMMAND OPTIONS:
         while ((c = getopt_long(
                 argc, argv, "d:ag:o:s:t:f:p", GETOPT.data(), nullptr)) != -1) {
             switch (c) {
-                case 1003: opts.hdr10 = true; break;
-                case 1004: opts.hdr_reduced_precision = true; break;
-                case 1005: opts.hdr_white_nits = numericArgument<float>(optarg, "--hdr-white-nits"); break;
                 case 1001:
                     opts.width = numericArgument<uint32_t>(optarg, "--width");
                     break;

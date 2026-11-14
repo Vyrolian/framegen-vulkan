@@ -68,7 +68,7 @@ LaunchConfigFile::LaunchConfigFile(const std::filesystem::path& path) {
         } else if (key == "disable_hdr_exposure") {
             if (disableHdrExposureSeen)
                 throw ls::error("duplicate disable_hdr_exposure launcher setting");
-            this->launchConf.disable_hdr_exposure = parseBoolean(key, value);
+            static_cast<void>(parseBoolean(key, value)); // Accepted for old launcher files.
             disableHdrExposureSeen = true;
         } else if (key == "disable_steam_overlay") {
             if (disableSteamOverlaySeen)
@@ -99,8 +99,6 @@ void LaunchConfigFile::write(const std::filesystem::path& path) const {
         std::ostringstream output;
 
         output << "version=" << LaunchConfigFile::formatVersion << '\n'
-            << "disable_hdr_exposure="
-            << static_cast<int>(this->launchConf.disable_hdr_exposure) << '\n'
             << "disable_steam_overlay="
             << static_cast<int>(this->launchConf.disable_steam_overlay) << '\n'
             << "enable_zink="

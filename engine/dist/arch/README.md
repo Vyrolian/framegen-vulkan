@@ -82,7 +82,7 @@ Use `/usr/bin/fgvk` explicitly to select this package. Do not export `ENABLE_FGV
 
 ## Profiles and configuration data
 
-Profiles, settings, and runtime state live in `~/.config/framegen-vulkan` (`conf.toml`, `launcher.conf`, `mangohud.conf`, and `runtime-state/`). They belong to the user and are never installed, replaced, or removed by this package.
+Profiles, settings, and runtime state live in `~/.config/framegen-vulkan` (`conf.toml`, `launcher.conf`, and `runtime-state/`). They belong to the user and are never installed, replaced, or removed by this package.
 
 Because both delivery paths share that directory, do not run two different framegen-vulkan versions against one `~/.config/framegen-vulkan`: a user-local install and this package would migrate the same profiles with different engine versions. Keep one owner per user.
 

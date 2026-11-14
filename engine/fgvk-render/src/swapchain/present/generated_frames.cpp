@@ -37,8 +37,7 @@ using namespace fgvk::layer::present_detail;
 
 VkResult Swapchain::presentGeneratedFrames(
         const PresentInvocation& invocation,
-        const PresentationFramePlan& plan,
-        const bool gamescopeHdrTransport) {
+        const PresentationFramePlan& plan) {
     const bool adaptiveVariableRefreshBounded =
         plan.adaptiveOrderedDeliveryPolicy ==
             AdaptiveOrderedDeliveryPolicy::VariableRefreshBounded;

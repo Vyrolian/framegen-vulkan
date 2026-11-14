@@ -36,7 +36,7 @@ namespace {
 }
 
 vk::Limits backend::calculateDescriptorPoolLimits(
-        size_t count, bool perf, bool colorConversion) {
+        size_t count, bool perf) {
     const auto m = static_cast<uint16_t>(count);
 
     vk::Limits a{BASE_LIMITS};
@@ -54,13 +54,5 @@ vk::Limits backend::calculateDescriptorPoolLimits(
     a.sampled_images += b.sampled_images * m;
     a.storage_images += b.storage_images * m;
 
-    if (colorConversion) {
-        // Two source decoders plus one encoder per generated-frame image.
-        const auto conversionSets = static_cast<uint16_t>(2 + count);
-        a.sets += conversionSets;
-        a.samplers += conversionSets;
-        a.sampled_images += conversionSets;
-        a.storage_images += conversionSets;
-    }
     return a;
 }

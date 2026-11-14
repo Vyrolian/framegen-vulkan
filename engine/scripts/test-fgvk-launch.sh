@@ -39,7 +39,7 @@ default_output="$({
     env -u ENABLE_FGVK -u DISABLE_FGVK \
         -u ENABLE_VKBASALT -u DISABLE_VKBASALT -u VKBASALT_CONFIG_FILE -u VKBASALT_CONFIG_RELOAD \
         -u ENABLE_GAMESCOPE_WSI -u DISABLE_GAMESCOPE_WSI \
-        -u FGVK_DISABLE_HDR_EXPOSURE -u DXVK_HDR \
+        -u DXVK_HDR \
         -u DISABLE_LSFG -u DISABLE_LSFGVK \
         -u FGVK_ALLOW_COMPETING_LAYERS \
         XDG_DATA_HOME="$test_data_home" \
@@ -54,7 +54,6 @@ default_output="$({
                 "${DISABLE_LSFGVK:-unset}" \
                 "${DISABLE_GAMESCOPE_WSI:-unset}" \
                 "${ENABLE_GAMESCOPE_WSI:-unset}" \
-                "${FGVK_DISABLE_HDR_EXPOSURE:-unset}" \
                 "${DXVK_HDR:-unset}" \
                 "${VK_IMPLICIT_LAYER_PATH:-unset}" \
                 "${VK_ADD_IMPLICIT_LAYER_PATH:-unset}" \
@@ -68,7 +67,7 @@ default_output="$({
         ' _ "argument with spaces" '$literal'
 } 2>&1)" || fail "default launch failed: $default_output"
 
-expected_default="$(printf '1\n1\n1\n1\nunset\n1\nunset\n%s\nunset\nVK_LAYER_existing\nunset\n1\nunset\nunset\nprofile with spaces\nargument with spaces\n$literal' "$expected_layer_path")"
+expected_default="$(printf '1\n1\n1\n1\nunset\nunset\n%s\nunset\nVK_LAYER_existing\nunset\n1\nunset\nunset\nprofile with spaces\nargument with spaces\n$literal' "$expected_layer_path")"
 if [[ "$default_output" != "$expected_default" ]]; then
     fail "default environment or argument forwarding changed:\n$default_output"
 fi
@@ -191,7 +190,7 @@ rm -f "$steam_overlay_dir/steamoverlay_x86_64.json"
 
 allow_output="$({
     DISABLE_LSFG=1 DISABLE_LSFGVK=1 ENABLE_GAMESCOPE_WSI=1 \
-        FGVK_DISABLE_HDR_EXPOSURE=0 DXVK_HDR=1 \
+        DXVK_HDR=1 \
         XDG_DATA_HOME="$test_data_home" \
         VK_IMPLICIT_LAYER_PATH="/caller/override" \
         VK_ADD_IMPLICIT_LAYER_PATH="/caller/additional" \
@@ -203,7 +202,6 @@ allow_output="$({
                 "${DISABLE_LSFGVK:-unset}" \
                 "${DISABLE_GAMESCOPE_WSI:-unset}" \
                 "${ENABLE_GAMESCOPE_WSI:-unset}" \
-                "${FGVK_DISABLE_HDR_EXPOSURE:-unset}" \
                 "${DXVK_HDR:-unset}" \
                 "${VK_IMPLICIT_LAYER_PATH:-unset}" \
                 "${VK_ADD_IMPLICIT_LAYER_PATH:-unset}" \
@@ -211,7 +209,7 @@ allow_output="$({
         '
 } 2>&1)" || fail "advanced opt-out launch failed: $allow_output"
 
-expected_allow="$(printf '1\nunset\nunset\n1\nunset\n1\nunset\n%s\nunset\nunset' "$expected_layer_path")"
+expected_allow="$(printf '1\nunset\nunset\n1\nunset\nunset\n%s\nunset\nunset' "$expected_layer_path")"
 if [[ "$allow_output" != "$expected_allow" ]]; then
     fail "advanced opt-out did not remove only the conflict guards:\n$allow_output"
 fi
@@ -310,9 +308,8 @@ fi
 for disable_hdr in 0 1; do
     printf '%s\n' 'version=1' "disable_hdr_exposure=$disable_hdr" > "$launch_config"
     hdr_output="$(FGVK_LAUNCH_CONFIG="$launch_config" DXVK_HDR=1 "$launcher" bash -c \
-        'printf "%s %s %s" "$FGVK_DISABLE_HDR_EXPOSURE" "${DXVK_HDR:-unset}" "$DISABLE_GAMESCOPE_WSI"')"
-    expected_hdr="$disable_hdr unset 1"
-    [[ "$disable_hdr" == 0 ]] && expected_hdr="0 1 1"
+        'printf "%s %s" "${DXVK_HDR:-unset}" "$DISABLE_GAMESCOPE_WSI"')"
+    expected_hdr="unset 1"
     [[ "$hdr_output" == "$expected_hdr" ]] || fail "HDR toggle changed WSI ownership: $hdr_output"
 done
 

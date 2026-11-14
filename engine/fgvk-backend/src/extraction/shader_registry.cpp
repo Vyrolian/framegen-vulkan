@@ -3,7 +3,6 @@
 #include "shader_registry.hpp"
 #include "spirv_image_format.hpp"
 #include "spirv_output_split.hpp"
-#include "../shaders/color_conversion_spirv.hpp"
 #include "model_resource_validation.hpp"
 #include "lsfg_shader_set.hpp"
 #include "fgvk-common/helpers/errors.hpp"
@@ -95,11 +94,9 @@ ShaderRegistry backend::buildShaderRegistry(const vk::Vulkan& vk, bool fp16,
             << "converted_stages=" << selection.convertedFp16Stages << '\n';
     // patch the generate shader
     std::vector<uint8_t> generate_data = getShaderSource(256, false, archive, selection);
-    std::vector<uint8_t> generate_data_hdr = generate_data;
-    std::vector<uint8_t> generate_data_packed = generate_data;
+    std::vector<uint8_t> generate_data_rgba16f = generate_data;
     detail::patchStorageImageFormat(generate_data, 4); // Rgba8
-    detail::patchStorageImageFormat(generate_data_hdr, 2); // Rgba16f
-    detail::patchStorageImageFormat(generate_data_packed, 11); // Rgb10A2
+    detail::patchStorageImageFormat(generate_data_rgba16f, 2); // Rgba16f
 
     // load all other shaders
 #define SHADER(id) makeShader(vk, id, PERF, archive, selection, splitOutputs)
@@ -112,23 +109,11 @@ ShaderRegistry backend::buildShaderRegistry(const vk::Vulkan& vk, bool fp16,
             shaderSpec(256, PERF).contract.storageImages,
             shaderSpec(256, PERF).contract.uniformBuffers,
             shaderSpec(256, PERF).contract.samplers),
-        .generate_hdr = vk::Shader(vk, generate_data_hdr,
+        .generate_rgba16f = vk::Shader(vk, generate_data_rgba16f,
             shaderSpec(256, PERF).contract.sampledImages,
             shaderSpec(256, PERF).contract.storageImages,
             shaderSpec(256, PERF).contract.uniformBuffers,
             shaderSpec(256, PERF).contract.samplers),
-        .generate_pq_packed_source = std::move(generate_data_packed),
-        .hdr10_pq_to_scrgb = vk::Shader(
-            vk, embedded::hdr10PqToScRgbSpirv, 1, 1, 0, 1
-        ),
-        .scrgb_to_hdr10_pq = vk::Shader(
-            vk, embedded::scRgbToHdr10PqSpirv, 1, 1, 0, 1
-        ),
-        .scrgb_to_hdr10_pq_packed =
-            vk.supportsStorageImageExtendedFormats()
-                ? std::optional<vk::Shader>(std::in_place,
-                    vk, embedded::scRgbToHdr10PqPackedSpirv, 1, 1, 0, 1)
-                : std::nullopt,
         .quality = {
             .alpha = {
                 SHADER(267), SHADER(268), SHADER(269), SHADER(270)
@@ -172,10 +157,4 @@ ShaderRegistry backend::buildShaderRegistry(const vk::Vulkan& vk, bool fp16,
     };
 
 #undef SHADER
-}
-
-vk::Shader ShaderRegistry::packedPqShader(const vk::Vulkan& vk) const {
-    const auto& contract = shaderSpec(256, false).contract;
-    return vk::Shader(vk, this->generate_pq_packed_source, contract.sampledImages,
-        contract.storageImages, contract.uniformBuffers, contract.samplers);
 }

@@ -69,62 +69,6 @@ bool Swapchain::directSpatialFrameGenerationOutputSupported(
     );
 }
 
-SwapchainColorPipeline Swapchain::initialColorPipeline(
-        const VkFormat format, const VkColorSpaceKHR colorSpace,
-        const std::optional<bool> gamescopeHdrActive,
-        const bool gamescopeDetected,
-        const bool hdrExposureDisabled) {
-    auto pipeline = classifySwapchainColor(
-        format, colorSpace, gamescopeHdrActive.value_or(false)
-    );
-    if (hdrExposureDisabled && pipeline.hdr) {
-        pipeline.generationSupported = false;
-        pipeline.name = "hdr-exposure-disabled";
-        pipeline.reason =
-            "HDR frame generation is disabled for this process";
-        return pipeline;
-    }
-    if (gamescopeDetected && !gamescopeHdrActive &&
-            pipeline.encoding == backend::FrameEncoding::SdrHighPrecision) {
-        pipeline.generationSupported = false;
-        pipeline.name = "gamescope-hdr-pending";
-        pipeline.reason =
-            "Gamescope HDR state is not confirmed; real-frame passthrough retained";
-    }
-    return pipeline;
-}
-
-void Swapchain::selectPackedHdr10Transport(const vk::Vulkan& vk,
-        backend::Instance& backendInstance, SwapchainColorPipeline& pipeline,
-        bool& applicationSupported, bool& backendSupported) {
-    if (pipeline.encoding != backend::FrameEncoding::Hdr10Pq)
-        return;
-
-    applicationSupported =
-        vk.supportsExternalImageFormat(
-            VK_FORMAT_A2B10G10R10_UNORM_PACK32,
-            VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-            VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT
-        ) &&
-        vk.supportsOptimalTilingFormatFeatures(
-            VK_FORMAT_A2B10G10R10_UNORM_PACK32,
-            VK_FORMAT_FEATURE_BLIT_DST_BIT
-        ) &&
-        vk.supportsExternalImageFormat(
-            VK_FORMAT_A2B10G10R10_UNORM_PACK32,
-            VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-            VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT
-        ) &&
-        vk.supportsOptimalTilingFormatFeatures(
-            VK_FORMAT_A2B10G10R10_UNORM_PACK32,
-            VK_FORMAT_FEATURE_BLIT_SRC_BIT
-        );
-    backendSupported = backendInstance.supportsPackedHdr10Transport();
-    static_cast<void>(enablePackedHdr10Transport(
-        pipeline, applicationSupported, backendSupported
-    ));
-}
-
 void Swapchain::ensureFrameGenerationExecutionResources(
         const vk::Vulkan& vk) {
     if (this->pacingProfile && present_diagnostics::pacingCopyProfileEnabled() && !this->gamescopeDetected &&
@@ -335,7 +279,6 @@ Swapchain::buildFrameGenerationResources(const vk::Vulkan& vk,
     std::vector<int> destinationFds(generatedFrameCapacityForProfile(resourceProfile), -1);
     ls::FileDescriptorScope destinationScope{destinationFds};
     FrameGenerationResources resources;
-    resources.hdrReducedPrecision = ls::hdrApproximateGeneration(resourceProfile.hdr_quality);
     resources.sourceImages.reserve(sourceFds.size());
     resources.destinationImages.reserve(destinationFds.size());
     const auto sourceImageUsage = frameGenerationSourceImageUsage(
@@ -369,8 +312,7 @@ Swapchain::buildFrameGenerationResources(const vk::Vulkan& vk,
             (syncScope.release(), syncFd),
             extent.width, extent.height, pipeline.encoding,
             1.0F / ls::effectiveFlowScale(resourceProfile),
-            ls::effectivePerformanceMode(resourceProfile),
-            ls::hdrApproximateGeneration(resourceProfile.hdr_quality)
+            ls::effectivePerformanceMode(resourceProfile)
         )),
         [backend = &backendInstance](ls::R<backend::Context>& context) {
             backend->closeContext(context);
@@ -404,12 +346,6 @@ void Swapchain::commitFrameGenerationResources(
     this->destinationImages = std::move(resources.destinationImages);
     this->syncSemaphore = std::move(resources.syncSemaphore);
     this->ctx = std::move(resources.context);
-    this->frameGenerationHdrReducedPrecision = resources.hdrReducedPrecision;
-    // The scaler and FG prepare independently. A pending scaler still owns
-    // its applied precision; neither transaction may cancel the other.
-    if (!this->spatialTransition.pendingRequest())
-        this->profile.hdr_quality = resourceProfile.hdr_quality;
-
     applyFrameGenerationResourceProfile(
         this->profile, resourceProfile,
         this->runtimeStatusState.requestedProfile, this->gamescopeRefreshHz
@@ -457,157 +393,6 @@ void Swapchain::commitFrameGenerationResources(
             AdaptiveScheduler::historyWarmupFrameCount();
     }
     this->ensureHistoryWarmup();
-}
-
-void Swapchain::rebuildPrivateResources(const vk::Vulkan& vk,
-        SwapchainColorPipeline pipeline,
-        const ls::GameConf& resourceProfile) {
-    bool applicationPackedHdr10Supported = false;
-    bool backendPackedHdr10Supported = false;
-    if (this->instance && !this->spatialScaler) {
-        selectPackedHdr10Transport(
-            vk, *this->instance, pipeline,
-            applicationPackedHdr10Supported, backendPackedHdr10Supported
-        );
-    }
-
-    this->ensureFrameGenerationExecutionResources(vk);
-    FrameGenerationResources replacement;
-    if (this->instance && pipeline.generationSupported) {
-        replacement = this->buildFrameGenerationResources(
-            vk, pipeline, resourceProfile
-        );
-    }
-    this->colorPipeline = std::move(pipeline);
-    this->clearDirectSpatialFrameGenerationOutputs();
-    this->commitFrameGenerationResources(
-        std::move(replacement), resourceProfile, "hdr-private-transition"
-    );
-    if (this->spatialScaler) {
-        this->configureDirectSpatialFrameGenerationOutputs(
-            vk, *this->spatialScaler, this->sourceImages,
-            "hdr-private-transition"
-        );
-    }
-    if (this->preparedSpatialScaler) {
-        this->configureDirectSpatialFrameGenerationOutputs(
-            vk, *this->preparedSpatialScaler, this->sourceImages,
-            "hdr-private-transition-prepared-scaler"
-        );
-    }
-
-    std::cerr << "framegen-vulkan: swapchain colour pipeline transitioned in place: mode="
-              << this->colorPipeline.name
-              << "; transport="
-              << (this->colorPipeline.packedHdr10Transport
-                    ? "packed-hdr10-32-bit"
-                    : (transportBytesPerPixel(this->colorPipeline.encoding) == 8
-                        ? "rgba16f-64-bit" : "rgba8-32-bit"))
-              << "; application_device_supported="
-              << applicationPackedHdr10Supported
-              << "; backend_device_supported="
-              << backendPackedHdr10Supported << '\n';
-    if (this->colorPipeline.encoding == backend::FrameEncoding::Hdr10Pq ||
-            this->colorPipeline.encoding ==
-                backend::FrameEncoding::Hdr10PqPacked) {
-        const VkExtent2D extent = this->info.extent;
-        const uint64_t transportImageCount = 2 +
-            generatedFrameCapacityForProfile(resourceProfile);
-        const uint64_t floatTransportBytes =
-            static_cast<uint64_t>(extent.width) * extent.height *
-            transportImageCount * 8;
-        const uint64_t selectedTransportBytes =
-            static_cast<uint64_t>(extent.width) * extent.height *
-            transportImageCount *
-            transportBytesPerPixel(this->colorPipeline.encoding);
-        std::cerr << "framegen-vulkan: HDR10 transport: mode="
-                  << (this->colorPipeline.packedHdr10Transport
-                        ? "packed-10-bit" : "rgba16f")
-                  << "; nominal_bytes=" << selectedTransportBytes
-                  << "; nominal_bytes_saved="
-                  << (floatTransportBytes - selectedTransportBytes)
-                  << "; application_device_supported="
-                  << applicationPackedHdr10Supported
-                  << "; backend_device_supported="
-                  << backendPackedHdr10Supported << '\n';
-    }
-}
-
-bool Swapchain::applyPendingColorPipeline(const vk::Vulkan& vk) {
-    if (!liveGamescopeHdrReclassificationAllowed(
-            this->spatialScaler.has_value())) {
-        this->colorTransitionState.pendingGamescopeHdrActive.reset();
-        this->colorTransitionState.pendingHdrStateRevision = 0;
-        this->colorTransitionState.retryAt.reset();
-        return true;
-    }
-    if (!this->colorTransitionState.pendingGamescopeHdrActive)
-        return true;
-
-    const auto now = DiagnosticsClock::now();
-    if (this->colorTransitionState.retryAt && now < *this->colorTransitionState.retryAt)
-        return false;
-
-    const bool resourcesAvailable = this->sourceImages.size() == 2 &&
-        !this->destinationImages.empty() && this->syncSemaphore.has_value();
-    if (resourcesAvailable) {
-        try {
-            if (!this->instance ||
-                    !this->instance->contextReady(this->ctx.get()))
-                return false;
-            if (!this->pollRenderSlotsIdle(vk))
-                return false;
-        } catch (const std::exception& error) {
-            std::cerr << "framegen-vulkan: private colour transition readiness poll "
-                         "failed; real-frame passthrough retained: "
-                      << error.what() << '\n';
-            this->colorTransitionState.retryAt = now + std::chrono::seconds(1);
-            return false;
-        }
-    }
-
-    auto desiredPipeline = classifySwapchainColor(
-        this->info.format, this->info.colorSpace,
-        *this->colorTransitionState.pendingGamescopeHdrActive
-    );
-    try {
-        this->rebuildPrivateResources(
-            vk, std::move(desiredPipeline), this->profile
-        );
-    } catch (const std::exception& error) {
-        std::cerr << "framegen-vulkan: private colour transition failed; real-frame "
-                     "passthrough retained and retry scheduled: "
-                  << error.what() << '\n';
-        this->colorTransitionState.retryAt = now + std::chrono::seconds(5);
-        return false;
-    }
-
-    // A prepared frame-generation context encodes the colour transport that
-    // was active when it was built. If HDR reclassification commits first,
-    // discard that private candidate and prepare the same last-value-wins
-    // request again against the newly active transport.
-    if (this->frameGenerationTransition.pendingRequest()) {
-        this->preparedFrameGenerationResources.reset();
-        this->frameGenerationTransition.restartPreparation(
-            std::chrono::milliseconds(500), now
-        );
-    }
-    this->runtimeStatusState.error.reset();
-    this->publishRuntimeStatus("hdr-mode");
-
-    if (present_diagnostics::enabled()) {
-        std::cerr << "framegen-vulkan: present diagnostics: "
-                     "operation=runtime-transition-applied"
-                  << " context=" << this->diagnosticsState.contextId
-                  << " state_revision=" << this->colorTransitionState.pendingHdrStateRevision
-                  << " reason=hdr-mode"
-                  << " transition=private-context"
-                  << " hdr=" << this->colorPipeline.hdr << '\n';
-    }
-    this->colorTransitionState.pendingGamescopeHdrActive.reset();
-    this->colorTransitionState.pendingHdrStateRevision = 0;
-    this->colorTransitionState.retryAt.reset();
-    return true;
 }
 
 bool Swapchain::applyPendingFrameGenerationResources(
@@ -771,8 +556,7 @@ void Swapchain::applyPendingSpatialScaler(const vk::Vulkan& vk) {
             this->preparedSpatialScaler.emplace(
                 vk, this->info.applicationExtent, this->info.extent,
                 this->colorPipeline.exchangeFormat, requested.method,
-                requested.sharpness, this->scalingShaderDll, this->fp16Requested,
-                this->colorPipeline.encoding, ls::hdrCompactBuffers(requested.hdrQuality)
+                requested.sharpness, this->scalingShaderDll, this->fp16Requested
             );
             this->configureDirectSpatialFrameGenerationOutputs(
                 vk, *this->preparedSpatialScaler, this->sourceImages,
@@ -847,11 +631,8 @@ void Swapchain::applyPendingSpatialScaler(const vk::Vulkan& vk) {
     this->invalidateSpatialScalingRecordings();
     *this->spatialScaler = std::move(*this->preparedSpatialScaler);
     this->preparedSpatialScaler.reset();
-    if (!this->info.hdrDisplayResize) {
-        this->profile.scaling_method = requested.method;
-        this->profile.scaling_sharpness = requested.sharpness;
-    }
-    this->profile.hdr_quality = requested.hdrQuality;
+    this->profile.scaling_method = requested.method;
+    this->profile.scaling_sharpness = requested.sharpness;
     const auto committedRevision = this->spatialTransition.committed();
     this->runtimeStatusState.error.reset();
     this->publishRuntimeStatus("spatial-scaler");
@@ -994,37 +775,4 @@ void Swapchain::clearDirectSpatialFrameGenerationOutputs() noexcept {
         this->spatialScaler->clearDirectFrameGenerationOutputs();
     if (this->preparedSpatialScaler)
         this->preparedSpatialScaler->clearDirectFrameGenerationOutputs();
-}
-
-bool Swapchain::updateGamescopeHdrState(
-        const bool active, const uint64_t runtimeStateRevision) {
-    if (!liveGamescopeHdrReclassificationAllowed(
-            this->spatialScaler.has_value())) {
-        return false;
-    }
-    const auto desiredPipeline = classifySwapchainColor(
-        this->info.format, this->info.colorSpace, active
-    );
-    if (!this->colorTransitionState.pendingGamescopeHdrActive &&
-            desiredPipeline.name == this->colorPipeline.name &&
-            desiredPipeline.generationSupported ==
-                this->colorPipeline.generationSupported) {
-        return false;
-    }
-
-    this->colorTransitionState.pendingGamescopeHdrActive = active;
-    this->colorTransitionState.pendingHdrStateRevision = runtimeStateRevision;
-    this->colorTransitionState.retryAt.reset();
-
-    if (present_diagnostics::enabled()) {
-        std::cerr << "framegen-vulkan: present diagnostics: "
-                     "operation=runtime-transition-pending"
-                  << " context=" << this->diagnosticsState.contextId
-                  << " state_revision=" << runtimeStateRevision
-                  << " reason=hdr-mode"
-                  << " current=" << this->colorPipeline.name
-                  << " requested=" << desiredPipeline.name
-                  << " action=rebuild-private-context\n";
-    }
-    return true;
 }

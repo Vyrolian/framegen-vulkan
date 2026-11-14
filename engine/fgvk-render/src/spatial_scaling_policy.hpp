@@ -127,34 +127,6 @@ namespace fgvk::layer {
         bool preserveFrameGenerationSource{false};
     };
 
-    /// Reuse native post-FG resizing for isolated HDR presentation to
-    /// fill a proven display target without changing the saved scaling choice.
-    /// Geometry, format and memory admission still belong to the ordinary
-    /// scaling create policy. Unequal aspect ratios remain on the native path.
-    [[nodiscard]] inline std::optional<SpatialScalingPolicy>
-    hdrBridgeDisplayResizePolicy(const ls::GameConf& profile,
-            const bool isolatedVariableBridge, const bool hdr,
-            const bool hdrAllowed, const bool frameGenerationProvisioned,
-            const VkExtent2D source, const std::optional<VkExtent2D> target) {
-        if (profile.scaling_enabled || !isolatedVariableBridge || !hdr ||
-                !hdrAllowed || !frameGenerationProvisioned || !target ||
-                source.width == 0 || source.height == 0 ||
-                target->width <= source.width || target->height <= source.height ||
-                uint64_t{target->width} * source.height !=
-                    uint64_t{target->height} * source.width ||
-                static_cast<double>(target->width) / source.width >
-                    ls::GameConfLimits::maximumScalingFactor)
-            return std::nullopt;
-        // The existing display-target clamp selects the exact fit; using the
-        // maximum avoids rounding a fractional fit down before that clamp.
-        return SpatialScalingPolicy{
-            .enabled = true,
-            .factor = ls::GameConfLimits::maximumScalingFactor,
-            .supersampling = false,
-            .preserveFrameGenerationSource = true,
-        };
-    }
-
     /// One coherent policy snapshot used for a fixed-surface capability query.
     /// The revision changes only when scaler activity, process support, or the
     /// factor changes. Native Resolution and changes between active scaler
@@ -416,22 +388,6 @@ namespace fgvk::layer {
             SpatialScalingInactiveReason::None
         };
     };
-
-    [[nodiscard]] constexpr bool spatialScalingProcessSupported(
-            const bool gamescopeEnvironmentHint,
-            const bool gamescopeFeedbackDetected,
-            const bool hdrExposureDisabled,
-            const bool isolatedColorSpace = false) noexcept {
-        return !(gamescopeEnvironmentHint || gamescopeFeedbackDetected) ||
-            hdrExposureDisabled || isolatedColorSpace;
-    }
-
-    /// A scaled swapchain keeps its explicit creation-time encoding. Global
-    /// Gamescope feedback must never reclassify existing scaler resources.
-    [[nodiscard]] constexpr bool liveGamescopeHdrReclassificationAllowed(
-            const bool spatialScalingActive) noexcept {
-        return !spatialScalingActive;
-    }
 
     [[nodiscard]] inline bool validSpatialScalingFactor(
         float factor) noexcept;

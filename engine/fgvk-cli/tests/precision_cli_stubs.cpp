@@ -21,8 +21,7 @@ namespace fgvk::cli {
     int benchmark::run(const Options& opts, i18n::Language) {
         if (opts.profile) {
             std::cout << "profile samples=" << opts.profile_samples << " warmup=" << opts.profile_warmup
-                      << " hdr10=" << opts.profile_hdr10
-                      << " reduced=" << opts.profile_hdr_reduced_precision << '\n';
+                      << '\n';
             return 0;
         }
         return reportPrecision(opts.allow_fp16);

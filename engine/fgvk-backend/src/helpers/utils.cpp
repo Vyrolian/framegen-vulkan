@@ -14,10 +14,10 @@ using namespace fgvk;
 using namespace fgvk::backend;
 
 ConstantBuffer backend::getDefaultConstantBuffer(
-        size_t index, size_t total, const bool hdr, float invFlow) {
+        size_t index, size_t total, float invFlow) {
     return ConstantBuffer {
-        .advancedColorKind = hdr ? 2U : 0U,
-        .hdrSupport = hdr ? 1U : 0U,
+        .advancedColorKind = 0,
+        .hdrSupport = 0,
         .resolutionInvScale = invFlow,
         .timestamp = static_cast<float>(index + 1) / static_cast<float>(total + 1),
         .uiThreshold = 0.5F

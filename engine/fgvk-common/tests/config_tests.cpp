@@ -59,7 +59,6 @@ namespace {
             left.scaling_factor == right.scaling_factor &&
             left.scaling_supersampling == right.scaling_supersampling &&
             left.scaling_sharpness == right.scaling_sharpness &&
-            left.hdr_quality == right.hdr_quality &&
             left.frame_generation_refresh_threshold ==
                 right.frame_generation_refresh_threshold &&
             left.base_fps_cap == right.base_fps_cap &&
@@ -332,8 +331,6 @@ performance_mode = false
 
 int main() {
     const ls::GameConf defaults;
-    expect(defaults.hdr_quality == ls::HdrQuality::Performance,
-        "Reduced HDR precision must default on for profiles without an explicit choice");
     expect(defaults.multiplier == ls::GameConfDefaults::multiplier &&
             defaults.frame_generation_provisioned ==
                 ls::GameConfDefaults::frameGenerationProvisioned &&
@@ -450,37 +447,9 @@ int main() {
         "The documented default TOML and in-memory examples must stay equivalent");
 
     const auto precisionPath = directory / "precision.toml";
-    writeText(precisionPath, "version = 2\n[[profile]]\nname = 'hdr'\n");
-    expect(ls::ConfigFile(precisionPath).profiles().front().hdr_quality == ls::HdrQuality::Performance,
-        "Profiles without an HDR quality choice must default to Performance");
-    expect(!ls::hdrCompactBuffers(ls::HdrQuality::Quality) &&
-            !ls::hdrApproximateGeneration(ls::HdrQuality::Quality) &&
-            ls::hdrCompactBuffers(ls::HdrQuality::Balanced) &&
-            !ls::hdrApproximateGeneration(ls::HdrQuality::Balanced) &&
-            ls::hdrCompactBuffers(ls::HdrQuality::Performance) &&
-            ls::hdrApproximateGeneration(ls::HdrQuality::Performance),
-        "Balanced must compact buffers without reducing HDR10 generation quality");
-    for (const auto quality : {ls::HdrQuality::Quality, ls::HdrQuality::Balanced, ls::HdrQuality::Performance}) {
-        writeText(precisionPath, "version = 2\n[[profile]]\nname = 'hdr'\nhdr_quality = '" +
-            std::string(ls::hdrQualityName(quality)) + "'\n");
-        ls::ConfigFile(precisionPath).write(precisionPath);
-        expect(ls::ConfigFile(precisionPath).profiles().front().hdr_quality == quality,
-            "Every HDR quality choice must survive saving and reloading");
-    }
-    writeText(precisionPath, "version = 2\n[[profile]]\nname = 'hdr'\nhdr_quality = 'unknown'\n");
-    bool invalidHdrQualityRejected = false;
-    try { static_cast<void>(ls::ConfigFile(precisionPath)); }
-    catch (const std::exception&) { invalidHdrQualityRejected = true; }
-    expect(invalidHdrQualityRejected, "Unknown HDR quality must not silently select an approximation");
-    writeText(precisionPath, "version = 2\n[[profile]]\nname = 'hdr'\nhdr_quality = 'performance'\n[profile.handheld]\nhdr_quality = 'balanced'\n[profile.docked]\nhdr_quality = 'quality'\n");
-    auto hdrPrecisionConfig = ls::ConfigFile(precisionPath);
-    hdrPrecisionConfig.write(precisionPath);
-    hdrPrecisionConfig = ls::ConfigFile(precisionPath);
-    const auto& hdrPrecisionProfile = hdrPrecisionConfig.profiles().front();
-    expect(hdrPrecisionProfile.hdr_quality == ls::HdrQuality::Performance &&
-            ls::profileForPowerSource(hdrPrecisionProfile, ls::PowerSource::Handheld).hdr_quality == ls::HdrQuality::Balanced &&
-            ls::profileForPowerSource(hdrPrecisionProfile, ls::PowerSource::Docked).hdr_quality == ls::HdrQuality::Quality,
-        "HDR quality must round-trip independently through base and power profiles");
+    writeText(precisionPath, "version = 2\n[[profile]]\nname = 'legacy'\nhdr_quality = 'performance'\nmultiplier = 3\n");
+    expect(ls::ConfigFile(precisionPath).profiles().front().multiplier == 3,
+        "A retired profile key must not prevent loading supported settings");
     for (const std::string_view global : {"", "[global]\n", "[global]\nallow_fp16 = true\n"}) {
         writeText(precisionPath, "version = 2\n" + std::string(global) + "[[profile]]\n");
         expect(ls::ConfigFile(precisionPath).global().allow_fp16,
@@ -894,15 +863,6 @@ scaling_sharpness = 0.5
 
     setenv("FGVK_ENV", "1", 1);
     setenv("FGVK_ADAPTIVE", "0", 1);
-    unsetenv("FGVK_HDR_QUALITY");
-    expect(ls::WatchedConfig{}.get().profiles().front().hdr_quality == ls::HdrQuality::Performance,
-        "Environment-only profiles must default to Performance HDR quality");
-    for (const auto quality : {ls::HdrQuality::Quality, ls::HdrQuality::Balanced, ls::HdrQuality::Performance}) {
-        setenv("FGVK_HDR_QUALITY", ls::hdrQualityName(quality), 1);
-        expect(ls::WatchedConfig{}.get().profiles().front().hdr_quality == quality,
-            "FGVK_HDR_QUALITY must select every HDR quality level");
-    }
-    unsetenv("FGVK_HDR_QUALITY");
     unsetenv("FGVK_NO_FP16");
     expect(ls::WatchedConfig{}.get().global().allow_fp16,
         "Environment-only configuration must allow FP16 by default");

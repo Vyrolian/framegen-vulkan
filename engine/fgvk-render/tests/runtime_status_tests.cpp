@@ -53,7 +53,6 @@ int main() {
     applied.name = "game \"profile\"";
     applied.multiplier = 2;
     applied.adaptive = false;
-    applied.hdr_quality = ls::HdrQuality::Quality;
 
     auto requested = applied;
     requested.multiplier = 5;
@@ -62,7 +61,6 @@ int main() {
     requested.performance_mode = true;
     requested.flow_scale = 0.5F;
     requested.adaptive_target_refresh_rate = true;
-    requested.hdr_quality = ls::HdrQuality::Performance;
 
     const fgvk::layer::RuntimeStatusRecord record{
         .phase = fgvk::layer::RuntimeApplicationPhase::Draining,
@@ -109,9 +107,6 @@ int main() {
     expect(json.find("\"adaptive_target_refresh_rate\":true") != std::string::npos &&
             json.find("\"adaptive_target_refresh_rate\":false") != std::string::npos,
         "requested and applied refresh targeting choices missing");
-    expect(json.find("\"hdr_quality\":\"performance\"") != std::string::npos &&
-            json.find("\"hdr_quality\":\"quality\"") != std::string::npos,
-        "requested and applied HDR precision choices missing");
     expect(json.find(
             "\"adaptive_fractional_real_frame_priority\":\"high\""
         ) != std::string::npos,
@@ -157,7 +152,7 @@ int main() {
             std::string::npos,
         "spatial scaling display ceiling missing");
 
-    // HDR can resize a smaller window to the display with user Scaling off.
+    // A pending toggle cannot activate user-facing Scaling before it applies.
     // Follow the applied setting across window replacements and restart-pending
     // toggle edits, while retaining the actual transport dimensions.
     for (const bool scalingApplied : {false, true}) {
@@ -176,7 +171,7 @@ int main() {
                 expect(windowJson.find(featureActive
                         ? "\"spatial_scaling\":{\"active\":true"
                         : "\"spatial_scaling\":{\"active\":false") != std::string::npos,
-                    "internal HDR resize or a pending toggle changed Scaling status");
+                    "a pending toggle changed Scaling status");
                 expect(windowJson.find("\"presentation_width\":3840") != std::string::npos &&
                         windowJson.find("\"frame_generation_active\":true") != std::string::npos,
                     "Scaling status filtering hid transport dimensions or Frame Generation");

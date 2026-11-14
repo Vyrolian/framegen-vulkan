@@ -54,13 +54,10 @@ namespace fgvk::layer {
     /// Owns Gamescope's X11-window -> Wayland-buffer association and protocol
     /// timing. Vulkan owns acquisition, synchronization and retirement.
     /// Ordered private outputs use bounded desired presentation times.
-    /// The same surface owner forwards optional HDR colour and metadata. No
-    /// Gamescope WSI layer or frame-limiter interface is loaded.
+    /// No Gamescope WSI layer or frame-limiter interface is loaded.
     class GamescopeScalingSurface {
     public:
-        using HdrOutputQuery = std::function<std::optional<bool>(uint32_t gamescopePid)>;
-        explicit GamescopeScalingSurface(bool allowHdr = false,
-            HdrOutputQuery rootHdrOutput = {});
+        GamescopeScalingSurface();
         ~GamescopeScalingSurface();
         GamescopeScalingSurface(const GamescopeScalingSurface&) = delete;
         GamescopeScalingSurface& operator=(const GamescopeScalingSurface&) = delete;
@@ -117,17 +114,8 @@ namespace fgvk::layer {
             std::optional<std::chrono::steady_clock::time_point>* scheduledDeadline = nullptr,
             std::optional<std::chrono::steady_clock::time_point> sourceDeadline = std::nullopt);
         [[nodiscard]] bool owns(VkSurfaceKHR surface) const;
-        [[nodiscard]] bool hdrEnabled() const;
-
-        /// Validate HDR against this surface's compositor and lower image
-        /// formats, then normalize only the driver-facing colour space.
-        [[nodiscard]] VkResult prepareSwapchain(VkPhysicalDevice physicalDevice,
-            VkSwapchainCreateInfoKHR& info,
-            PFN_vkGetPhysicalDeviceSurfaceFormatsKHR lowerFormats) const;
-        /// True means this bridge owns the swapchain, including ignored SDR
-        /// metadata. Unowned swapchains must retain lower extension dispatch.
-        [[nodiscard]] bool setHdrMetadata(VkSurfaceKHR surface,
-            VkSwapchainKHR swapchain, const VkHdrMetadataEXT& metadata);
+        /// Only nonlinear sRGB formats are exposed on the private bridge.
+        [[nodiscard]] VkResult prepareSwapchain(const VkSwapchainCreateInfoKHR& info) const;
 
         /// Preserve the application's X11 extent contract at both public
         /// capability-query entrypoints. Internal driver queries still see
@@ -142,7 +130,7 @@ namespace fgvk::layer {
             VkPhysicalDevice physicalDevice, VkSurfaceKHR surface,
             PFN_vkGetPhysicalDeviceSurfaceFormatsKHR lowerFormats) const;
         /// Preserve formats2 input constraints and per-format compression
-        /// properties while applying the same X11/HDR exposure policy.
+        /// properties while applying the same X11 format policy.
         /// nullopt retains lower dispatch for unowned/unsupported queries.
         [[nodiscard]] std::optional<VkResult> applicationFormats2(
             VkPhysicalDevice physicalDevice,

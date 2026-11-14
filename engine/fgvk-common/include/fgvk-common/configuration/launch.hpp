@@ -9,7 +9,6 @@ namespace ls {
 
     /// Process-start compatibility settings consumed by standalone fgvk-launch.
     struct LaunchConf {
-        bool disable_hdr_exposure{true};
         bool disable_steam_overlay{true};
         bool enable_zink{false};
         bool force_alsa_audio{false};

@@ -7,7 +7,7 @@ set(PRESENT_RECORD_SOURCES
 
 set(LAYER_SOURCES
     "src/entrypoint.cpp"
-    "src/gamescope_hdr_feedback.cpp"
+    "src/gamescope_feedback.cpp"
     "src/gamescope_scaling_surface.cpp"
     "src/instance.cpp"
     "src/present_diagnostics.cpp"
@@ -481,7 +481,7 @@ if(BUILD_TESTING)
             LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/feedback-client-fixture")
         add_executable(fgvk-gamescope-feedback-reader-tests
             "tests/gamescope_feedback_reader_tests.cpp"
-            "src/gamescope_hdr_feedback.cpp")
+            "src/gamescope_feedback.cpp")
         target_include_directories(fgvk-gamescope-feedback-reader-tests
             PRIVATE "src" "../fgvk-common/include")
         target_link_libraries(fgvk-gamescope-feedback-reader-tests
@@ -572,12 +572,6 @@ if(BUILD_TESTING)
     target_link_libraries(fgvk-adaptive-benchmark
         PRIVATE fgvk-adaptive)
 
-    add_executable(fgvk-hdr-color-math-tests
-        "tests/hdr_color_math_tests.cpp")
-    add_test(NAME hdr-color-math
-        COMMAND fgvk-hdr-color-math-tests)
-    fgvk_register_portable_policy_test(
-        fgvk-hdr-color-math-tests hdr-color-math)
 endif()
 
 if(FGVK_BUILD_VK_LAYER)

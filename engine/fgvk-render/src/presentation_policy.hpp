@@ -170,79 +170,14 @@ namespace fgvk::layer {
             flag == "yes" || flag == "on";
     }
 
-    /// Process-start policy shared by HDR classification and presentation
-    /// transport selection. Gamescope WSI membership is fixed before Vulkan
-    /// instance creation. The isolated surface bridge carries explicit HDR
-    /// colour and metadata without switching to the legacy full-WSI transport.
+    /// Gamescope WSI membership is fixed before Vulkan instance creation.
     struct PresentationEnvironmentPolicy {
         bool gamescopeWsiDisabled{false};
-        bool hdrExposureDisabled{false};
     };
 
     [[nodiscard]] inline PresentationEnvironmentPolicy
-    resolvePresentationEnvironmentPolicy(
-            const char* explicitHdrDisable, const char* dxvkHdr,
-            const char* gamescopeWsiDisable) {
-        const bool wsiDisabled = environmentFlagEnabled(gamescopeWsiDisable);
-        return {
-            .gamescopeWsiDisabled = wsiDisabled,
-            .hdrExposureDisabled = environmentFlagEnabled(explicitHdrDisable) ||
-                (wsiDisabled && (!explicitHdrDisable ||
-                    std::string_view(explicitHdrDisable) != "0")) ||
-                (dxvkHdr && !environmentFlagEnabled(dxvkHdr)),
-        };
-    }
-
-    /// SteamOS/Gamescope integration boundary.
-    ///
-    /// This is not a general Vulkan rule that Linux SDR requires FIFO and HDR
-    /// requires MAILBOX. Gamescope's WSI layer runs above framegen-vulkan, implements the
-    /// application's pacing there, then forwards a MAILBOX lower swapchain.
-    /// framegen-vulkan runs below that hook and expands one application present into
-    /// synthetic present(s) plus the original, so those injected presents do
-    /// not pass through Gamescope's upper QueuePresent policy individually.
-    ///
-    /// The fork's established SDR path therefore owns a private FIFO sequence:
-    /// it provides ordering and backpressure for every generated/original
-    /// image. HDR-capable Gamescope swapchains retain Gamescope's lower WSI
-    /// contract because its format/colour-space normalization and HDR feedback
-    /// are part of that bridge. The decision is made once from create-time
-    /// capability and must remain stable for the lifetime of the swapchain.
-    // OrderedSdr is the established private ordered transport name. Explicit
-    // HDR on the isolated bridge uses that same scheduling contract.
-    enum class PresentationTransport {
-        OrderedSdr,
-        GamescopeHdr,
-    };
-
-    /// Gamescope can normalize the colour space before framegen-vulkan sees it, so the
-    /// HDR-capable create-time format is the stable discriminator while live
-    /// application-HDR feedback is still provisional. Live feedback may
-    /// rebuild colour resources; it must not change the transport underneath
-    /// an already-created VkSwapchainKHR.
-    [[nodiscard]] inline PresentationTransport selectPresentationTransport(
-            const bool gamescopeDetected,
-            const bool hdrCapableSwapchain,
-            const PresentationEnvironmentPolicy& environment) {
-        return gamescopeDetected && hdrCapableSwapchain &&
-                !environment.gamescopeWsiDisabled &&
-                !environment.hdrExposureDisabled
-            ? PresentationTransport::GamescopeHdr
-            : PresentationTransport::OrderedSdr;
-    }
-
-    /// Generated images on the Gamescope HDR bridge are opportunistic: waiting
-    /// for one blocks the application's real present and caused deterministic
-    /// 7-13 ms stalls at 120 Hz. A zero timeout means "native frame wins", not
-    /// a backend failure. Headroom-bearing ordered and legacy paths retain
-    /// their configured ceiling because their synchronous FIFO contract is
-    /// intentionally different.
-    [[nodiscard]] inline uint64_t generatedImageAcquireTimeout(
-            const bool gamescopeHdrTransport,
-            const std::optional<uint64_t> configuredTimeout) {
-        if (gamescopeHdrTransport)
-            return 0;
-        return configuredTimeout.value_or(std::numeric_limits<uint64_t>::max());
+    resolvePresentationEnvironmentPolicy(const char* gamescopeWsiDisable) {
+        return {.gamescopeWsiDisabled = environmentFlagEnabled(gamescopeWsiDisable)};
     }
 
     /// The real frame already belongs to the application's minimum. Ordered
@@ -289,12 +224,11 @@ namespace fgvk::layer {
             const bool adaptive,
             const bool orderedTransport,
             const bool orderedAcquireRecoveryProbe,
-            const bool gamescopeHdrTransport,
             const bool headroomTightOrderedBatch,
             const GamescopePresentationFeedback& presentationFeedback,
             const size_t requestedGeneratedFrames) noexcept {
         if (!adaptive || !orderedTransport || orderedAcquireRecoveryProbe ||
-                gamescopeHdrTransport || headroomTightOrderedBatch ||
+                headroomTightOrderedBatch ||
                 requestedGeneratedFrames == 0) {
             return AdaptiveOrderedDeliveryPolicy::NotApplicable;
         }
@@ -478,7 +412,7 @@ namespace fgvk::layer {
     }
 
     /// Tracks temporary generated-swapchain pressure without turning it into
-    /// an engine or temporal-history failure. Gamescope HDR and headroom-tight
+    /// an engine or temporal-history failure. Headroom-tight
     /// ordered SDR admission are nonblocking; this state exists only to
     /// aggregate diagnostics and report the eventual recovery.
     class GeneratedImageAdmission {

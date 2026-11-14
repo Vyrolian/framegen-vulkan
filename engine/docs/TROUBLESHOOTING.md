@@ -40,9 +40,9 @@ To check configuration errors:
 fgvk-cli validate --config ~/.config/framegen-vulkan/conf.toml
 ```
 
-## Gamescope WSI, overlays, and HDR
+## Gamescope WSI and overlays
 
-Use [supported graphics integrations](LAYER-CHAINING.md). HDR is experimental and disabled by default. To use it on a supported Gamescope display, set `disable_hdr_exposure = 0` in `launcher.conf`, restart the game, then enable HDR in the game. Keep full Gamescope WSI off; see [HDR setup](CONFIGURATION.md#hdr).
+Use [supported graphics integrations](LAYER-CHAINING.md).
 
 ## Collect diagnostics
 

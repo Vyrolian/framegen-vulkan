@@ -7,7 +7,7 @@
 #include "fgvk-common/helpers/errors.hpp"
 #include "fgvk-common/helpers/pointers.hpp"
 #include "fgvk-common/vulkan/vulkan.hpp"
-#include "gamescope_hdr_feedback.hpp"
+#include "gamescope_feedback.hpp"
 #include "runtime_transition.hpp"
 #include "runtime_health.hpp"
 #include "spatial_scaling_policy.hpp"
@@ -35,8 +35,6 @@ namespace fgvk::layer {
         size_t recreationRequestedContexts{0};
         bool processProfileChangeDeferred{false};
         bool globalChangeDeferred{false};
-        bool hdrFeedbackChanged{false};
-        size_t hdrContextsDeferred{0};
         bool refreshRateChanged{false};
     };
 
@@ -46,7 +44,6 @@ namespace fgvk::layer {
         uint32_t gamescopePresentRefreshHz{0};
         bool swapchainImageCountCompatibility{false};
         bool spatialScalingActive{false};
-        bool hdrDisplayResize{false};
         bool variableSurface{false};
         bool variableFeedbackSuppressed{false};
         bool retainVariableSurfaceProof{false};
@@ -84,29 +81,13 @@ namespace fgvk::layer {
         /// needs the same compute-capable application queue as an initially
         /// active scaler.
         [[nodiscard]] bool scalingEngineProvisioned() const {
-            return this->active_profile &&
-                this->active_profile->scaling_enabled &&
-                spatialScalingProcessSupported(
-                    this->gamescopeEnvironmentDetected,
-                    this->gamescopeDetected,
-                    this->presentationEnvironment.hdrExposureDisabled,
-                    this->presentationEnvironment.gamescopeWsiDisabled
-                );
+            return this->active_profile && this->active_profile->scaling_enabled;
         }
 
         [[nodiscard]] bool scalingSurfaceConnectionProvisioned() const {
-            return this->active_profile &&
-                ((this->scalingEngineConfiguredAtStartup && this->scalingEngineProvisioned()) ||
-                    !this->presentationEnvironment.hdrExposureDisabled) &&
+            return this->active_profile && this->scalingEngineConfiguredAtStartup &&
+                this->scalingEngineProvisioned() &&
                 this->presentationEnvironment.gamescopeWsiDisabled;
-        }
-
-        [[nodiscard]] bool hdrExposureEnabled() const {
-            return !this->presentationEnvironment.hdrExposureDisabled;
-        }
-
-        [[nodiscard]] std::optional<bool> queryGamescopeOutputHdr(uint32_t gamescopePid) {
-            return this->hdrFeedbackReader.queryOutputHdrEnabled(gamescopePid);
         }
 
         [[nodiscard]] bool gamescopeWsiTimingProvisioned() const {
@@ -214,19 +195,15 @@ namespace fgvk::layer {
         std::unordered_map<VkSwapchainKHR, Swapchain> swapchains;
         PresentationEnvironmentPolicy presentationEnvironment;
         bool gamescopeEnvironmentDetected{false};
-        GamescopeHdrFeedbackReader hdrFeedbackReader;
+        GamescopeFeedbackReader gamescopeFeedbackReader;
         GamescopeFocusFeedback gamescopeFocus;
-        StableBooleanFeedback hdrFeedback;
-        std::optional<bool> gamescopeHdrActive;
         bool gamescopeDetected{false};
         std::optional<VkExtent2D> gamescopePresentationTarget;
         std::optional<uint32_t> gamescopeRefreshHz;
         GamescopePresentationFeedback gamescopePresentationFeedback;
-        std::optional<bool> lastHdrFeedbackSample;
-        std::string lastHdrActivationSource;
         std::optional<uint32_t> lastGamescopeRefreshHz;
-        std::string lastHdrFeedbackDiagnosticKey;
-        std::optional<std::chrono::steady_clock::time_point> lastHdrFeedbackPoll;
+        std::string lastGamescopeFeedbackDiagnosticKey;
+        std::optional<std::chrono::steady_clock::time_point> lastGamescopeFeedbackPoll;
         std::optional<std::chrono::steady_clock::time_point> lastConfigurationPoll;
         uint64_t runtimeStateRevision{1};
         // A seqlock publishes packed flags + IEEE-754 factor as one coherent

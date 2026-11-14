@@ -102,14 +102,10 @@ namespace fgvk::layer {
         // framegen-vulkan selects its immutable lower/compositor transport contract.
         VkPresentModeKHR incomingPresentMode{VK_PRESENT_MODE_FIFO_KHR};
         VkPresentModeKHR presentMode;
-        // Persist the exact create-time transport decision. HDR feedback can
-        // change later, but Vulkan present mode/pNext compatibility cannot be
-        // reinterpreted without replacing the game-owned swapchain.
+        // Persist the create-time transport decision; present-mode compatibility
+        // cannot change without replacing the game-owned swapchain.
         bool privateOrderedTransport{false};
         bool spatialScalingActive{false};
-        // Requested internal native output resize, including a memory-rejected
-        // candidate eligible for retry; the saved Scaling toggle stays off.
-        bool hdrDisplayResize{false};
         // Variable WSI surfaces retain the source extent and select a larger
         // lower presentation envelope. Factor edits which remain above an
         // already active ceiling can therefore be applied without replacing
@@ -149,9 +145,8 @@ namespace fgvk::layer {
     /// @param surfaceMinImages surface minImageCount for the layer-needs floor (0 = none)
     [[nodiscard]] bool context_ModifySwapchainCreateInfo(
         const ls::GameConf& profile, uint32_t maxImages,
-        VkSwapchainCreateInfoKHR& createInfo, bool gamescopeHdrActive,
+        VkSwapchainCreateInfoKHR& createInfo,
         bool gamescopeDetected,
-        const PresentationEnvironmentPolicy& presentationEnvironment,
         bool frameGenerationInteropEnabled,
         bool spatialScalingActive,
         uint32_t surfaceMinImages = 0);
@@ -169,8 +164,7 @@ namespace fgvk::layer {
             ls::GameConf profile, SwapchainInfo info,
             std::optional<std::filesystem::path> scalingShaderDll,
             bool fp16Requested,
-            std::optional<bool> gamescopeHdrActive,
-            bool gamescopeDetected, bool hdrExposureDisabled,
+            bool gamescopeDetected,
             std::optional<uint32_t> gamescopeRefreshHz,
             GamescopePresentationFeedback gamescopePresentationFeedback,
             uint64_t runtimeStateRevision,
@@ -304,12 +298,6 @@ namespace fgvk::layer {
         [[nodiscard]] bool presentRetirementEnabled() const {
             return !this->presentRetirementFences.empty();
         }
-        /// Record a confirmed Gamescope application-HDR state change. Existing
-        /// contexts retain their safe encoding until the game naturally
-        /// recreates them.
-        [[nodiscard]] bool updateGamescopeHdrState(
-            bool active, uint64_t runtimeStateRevision);
-
         /// Update the compositor scanout budget without rebuilding resources.
         void updateGamescopeRefreshRate(std::optional<uint32_t> refreshHz);
         void updateGamescopePresentationFeedback(
@@ -337,14 +325,6 @@ namespace fgvk::layer {
         [[nodiscard]] static bool directSpatialFrameGenerationOutputSupported(
             const vk::Vulkan& vk, VkFormat format,
             SpatialFramePipelinePlacement placement, bool spatialScalingActive);
-        [[nodiscard]] static SwapchainColorPipeline initialColorPipeline(
-            VkFormat format, VkColorSpaceKHR colorSpace,
-            std::optional<bool> gamescopeHdrActive, bool gamescopeDetected,
-            bool hdrExposureDisabled);
-        static void selectPackedHdr10Transport(const vk::Vulkan& vk,
-            backend::Instance& backendInstance, SwapchainColorPipeline& pipeline,
-            bool& applicationSupported, bool& backendSupported);
-
         struct PresentInvocation {
             const vk::Vulkan& vk;
             VkQueue queue;
@@ -384,9 +364,8 @@ namespace fgvk::layer {
             // Policy request before WSI admission. Fully admitted timestamps
             // remain authoritative through backend submission.
             GeneratedFramePlan requestedGeneratedFrames;
-            // Executable plan after transport-specific admission. Gamescope HDR
-            // and headroom-tight ordered SDR may contain fewer, deliberately
-            // re-spaced timestamps.
+            // Executable plan after transport-specific admission. Headroom-tight
+            // ordered SDR may contain fewer, deliberately re-spaced timestamps.
             GeneratedFramePlan scheduledGeneratedFrames;
             size_t admittedGeneratedFrameCount{0};
             bool historyWarmupActive{false};
@@ -452,23 +431,15 @@ namespace fgvk::layer {
                 applicationPresentMode;
         };
 
-        struct ColorTransitionState {
-            std::optional<bool> pendingGamescopeHdrActive;
-            uint64_t pendingHdrStateRevision{0};
-            std::optional<std::chrono::steady_clock::time_point> retryAt;
-        };
-
         struct SpatialResourceRequest {
             ls::ScalingMethod method{ls::ScalingMethod::Native};
             float sharpness{0.5F};
-            ls::HdrQuality hdrQuality{ls::HdrQuality::Quality};
 
             friend bool operator==(
                     const SpatialResourceRequest& left,
                     const SpatialResourceRequest& right) {
                 return left.method == right.method &&
-                    left.sharpness == right.sharpness &&
-                    ls::hdrCompactBuffers(left.hdrQuality) == ls::hdrCompactBuffers(right.hdrQuality);
+                    left.sharpness == right.sharpness;
             }
         };
 
@@ -480,8 +451,6 @@ namespace fgvk::layer {
                     const FrameGenerationResourceRequest& right) {
                 return ls::effectiveFlowScale(left.profile) ==
                         ls::effectiveFlowScale(right.profile) &&
-                    ls::hdrApproximateGeneration(left.profile.hdr_quality) ==
-                        ls::hdrApproximateGeneration(right.profile.hdr_quality) &&
                     ls::effectivePerformanceMode(left.profile) ==
                         ls::effectivePerformanceMode(right.profile) &&
                     generatedFrameCapacityForProfile(left.profile) ==
@@ -490,7 +459,6 @@ namespace fgvk::layer {
         };
 
         struct FrameGenerationResources {
-            bool hdrReducedPrecision{false};
             // Context must be destroyed before the exported Vulkan resources
             // it imports. Members are destroyed in reverse declaration order.
             std::vector<vk::Image> sourceImages;
@@ -507,7 +475,6 @@ namespace fgvk::layer {
             std::optional<std::string> error;
         };
 
-        bool frameGenerationHdrReducedPrecision{false};
         std::vector<vk::Image> sourceImages;
         std::vector<vk::Image> destinationImages;
         ls::lazy<vk::TimelineSemaphore> syncSemaphore;
@@ -600,7 +567,6 @@ namespace fgvk::layer {
         bool splitRenderUnavailable{};
         std::array<present_diagnostics::SplitRenderHalf, 8> splitRenderHalves{};
         size_t splitRenderHalfNext{};
-        ColorTransitionState colorTransitionState;
         PrivateResourceTransition<SpatialResourceRequest> spatialTransition;
         std::optional<SpatialScaler> preparedSpatialScaler;
         PrivateResourceTransition<FrameGenerationResourceRequest>
@@ -626,7 +592,7 @@ namespace fgvk::layer {
 
         bool gamescopeDetected{false};
         // Immutable for this context; copied from SwapchainInfo rather than
-        // inferred again from the current SDR/HDR colour pipeline.
+        // inferred again from the current colour pipeline.
         bool privateOrderedTransport{false};
         VkPresentModeKHR currentPresentMode{VK_PRESENT_MODE_FIFO_KHR};
         // Last per-present modes printed to stderr (-2 = nothing printed yet).
@@ -691,13 +657,11 @@ namespace fgvk::layer {
         bool replacementWsiPrimePending{false};
 
         SwapchainColorPipeline colorPipeline;
-        bool hdrExposureDisabled{true};
         std::optional<std::filesystem::path> scalingShaderDll;
         bool fp16Requested{true};
         ls::GameConf profile;
         SwapchainInfo info;
 
-        [[nodiscard]] bool applyPendingColorPipeline(const vk::Vulkan& vk);
         [[nodiscard]] bool applyPendingFrameGenerationResources(
             const vk::Vulkan& vk);
         void applyPendingSpatialScaler(const vk::Vulkan& vk);
@@ -726,9 +690,6 @@ namespace fgvk::layer {
             FrameGenerationResources resources,
             const ls::GameConf& resourceProfile,
             std::string_view reason);
-        void rebuildPrivateResources(const vk::Vulkan& vk,
-            SwapchainColorPipeline pipeline,
-            const ls::GameConf& resourceProfile);
         [[nodiscard]] bool resetGenerationScheduler(
             std::chrono::steady_clock::time_point now,
             std::string_view reason);
@@ -761,10 +722,6 @@ namespace fgvk::layer {
             bool orderedAcquireRecoveryProbe);
         void reportAdaptiveDelivery(const PresentationFramePlan& plan,
             size_t acceptedForPresentation);
-        [[nodiscard]] bool generationPipelineReady(
-            const vk::Vulkan& vk, bool gamescopeHdrTransport,
-            const PresentationFramePlan& plan,
-            std::chrono::steady_clock::time_point presentNow);
         [[nodiscard]] bool prepareRenderFence(const vk::Vulkan& vk);
         // Diagnostic split timestamps. Recording only adds two queries to the existing copy.
         [[nodiscard]] bool recordRenderSplitBegin(const vk::Vulkan& vk, VkCommandBuffer command, RenderSlot& slot);
@@ -800,8 +757,7 @@ namespace fgvk::layer {
         // Generated delivery and lower-swapchain retirement.
         [[nodiscard]] VkResult presentGeneratedFrames(
             const PresentInvocation& invocation,
-            const PresentationFramePlan& plan,
-            bool gamescopeHdrTransport);
+            const PresentationFramePlan& plan);
         [[nodiscard]] VkResult queuePresentWithRetirementFence(
             const vk::Vulkan& vk, VkQueue queue,
             const VkPresentInfoKHR& presentInfo,

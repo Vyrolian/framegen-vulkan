@@ -1,7 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 
 #include "benchmark.hpp"
-#include "benchmark_input.hpp"
 #include "profile_statistics.hpp"
 #include "image_transfer.hpp"
 #include "fgvk-common/quality/image_quality.hpp"
@@ -94,8 +93,7 @@ namespace {
         }
         std::cerr << std::fixed << std::setprecision(9)
             << "framegen-vulkan: benchmark-profile operation=summary schema=2 encoding="
-            << (opts.profile_hdr_reduced_precision ? "hdr10-pq-approximate" :
-                (opts.profile_hdr10 ? "hdr10-pq-packed" : "sdr-8-bit")) << " samples=" << opts.profile_samples
+            << "sdr-8-bit samples=" << opts.profile_samples
             << " warmup=" << opts.profile_warmup << " outputs=" << outputs
             << " timestamp_bits=" << result.timestampValidBits
             << " timestamp_period_ns=" << result.timestampPeriodNs << '\n';
@@ -141,10 +139,6 @@ int benchmark::run(const Options& opts, const i18n::Language language) {
         if (opts.profile_samples < 1 || opts.profile_samples > 10000 ||
                 opts.profile_warmup < 6 || opts.profile_warmup > 10000)
             throw ls::error("Invalid frame-profile sample or warm-up count");
-        if (opts.profile_hdr_reduced_precision && !opts.profile_hdr10)
-            throw ls::error("Reduced HDR precision profiling requires --profile-hdr10");
-        if (opts.profile_hdr10 && !opts.profile)
-            throw ls::error("HDR10 inputs require diagnostic frame profiling");
         const VkExtent2D extent{
             static_cast<uint32_t>(opts.width),
             static_cast<uint32_t>(opts.height)
@@ -178,8 +172,7 @@ int benchmark::run(const Options& opts, const i18n::Language language) {
         };
 
         std::array<int, 2> srcfds{-1, -1};
-        const VkFormat imageFormat = opts.profile_hdr10
-            ? VK_FORMAT_A2B10G10R10_UNORM_PACK32 : VK_FORMAT_R8G8B8A8_UNORM;
+        const VkFormat imageFormat = VK_FORMAT_R8G8B8A8_UNORM;
         ls::FileDescriptorScope sourceScope{srcfds};
         const vk::Image frame_0{vk,
             extent, imageFormat,
@@ -224,14 +217,12 @@ int benchmark::run(const Options& opts, const i18n::Language language) {
             },
             dll, opts.allow_fp16
         };
-        if (opts.profile_hdr10 && !fgvk.supportsPackedHdr10Transport())
-            throw ls::error("Packed HDR10 profiling is unsupported on the selected backend device");
         fgvk::backend::Context& fgvk_ctx = fgvk.openContext(
             (sourceScope.release(), std::pair{srcfds[0], srcfds[1]}),
             (destinationScope.release(), destfds),
             (syncScope.release(), syncfd), extent.width, extent.height,
-            opts.profile_hdr10 ? fgvk::backend::FrameEncoding::Hdr10PqPacked : fgvk::backend::FrameEncoding::Sdr8,
-            1.0F / opts.flow, opts.performance_mode, opts.profile_hdr_reduced_precision
+            fgvk::backend::FrameEncoding::Sdr8,
+            1.0F / opts.flow, opts.performance_mode
         );
 
         // Defined inputs belong outside the timed capacity loop. This remains a
@@ -240,16 +231,11 @@ int benchmark::run(const Options& opts, const i18n::Language language) {
             const auto scene = fgvk::quality::makeImageQualityRegressionScene(
                 fgvk::quality::QualitySceneKind::Traffic, extent.width, extent.height,
                 0.0F, 1.0F, 0.5F);
-            if (opts.profile_hdr10) {
-                images::uploadImage(vk, frame_0, hdr10ProfileInput(scene.previous));
-                images::uploadImage(vk, frame_1, hdr10ProfileInput(scene.current));
-            } else {
-                images::uploadImage(vk, frame_0, scene.previous);
-                images::uploadImage(vk, frame_1, scene.current);
-            }
+            images::uploadImage(vk, frame_0, scene.previous);
+            images::uploadImage(vk, frame_1, scene.current);
         }
         std::cerr << "FGVK_BENCHMARK recipe=2 content="
-                  << (opts.profile_hdr10 ? "traffic-pair-hdr10-203nit-v1" : "traffic-pair-v1")
+                  << "traffic-pair-v1"
                   << " source_times=0,1 upload=outside-timer precision="
                   << (opts.allow_fp16 ? "fp16-allowed" : "fp32") << '\n';
 

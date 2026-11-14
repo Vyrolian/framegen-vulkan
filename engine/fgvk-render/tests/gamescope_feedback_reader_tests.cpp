@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
-#include "gamescope_hdr_feedback.hpp"
+#include "gamescope_feedback.hpp"
 #include <chrono>
 #include <cstdlib>
 #include <iostream>
@@ -12,8 +12,6 @@ extern "C" {
     unsigned fgvk_test_feedback_hdr_reads();
     void fgvk_test_feedback_refresh(unsigned);
     void fgvk_test_feedback_identity(unsigned, unsigned);
-    void fgvk_test_feedback_hdr_output(int);
-    void fgvk_test_feedback_change_pid_on_hdr_read();
 }
 namespace {
     void expect(bool value, const char* message) {
@@ -26,65 +24,22 @@ int main() {
         setenv("SteamAppId", "730", 1);
         unsetenv("UMU_STEAM_GAME_ID");
         unsetenv("SteamGameId");
-        for (bool isolated : {false, true}) {
-            for (bool disabled : {false, true}) {
-                fgvk_test_feedback_reset();
-                fgvk::layer::GamescopeHdrFeedbackReader reader({
-                    .gamescopeWsiDisabled = isolated, .hdrExposureDisabled = disabled,
-                });
-                auto sample = reader.diagnosticSample();
-                expect(sample.gamescopeDetected && sample.refreshHz == 90 &&
-                    sample.outputWidth == 1920 && sample.presentation.vrrActive == true,
-                    "HDR policy must preserve presentation feedback");
-                const bool legacyHdr = !isolated && !disabled;
-                expect(sample.active == legacyHdr, "HDR activation source does not match transport policy");
-                fgvk_test_feedback_refresh(144);
-                const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
-                do {
-                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
-                    sample = reader.diagnosticSample();
-                } while (sample.refreshHz != 144 && std::chrono::steady_clock::now() < deadline);
-                expect(sample.refreshHz == 144, "presentation monitoring must remain live");
-                expect((fgvk_test_feedback_hdr_atoms() != 0) == legacyHdr &&
-                    (fgvk_test_feedback_hdr_reads() != 0) == legacyHdr,
-                    "isolated or disabled HDR must perform no HDR atom lookup or property read");
-                expect(legacyHdr || (!sample.outputHdrEnabled && !sample.appHdrMetadataPresent),
-                    "skipped HDR evidence must not be fabricated");
-                expect(legacyHdr || sample.activationSource ==
-                    (disabled ? "hdr-exposure-disabled" : "isolated-swapchain-colorspace"),
-                    "diagnostic source must distinguish disabled HDR from per-swapchain HDR");
-            }
-        }
-        for (bool disabled : {false, true}) {
-            fgvk_test_feedback_reset();
-            fgvk::layer::GamescopeHdrFeedbackReader reader({
-                .gamescopeWsiDisabled = true, .hdrExposureDisabled = disabled,
-            });
-            expect(!reader.queryOutputHdrEnabled(0) && !reader.queryOutputHdrEnabled(88),
-                "missing or foreign compositor identity must reject capability");
-            expect(fgvk_test_feedback_hdr_reads() == 0, "rejected identity must not read HDR");
-            expect(reader.queryOutputHdrEnabled(77) ==
-                (disabled ? std::optional<bool>{} : std::optional<bool>{true}),
-                "allowed bridge may query same-compositor root output on demand");
-            fgvk_test_feedback_hdr_output(0);
-            expect(reader.queryOutputHdrEnabled(77) ==
-                (disabled ? std::optional<bool>{} : std::optional<bool>{false}),
-                "root SDR must not become HDR");
-            for (int invalid : {-1, 2}) {
-                fgvk_test_feedback_hdr_output(invalid);
-                expect(!reader.queryOutputHdrEnabled(77), "missing or malformed root capability is unknown");
-            }
-            fgvk_test_feedback_hdr_output(1);
-            fgvk_test_feedback_identity(77, 4);
-            expect(!reader.queryOutputHdrEnabled(77), "a non-root display cannot supply fallback capability");
-            fgvk_test_feedback_identity(77, 0);
-            fgvk_test_feedback_change_pid_on_hdr_read();
-            expect(!reader.queryOutputHdrEnabled(77), "identity change during query must reject capability");
-            expect(!disabled || (fgvk_test_feedback_hdr_atoms() == 0 && fgvk_test_feedback_hdr_reads() == 0),
-                "HDR off must skip all on-demand HDR access");
-            expect(!reader.diagnosticSample().active.value_or(true),
-                "on-demand capability must never activate the application's HDR pipeline");
-        }
+        fgvk_test_feedback_reset();
+        fgvk::layer::GamescopeFeedbackReader reader;
+        auto sample = reader.diagnosticSample();
+        expect(sample.gamescopeDetected && sample.gamescopePid == 77 &&
+            sample.xwaylandServerId == 0 && sample.refreshHz == 90 &&
+            sample.outputWidth == 1920 && sample.presentation.vrrActive == true,
+            "presentation monitoring must retain identity, geometry, refresh and VRR");
+        fgvk_test_feedback_refresh(144);
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+        do {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            sample = reader.diagnosticSample();
+        } while (sample.refreshHz != 144 && std::chrono::steady_clock::now() < deadline);
+        expect(sample.refreshHz == 144, "presentation monitoring must remain live");
+        expect(fgvk_test_feedback_hdr_atoms() == 0 && fgvk_test_feedback_hdr_reads() == 0,
+            "presentation monitoring must perform no HDR atom lookup or property read");
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n'; return 1;
     }

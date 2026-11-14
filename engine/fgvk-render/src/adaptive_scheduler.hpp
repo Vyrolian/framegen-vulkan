@@ -23,18 +23,11 @@ namespace fgvk::layer {
         double baseFps{0.0};
     };
 
-    /// Cadence recovery follows the presentation transport selected when the
-    /// swapchain was created; it is not selected from live HDR feedback.
-    ///
-    /// Ordered SDR has FIFO ordering/backpressure under framegen-vulkan's control, so a
-    /// discontinuity only needs a short temporal-history refresh and can keep
-    /// the last multiplier that was proven stable. The Gamescope HDR bridge
-    /// preserves Gamescope's lower transport and admits synthetic images
-    /// opportunistically. A discontinuity there can also mean compositor or
-    /// colour-pipeline pressure, so it deliberately remeasures more cautiously.
+    /// Ordered transport can retain a proven multiplier after a short history
+    /// refresh. Other transports remeasure conservatively after discontinuity.
     enum class AdaptiveRecoveryPolicy : uint8_t {
         OrderedSdr,
-        ConservativeHdr,
+        Conservative,
     };
 
     struct AdaptiveSchedulerConfig {
@@ -61,7 +54,7 @@ namespace fgvk::layer {
         };
         std::optional<uint32_t> displayRefreshFps;
         AdaptiveRecoveryPolicy recoveryPolicy{
-            AdaptiveRecoveryPolicy::ConservativeHdr
+            AdaptiveRecoveryPolicy::Conservative
         };
     };
 

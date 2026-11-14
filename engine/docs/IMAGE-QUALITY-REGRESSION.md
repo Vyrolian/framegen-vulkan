@@ -100,5 +100,3 @@ ctest --test-dir build/quality-policy --output-on-failure -R '^(optional-device-
 ```
 
 A skipped GPU test is not image-quality evidence. Offscreen tests also do not prove WSI presentation, compositor scanout, subjective quality, latency, power, HDR, Proton translation, or another GPU and driver.
-
-For HDR10 single-pair checks, add `--hdr10`, optionally `--hdr-reduced-precision` and `--hdr-white-nits N` (default 203, maximum 10000). Fixtures convert to PQ BT.2020; readback converts to relative sRGB for existing quality guards and PPM previews. This checks bounded-scene corruption and moving edges, not physical HDR output or wide-gamut extrema. HDR temporal-sequence mode is unsupported. fgvk Gym’s quality runner owns collection.

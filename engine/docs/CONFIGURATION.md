@@ -149,12 +149,14 @@ Supported AMD telemetry must be readable for the game's GPU; Gamescope is option
 
 Keep the defaults unless a game needs a change.
 
+HDR swapchains run without frame generation; `disable_hdr_exposure` in old launcher files is ignored.
+
 ## Applying changes
 
 | Timing | Common settings |
 | --- | --- |
 | Restart | Enabling `frame_generation_provisioned` or `scaling_enabled`; `dll`; `allow_fp16`; `pacing_correction`; `gpu`; `ultra_performance`; `swapchain_image_count_compatibility`; launcher compatibility settings |
-| Live | `frame_generation_enabled`; most Frame Generation timing and cap settings; `scaling_method` and `scaling_sharpness`; `flow_scale`; `performance_mode`; `gpu_headroom_percent`; `hdr_quality` |
+| Live | `frame_generation_enabled`; most Frame Generation timing and cap settings; `scaling_method` and `scaling_sharpness`; `flow_scale`; `performance_mode`; `gpu_headroom_percent` |
 | May wait for resolution change or restart | `scaling_factor`, `scaling_supersampling`, and changes needing more Frame Generation capacity |
 
 Some live changes rebuild resources and may briefly hitch. See [Runtime transitions](RUNTIME-TRANSITIONS.md) for details.
@@ -172,7 +174,6 @@ Standalone launch compatibility settings live in `~/.config/framegen-vulkan/laun
 ```ini
 version = 1
 disable_steam_overlay = 1
-disable_hdr_exposure = 0
 enable_zink = 0
 force_alsa_audio = 0
 ```
@@ -181,15 +182,7 @@ force_alsa_audio = 0
 - `enable_zink`: runs OpenGL through Vulkan.
 - `force_alsa_audio`: changes the audio path for compatibility problems.
 
-To use a shared MangoHud layout, create `~/.config/framegen-vulkan/mangohud.conf` and enable MangoHud for a game with `MANGOHUD=1` in its launch option. Install host MangoHud and Python 3 first, and check availability with `fgvk --check-mangohud`. Flatpak games are unsupported. See the [shared MangoHud layout](LAYER-CHAINING.md#shared-mangohud-layout).
-
-## HDR
-
-**HDR is experimental and disabled by default.** It works with Scaling and Frame Generation in Gaming Mode on Steam Deck OLED or an HDR-capable external display, with HDR allowed in Gamescope. The Steam Deck LCD's built-in display is SDR.
-
-Set `disable_hdr_exposure = 0` in `launcher.conf`, restart the game, then enable HDR in its own settings. Restart after changing HDR exposure or switching between HDR and SDR displays.
-
-`hdr_quality` defaults to `'performance'`. `'quality'` retains full precision and full motion analysis; `'balanced'` uses compact shader and scaling buffers while retaining linear-light Frame Generation and full motion analysis; `'performance'` also uses approximate HDR10 generation and coarser motion analysis. Output resolution stays unchanged. Changes apply live with a brief hitch; lower precision may add banding or motion artifacts. See the [HDR pipeline](HDR-PIPELINE.md) for details.
+Enable host MangoHud with `MANGOHUD=1` in the launch option after installing MangoHud and Python 3. MangoHud reads its own configuration. See [layer ordering](LAYER-CHAINING.md#standalone-framegen-vulkan-with-mangohud).
 
 ## Advanced configuration
 

@@ -270,7 +270,7 @@ namespace {
         return written < available ? VK_INCOMPLETE : VK_SUCCESS;
     }
 
-    void checkFormats2(GamescopeScalingSurface& bridge, VkSurfaceKHR surface, bool hdr) {
+    void checkFormats2(GamescopeScalingSurface& bridge, VkSurfaceKHR surface) {
         VkSurfacePresentModeEXT mode{
             .sType = VK_STRUCTURE_TYPE_SURFACE_PRESENT_MODE_EXT,
             .presentMode = VK_PRESENT_MODE_FIFO_KHR,
@@ -281,10 +281,10 @@ namespace {
             .surface = surface,
         };
         expectedFormatInput = &mode;
-        const uint32_t expectedCount = hdr ? 4 : 2;
+        const uint32_t expectedCount = 2;
         uint32_t count{};
         expect(bridge.applicationFormats2({}, info, &count, nullptr, surfaceFormats2) == VK_SUCCESS &&
-            count == expectedCount, "chained formats2 count must retain opt-in HDR exposure");
+            count == expectedCount, "chained formats2 count must retain the SDR format boundary");
         VkSurfaceFormat2KHR output[5]{};
         VkImageCompressionPropertiesEXT compression[5]{};
         for (uint32_t i = 0; i < 5; ++i) {
@@ -294,13 +294,13 @@ namespace {
         }
         count = 5;
         expect(bridge.applicationFormats2({}, info, &count, output, surfaceFormats2) == VK_SUCCESS &&
-            count == expectedCount, "compression outputs must not replace the advertised HDR list");
+            count == expectedCount, "compression outputs must not replace the advertised format list");
         const auto legacy = bridge.applicationFormats({}, surface, surfaceFormats);
         expect(legacy && legacy->size() == count, "formats and formats2 count parity");
         for (uint32_t i = 0; i < count; ++i) {
             expect(output[i].surfaceFormat.format == (*legacy)[i].format &&
                 output[i].surfaceFormat.colorSpace == (*legacy)[i].colorSpace,
-                "formats2 must preserve legacy order and HDR colour spaces");
+                "formats2 must preserve legacy order and colour spaces");
             expect(output[i].sType == VK_STRUCTURE_TYPE_SURFACE_FORMAT_2_KHR &&
                 output[i].pNext == &compression[i] && !compression[i].pNext &&
                 compression[i].sType == VK_STRUCTURE_TYPE_IMAGE_COMPRESSION_PROPERTIES_EXT,
@@ -310,7 +310,7 @@ namespace {
                     (output[i].surfaceFormat.format == VK_FORMAT_A2B10G10R10_UNORM_PACK32
                         ? VK_IMAGE_COMPRESSION_FIXED_RATE_1BPC_BIT_EXT
                         : VK_IMAGE_COMPRESSION_FIXED_RATE_2BPC_BIT_EXT),
-                "reordered and virtual HDR pairs need their matching lower storage properties");
+                "Reordered pairs need their matching lower storage properties");
         }
         expect(output[count].surfaceFormat.format == VK_FORMAT_UNDEFINED &&
             !compression[count].imageCompressionFlags, "formats2 must not write beyond returned count");
@@ -323,7 +323,7 @@ namespace {
         mode.presentMode = VK_PRESENT_MODE_MAILBOX_KHR;
         count = 5;
         expect(bridge.applicationFormats2({}, info, &count, output, surfaceFormats2) == VK_SUCCESS &&
-            count == (hdr ? 3u : 2u), "driver constraints must remove unsupported HDR storage");
+            count == 2u, "driver constraints must preserve supported SDR storage");
         for (uint32_t i = 0; i < count; ++i)
             expect(output[i].surfaceFormat.colorSpace != VK_COLOR_SPACE_HDR10_ST2084_EXT,
                 "unconstrained legacy enumeration must not leak PQ into a constrained query");
@@ -849,178 +849,39 @@ int main() {
         .sType = VK_STRUCTURE_TYPE_XCB_SURFACE_CREATE_INFO_KHR,
         .connection = reinterpret_cast<xcb_connection_t*>(1), .window = 71,
     };
-    // The OLED panel and an external HDR monitor share the same capability
-    // contract. A Deck-sized SDR panel must not gain HDR from its resolution.
-    const struct DisplayCase {
-        VkExtent2D extent;
-        bool external;
-        uint32_t hdr;
-    } displays[]{
-        {{1280, 800}, false, 0}, {{1280, 800}, false, 1}, {{1280, 800}, false, 2},
-        {{1920, 1080}, true, 0}, {{1920, 1080}, true, 1}, {{1920, 1080}, true, 2},
-    };
-    for (const bool allowHdr : {false, true}) {
-        for (const auto& display : displays) {
-            const bool enabled = allowHdr && display.hdr == 1;
-            fgvk_test_surface_resize(display.extent.width, display.extent.height);
-            fgvk_test_surface_external_output(display.external);
-            fgvk_test_surface_hdr_output(display.hdr);
+    // Output HDR capability must not change the private bridge's SDR boundary.
+    for (const auto extent : {VkExtent2D{1280, 800}, VkExtent2D{1920, 1080}}) {
+        for (uint32_t capability : {0u, 1u, 2u}) {
+            fgvk_test_surface_resize(extent.width, extent.height);
+            fgvk_test_surface_hdr_output(capability);
             const auto queries = fgvk_test_surface_hdr_queries();
-            GamescopeScalingSurface bridge(allowHdr);
+            GamescopeScalingSurface bridge;
             VkSurfaceKHR surface{};
             expect(bridge.connect() &&
                 bridge.create(VK_NULL_HANDLE, next, info, nullptr, &surface) == VK_SUCCESS,
-                "HDR policy must preserve ordinary bridge creation");
-            expect(fgvk_test_surface_hdr_queries() - queries == (allowHdr ? 1 : 0),
-                "disabled HDR must not query output capability");
+                "output capability must preserve ordinary bridge creation");
+            expect(fgvk_test_surface_hdr_queries() == queries,
+                "the bridge must not query HDR capability");
             const auto formats = bridge.applicationFormats(VK_NULL_HANDLE, surface, surfaceFormats);
-            expect(formats && formats->size() == (enabled ? 4u : 2u),
-                "HDR formats require explicit opt-in and confirmed output capability");
-            checkFormats2(bridge, surface, enabled);
-            for (const auto colorSpace : {VK_COLOR_SPACE_HDR10_ST2084_EXT,
-                    VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT})
-                expect(std::ranges::any_of(*formats, [colorSpace](const auto& format) {
-                    return format.colorSpace == colorSpace;
-                }) == enabled, "internal and external displays must expose both HDR encodings by capability");
-            VkSwapchainCreateInfoKHR hdrInfo{
-                .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
-                .surface = surface, .minImageCount = 3,
-                .imageFormat = VK_FORMAT_A2B10G10R10_UNORM_PACK32,
-                .imageColorSpace = VK_COLOR_SPACE_HDR10_ST2084_EXT,
-                .imageExtent = display.extent, .presentMode = VK_PRESENT_MODE_FIFO_KHR,
-            };
-            auto lowerInfo = hdrInfo;
-            const auto queriesBeforeCreate = formatQueries;
-            expect(bridge.prepareSwapchain(VK_NULL_HANDLE, lowerInfo, surfaceFormats) ==
-                (enabled ? VK_SUCCESS : VK_ERROR_FORMAT_NOT_SUPPORTED),
-                "HDR creation must obey the same opt-in as enumeration");
-            expect(enabled || formatQueries == queriesBeforeCreate,
-                "disabled HDR must reject creation without querying HDR storage");
-            if (enabled) {
-                expect(lowerInfo.imageColorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR &&
-                    hdrInfo.imageColorSpace == VK_COLOR_SPACE_HDR10_ST2084_EXT,
-                    "normalize only the lower driver's create info");
-                hdrInfo.imageFormat = VK_FORMAT_R8G8B8A8_UNORM;
-                expect(bridge.prepareSwapchain(VK_NULL_HANDLE, hdrInfo, surfaceFormats) == VK_ERROR_FORMAT_NOT_SUPPORTED,
-                    "invalid HDR format pairs must fail closed");
-                hdrInfo.imageFormat = VK_FORMAT_A2B10G10R10_UNORM_PACK32;
-                const auto swapchain = fakeHandle<VkSwapchainKHR>(800);
-                expect(bridge.createSwapchain(surface, swapchain, hdrInfo, hdrInfo.imageExtent, 3, "hdr-test", VK_PRESENT_MODE_FIFO_KHR), "HDR protocol creation");
-                expect(fgvk_test_surface_feedback_color() == VK_COLOR_SPACE_HDR10_ST2084_EXT,
-                    "compositor feedback must preserve the application's original colour space");
-                const VkHdrMetadataEXT metadata{
-                    .sType = VK_STRUCTURE_TYPE_HDR_METADATA_EXT,
-                    .displayPrimaryRed = {0.64F, 0.33F}, .displayPrimaryGreen = {0.3F, 0.6F},
-                    .displayPrimaryBlue = {0.15F, 0.06F}, .whitePoint = {0.3127F, 0.329F},
-                    .maxLuminance = 1000, .minLuminance = 0.005F,
-                    .maxContentLightLevel = 2000, .maxFrameAverageLightLevel = 400,
-                };
-                const auto calls = fgvk_test_surface_hdr_metadata_calls();
-                const auto reads = fgvk_test_surface_reads();
-                expect(bridge.setHdrMetadata(surface, swapchain, metadata), "owned HDR metadata");
-                expect(fgvk_test_surface_hdr_metadata_calls() == calls + 1 &&
-                    fgvk_test_surface_hdr_metadata(0) == 32000 &&
-                    fgvk_test_surface_hdr_metadata(6) == 15635 &&
-                    fgvk_test_surface_hdr_metadata(8) == 1000 &&
-                    fgvk_test_surface_hdr_metadata(9) == 50 &&
-                    fgvk_test_surface_hdr_metadata(10) == 2000 &&
-                    fgvk_test_surface_hdr_metadata(11) == 400,
-                    "metadata must use CTA-861 protocol units");
-                expect(fgvk_test_surface_reads() == reads, "metadata must not roundtrip or poll");
-                for (size_t repeat = 0; repeat < 1024; ++repeat)
-                    expect(bridge.setHdrMetadata(surface, swapchain, metadata), "repeated metadata ownership");
-                auto changed = metadata;
-                changed.maxLuminance += 0.1F;
-                expect(bridge.setHdrMetadata(surface, swapchain, changed) &&
-                    fgvk_test_surface_hdr_metadata_calls() == calls + 1,
-                    "identical wire metadata must not generate repeated requests");
-                changed.maxLuminance = 1200;
-                expect(bridge.setHdrMetadata(surface, swapchain, changed) &&
-                    fgvk_test_surface_hdr_metadata_calls() == calls + 2 &&
-                    fgvk_test_surface_hdr_metadata(8) == 1200,
-                    "changed metadata must reach the compositor");
-                bridge.destroySwapchain(surface, swapchain);
-                expect(bridge.createSwapchain(surface, swapchain, hdrInfo, hdrInfo.imageExtent, 3, "hdr-test", VK_PRESENT_MODE_FIFO_KHR), "HDR replacement protocol creation");
-                expect(bridge.setHdrMetadata(surface, swapchain, changed) &&
-                    fgvk_test_surface_hdr_metadata_calls() == calls + 3,
-                    "replacement protocol object must receive its own initial metadata");
-                bridge.destroySwapchain(surface, swapchain);
-                hdrInfo.imageFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
-                hdrInfo.imageColorSpace = VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT;
-                lowerInfo = hdrInfo;
-                expect(bridge.prepareSwapchain(VK_NULL_HANDLE, lowerInfo, surfaceFormats) == VK_SUCCESS &&
-                    lowerInfo.imageColorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR &&
-                    lowerInfo.imageExtent.width == display.extent.width &&
-                    lowerInfo.imageExtent.height == display.extent.height,
-                    "scRGB must preserve each display's extent through the same bridge");
-                expect(bridge.createSwapchain(surface, swapchain, hdrInfo, hdrInfo.imageExtent, 3, "hdr-test", VK_PRESENT_MODE_FIFO_KHR) &&
-                    fgvk_test_surface_feedback_color() == VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT,
-                    "internal and external scRGB must retain original compositor colour feedback");
-                bridge.destroySwapchain(surface, swapchain);
-                hdrInfo.imageColorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
-                expect(bridge.createSwapchain(surface, swapchain, hdrInfo, hdrInfo.imageExtent, 3, "hdr-test", VK_PRESENT_MODE_FIFO_KHR), "SDR replacement protocol creation");
-                expect(bridge.setHdrMetadata(surface, swapchain, metadata) &&
-                    fgvk_test_surface_hdr_metadata_calls() == calls + 3,
-                    "reused SDR swapchain handle must not inherit HDR metadata");
-                bridge.destroySwapchain(surface, swapchain);
+            expect(formats && formats->size() == 2, "the bridge exposes only supported SDR pairs");
+            for (const auto& format : *formats)
+                expect(format.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR,
+                    "the private bridge cannot expose non-sRGB pairs");
+            checkFormats2(bridge, surface);
+            auto create = swapchainInfo(surface);
+            for (const auto space : {VK_COLOR_SPACE_HDR10_ST2084_EXT,
+                    VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT, VK_COLOR_SPACE_HDR10_HLG_EXT,
+                    VK_COLOR_SPACE_DISPLAY_P3_NONLINEAR_EXT}) {
+                create.imageColorSpace = space;
+                expect(bridge.prepareSwapchain(create) == VK_ERROR_FORMAT_NOT_SUPPORTED &&
+                    create.imageColorSpace == space,
+                    "unsupported bridge colour spaces must fail without reinterpretation");
             }
+            create.imageColorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
+            expect(bridge.prepareSwapchain(create) == VK_SUCCESS, "SDR bridge creation remains supported");
             bridge.destroy(surface);
         }
     }
-    // Gamescope can create a game server after publishing output capability.
-    // Only missing game-server capability may use the same-PID root query.
-    for (bool allowed : {false, true}) {
-        for (uint32_t server : {0u, 9u}) {
-            for (bool present : {false, true}) {
-                for (uint32_t local : {0u, 1u, 2u}) {
-                    for (const std::optional<bool> root :
-                            {std::optional<bool>{}, std::optional<bool>{false}, std::optional<bool>{true}}) {
-                        fgvk_test_surface_server_id(server);
-                        fgvk_test_surface_hdr_output_present(present);
-                        fgvk_test_surface_hdr_output(local);
-                        unsigned rootQueries{};
-                        GamescopeScalingSurface bridge(allowed, [&](uint32_t pid) {
-                            expect(pid == static_cast<uint32_t>(getpid()),
-                                "root query must receive the validated compositor identity");
-                            ++rootQueries;
-                            return root;
-                        });
-                        VkSurfaceKHR surface{};
-                        expect(bridge.connect() && bridge.create(VK_NULL_HANDLE, next,
-                            info, nullptr, &surface) == VK_SUCCESS, "dynamic server surface");
-                        const bool fallback = allowed && !present && server != 0;
-                        const bool hdr = allowed && (present ? local == 1 : fallback && root.value_or(false));
-                        const auto formats = bridge.applicationFormats(VK_NULL_HANDLE, surface, surfaceFormats);
-                        expect(rootQueries == (fallback ? 1u : 0u),
-                            "query root only for missing capability on an HDR-enabled game server");
-                        expect(formats && formats->size() == (hdr ? 4u : 2u),
-                            "missing capability may use root, but explicit SDR/invalid/off must remain SDR");
-                        bridge.destroy(surface);
-                    }
-                }
-            }
-        }
-    }
-    fgvk_test_surface_server_id(9);
-    fgvk_test_surface_hdr_output_present(true);
-    for (int fault = 1; fault <= 7; ++fault) {
-        fgvk_test_surface_hdr_property_fault(fault);
-        unsigned rootQueries{};
-        GamescopeScalingSurface bridge(true, [&](uint32_t) {
-            ++rootQueries;
-            return true;
-        });
-        VkSurfaceKHR surface{};
-        expect(bridge.connect() && bridge.create(VK_NULL_HANDLE, next,
-            info, nullptr, &surface) == VK_SUCCESS, "malformed capability surface");
-        const auto formats = bridge.applicationFormats(VK_NULL_HANDLE, surface, surfaceFormats);
-        expect(rootQueries == (fault == 7 ? 1u : 0u),
-            "only absent atoms/properties authorize fallback; malformed or failed reads do not");
-        expect(formats && formats->size() == (fault == 7 ? 4u : 2u),
-            "failed capability proof cannot expose HDR formats");
-        bridge.destroy(surface);
-    }
-    fgvk_test_surface_hdr_property_fault(0);
     fgvk_test_surface_hdr_output(0);
     fgvk_test_surface_external_output(false);
     fgvk_test_surface_resize(1920, 1080);
@@ -1530,9 +1391,8 @@ int main() {
     fgvk_test_surface_ownership(false);
     expect(fgvk_test_surface_objects() == 0, "ownership stress connection teardown");
 
-    for (const bool allowHdr : {false, true}) {
-        fgvk_test_surface_hdr_output(1);
-        GamescopeScalingSurface bridge(allowHdr);
+    {
+        GamescopeScalingSurface bridge;
         VkSurfaceKHR surface{};
         expect(bridge.connect() &&
             bridge.create(VK_NULL_HANDLE, next, info, nullptr, &surface) == VK_SUCCESS,
@@ -1551,23 +1411,10 @@ int main() {
             const bool scaled = (cycle & 2) != 0;
             const bool generated = (cycle & 4) != 0;
             info.imageExtent = scaled ? VkExtent2D{source.width * 3 / 2, source.height * 3 / 2} : source;
-            const unsigned encoding = allowHdr ? (cycle / 8) % 3 : 0;
-            info.imageColorSpace = encoding == 1 ? VK_COLOR_SPACE_HDR10_ST2084_EXT
-                : encoding == 2 ? VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT
-                : VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
-            info.imageFormat = encoding == 1 ? VK_FORMAT_A2B10G10R10_UNORM_PACK32
-                : encoding == 2 ? VK_FORMAT_R16G16B16A16_SFLOAT : VK_FORMAT_B8G8R8A8_UNORM;
             expect(bridge.createSwapchain(surface, handle, info, source, generated ? 6 : 3,
                 "resize-matrix", VK_PRESENT_MODE_FIFO_KHR), "create resize matrix swapchain");
             expect(fgvk_test_surface_feedback_color() == info.imageColorSpace,
-                "resize replacement must advertise its own SDR/HDR colour space");
-            const VkHdrMetadataEXT metadata{.sType = VK_STRUCTURE_TYPE_HDR_METADATA_EXT,
-                .maxLuminance = 1000, .maxContentLightLevel = 1000};
-            const auto metadataCalls = fgvk_test_surface_hdr_metadata_calls();
-            expect(bridge.setHdrMetadata(surface, handle, metadata) &&
-                bridge.setHdrMetadata(surface, handle, metadata), "replacement metadata owner");
-            expect(fgvk_test_surface_hdr_metadata_calls() == metadataCalls + (encoding != 0),
-                "HDR must initialize metadata once per replacement; SDR must not inherit or send it");
+                "resize replacement must advertise its own colour space");
             expect(bridge.acquisitionResult(surface, handle) == VK_SUCCESS,
                 "acquire before a mid-frame resize");
             checkApplicationExtent(bridge, surface, target, 1.5F);

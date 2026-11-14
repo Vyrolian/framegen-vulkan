@@ -25,15 +25,9 @@ namespace fgvk::backend {
     /// shader registry struct
     struct ShaderRegistry {
         vk::Shader mipmaps;
-        vk::Shader generate, generate_hdr;
-        std::vector<uint8_t> generate_pq_packed_source;
-        vk::Shader hdr10_pq_to_scrgb;
-        vk::Shader scrgb_to_hdr10_pq;
-        std::optional<vk::Shader> scrgb_to_hdr10_pq_packed;
+        vk::Shader generate, generate_rgba16f;
         Shaders quality;
         Shaders performance;
-
-        [[nodiscard]] vk::Shader packedPqShader(const vk::Vulkan& vk) const;
 
         bool is_fp16; //!< whether the fp16 shader variants were loaded
     };

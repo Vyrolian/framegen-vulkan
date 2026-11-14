@@ -70,7 +70,7 @@ bool Swapchain::resetGenerationScheduler(
             .displayRefreshFps = this->gamescopeRefreshHz,
             .recoveryPolicy = this->privateOrderedTransport
                 ? AdaptiveRecoveryPolicy::OrderedSdr
-                : AdaptiveRecoveryPolicy::ConservativeHdr,
+                : AdaptiveRecoveryPolicy::Conservative,
         },
         &present_diagnostics::adaptiveScheduler()
     );
@@ -188,10 +188,6 @@ ProfileUpdateDecision Swapchain::updateProfile(
             nextProfile.scaling_supersampling,
             this->info.gamescopePresentationTarget
         );
-    const bool hdrFrameGenerationPrecisionChanged = resourcesAvailable &&
-        (this->colorPipeline.encoding == backend::FrameEncoding::Hdr10Pq ||
-         this->colorPipeline.encoding == backend::FrameEncoding::Hdr10PqPacked) &&
-        this->frameGenerationHdrReducedPrecision != ls::hdrApproximateGeneration(nextProfile.hdr_quality);
     auto plan = planProfileUpdate(
         this->profile, nextProfile, this->destinationImages.size(),
         resourcesAvailable, this->spatialScaler.has_value(),
@@ -199,10 +195,7 @@ ProfileUpdateDecision Swapchain::updateProfile(
         this->info.spatialScalingActivationSupported,
         spatialScalingEffectiveExtentUnchanged,
         spatialSupersamplingEffectiveExtentUnchanged,
-        this->gamescopeRefreshHz,
-        this->colorPipeline.encoding == backend::FrameEncoding::Hdr10Pq ||
-            this->colorPipeline.encoding == backend::FrameEncoding::Hdr10PqPacked,
-        hdrFrameGenerationPrecisionChanged, this->info.hdrDisplayResize
+        this->gamescopeRefreshHz
     );
     auto decision = plan.decision;
     if (decision.frameGenerationPrivateRebuild) {
@@ -236,8 +229,7 @@ ProfileUpdateDecision Swapchain::updateProfile(
                       << generatedFrameCapacityForProfile(nextProfile)
                       << " action=prepare-private-context\n";
         }
-    } else if (!hdrFrameGenerationPrecisionChanged &&
-            ls::effectiveFlowScale(this->profile) ==
+    } else if (ls::effectiveFlowScale(this->profile) ==
                 ls::effectiveFlowScale(nextProfile) &&
             ls::effectivePerformanceMode(this->profile) ==
                 ls::effectivePerformanceMode(nextProfile) &&
@@ -254,10 +246,8 @@ ProfileUpdateDecision Swapchain::updateProfile(
     }
     if (decision.spatialScalingLiveRebuild) {
         const SpatialResourceRequest request{
-            .method = this->info.hdrDisplayResize ? ls::ScalingMethod::Native
-                : ls::effectiveScalingMethod(nextProfile),
-            .sharpness = this->info.hdrDisplayResize ? 0.0F : nextProfile.scaling_sharpness,
-            .hdrQuality = nextProfile.hdr_quality,
+            .method = ls::effectiveScalingMethod(nextProfile),
+            .sharpness = nextProfile.scaling_sharpness,
         };
         if (this->spatialTransition.pendingRequest() &&
                 !(this->spatialTransition.value() == request)) {
@@ -280,12 +270,9 @@ ProfileUpdateDecision Swapchain::updateProfile(
                       << request.sharpness
                       << " action=rebuild-private-scaler\n";
         }
-    } else if ((this->info.hdrDisplayResize ||
-            (ls::effectiveScalingMethod(nextProfile) ==
+    } else if (ls::effectiveScalingMethod(nextProfile) ==
                 ls::effectiveScalingMethod(this->profile) &&
-            nextProfile.scaling_sharpness ==
-                this->profile.scaling_sharpness)) &&
-            ls::hdrCompactBuffers(nextProfile.hdr_quality) == ls::hdrCompactBuffers(this->profile.hdr_quality)) {
+            nextProfile.scaling_sharpness == this->profile.scaling_sharpness) {
         this->spatialTransition.cancel();
         this->preparedSpatialScaler.reset();
     }
@@ -650,7 +637,7 @@ bool Swapchain::requestSpatialScalingAdmissionRetryAfterPresent(
             !this->spatialScalingAdmissionRetryAfter ||
             now < *this->spatialScalingAdmissionRetryAfter ||
             this->spatialScaler ||
-            !(ls::spatialScalingRequested(this->profile) || this->info.hdrDisplayResize) ||
+            !ls::spatialScalingRequested(this->profile) ||
             this->info.spatialScalingInactiveReason !=
                 SpatialScalingInactiveReason::VariableSurfaceMemoryBudget ||
             (lowerPresentResult != VK_SUCCESS &&

@@ -48,8 +48,7 @@ namespace {
 
 int main() {
     const ls::LaunchConfigFile defaults;
-    expect(defaults.settings().disable_hdr_exposure &&
-            defaults.settings().disable_steam_overlay &&
+    expect(defaults.settings().disable_steam_overlay &&
             !defaults.settings().enable_zink &&
             !defaults.settings().force_alsa_audio,
         "standalone launcher defaults must disable Steam overlay and preserve other defaults");
@@ -60,7 +59,6 @@ int main() {
     std::filesystem::create_directories(directory);
 
     ls::LaunchConfigFile configured;
-    configured.settings().disable_hdr_exposure = false;
     configured.settings().disable_steam_overlay = false;
     configured.settings().enable_zink = true;
     configured.settings().force_alsa_audio = true;
@@ -69,19 +67,23 @@ int main() {
 
     expect(readText(canonicalPath) ==
             "version=1\n"
-            "disable_hdr_exposure=0\n"
             "disable_steam_overlay=0\n"
             "enable_zink=1\n"
             "force_alsa_audio=1\n",
         "launcher configuration writer must retain its canonical shell-safe format");
 
     const ls::LaunchConfigFile restored(canonicalPath);
-    expect(!restored.settings().disable_hdr_exposure &&
-            !restored.settings().disable_steam_overlay &&
+    expect(!restored.settings().disable_steam_overlay &&
             restored.settings().enable_zink &&
             restored.settings().force_alsa_audio,
         "launcher configuration must round-trip every supported setting");
 
+    for (const auto value : {"0", "1"}) {
+        writeText(canonicalPath, std::string("version=1\ndisable_hdr_exposure=") + value +
+            "\nenable_zink=1\n");
+        expect(ls::LaunchConfigFile(canonicalPath).settings().enable_zink,
+            "the retired launcher key must parse without changing supported settings");
+    }
     expect(rejects(directory / "duplicate-hdr.conf",
             "version=1\ndisable_hdr_exposure=1\ndisable_hdr_exposure=0\n"),
         "duplicate HDR settings must fail closed");

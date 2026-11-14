@@ -2098,41 +2098,6 @@ int main() {
             shouldRejectManagedMultiSwapchainPresent(2, true),
         "managed multi-swapchain batches must fail closed before shared waits are consumed");
 
-    const PresentationEnvironmentPolicy normalEnvironment{};
-    const PresentationEnvironmentPolicy isolatedEnvironment{
-        .gamescopeWsiDisabled = true,
-        .hdrExposureDisabled = true,
-    };
-    // Regression boundary: only an HDR-capable swapchain managed by Gamescope
-    // may use the compositor bridge. In particular, merely discovering
-    // Gamescope must not route an ordinary SDR game away from ordered FIFO.
-    expect(selectPresentationTransport(false, false, normalEnvironment) ==
-            PresentationTransport::OrderedSdr,
-        "ordinary SDR did not retain the ordered fork transport");
-    expect(selectPresentationTransport(false, true, normalEnvironment) ==
-            PresentationTransport::OrderedSdr,
-        "non-Gamescope HDR unexpectedly selected the Gamescope bridge");
-    expect(selectPresentationTransport(true, false, normalEnvironment) ==
-            PresentationTransport::OrderedSdr,
-        "Gamescope SDR was routed through the HDR transport");
-    expect(selectPresentationTransport(true, true, normalEnvironment) ==
-            PresentationTransport::GamescopeHdr,
-        "HDR-capable Gamescope swapchain did not select the HDR bridge");
-    expect(selectPresentationTransport(true, true, isolatedEnvironment) ==
-            PresentationTransport::OrderedSdr,
-        "WSI-isolated launch selected the unavailable Gamescope HDR bridge");
-
-    // The HDR/Gamescope path must never block a real frame waiting for a
-    // synthetic image. Legacy/ordered paths keep their historical contract.
-    expect(generatedImageAcquireTimeout(true, 50'000'000) == 0,
-        "Gamescope admission must remain nonblocking");
-    expect(generatedImageAcquireTimeout(true, std::nullopt) == 0,
-        "Gamescope admission became unbounded without a configured ceiling");
-    expect(generatedImageAcquireTimeout(false, 50'000'000) == 50'000'000,
-        "legacy configured acquire ceiling was not preserved");
-    expect(generatedImageAcquireTimeout(false, std::nullopt) ==
-            std::numeric_limits<uint64_t>::max(),
-        "legacy unconfigured acquire behaviour changed");
     expect(!orderedGeneratedBatchNeedsNonblockingAdmission(3, 5, 0) &&
             !orderedGeneratedBatchNeedsNonblockingAdmission(3, 5, 1) &&
             !orderedGeneratedBatchNeedsNonblockingAdmission(3, 5, 2) &&
@@ -2172,43 +2137,41 @@ int main() {
         .allowTearing = true,
     };
     const auto fixedPolicy = selectAdaptiveOrderedDeliveryPolicy(
-        true, true, false, false, false, fixedRefresh, 1
+        true, true, false, false, fixedRefresh, 1
     );
     expect(fixedPolicy ==
                 AdaptiveOrderedDeliveryPolicy::NotApplicable &&
             selectAdaptiveOrderedDeliveryPolicy(
-                true, true, false, false, false,
+                true, true, false, false,
                 fixedRefreshWithTearing, 1
             ) == fixedPolicy &&
             selectAdaptiveOrderedDeliveryPolicy(
-                true, true, false, false, false, incapableVrr, 1
+                true, true, false, false, incapableVrr, 1
             ) == fixedPolicy &&
             selectAdaptiveOrderedDeliveryPolicy(
-                true, true, false, false, false, {}, 2
+                true, true, false, false, {}, 2
             ) == fixedPolicy,
         "Adaptive fixed-refresh delivery diverged from the 3.3 ordered path");
     const auto variablePolicy = selectAdaptiveOrderedDeliveryPolicy(
-        true, true, false, false, false, requestedVrr, 1
+        true, true, false, false, requestedVrr, 1
     );
     expect(variablePolicy ==
                 AdaptiveOrderedDeliveryPolicy::VariableRefreshBounded &&
             selectAdaptiveOrderedDeliveryPolicy(
-                true, true, false, false, false, activeVrr, 2
+                true, true, false, false, activeVrr, 2
             ) == variablePolicy,
         "Adaptive VRR feedback did not select bounded delivery");
     for (const auto policy : {
             selectAdaptiveOrderedDeliveryPolicy(
-                false, true, false, false, false, fixedRefresh, 1),
+                false, true, false, false, fixedRefresh, 1),
             selectAdaptiveOrderedDeliveryPolicy(
-                true, false, false, false, false, fixedRefresh, 1),
+                true, false, false, false, fixedRefresh, 1),
             selectAdaptiveOrderedDeliveryPolicy(
-                true, true, true, false, false, fixedRefresh, 1),
+                true, true, true, false, fixedRefresh, 1),
             selectAdaptiveOrderedDeliveryPolicy(
-                true, true, false, true, false, fixedRefresh, 1),
+                true, true, false, true, fixedRefresh, 1),
             selectAdaptiveOrderedDeliveryPolicy(
-                true, true, false, false, true, fixedRefresh, 1),
-            selectAdaptiveOrderedDeliveryPolicy(
-                true, true, false, false, false, fixedRefresh, 0),
+                true, true, false, false, fixedRefresh, 0),
         }) {
         expect(policy == AdaptiveOrderedDeliveryPolicy::NotApplicable,
             "non-normal Adaptive delivery selected a pacing adapter");

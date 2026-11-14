@@ -12,6 +12,6 @@ namespace fgvk::backend {
     /// @param perf whether performance mode is enabled
     /// @return calculated limits
     vk::Limits calculateDescriptorPoolLimits(
-        size_t count, bool perf, bool colorConversion = false
+        size_t count, bool perf
     );
 }

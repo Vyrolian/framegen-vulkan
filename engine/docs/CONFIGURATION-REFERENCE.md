@@ -4,7 +4,7 @@ For normal setup, use the [configuration guide](CONFIGURATION.md). This page cov
 
 ## Format compatibility
 
-Only `version = 2` is supported. Unknown keys are ignored. Launcher compatibility options belong in `launcher.conf`, and HDR buffer precision is a native profile field.
+Only `version = 2` is supported. Unknown keys are ignored. Launcher compatibility options belong in `launcher.conf`.
 
 ## Profiles
 
@@ -96,7 +96,6 @@ See [Adaptive validation](ADAPTIVE-VALIDATION.md) for scheduling details.
 | `scaling_factor` | `1.5` | Target output-to-source ratio per dimension from 1.0–2.0; the surface, display target, and resource limits may reduce the effective ratio. |
 | `scaling_supersampling` | `false` | Allows supported variable Gamescope surfaces to render beyond the display target before downsampling. |
 | `scaling_sharpness` | `0.8` | Sharpening strength from 0.0–1.0. |
-| `hdr_quality` | `'performance'` | Live HDR quality: `'quality'` retains full precision; `'balanced'` uses compact shader/scaling buffers with full motion analysis and linear-light generation; `'performance'` also uses approximate HDR10 interpolation and halves motion Flow Scale, bounded at 0.25. Output resolution and saved Flow Scale are preserved. SDR ignores it. See [HDR quality](HDR-PIPELINE.md#hdr-quality). |
 | `swapchain_image_count_compatibility` | `false` | Preserves the game's requested swapchain image minimum. Use only for games that otherwise fail to start. Requires restart. |
 
 ### Performance and device selection
@@ -140,11 +139,9 @@ Set `FGVK_ENV=1` to build one profile from environment variables instead of TOML
 - Fixed and identity: `FGVK_GPU`, `FGVK_MULTIPLIER`, `FGVK_FRAME_GENERATION_PROVISIONED`, `FGVK_FRAME_GENERATION_ENABLED`, `FGVK_FRAME_GENERATION_REFRESH_THRESHOLD`, `FGVK_BASE_FPS_CAP`;
 - Adaptive: `FGVK_ADAPTIVE`, `FGVK_ADAPTIVE_AUTO_BASE_FPS_CAP`, `FGVK_ADAPTIVE_FRACTIONAL_REAL_FRAME_PRIORITY`, `FGVK_TARGET_FPS`, `FGVK_ADAPTIVE_TARGET_REFRESH_RATE`, `FGVK_ADAPTIVE_MAX_MULTIPLIER`, `FGVK_ADAPTIVE_STABLE_CADENCE`, `FGVK_DYNAMIC_CADENCE_RECOVERY`, `FGVK_DYNAMIC_CADENCE_PROBE_INTERVAL_SECONDS`;
 - Gamescope VRR: `FGVK_GAMESCOPE_VRR_MODE` (`follow-steam`, `on`, or `off`);
-- HDR quality: `FGVK_HDR_QUALITY` (`quality`, `balanced`, or `performance`; defaults to `performance`);
 - Scaling: `FGVK_SCALING_ENABLED`, `FGVK_SCALING_METHOD`, `FGVK_SCALING_FACTOR`, `FGVK_SCALING_SUPERSAMPLING`, `FGVK_SCALING_SHARPNESS`, `FGVK_SWAPCHAIN_IMAGE_COUNT_COMPATIBILITY`; and
 - resources: `FGVK_ULTRA_PERFORMANCE`, `FGVK_FLOW_SCALE`, `FGVK_PERFORMANCE_MODE`, `FGVK_PACING`.
 
-`FGVK_DISABLE_HDR_EXPOSURE=1` disables HDR exposure by default. The restart-only HDR control exports `FGVK_DISABLE_HDR_EXPOSURE=0` and `DXVK_HDR=1` while retaining `DISABLE_GAMESCOPE_WSI=1`; see the [HDR launch contract](HDR-PIPELINE.md#toggle-and-launch-contract). Environment-only settings are process-start settings, not live profile controls.
 
 ## Pacing profiler
 

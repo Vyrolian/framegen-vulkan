@@ -80,8 +80,6 @@ namespace {
         std::unordered_set<VkDevice> copyCalibrationDevices;
         std::unordered_set<VkDevice> applicationTimingDevices;
         std::unordered_set<VkDevice> presentFeedbackDevices;
-        std::unordered_set<VkDevice> hdrMetadataDevices;
-        std::unordered_set<VkDevice> lowerHdrMetadataDevices;
         struct QueueIdentity {
             VkDevice device{VK_NULL_HANDLE};
             uint32_t familyIndex{UINT32_MAX};
@@ -567,11 +565,7 @@ namespace {
                     });
                 if (canAttemptGamescopeScalingSurface(
                         extensionQuery.result, waylandSupported)) {
-                    auto candidate = std::make_unique<GamescopeScalingSurface>(
-                        layer_info->root.hdrExposureEnabled(),
-                        [](uint32_t gamescopePid) {
-                            return layer_info->root.queryGamescopeOutputHdr(gamescopePid);
-                        });
+                    auto candidate = std::make_unique<GamescopeScalingSurface>();
                     if (candidate->connect())
                         scalingSurfaces = std::move(candidate);
                 }
@@ -676,11 +670,6 @@ namespace {
     }
 
     // create device
-    bool bridgeHdrEnabled() {
-        return frameGenerationLayer && instance_info && instance_info->scalingSurfaces &&
-            instance_info->scalingSurfaces->hdrEnabled();
-    }
-
     std::vector<VkExtensionProperties> lowerDeviceExtensions(VkPhysicalDevice physicalDevice) {
         for (unsigned attempt = 0; attempt < 3; ++attempt) {
             uint32_t count{};
@@ -700,33 +689,6 @@ namespace {
                 throw ls::vulkan_error(result, "device extension enumeration failed");
         }
         throw ls::vulkan_error(VK_INCOMPLETE, "device extensions changed during enumeration");
-    }
-
-    VkResult myvkEnumerateDeviceExtensionProperties(VkPhysicalDevice physicalDevice,
-            const char* layerName, uint32_t* count, VkExtensionProperties* properties) {
-        if (!bridgeHdrEnabled() || (layerName && std::strcmp(layerName, "VK_LAYER_FGVK_render")))
-            return instance_info->funcs.EnumerateDeviceExtensionProperties(
-                physicalDevice, layerName, count, properties);
-        try {
-            auto extensions = layerName ? std::vector<VkExtensionProperties>{}
-                : lowerDeviceExtensions(physicalDevice);
-            if (std::ranges::none_of(extensions, [](const auto& extension) {
-                    return std::strcmp(extension.extensionName, VK_EXT_HDR_METADATA_EXTENSION_NAME) == 0;
-                }))
-                extensions.push_back({VK_EXT_HDR_METADATA_EXTENSION_NAME, VK_EXT_HDR_METADATA_SPEC_VERSION});
-            if (!properties) {
-                *count = static_cast<uint32_t>(extensions.size());
-                return VK_SUCCESS;
-            }
-            const auto written = std::min(*count, static_cast<uint32_t>(extensions.size()));
-            std::copy_n(extensions.begin(), written, properties);
-            *count = written;
-            return written < extensions.size() ? VK_INCOMPLETE : VK_SUCCESS;
-        } catch (const ls::vulkan_error& error) {
-            return error.error();
-        } catch (...) {
-            return VK_ERROR_OUT_OF_HOST_MEMORY;
-        }
     }
 
     void myvkGetPhysicalDeviceFeatures2(
@@ -866,8 +828,6 @@ namespace {
             supportedGamescopeDisplayTiming(physdev, *info);
         bool presentRetirementEnabled = false;
         bool shaderFloat16Enabled = false;
-        bool hdrMetadataEnabled = false;
-        bool lowerHdrMetadataEnabled = false;
         bool lowerDeviceCreated = false;
         const auto rollbackCreatedDevice = [&]() noexcept {
             if (!lowerDeviceCreated || !device || *device == VK_NULL_HANDLE)
@@ -929,27 +889,6 @@ namespace {
                         newInfo.ppEnabledExtensionNames = precisionExtensions.data();
                         newInfo.enabledExtensionCount = static_cast<uint32_t>(precisionExtensions.size());
                     }
-                }
-            }
-            std::vector<const char*> hdrExtensions;
-            if (bridgeHdrEnabled()) {
-                for (uint32_t i = 0; i < newInfo.enabledExtensionCount; ++i) {
-                    const auto* name = newInfo.ppEnabledExtensionNames[i];
-                    if (std::strcmp(name, VK_EXT_HDR_METADATA_EXTENSION_NAME) == 0)
-                        hdrMetadataEnabled = true;
-                    hdrExtensions.push_back(name);
-                }
-                if (hdrMetadataEnabled) {
-                    const auto supported = lowerDeviceExtensions(physdev);
-                    lowerHdrMetadataEnabled = std::ranges::any_of(supported, [](const auto& extension) {
-                        return std::strcmp(extension.extensionName, VK_EXT_HDR_METADATA_EXTENSION_NAME) == 0;
-                    });
-                    if (!lowerHdrMetadataEnabled)
-                        std::erase_if(hdrExtensions, [](const char* name) {
-                            return std::strcmp(name, VK_EXT_HDR_METADATA_EXTENSION_NAME) == 0;
-                        });
-                    newInfo.ppEnabledExtensionNames = hdrExtensions.data();
-                    newInfo.enabledExtensionCount = static_cast<uint32_t>(hdrExtensions.size());
                 }
             }
             const vk::ShaderFloat16FeatureRequest precisionFeatures(newInfo, enableScalingFp16);
@@ -1074,10 +1013,6 @@ namespace {
             instance_info->applicationTimingDevices.insert(*device);
         if (enablesApplicationPresentId2Wait2(info->pNext))
             instance_info->presentFeedbackDevices.insert(*device);
-        if (hdrMetadataEnabled)
-            instance_info->hdrMetadataDevices.insert(*device);
-        if (lowerHdrMetadataEnabled)
-            instance_info->lowerHdrMetadataDevices.insert(*device);
 
         // No game profile matched when this device was created. Keep only the
         // layer lifecycle hooks needed to chain and clean up correctly; all
@@ -1108,8 +1043,6 @@ namespace {
             instance_info->copyCalibrationDevices.erase(*device);
             instance_info->applicationTimingDevices.erase(*device);
             instance_info->presentFeedbackDevices.erase(*device);
-            instance_info->hdrMetadataDevices.erase(*device);
-            instance_info->lowerHdrMetadataDevices.erase(*device);
             instance_info->deferredPresentQueues.erase(*device);
         };
         try {
@@ -1513,8 +1446,6 @@ namespace {
         instance_info->copyCalibrationDevices.erase(device);
         instance_info->applicationTimingDevices.erase(device);
         instance_info->presentFeedbackDevices.erase(device);
-        instance_info->hdrMetadataDevices.erase(device);
-        instance_info->lowerHdrMetadataDevices.erase(device);
 
         // destroy device
         auto vkDestroyDevice = reinterpret_cast<PFN_vkDestroyDevice>(
@@ -1638,29 +1569,7 @@ namespace {
 #endif
 
     // get optional function pointer override
-    void VKAPI_CALL myvkSetHdrMetadataEXT(VkDevice device, uint32_t count,
-            const VkSwapchainKHR* swapchains, const VkHdrMetadataEXT* metadata) {
-        const auto lower = reinterpret_cast<PFN_vkSetHdrMetadataEXT>(
-            instance_info->funcs.GetDeviceProcAddr(device, "vkSetHdrMetadataEXT"));
-        if (!instance_info->hdrMetadataDevices.contains(device)) {
-            if (lower)
-                lower(device, count, swapchains, metadata);
-            return;
-        }
-        for (uint32_t i = 0; i < count; ++i) {
-            const auto found = instance_info->swapchainInfos.find(swapchains[i]);
-            if (found != instance_info->swapchainInfos.end() &&
-                    instance_info->scalingSurfaces->setHdrMetadata(
-                        found->second.surface, swapchains[i], metadata[i]))
-                continue;
-            if (lower && instance_info->lowerHdrMetadataDevices.contains(device))
-                lower(device, 1, swapchains + i, metadata + i);
-        }
-    }
-
     PFN_vkVoidFunction getProcAddr(const std::string& name) {
-        if (name == "vkSetHdrMetadataEXT" && !bridgeHdrEnabled())
-            return nullptr;
         // The application role also observes actual serialized completion
         // pacing when diagnostics are off. Lower spatial roles forward waits
         // untouched and must not count or classify the same call twice.
@@ -1775,10 +1684,6 @@ namespace {
                 isOptionalSwapchainReleaseCommand(name)) &&
                 !instance_info->funcs.GetDeviceProcAddr(device, name))
             return nullptr;
-
-        if (std::string_view(name) == "vkSetHdrMetadataEXT" &&
-                !instance_info->hdrMetadataDevices.contains(device))
-            return instance_info->funcs.GetDeviceProcAddr(device, name);
 
         // A lower VkDevice can outlive a failed optional framegen-vulkan wrapper
         // initialization. Forward every command for that device directly,
@@ -2139,7 +2044,7 @@ namespace {
                     if (format.format == VK_FORMAT_UNDEFINED)
                         return false;
                     const auto pipeline = classifySwapchainColor(
-                        format.format, format.colorSpace, false
+                        format.format, format.colorSpace
                     );
                     if (!spatialScalingColorSupported(pipeline)) {
                         return false;
@@ -2775,7 +2680,6 @@ namespace {
                 .gamescopeScalingSurface = swapchainInfo.gamescopeScalingSurface != nullptr,
                 .gamescopeDetected = context.gamescopeDetectedAtCreation(),
                 .spatialScalingActive = swapchainInfo.spatialScalingActive,
-                .hdrDisplayResize = swapchainInfo.hdrDisplayResize,
                 .variableSurface = swapchainInfo.variableSurface,
                 .applicationExtent = swapchainInfo.applicationExtent,
                 .lowerExtent = swapchainInfo.extent,
@@ -3036,10 +2940,9 @@ namespace {
                         auto driverInfo = *newInfo;
                         if (instance_info->scalingSurfaces) {
                             const auto prepared = instance_info->scalingSurfaces->prepareSwapchain(
-                                it->second.physdev(), driverInfo,
-                                instance_info->funcs.GetPhysicalDeviceSurfaceFormatsKHR);
+                                driverInfo);
                             if (prepared != VK_SUCCESS)
-                                throw ls::vulkan_error(prepared, "HDR surface format is unavailable");
+                                throw ls::vulkan_error(prepared, "bridge surface format is unavailable");
                         }
 #if defined(VK_EXT_present_timing) && defined(VK_KHR_present_id2)
                         // The bridge already owns protocol timing. Native and
@@ -3405,7 +3308,6 @@ namespace {
                     modification.privateOrderedTransport,
                 .spatialScalingActive =
                     modification.spatialScalingActive,
-                .hdrDisplayResize = modification.hdrDisplayResize,
                 .variableSurface = modification.variableSurface,
                 .spatialScalingMemoryConstrained =
                     modification.spatialScalingMemoryConstrained,
@@ -4235,8 +4137,6 @@ namespace {
 #define VKPTR(name) reinterpret_cast<PFN_vkVoidFunction>(name)
                     { "vkCreateInstance", VKPTR(myvkCreateInstance) },
                     { "vkCreateDevice", VKPTR(myvkCreateDevice) },
-                    { "vkEnumerateDeviceExtensionProperties", VKPTR(myvkEnumerateDeviceExtensionProperties) },
-                    { "vkSetHdrMetadataEXT", VKPTR(myvkSetHdrMetadataEXT) },
                     { "vkGetPhysicalDeviceFeatures2", VKPTR(myvkGetPhysicalDeviceFeatures2) },
                     { "vkGetPhysicalDeviceFeatures2KHR", VKPTR(myvkGetPhysicalDeviceFeatures2) },
                     { "vkDestroyDevice", VKPTR(myvkDestroyDevice) },

@@ -267,7 +267,6 @@ namespace {
                << ",\"scaling_supersampling\":"
                << profile.scaling_supersampling
                << ",\"scaling_sharpness\":" << profile.scaling_sharpness
-               << ",\"hdr_quality\":\"" << ls::hdrQualityName(profile.hdr_quality) << "\""
                << ",\"frame_generation_refresh_threshold\":"
                << profile.frame_generation_refresh_threshold
                << ",\"gpu_headroom_percent\":" << profile.gpu_headroom_percent
@@ -311,9 +310,7 @@ std::string fgvk::layer::runtimeStatusJson(
         const uint64_t processStartTicks, const uint64_t contextId,
         const std::string_view role,
         const int64_t updatedUnixMilliseconds) {
-    // The private spatial graph also serves HDR display-size presentation.
-    // That work must not enable the user-facing Scaling feature; a saved
-    // toggle waiting for restart must not override the applied setting either.
+    // A saved toggle waiting for restart cannot override the applied state.
     const bool scalingActive = status.spatialScalingActive &&
         status.appliedProfile.scaling_enabled;
     std::ostringstream stream;

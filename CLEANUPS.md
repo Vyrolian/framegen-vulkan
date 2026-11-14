@@ -14,7 +14,6 @@ The shader editor adds optional `fgvk-shader-tool` payload discovery while publi
 
 ## Policy
 
-The unreleased HDR precision toggle has been replaced by `hdr_quality` without a saved-value migration or legacy-field reader. Older runtime records without this field decode as `quality`, matching their full-precision behavior; retain this missing-field default until all supported Renderers report HDR quality. Older shader binaries without the optional precision hook retain full precision.
 
 Generated files and user data have different lifecycles:
 
@@ -22,7 +21,7 @@ Generated files and user data have different lifecycles:
 - Persisted values that exist nowhere else are user data. Keep an idempotent migration until framegen-vulkan ends the direct-upgrade path from the affected release.
 - Deny-lists and fail-closed host guards remain current safety rules while stale artifacts could reactivate unsupported behavior.
 
-The optional `disable_hdr_exposure` boolean in standalone `launcher.conf` version 1 defaults to true.
+The optional `disable_hdr_exposure` boolean in standalone `launcher.conf` version 1 is still accepted (0 or 1, no duplicates) and ignored, so old files stay valid.
 
 Standalone `launcher.conf` version 1 gains the optional `disable_steam_overlay` boolean, with true as the absent-field default. Use a matching launcher; older strict readers cannot consume the new field.
 

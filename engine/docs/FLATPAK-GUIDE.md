@@ -72,8 +72,6 @@ flatpak override --user --env=DISABLE_LSFGVK=1 "$appid"
 flatpak override --user --env=DISABLE_GAMESCOPE_WSI=1 "$appid"
 flatpak override --user --env=DISABLE_VKBASALT=1 "$appid"
 flatpak override --user --unset-env=ENABLE_GAMESCOPE_WSI "$appid"
-flatpak override --user --env=FGVK_DISABLE_HDR_EXPOSURE=1 "$appid"
-flatpak override --user --unset-env=DXVK_HDR "$appid"
 flatpak override --user --env=VK_IMPLICIT_LAYER_PATH=/usr/lib/extensions/vulkan/fgvkrender/share/vulkan/implicit_layer.d "$appid"
 flatpak override --user --unset-env=VK_ADD_IMPLICIT_LAYER_PATH "$appid"
 ```
@@ -82,24 +80,6 @@ These settings persist for this app. Repeat with another `appid` for each additi
 
 - **Heroic/Lutris:** prepare the launcher and match each game's executable. Avoid an app-wide `FGVK_PROFILE`; no host wrapper is needed.
 - **EmuDeck:** prepare each Flatpak emulator, select Vulkan, and keep its Steam shortcut and ROM arguments. Native/AppImage emulators use [native launch setup](../README.md#usage).
-
-## Optional HDR
-
-The manual setup above defaults to SDR. To enable experimental HDR, close the app and replace its HDR overrides. These sandbox settings control exposure; `launcher.conf` applies to `fgvk` and does not configure Flatpak apps.
-
-```bash
-flatpak override --user --env=FGVK_DISABLE_HDR_EXPOSURE=0 "$appid"
-flatpak override --user --env=DXVK_HDR=1 "$appid"
-```
-
-Restart the app, then enable HDR inside the game. This requires an HDR-capable display in a Gamescope session. See [HDR setup](CONFIGURATION.md#hdr) for the supported path. To return to SDR, close the app and restore the overrides:
-
-```bash
-flatpak override --user --env=FGVK_DISABLE_HDR_EXPOSURE=1 "$appid"
-flatpak override --user --unset-env=DXVK_HDR "$appid"
-```
-
-These app-wide overrides affect every game launched by that Flatpak.
 
 ## Launch and verify
 

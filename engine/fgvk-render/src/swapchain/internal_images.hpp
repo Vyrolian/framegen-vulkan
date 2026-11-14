@@ -47,7 +47,6 @@ namespace fgvk::layer {
         bool gamescopeScalingSurface{false};
         bool gamescopeDetected{false};
         bool spatialScalingActive{false};
-        bool hdrDisplayResize{false};
         // Surface without a fixed currentExtent. Logged only; not a refusal.
         bool variableSurface{false};
         VkExtent2D applicationExtent{};
@@ -97,9 +96,8 @@ namespace fgvk::layer {
         if (input.diagnosticCopyPath) return "diagnostic-copy-path";
         if (input.gamescopeScalingSurface || input.gamescopeDetected) return "gamescope";
         if (input.spatialScalingActive) return "spatial-scaling";
-        if (input.hdrDisplayResize) return "hdr-display-resize";
         // A variable surface (Wayland: no fixed currentExtent) is not refused.
-        // Its own paths are spatial scaling, Gamescope and HDR resize, refused
+        // Its own paths are spatial scaling and Gamescope, refused
         // above; with those off the lower swapchain has the application's
         // extent, which the next check requires.
         if (input.applicationExtent.width != input.lowerExtent.width ||
