@@ -241,8 +241,7 @@ cmake -S "$repo_root" -B "$build64_dir" -G Ninja \
     "${native_header_args[@]}" \
     -DFGVK_BUILD_VK_LAYER=ON \
     -DFGVK_BUILD_CLI=ON \
-    -DFGVK_LAYER_LIBRARY_PATH="../../../lib/libfgvk-render.so" \
-    -DFGVK_SCALING_LAYER_LIBRARY_PATH="../../../lib/libfgvk-render-scaling.so"
+    -DFGVK_LAYER_LIBRARY_PATH="../../../lib/libfgvk-render.so"
 
 # Build the complete configured tree before CTest so CMake remains the single
 # authority for every registered test executable and production dependency.
@@ -272,10 +271,9 @@ if [[ "$build_32_bit" == true ]]; then
         -DFGVK_BUILD_VK_LAYER=ON \
         -DFGVK_BUILD_CLI=OFF \
         -DFGVK_LAYER_MANIFEST_SUFFIX=.x86 \
-        -DFGVK_LAYER_LIBRARY_PATH="../../../lib32/libfgvk-render.so" \
-        -DFGVK_SCALING_LAYER_LIBRARY_PATH="../../../lib32/libfgvk-render-scaling.so"
+        -DFGVK_LAYER_LIBRARY_PATH="../../../lib32/libfgvk-render.so"
 
-    cmake --build "$build32_dir" --target fgvk-render fgvk-render-scaling
+    cmake --build "$build32_dir" --target fgvk-render
     cmake --install "$build32_dir" --strip
 fi
 
@@ -298,23 +296,17 @@ required_paths=(
     "libexec/framegen-vulkan/fgvk-launch" \
     "bin/fgvk-vrr-lease" \
     "lib/libfgvk-render.so" \
-    "lib/libfgvk-render-scaling.so" \
     "share/doc/framegen-vulkan/ASSET_PROVENANCE.md" \
     "share/doc/framegen-vulkan/LICENSE.md" \
     "share/doc/framegen-vulkan/THIRD_PARTY_NOTICES.md" \
     "share/framegen-vulkan/vulkan/implicit_layer.d/VkLayer_FGVK_render.json" \
-    "share/framegen-vulkan/vulkan/spatial_scaling.d/VkLayer_FGVK_spatial_scaling.json" \
-    "share/vulkan/implicit_layer.d/VkLayer_FGVK_spatial_scaling.json" \
     "share/vulkan/implicit_layer.d/VkLayer_FGVK_render.json"
 )
 if [[ "$build_32_bit" == true ]]; then
     required_paths+=(
         "lib32/libfgvk-render.so"
-        "lib32/libfgvk-render-scaling.so"
         "share/framegen-vulkan/vulkan/implicit_layer.d/VkLayer_FGVK_render.x86.json"
         "share/vulkan/implicit_layer.d/VkLayer_FGVK_render.x86.json"
-        "share/framegen-vulkan/vulkan/spatial_scaling.d/VkLayer_FGVK_spatial_scaling.x86.json"
-        "share/vulkan/implicit_layer.d/VkLayer_FGVK_spatial_scaling.x86.json"
     )
 fi
 for required_path in "${required_paths[@]}"; do
@@ -392,28 +384,8 @@ verify_elf_class() {
 
 verify_elf_class "$install_dir/bin/fgvk" 2
 verify_elf_class "$install_dir/lib/libfgvk-render.so" 2
-verify_elf_class "$install_dir/lib/libfgvk-render-scaling.so" 2
-verify_elf_class "$install_dir/lib/libfgvk-render-scaling.so" 2
 if [[ "$build_32_bit" == true ]]; then
     verify_elf_class "$install_dir/lib32/libfgvk-render.so" 1
-    verify_elf_class "$install_dir/lib32/libfgvk-render-scaling.so" 1
-fi
-
-scaling_manifest64="$install_dir/share/vulkan/implicit_layer.d/VkLayer_FGVK_spatial_scaling.json"
-private_scaling_manifest64="$install_dir/share/framegen-vulkan/vulkan/spatial_scaling.d/VkLayer_FGVK_spatial_scaling.json"
-if ! grep -Fq '"library_arch": "64"' "$scaling_manifest64" ||
-        ! grep -Fq '../../../lib/libfgvk-render-scaling.so' "$scaling_manifest64" ||
-        ! grep -Fq '"name": "VK_LAYER_FGVK_spatial_scaling"' "$scaling_manifest64" ||
-        ! grep -Fq '"ENABLE_FGVK_SPATIAL_SCALING": "1"' "$scaling_manifest64" ||
-        ! grep -Fq '"DISABLE_FGVK_SPATIAL_SCALING": "1"' "$scaling_manifest64"; then
-    echo "Packaging failed: 64-bit spatial Vulkan manifest is incorrect" >&2
-    exit 1
-fi
-if ! grep -Fq '"library_arch": "64"' "$private_scaling_manifest64" ||
-        ! grep -Fq '../../../../lib/libfgvk-render-scaling.so' "$private_scaling_manifest64" ||
-        ! grep -Fq '"name": "VK_LAYER_FGVK_spatial_scaling"' "$private_scaling_manifest64"; then
-    echo "Packaging failed: private 64-bit spatial Vulkan manifest is incorrect" >&2
-    exit 1
 fi
 
 manifest64="$install_dir/share/vulkan/implicit_layer.d/VkLayer_FGVK_render.json"
@@ -435,8 +407,6 @@ fi
 if [[ "$build_32_bit" == true ]]; then
     manifest32="$install_dir/share/vulkan/implicit_layer.d/VkLayer_FGVK_render.x86.json"
     private_manifest32="$install_dir/share/framegen-vulkan/vulkan/implicit_layer.d/VkLayer_FGVK_render.x86.json"
-    scaling_manifest32="$install_dir/share/vulkan/implicit_layer.d/VkLayer_FGVK_spatial_scaling.x86.json"
-    private_scaling_manifest32="$install_dir/share/framegen-vulkan/vulkan/spatial_scaling.d/VkLayer_FGVK_spatial_scaling.x86.json"
     if ! grep -Fq '"library_arch": "32"' "$manifest32" ||
             ! grep -Fq '../../../lib32/libfgvk-render.so' "$manifest32" ||
             ! grep -Fq '"name": "VK_LAYER_FGVK_render"' "$manifest32" ||
@@ -451,29 +421,12 @@ if [[ "$build_32_bit" == true ]]; then
         echo "Packaging failed: private 32-bit Vulkan manifest is incorrect" >&2
         exit 1
     fi
-    if ! grep -Fq '"library_arch": "32"' "$scaling_manifest32" ||
-            ! grep -Fq '../../../lib32/libfgvk-render-scaling.so' "$scaling_manifest32" ||
-            ! grep -Fq '"name": "VK_LAYER_FGVK_spatial_scaling"' "$scaling_manifest32" ||
-            ! grep -Fq '"ENABLE_FGVK_SPATIAL_SCALING": "1"' "$scaling_manifest32" ||
-            ! grep -Fq '"DISABLE_FGVK_SPATIAL_SCALING": "1"' "$scaling_manifest32"; then
-        echo "Packaging failed: 32-bit spatial Vulkan manifest is incorrect" >&2
-        exit 1
-    fi
-    if ! grep -Fq '"library_arch": "32"' "$private_scaling_manifest32" ||
-            ! grep -Fq '../../../../lib32/libfgvk-render-scaling.so' "$private_scaling_manifest32" ||
-            ! grep -Fq '"name": "VK_LAYER_FGVK_spatial_scaling"' "$private_scaling_manifest32"; then
-        echo "Packaging failed: private 32-bit spatial Vulkan manifest is incorrect" >&2
-        exit 1
-    fi
 fi
 
 layer_binaries=("$install_dir/lib/libfgvk-render.so")
-layer_binaries+=("$install_dir/lib/libfgvk-render-scaling.so")
 if [[ "$build_32_bit" == true ]]; then
     layer_binaries+=("$install_dir/lib32/libfgvk-render.so")
-    layer_binaries+=("$install_dir/lib32/libfgvk-render-scaling.so")
 fi
-relay_contract_symbol="fgvkSpatialScalingLookupFixedContract"
 for layer_binary in "${layer_binaries[@]}"; do
     dynamic_dependencies="$(readelf -d "$layer_binary")"
     if ! grep -Fq 'Shared library: [libstdc++.so.6]' <<< "$dynamic_dependencies"; then
@@ -493,16 +446,6 @@ for layer_binary in "${layer_binaries[@]}"; do
         fi
     done
     expected_identity="VK_LAYER_FGVK_render"
-    if [[ "$layer_binary" == *libfgvk-render-scaling.so ]]; then
-        expected_identity="VK_LAYER_FGVK_spatial_scaling"
-        if ! grep -Fxq "$relay_contract_symbol" <<< "$exported_symbols"; then
-            echo "Packaging failed: spatial capability relay entrypoint is missing from $layer_binary" >&2
-            exit 1
-        fi
-    elif grep -Fxq "$relay_contract_symbol" <<< "$exported_symbols"; then
-        echo "Packaging failed: spatial capability relay entrypoint leaked into $layer_binary" >&2
-        exit 1
-    fi
     if ! strings "$layer_binary" |
             grep -F "framegen-vulkan: render layer active; identity=$expected_identity; build=$version" >/dev/null; then
         echo "Packaging failed: layer build identity diagnostic is missing from $layer_binary" >&2

@@ -104,22 +104,6 @@ verify_elf_class() {
     fi
 }
 
-verify_relay_contract() {
-    local layer_binary="$1"
-    local relay_contract_symbol="fgvkSpatialScalingLookupFixedContract"
-    local exported_symbols
-    exported_symbols="$(nm -D --defined-only "$layer_binary" | awk '{print $3}')"
-    if [[ "$layer_binary" == *libfgvk-render-scaling.so ]]; then
-        if ! grep -Fxq "$relay_contract_symbol" <<< "$exported_symbols"; then
-            echo "Flatpak packaging failed: spatial capability relay entrypoint is missing from $layer_binary" >&2
-            exit 1
-        fi
-    elif grep -Fxq "$relay_contract_symbol" <<< "$exported_symbols"; then
-        echo "Flatpak packaging failed: spatial capability relay entrypoint leaked into $layer_binary" >&2
-        exit 1
-    fi
-}
-
 # Docker Desktop's Linux VM may not expose CONFIG_SECCOMP_FILTER to nested
 # Bubblewrap instances. This is only set by the privileged local Docker build
 # above; normal Linux builds retain Flatpak's default sandboxing.
@@ -186,19 +170,13 @@ while IFS= read -r runtime_version || [[ -n "$runtime_version" ]]; do
     for required_path in \
         "files/share/vulkan/implicit_layer.d/VkLayer_FGVK_render.json" \
         "files/share/vulkan/implicit_layer.d/VkLayer_FGVK_render.x86.json" \
-        "files/share/vulkan/implicit_layer.d/VkLayer_FGVK_spatial_scaling.json" \
-        "files/share/vulkan/implicit_layer.d/VkLayer_FGVK_spatial_scaling.x86.json" \
         "files/share/framegen-vulkan/vulkan/implicit_layer.d/VkLayer_FGVK_render.json" \
         "files/share/framegen-vulkan/vulkan/implicit_layer.d/VkLayer_FGVK_render.x86.json" \
-        "files/share/framegen-vulkan/vulkan/spatial_scaling.d/VkLayer_FGVK_spatial_scaling.json" \
-        "files/share/framegen-vulkan/vulkan/spatial_scaling.d/VkLayer_FGVK_spatial_scaling.x86.json" \
         "files/share/doc/framegen-vulkan/ASSET_PROVENANCE.md" \
         "files/share/doc/framegen-vulkan/LICENSE.md" \
         "files/share/doc/framegen-vulkan/THIRD_PARTY_NOTICES.md" \
         "files/lib64/libfgvk-render.so" \
-        "files/lib64/libfgvk-render-scaling.so" \
-        "files/lib/i386-linux-gnu/libfgvk-render.so" \
-        "files/lib/i386-linux-gnu/libfgvk-render-scaling.so"; do
+        "files/lib/i386-linux-gnu/libfgvk-render.so"; do
         if [[ ! -f "$build_dir/$required_path" ]]; then
             echo "Flatpak packaging failed: missing $required_path for $runtime_version" >&2
             exit 1
@@ -206,20 +184,12 @@ while IFS= read -r runtime_version || [[ -n "$runtime_version" ]]; do
     done
 
     verify_elf_class "$build_dir/files/lib64/libfgvk-render.so" 2
-    verify_elf_class "$build_dir/files/lib64/libfgvk-render-scaling.so" 2
     verify_elf_class "$build_dir/files/lib/i386-linux-gnu/libfgvk-render.so" 1
-    verify_elf_class "$build_dir/files/lib/i386-linux-gnu/libfgvk-render-scaling.so" 1
 
     for layer_binary in \
             "$build_dir/files/lib64/libfgvk-render.so" \
-            "$build_dir/files/lib64/libfgvk-render-scaling.so" \
-            "$build_dir/files/lib/i386-linux-gnu/libfgvk-render.so" \
-            "$build_dir/files/lib/i386-linux-gnu/libfgvk-render-scaling.so"; do
-        verify_relay_contract "$layer_binary"
+            "$build_dir/files/lib/i386-linux-gnu/libfgvk-render.so"; do
         expected_identity="VK_LAYER_FGVK_render"
-        if [[ "$layer_binary" == *libfgvk-render-scaling.so ]]; then
-            expected_identity="VK_LAYER_FGVK_spatial_scaling"
-        fi
         if ! strings "$layer_binary" |
                 grep -F "framegen-vulkan: render layer active; identity=$expected_identity; build=$version" >/dev/null; then
             echo "Flatpak packaging failed: layer build identity is missing for $runtime_version" >&2
@@ -233,8 +203,6 @@ while IFS= read -r runtime_version || [[ -n "$runtime_version" ]]; do
 
     manifest64="$build_dir/files/share/vulkan/implicit_layer.d/VkLayer_FGVK_render.json"
     manifest32="$build_dir/files/share/vulkan/implicit_layer.d/VkLayer_FGVK_render.x86.json"
-    scaling_manifest64="$build_dir/files/share/vulkan/implicit_layer.d/VkLayer_FGVK_spatial_scaling.json"
-    scaling_manifest32="$build_dir/files/share/vulkan/implicit_layer.d/VkLayer_FGVK_spatial_scaling.x86.json"
 
     if ! grep -Fq "/usr/lib/extensions/vulkan/fgvkrender/lib64/libfgvk-render.so" \
         "$manifest64"; then
@@ -264,26 +232,6 @@ while IFS= read -r runtime_version || [[ -n "$runtime_version" ]]; do
             exit 1
         fi
     done
-    if ! grep -Fq "/usr/lib/extensions/vulkan/fgvkrender/lib64/libfgvk-render-scaling.so" \
-            "$scaling_manifest64" ||
-            ! grep -Fq '"library_arch": "64"' "$scaling_manifest64"; then
-        echo "Flatpak packaging failed: 64-bit spatial manifest is incorrect for $runtime_version" >&2
-        exit 1
-    fi
-    if ! grep -Fq "/usr/lib/extensions/vulkan/fgvkrender/lib/i386-linux-gnu/libfgvk-render-scaling.so" \
-            "$scaling_manifest32" ||
-            ! grep -Fq '"library_arch": "32"' "$scaling_manifest32"; then
-        echo "Flatpak packaging failed: 32-bit spatial manifest is incorrect for $runtime_version" >&2
-        exit 1
-    fi
-    for manifest in "$scaling_manifest64" "$scaling_manifest32"; do
-        if ! grep -Fq '"name": "VK_LAYER_FGVK_spatial_scaling"' "$manifest" ||
-                ! grep -Fq '"ENABLE_FGVK_SPATIAL_SCALING": "1"' "$manifest" ||
-                ! grep -Fq '"DISABLE_FGVK_SPATIAL_SCALING": "1"' "$manifest"; then
-            echo "Flatpak packaging failed: spatial-layer gating is incorrect for $runtime_version" >&2
-            exit 1
-        fi
-    done
     flatpak build-bundle "$repo_dir" "$bundle" "$extension_id" "$runtime_version" --runtime
 
     if [[ ! -s "$bundle" ]]; then
@@ -299,8 +247,6 @@ while IFS= read -r runtime_version || [[ -n "$runtime_version" ]]; do
     deployed_dir="$(flatpak info --user --show-location "$extension_id//$runtime_version")"
     deployed_manifest64="$deployed_dir/files/share/vulkan/implicit_layer.d/VkLayer_FGVK_render.json"
     deployed_manifest32="$deployed_dir/files/share/vulkan/implicit_layer.d/VkLayer_FGVK_render.x86.json"
-    deployed_scaling_manifest64="$deployed_dir/files/share/vulkan/implicit_layer.d/VkLayer_FGVK_spatial_scaling.json"
-    deployed_scaling_manifest32="$deployed_dir/files/share/vulkan/implicit_layer.d/VkLayer_FGVK_spatial_scaling.x86.json"
 
     if [[ ! -f "$deployed_dir/files/lib64/libfgvk-render.so" ]]; then
         echo "Flatpak packaging failed: deployed 64-bit library is missing for $runtime_version" >&2
@@ -308,11 +254,6 @@ while IFS= read -r runtime_version || [[ -n "$runtime_version" ]]; do
     fi
     if [[ ! -f "$deployed_dir/files/lib/i386-linux-gnu/libfgvk-render.so" ]]; then
         echo "Flatpak packaging failed: deployed 32-bit library is missing for $runtime_version" >&2
-        exit 1
-    fi
-    if [[ ! -f "$deployed_dir/files/lib64/libfgvk-render-scaling.so" ||
-          ! -f "$deployed_dir/files/lib/i386-linux-gnu/libfgvk-render-scaling.so" ]]; then
-        echo "Flatpak packaging failed: deployed spatial-layer library is missing for $runtime_version" >&2
         exit 1
     fi
     for legal_file in ASSET_PROVENANCE.md LICENSE.md THIRD_PARTY_NOTICES.md; do
@@ -323,20 +264,12 @@ while IFS= read -r runtime_version || [[ -n "$runtime_version" ]]; do
     done
 
     verify_elf_class "$deployed_dir/files/lib64/libfgvk-render.so" 2
-    verify_elf_class "$deployed_dir/files/lib64/libfgvk-render-scaling.so" 2
     verify_elf_class "$deployed_dir/files/lib/i386-linux-gnu/libfgvk-render.so" 1
-    verify_elf_class "$deployed_dir/files/lib/i386-linux-gnu/libfgvk-render-scaling.so" 1
 
     for layer_binary in \
             "$deployed_dir/files/lib64/libfgvk-render.so" \
-            "$deployed_dir/files/lib64/libfgvk-render-scaling.so" \
-            "$deployed_dir/files/lib/i386-linux-gnu/libfgvk-render.so" \
-            "$deployed_dir/files/lib/i386-linux-gnu/libfgvk-render-scaling.so"; do
-        verify_relay_contract "$layer_binary"
+            "$deployed_dir/files/lib/i386-linux-gnu/libfgvk-render.so"; do
         expected_identity="VK_LAYER_FGVK_render"
-        if [[ "$layer_binary" == *libfgvk-render-scaling.so ]]; then
-            expected_identity="VK_LAYER_FGVK_spatial_scaling"
-        fi
         if ! strings "$layer_binary" |
                 grep -F "framegen-vulkan: render layer active; identity=$expected_identity; build=$version" >/dev/null; then
             echo "Flatpak packaging failed: deployed layer build identity is missing for $runtime_version" >&2
@@ -364,20 +297,6 @@ while IFS= read -r runtime_version || [[ -n "$runtime_version" ]]; do
     fi
     if ! grep -Fq '"library_arch": "32"' "$deployed_manifest32"; then
         echo "Flatpak packaging failed: deployed 32-bit manifest architecture is incorrect for $runtime_version" >&2
-        exit 1
-    fi
-    if ! grep -Fq "/usr/lib/extensions/vulkan/fgvkrender/lib64/libfgvk-render-scaling.so" \
-            "$deployed_scaling_manifest64" ||
-            ! grep -Fq '"library_arch": "64"' "$deployed_scaling_manifest64" ||
-            ! grep -Fq '"name": "VK_LAYER_FGVK_spatial_scaling"' "$deployed_scaling_manifest64"; then
-        echo "Flatpak packaging failed: deployed 64-bit spatial manifest is incorrect for $runtime_version" >&2
-        exit 1
-    fi
-    if ! grep -Fq "/usr/lib/extensions/vulkan/fgvkrender/lib/i386-linux-gnu/libfgvk-render-scaling.so" \
-            "$deployed_scaling_manifest32" ||
-            ! grep -Fq '"library_arch": "32"' "$deployed_scaling_manifest32" ||
-            ! grep -Fq '"name": "VK_LAYER_FGVK_spatial_scaling"' "$deployed_scaling_manifest32"; then
-        echo "Flatpak packaging failed: deployed 32-bit spatial manifest is incorrect for $runtime_version" >&2
         exit 1
     fi
 done < "$runtime_versions_file"

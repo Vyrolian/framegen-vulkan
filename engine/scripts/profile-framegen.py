@@ -181,11 +181,9 @@ def environment(original, mode, folder, warmup, duration, interval, control=None
         env["ENABLE_FGVK"] = "1"
     else:
         env.pop("ENABLE_FGVK", None)
-        env.pop("ENABLE_FGVK_SPATIAL_SCALING", None)
-        env["DISABLE_FGVK_SPATIAL_SCALING"] = "1"
         layers = env.get("VK_INSTANCE_LAYERS", "").split(":")
         layers = [name for name in layers if name and name not in
-                  ("VK_LAYER_FGVK_render", "VK_LAYER_FGVK_spatial_scaling")]
+                  ("VK_LAYER_FGVK_render",)]
         if layers:
             env["VK_INSTANCE_LAYERS"] = ":".join(layers)
         else:

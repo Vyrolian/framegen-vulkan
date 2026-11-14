@@ -32,10 +32,7 @@ namespace {
     using DiagnosticsClock = present_diagnostics::Clock;
     using DiagnosticsContextScope = present_diagnostics::ContextScope;
     uint64_t allocateDiagnosticsContextId() {
-        const auto contextId = present_diagnostics::allocateContextId();
-        if constexpr (spatialScalingLayer)
-            return contextId | uint64_t{0x80000000};
-        return contextId;
+        return present_diagnostics::allocateContextId();
     }
 
     std::optional<uint64_t> configuredGeneratedImageAcquireTimeoutNs() {
@@ -125,7 +122,7 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance* backend,
                 vk.dev(), "vkGetPastPresentationTimingGOOGLE"));
     }
     this->diagnosticsState.contextId = allocateDiagnosticsContextId();
-    if (frameGenerationInteropForLayer(vk.frameGenerationInteropEnabled()) &&
+    if (vk.frameGenerationInteropEnabled() &&
             !this->profile.adaptive && this->profile.multiplier == 2 &&
             !this->profile.scaling_enabled && !this->colorPipeline.hdr)
         this->frameContentCapture = FrameContentCapture::create(this->diagnosticsState.contextId);
@@ -154,7 +151,7 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance* backend,
     const VkExtent2D extent = this->info.extent;
 
     if (swapchainMaintenance1Enabled && presentationRetirementRequired(
-            frameGenerationInteropForLayer(vk.frameGenerationInteropEnabled()),
+            vk.frameGenerationInteropEnabled(),
             this->profile.scaling_enabled || this->info.spatialScalingActive,
             this->info.gamescopeScalingSurface != nullptr)) {
         try {
@@ -188,11 +185,9 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance* backend,
             );
 
         this->spatialFramePipelinePlacement =
-            combinedSpatialFramePipelineOwnedByLayer()
-            ? selectSpatialFramePipelinePlacement(
+            selectSpatialFramePipelinePlacement(
                 this->info.applicationExtent, this->info.extent
-            )
-            : SpatialFramePipelinePlacement::PostFrameGeneration;
+            );
 
         this->spatialScaler.emplace(
             vk, this->info.applicationExtent, this->info.extent,

@@ -269,4 +269,43 @@ XDG_CONFIG_HOME="$purge_config_home" \
 [[ ! -e "$purge_config_home/framegen-vulkan" ]] ||
     fail "explicit configuration purge left profiles or diagnostics behind"
 
+# A library and its Vulkan manifest removed from a later package must leave the
+# prefix and the installed-state record; the shape is the one used by obsolete
+# payload files above, applied to a shared object and a layer manifest.
+layer_prefix="$test_root/layer-removal"
+layer_library="lib/libfgvk-retired-example.so"
+layer_manifest="share/vulkan/implicit_layer.d/VkLayer_FGVK_retired_example.json"
+write_layer_manifest() {
+    (
+        cd "$package_root"
+        find bin libexec lib share -type f -print | LC_ALL=C sort | xargs sha256sum
+    ) > "$package_root/framegen-vulkan-install-manifest.txt"
+}
+mkdir -p "$package_root/lib" "$package_root/share/vulkan/implicit_layer.d"
+printf '%s\n' 'old retired library' > "$package_root/$layer_library"
+printf '%s\n' '{"layer": {"name": "VK_LAYER_FGVK_retired_example"}}' > "$package_root/$layer_manifest"
+write_layer_manifest
+FGVK_INSTALL_PREFIX="$layer_prefix" FGVK_INSTALLER_ASSUME_YES=1 \
+    "$package_root/Install framegen-vulkan" --install >"$test_root/layer-first.log" 2>&1 ||
+    fail "installer rejected the package that still ships the layer library and manifest"
+[[ -f "$layer_prefix/$layer_library" && -f "$layer_prefix/$layer_manifest" ]] ||
+    fail "the layer library or manifest was not installed before removal"
+grep -Fq "$layer_library" "$layer_prefix/share/framegen-vulkan/installer/installed-files.sha256" ||
+    fail "the installed-state record does not name the layer library"
+rm "$package_root/$layer_library" "$package_root/$layer_manifest"
+write_layer_manifest
+FGVK_INSTALL_PREFIX="$layer_prefix" FGVK_INSTALLER_ASSUME_YES=1 \
+    "$package_root/Install framegen-vulkan" --install >"$test_root/layer-removed.log" 2>&1 ||
+    fail "installer rejected the package after the layer library and manifest were removed"
+[[ ! -e "$layer_prefix/$layer_library" ]] ||
+    fail "a library absent from the new package survived the update"
+[[ ! -e "$layer_prefix/$layer_manifest" ]] ||
+    fail "a layer manifest absent from the new package survived the update"
+if grep -Fq -e "$layer_library" -e "$layer_manifest" \
+        "$layer_prefix/share/framegen-vulkan/installer/installed-files.sha256"; then
+    fail "the installed-state record still names a removed layer file"
+fi
+rm -rf -- "$layer_prefix"
+unset FGVK_INSTALL_PREFIX FGVK_INSTALLER_ASSUME_YES
+
 printf '%s\n' 'fgvk-installer contract test passed'

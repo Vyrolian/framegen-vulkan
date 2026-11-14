@@ -27,7 +27,7 @@ Disabling Gamescope WSI does not disable Gamescope, Steam, or Game Mode. It chan
 
 framegen-vulkan expands one application present into generated present(s) followed by the real frame. If Gamescope WSI sits above a single combined framegen-vulkan layer, it observes only the application's original call while framegen-vulkan injects additional calls below it. Gamescope WSI therefore cannot pace every delivered image.
 
-When both Scaling and Gamescope WSI compatibility are enabled, the managed path uses this explicit order:
+When Gamescope WSI compatibility is enabled, the managed path uses this explicit order:
 
 ```text
 Application / Proton translation
@@ -35,13 +35,11 @@ Application / Proton translation
        reconstruction + Frame Generation
     -> VK_LAYER_FROG_gamescope_wsi_x86_64
        sees every generated and real present
-    -> VK_LAYER_FGVK_spatial_scaling
-       capabilities + physical lower extent
     -> Vulkan driver
     -> Gamescope compositor
 ```
 
-The lower framegen-vulkan role performs no presentation-time GPU work. Reconstruction stays in the upper role so there is one resource and scheduling owner. An FG-only Gamescope WSI compatibility launch uses the upper framegen-vulkan role followed by WSI without the lower spatial role.
+The single framegen-vulkan layer owns reconstruction and every resource, so there is one resource and scheduling owner. Gamescope WSI sits below it and observes every generated and real present.
 
 The legacy timing fallback for ordered SDR through the optional WSI chain uses `VK_GOOGLE_display_timing` only when the lower chain advertises it and the application has enabled neither Google nor EXT presentation timing nor the `presentWait`/`presentWait2` features. Every generated and real output then receives a separate future timestamp from the same bounded timeline used by the isolated scaling bridge. WSI remains the surface/protocol owner; framegen-vulkan does not open a second Wayland connection. This Google fallback does not apply to application-owned timing or completion pacing, unavailable capabilities or the isolated bridge. framegen-vulkan drains only its own feedback namespace every 32 outputs, with a count query and at most 128 records per drain, so older WSI implementations cannot accumulate session-length timing history. Failure to read that owned feedback disables this timing path. The optional EXT timing contract described below can supersede this fallback when supported.
 
@@ -71,8 +69,7 @@ Standalone `fgvk` applies `disable_steam_overlay` from `launcher.conf` before ap
 
 The guarded path admits a staged 64-bit Gamescope WSI payload only when it is explicitly enabled before launch. `fgvk` sets `DISABLE_GAMESCOPE_WSI=1`, so standalone launches do not enter it:
 
-- With Scaling enabled, the WSI path requires the complete three-role split.
-- With Scaling disabled, the WSI path uses the upper Renderer followed by Gamescope WSI.
+- The WSI path uses the framegen-vulkan layer followed by Gamescope WSI.
 
 Scaling alone keeps WSI isolated and uses the existing combined Renderer.
 
@@ -114,17 +111,15 @@ The guarded Gamescope WSI path is independent from Scaling and from the host Man
 
 The optional full-WSI launcher's eligibility requires `GAMESCOPE_WAYLAND_DISPLAY` to be nonempty and `WAYLAND_DISPLAY` to be empty or equal to it before the runtime starts. Desktop Mode, a mismatched nested Wayland session, or unavailable staged manifests leave WSI disabled and use the combined Renderer. That path retains its own extent checks and can remain native if the game cannot supply a distinct source size. Once a split chain is selected, missing lower-role evidence fails closed; it cannot silently become a combined chain after Vulkan starts.
 
-The launcher sets the semantic prefix through `VK_INSTANCE_LAYERS`; manifest-directory enumeration does not define order. When Scaling and WSI are both selected, the order is render role, Gamescope WSI, spatial role, then any selected post-process tool. Caller-requested layers follow that managed prefix. See [Optional graphics integrations](LAYER-CHAINING.md) for supported exceptions.
+The launcher sets the semantic prefix through `VK_INSTANCE_LAYERS`; manifest-directory enumeration does not define order. When Gamescope WSI is selected, the order is the render role, Gamescope WSI, then any selected post-process tool. Caller-requested layers follow that managed prefix. See [Optional graphics integrations](LAYER-CHAINING.md) for supported exceptions.
 
 Prepared 64-bit Heroic and EmuDeck Flatpak launches can receive the same bounded WSI payload and framegen-vulkan extension. Unprepared Flatpaks, 32-bit WSI presentation, broader host layouts, and other sandboxes are separate validation boundaries.
 
 ## Scaling ownership proof
 
-Gamescope WSI may replace the surface handle between upper and lower roles. Fixed-surface capabilities and create decisions therefore cross the two framegen-vulkan DSOs through same-thread, one-shot relays tied to the physical device and request. The lower decision is authoritative: a valid source/presentation split activates scaling, while an equal-extent decision creates a native context. Missing, stale, or mismatched evidence rolls back the create.
+The framegen-vulkan layer is a single library, so fixed-surface capabilities and create decisions are answered in one place and need no relay between two DSOs.
 
-Call order alone is insufficient. The lower spatial role must observe a surface created through `vkCreateWaylandSurfaceKHR`, proving that Gamescope WSI converted the application's X11 window into the compositor-owned surface. An XCB or Xlib surface at that boundary remains native with `inactive_reason=gamescope-wsi-surface-unproven`; the upper role can still retain Frame Generation. Direct combined Renderer operation has no intervening WSI owner and does not require this split-only proof.
-
-For variable surfaces, scaling through either the managed split chain or the isolated surface adapter also requires the positively identified Gamescope output target. A missing target or a source with no enlargement headroom remains native. [Spatial scaling architecture](SCALING.md) owns the full fixed/variable extent policy.
+For variable surfaces, scaling through the isolated surface adapter also requires the positively identified Gamescope output target. A missing target or a source with no enlargement headroom remains native. [Spatial scaling architecture](SCALING.md) owns the full fixed/variable extent policy.
 
 ## Presentation and swapchain policy
 
@@ -227,7 +222,6 @@ Do not claim general multi-instance, multi-queue, or multi-swapchain-batch suppo
 | framegen-vulkan render role | Admitted and gated by `ENABLE_FGVK=1` |
 | Gamescope compositor and Game Mode | Remain active outside the application layer chain |
 | Gamescope WSI | Excluded normally, including for scaling; admitted only by an explicit compatibility profile |
-| framegen-vulkan spatial role | Admitted only when Scaling and Gamescope WSI select the complete managed split chain |
 | Known competing Frame Generation layers | Disabled |
 | System implicit overlays, capture, Mesa helpers, and vendor layers | Excluded unless a named guarded exception stages an exact manifest |
 | Explicit application layers | Outside this implicit-discovery policy |
@@ -287,9 +281,9 @@ For the behavior of each Fixed, Steady Adaptive, and Fractional Adaptive pacing 
 
 ### Presentation evidence
 
-For a default managed launch, loader and Renderer evidence must agree that Gamescope WSI is isolated, the render role selected a profile and backend, and ordered SDR presentation owns delivery. The presentation-feedback record must identify the explicit VRR state and selected pacing owner when those properties are available. For an FG-only compatibility launch, `VK_LAYER_FGVK_render` must be above the architecture-correct Gamescope WSI identity. For scaling with WSI, the complete three-role order, lower Wayland provenance, authoritative create relay, active source/presentation split, one upper reconstruction owner, and correct generated/real delivery are all required.
+For a default managed launch, loader and Renderer evidence must agree that Gamescope WSI is isolated, the render role selected a profile and backend, and ordered SDR presentation owns delivery. The presentation-feedback record must identify the explicit VRR state and selected pacing owner when those properties are available. For an FG-only compatibility launch, `VK_LAYER_FGVK_render` must be above the architecture-correct Gamescope WSI identity. For scaling with WSI, the single-layer order, an active source/presentation split, one reconstruction owner, and correct generated/real delivery are all required.
 
-Scaling with WSI off must instead prove a combined Renderer context with WSI isolated, no lower spatial role, and an active source/presentation split. WSI on/off comparisons must retain the same source/output sizes, scaler, FG mode, scene, and refresh rate; a safe native fallback cannot count as improved scaling performance.
+Scaling with WSI off must instead prove a combined Renderer context with WSI isolated and an active source/presentation split. WSI on/off comparisons must retain the same source/output sizes, scaler, FG mode, scene, and refresh rate; a safe native fallback cannot count as improved scaling performance.
 
 For X11/Proton scaling through the isolated surface adapter, additionally require `spatial scaling surface bridge` with `transport=wayland; gamescope_wsi=isolated` and Wayland surface provenance. The `spatial scaling surface formats` record reports native X11, private Wayland, and shared format counts; `action=intersection` means the application sees only shared pairs in its X11 order, while `action=wayland-fallback` means no common pair was proven. A lower layer may omit the global instance-extension entrypoint (Gamescope WSI) or return `VK_ERROR_LAYER_NOT_PRESENT`. Either case triggers a global query through the existing Vulkan loader owner; successful layer queries and other errors retain their original handling. A complete list must confirm Wayland support before bridge admission, and optional maintenance1 retirement requires both the instance surface dependencies and the device feature. Missing dependencies, incomplete lists and other enumeration failures retain the natural presentation fallback. The query runs at instance creation, never on presentation, and does not enable the full Gamescope WSI layer. fgvk Gym's `run-proton-end-to-end.sh --scaling-surface` exercises this boundary inside Steam Linux Runtime with the existing translation matrix. Its default mode still validates the full WSI split chain. Commercial-game, other-driver, 32-bit, and Flatpak evidence remains separate.
 
@@ -307,7 +301,7 @@ Present-chain filtering also preserves `VkPresentTimingsInfoEXT` (`VK_EXT_presen
 | Renderer manifests and installation | `fgvk-render/CMakeLists.txt` |
 | Host archive verification | `scripts/package-local.sh` |
 | Process-start policy, transport, and admission helpers | `fgvk-render/src/presentation_policy.hpp` |
-| Surface and split-role interception | `fgvk-render/src/entrypoint.cpp` |
+| Surface and capability interception | `fgvk-render/src/entrypoint.cpp` |
 | Swapchain creation and pNext filtering | `fgvk-render/src/instance.cpp`, `fgvk-render/src/swapchain/create.cpp` |
 | Generated/real delivery | `fgvk-render/src/swapchain/present.cpp`, `fgvk-render/src/swapchain/present/` |
 | Launcher and portable Renderer tests | `scripts/test-fgvk-launch.sh`, `fgvk-render/tests/` |

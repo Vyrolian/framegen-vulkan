@@ -89,7 +89,6 @@ if(FGVK_VULKAN_HEADERS_INCLUDE_DIR)
     include_directories(BEFORE SYSTEM "${FGVK_VULKAN_HEADERS_INCLUDE_DIR}")
 endif()
 set(FGVK_LAYER_LIBRARY_PATH libfgvk-render.so CACHE STRING "Change where Vulkan searches for the layer library")
-set(FGVK_SCALING_LAYER_LIBRARY_PATH libfgvk-render-scaling.so CACHE STRING "Change where Vulkan searches for the isolated spatial-scaling layer library")
 set(FGVK_LAYER_MANIFEST_SUFFIX "" CACHE STRING "Suffix for the installed Vulkan layer manifest filename")
 option(FGVK_TESTING_RENDERDOC  "Enable RenderDoc integration for testing purposes" OFF)
 # === READ HERE FOR BUILD OPTIONS ===

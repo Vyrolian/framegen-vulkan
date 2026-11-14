@@ -282,7 +282,7 @@ ProfileUpdateDecision Swapchain::updateProfile(
             this->instance && resourcesAvailable &&
                 this->colorPipeline.generationSupported,
             this->presentRetirementEnabled(), this->gamescopeDetected,
-            spatialScalingOwnedByLayer()
+            true
         );
     this->liveProfileResourceRecreation.update(
         this->profile,

@@ -210,10 +210,9 @@ Useful CMake options:
 - `FGVK_REQUIRE_NATIVE_PACKAGE_HEADERS`: Require the shared native/Flatpak Vulkan header baseline (default is `Off` for direct CMake builds; all package builds set it to `On`).
 - `FGVK_VULKAN_HEADERS_INCLUDE_DIR`: Prefer an explicit Vulkan-Headers `include/` directory for compilation and the required-header check; the fast SteamOS builder sets this to its cache of the shared pin.
 - `FGVK_LAYER_LIBRARY_PATH`: Override the frame-generation role library path stored in its manifest.
-- `FGVK_SCALING_LAYER_LIBRARY_PATH`: Override the spatial role library path stored in its manifest.
 - `FGVK_LAYER_MANIFEST_SUFFIX`: Add a suffix to the installed manifest filename when packaging multiple architectures.
 
-For a non-system prefix, set both paths relative to their installed manifests, for example `../../../lib/libfgvk-render.so` and `../../../lib/libfgvk-render-scaling.so`.
+For a non-system prefix, set the path relative to its installed manifest, for example `../../../lib/libfgvk-render.so`.
 
 3. **Build**
 
@@ -221,7 +220,7 @@ For a non-system prefix, set both paths relative to their installed manifests, f
 cmake --build build
 ```
 
-The default build produces both split-chain Vulkan DSOs. A targeted `--target fgvk-render` build also refreshes `fgvk-render-scaling`, because the upper and lower roles share one versioned runtime contract and must never be staged from different source generations.
+The default build produces the single framegen-vulkan Vulkan layer library, `libfgvk-render.so`.
 
 The default and Vulkan-layer builds check `fgvk-render/src/**/*.cpp` against the explicit production source lists in `fgvk-render/CMakeLists.txt`. When adding or moving an implementation file, assign it to its owning target there. The inventory check runs on incremental builds too, so an unlisted new file fails the build instead of silently disappearing from the host, 32-bit, Flatpak, and Arch artifacts. CTest runs the same check as `renderer-source-inventory` in the portable policy set.
 
@@ -244,8 +243,8 @@ The package installs:
 - `fgvk` (settings window and `fgvk <command>` entry point), `fgvk-cli`, and `fgvk-diagnostics` into `/usr/bin`.
 - the private launch helper `fgvk-launch` into `/usr/libexec/framegen-vulkan`, off `PATH`.
 - the 64-bit Vulkan layers into `/usr/lib` and the 32-bit layers into `/usr/lib32`.
-- the public implicit-layer manifests into `/usr/share/vulkan/implicit_layer.d`, gated by `ENABLE_FGVK` and `ENABLE_FGVK_SPATIAL_SCALING`.
-- the private manifests used by `fgvk` into `/usr/share/framegen-vulkan/vulkan/implicit_layer.d` and `/usr/share/framegen-vulkan/vulkan/spatial_scaling.d`.
+- the public implicit-layer manifest into `/usr/share/vulkan/implicit_layer.d`, gated by `ENABLE_FGVK`.
+- the private manifest used by `fgvk` into `/usr/share/framegen-vulkan/vulkan/implicit_layer.d`.
 - license texts into `/usr/share/licenses/framegen-vulkan-bin`.
 - `ASSET_PROVENANCE.md`, the version file, and the upstream checksum manifest into `/usr/share/doc/framegen-vulkan-bin`.
 

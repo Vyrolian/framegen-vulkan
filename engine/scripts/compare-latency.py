@@ -70,8 +70,6 @@ REMOVED_PREFIXES = ("FGVK_", "NVPRESENT_", "MANGOHUD")
 REMOVED_KEYS = frozenset({
     "ENABLE_FGVK",
     "DISABLE_FGVK",
-    "ENABLE_FGVK_SPATIAL_SCALING",
-    "DISABLE_FGVK_SPATIAL_SCALING",
     "DISABLE_LAYER_NV_PRESENT_1",
     "VK_INSTANCE_LAYERS",
     "VK_LAYER_PATH",
@@ -143,14 +141,12 @@ def mode_overrides(mode: str, session_dir: Path) -> dict[str, str]:
     if mode == "baseline":
         return {
             "DISABLE_FGVK": "1",
-            "DISABLE_FGVK_SPATIAL_SCALING": "1",
             "NVPRESENT_ENABLE_SMOOTH_MOTION": "0",
             "DISABLE_LAYER_NV_PRESENT_1": "1",
         }
     if mode == "smooth-motion":
         return {
             "DISABLE_FGVK": "1",
-            "DISABLE_FGVK_SPATIAL_SCALING": "1",
             "NVPRESENT_ENABLE_SMOOTH_MOTION": "1",
         }
     if mode == "fgvk":

@@ -66,15 +66,6 @@ namespace {
         };
     }
 
-#if defined(FGVK_LAYER_ROLE_SPATIAL_SCALING)
-    constexpr char fgvkBuildIdentity[] =
-        "framegen-vulkan: render layer active; identity="
-        "VK_LAYER_FGVK_spatial_scaling; build="
-        FGVK_BUILD_VERSION
-        "; fingerprint="
-        FGVK_BUILD_FINGERPRINT
-        "; role=spatial-scaling";
-#else
     constexpr char fgvkBuildIdentity[] =
         "framegen-vulkan: render layer active; identity="
         "VK_LAYER_FGVK_render; build="
@@ -82,7 +73,6 @@ namespace {
         "; fingerprint="
         FGVK_BUILD_FINGERPRINT
         "; role=frame-generation";
-#endif
 
     std::string diagnosticToken(const std::string_view raw) {
         if (raw.empty())
@@ -472,7 +462,6 @@ Root::Root() :
     // live: 0x performs no generation work while 2x-5x or Adaptive can reuse
     // already provisioned backend and private resources in place.
     this->frameGenerationInteropProvisionedAtStartup =
-        frameGenerationLayer &&
         this->active_profile->frame_generation_provisioned;
     this->scalingEngineConfiguredAtStartup =
         this->active_profile->scaling_enabled;
@@ -901,8 +890,6 @@ SwapchainCreateModification Root::modifySwapchainCreateInfo(const vk::Vulkan& vk
         const std::optional<FixedSurfaceScalingContract>& fixedSurfaceContract,
         const bool spatialSurfaceScalingSupported,
         const bool gamescopeScalingSurface,
-        const std::function<void(
-            const FixedSurfaceScalingContract&)>& publishSpatialCreate,
         const std::function<void(void)>& finish) const {
     SwapchainCreateModification modification{
         .applicationExtent = createInfo.imageExtent,
@@ -919,18 +906,6 @@ SwapchainCreateModification Root::modifySwapchainCreateInfo(const vk::Vulkan& vk
         vk.physdev(), createInfo.surface, &caps);
     if (res != VK_SUCCESS)
         throw ls::vulkan_error(res, "vkGetPhysicalDeviceSurfaceCapabilitiesKHR() failed");
-
-    // In the managed render -> Gamescope WSI -> spatial chain, the lower
-    // capability owner deliberately returns the virtual source extent. The
-    // current upper resource owner must validate create-time state against
-    // the relayed compositor presentation extent before expanding the source
-    // request. An unrelated extent remains unchanged and fails closed below.
-    if (spatialScalingCapabilityRelayByLayer() &&
-            spatialScalingOwnedByLayer() && fixedSurfaceContract) {
-        static_cast<void>(prepareFixedSurfaceCapabilityRelay(
-            caps, *fixedSurfaceContract
-        ));
-    }
 
     modification.variableSurface = !fixedSurfaceExtent(caps.currentExtent);
 
@@ -984,7 +959,7 @@ SwapchainCreateModification Root::modifySwapchainCreateInfo(const vk::Vulkan& vk
         caps.maxImageCount,
         prospectiveCreateInfo,
         this->gamescopeDetected,
-        frameGenerationInteropForLayer(vk.frameGenerationInteropEnabled()),
+        vk.frameGenerationInteropEnabled(),
         false,
         caps.minImageCount
     ));
@@ -1013,19 +988,9 @@ SwapchainCreateModification Root::modifySwapchainCreateInfo(const vk::Vulkan& vk
         // rate, never at the cheaper output-only WSI bytes-per-pixel rate.
         .sourceGrowth = memoryAdmission.effectivePixelBudget,
     };
-    const bool spatialCapabilityRelay =
-        spatialScalingCapabilityRelayByLayer();
-    const bool spatialResourceOwner = spatialScalingOwnedByLayer();
-    const bool spatialExtentOwner =
-        spatialScalingCapabilityOwnedByLayer();
     const bool gamescopePresentationTargetRequired =
-        spatialExtentOwner && (splitLayerChainEnabled() || gamescopeScalingSurface) &&
+        gamescopeScalingSurface &&
         (this->gamescopeEnvironmentDetected || this->gamescopeDetected);
-    if (!spatialResourceOwner && !spatialExtentOwner) {
-        // The legacy upper split role relays capabilities but neither expands
-        // the lower swapchain nor allocates reconstruction resources.
-        policySnapshot.policy.enabled = false;
-    }
     auto scalingDecision = spatialSurfaceScalingSupported
         ? scalingDecisionForCreate(
             policySnapshot.policy,
@@ -1110,9 +1075,8 @@ SwapchainCreateModification Root::modifySwapchainCreateInfo(const vk::Vulkan& vk
     if (scalingExtents && spatialScalingSupported) {
         modification.applicationExtent = scalingExtents->source;
         modification.presentationExtent = scalingExtents->presentation;
-        modification.spatialScalingActive = spatialResourceOwner;
-        if (spatialExtentOwner)
-            createInfo.imageExtent = scalingExtents->presentation;
+        modification.spatialScalingActive = true;
+        createInfo.imageExtent = scalingExtents->presentation;
         inactiveReason = SpatialScalingInactiveReason::None;
     } else if (scalingExtents) {
         inactiveReason = !spatialShapeSupported
@@ -1139,38 +1103,7 @@ SwapchainCreateModification Root::modifySwapchainCreateInfo(const vk::Vulkan& vk
         policySnapshot.policy.enabled &&
         policySnapshot.policy.factor <= 1.0F &&
         inactiveReason == SpatialScalingInactiveReason::FactorNotUpscaling;
-    if (spatialExtentOwner && !spatialResourceOwner) {
-        // Publish every lower create decision, including an explicit no-split
-        // result. The upper combined role must distinguish that valid native
-        // decision from a missing lower DSO; otherwise a deliberate exact-
-        // presentation replacement is rejected as a transient context.
-        publishSpatialCreate(FixedSurfaceScalingContract{
-            .extents = SpatialScalingExtents{
-                .source = modification.applicationExtent,
-                .presentation = modification.presentationExtent,
-            },
-            .factor = policySnapshot.policy.factor,
-            .policyRevision = policySnapshot.revision,
-            .queryGeneration = fixedSurfaceContract
-                ? fixedSurfaceContract->queryGeneration : 0,
-            .spatialSurfaceScalingSupported =
-                spatialSurfaceScalingSupported,
-            .variableSurface = modification.variableSurface,
-            .memoryBudgetConstrained =
-                modification.spatialScalingMemoryConstrained,
-            .inactiveReason = inactiveReason,
-        });
-    }
-    const bool awaitingLowerCreateRelay = awaitLowerSpatialCreateRelay(
-        spatialCapabilityRelay,
-        spatialResourceOwner,
-        fixedSurfaceContract.has_value(),
-        scalingExtents.has_value(),
-        fixedSurfaceExtent(caps.currentExtent)
-    );
-    if (this->active_profile->scaling_enabled &&
-            (spatialResourceOwner || spatialExtentOwner) &&
-            !awaitingLowerCreateRelay) {
+    if (this->active_profile->scaling_enabled) {
         const auto advertised = scalingDecision.fixedContract;
         const auto admissionPlacement = scalingDecision.memoryAdmissionPlacement.
             value_or(selectSpatialFramePipelinePlacement(
@@ -1320,17 +1253,7 @@ SwapchainCreateModification Root::modifySwapchainCreateInfo(const vk::Vulkan& vk
         }
     }
 
-    if (spatialCapabilityRelay && !spatialResourceOwner &&
-            ls::spatialScalingRequested(*this->active_profile)) {
-        std::cerr << "framegen-vulkan: spatial scaling capability relay: "
-                  << "role=" << layerRoleName
-                  << "; requested=" << modification.applicationExtent.width
-                  << 'x' << modification.applicationExtent.height
-                  << "; action=forward-unchanged"
-                  << "; ownership=lower-spatial-role\n";
-    }
-
-    if (!awaitingLowerCreateRelay && shouldRejectUnmatchedFixedSpatialCreate(
+    if (shouldRejectUnmatchedFixedSpatialCreate(
             fixedVirtualSourceRequest, scalingExtents.has_value())) {
         throw ls::vulkan_error(
             VK_ERROR_INITIALIZATION_FAILED,
@@ -1369,7 +1292,7 @@ SwapchainCreateModification Root::modifySwapchainCreateInfo(const vk::Vulkan& vk
         caps.maxImageCount,
         createInfo,
         this->gamescopeDetected,
-        frameGenerationInteropForLayer(vk.frameGenerationInteropEnabled()),
+        vk.frameGenerationInteropEnabled(),
         modification.spatialScalingActive,
         caps.minImageCount
     );
@@ -1451,15 +1374,7 @@ SwapchainCreateModification Root::modifySwapchainCreateInfo(const vk::Vulkan& vk
               << '\n';
 
     finish();
-    if (modification.spatialScalingActive && !spatialExtentOwner) {
-        // The lower extent owner expanded the real swapchain after Gamescope
-        // WSI observed the source-sized request. Reflect that immutable extent
-        // only in this upper layer's local create description so its combined
-        // scaler/FG context maps the actual presentation-sized images.
-        createInfo.imageExtent = modification.presentationExtent;
-    } else {
-        modification.presentationExtent = createInfo.imageExtent;
-    }
+    modification.presentationExtent = createInfo.imageExtent;
     return modification;
 }
 
@@ -1593,21 +1508,16 @@ void Root::createSwapchainContext(const vk::Vulkan& vk,
         profile.frame_generation_provisioned &&
         profile.frame_generation_enabled;
     const bool frameGenerationAvailableOnDevice =
-        frameGenerationInteropForLayer(vk.frameGenerationInteropEnabled());
+        vk.frameGenerationInteropEnabled();
     if (frameGenerationAvailableOnDevice &&
             !this->backend.has_value()) { // emplace backend late, due to loader bug
         try {
             // The backend owns a separate Vulkan instance. Prevent framegen-vulkan
             // Renderer, Gamescope WSI, or a selected post-process layer from
             // entering that internal instance while preserving caller values
-            // for the rest of the game process. The split chain has two framegen-vulkan
-            // identities, so disabling only the upper identity would let the
-            // lower role intercept the backend device and break construction.
+            // for the rest of the game process.
             const ScopedEnvironmentOverride disableFgvk(
                 "DISABLE_FGVK", "1"
-            );
-            const ScopedEnvironmentOverride disableSpatialFgvk(
-                "DISABLE_FGVK_SPATIAL_SCALING", "1"
             );
             const ScopedEnvironmentOverride disableGamescopeWsi(
                 "DISABLE_GAMESCOPE_WSI", "1"

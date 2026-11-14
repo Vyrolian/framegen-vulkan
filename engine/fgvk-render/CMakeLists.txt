@@ -166,19 +166,6 @@ if(FGVK_BUILD_VK_LAYER)
     add_dependencies(fgvk-render fgvk-renderer-source-inventory)
     fgvk_configure_renderer_layer(fgvk-render)
 
-    # Frame generation and scaling occupy opposite sides of Gamescope WSI.
-    # Build a second isolated copy so the loader can form the only chain that
-    # preserves both contracts: FG -> Gamescope WSI -> spatial scaling.
-    add_library(fgvk-render-scaling SHARED ${LAYER_SOURCES})
-    add_dependencies(fgvk-render-scaling fgvk-renderer-source-inventory)
-    target_compile_definitions(fgvk-render-scaling PRIVATE
-        FGVK_LAYER_ROLE_SPATIAL_SCALING=1)
-    fgvk_configure_renderer_layer(fgvk-render-scaling)
-
-    # The upper role consumes a same-process relay exported by the separately
-    # compiled lower role. Keep targeted developer builds coherent: rebuilding
-    # the public renderer target must never leave the spatial DSO stale.
-    add_dependencies(fgvk-render fgvk-render-scaling)
 endif()
 
 if(BUILD_TESTING)
@@ -387,18 +374,6 @@ if(BUILD_TESTING)
     fgvk_register_portable_policy_test(
         fgvk-layer-role-tests layer-role)
 
-    add_executable(fgvk-spatial-layer-role-tests
-        "tests/layer_role_tests.cpp")
-    target_compile_definitions(fgvk-spatial-layer-role-tests PRIVATE
-        FGVK_LAYER_ROLE_SPATIAL_SCALING=1)
-    target_include_directories(fgvk-spatial-layer-role-tests
-        PRIVATE "src"
-        PRIVATE "../fgvk-common/include")
-    add_test(NAME spatial-layer-role
-        COMMAND fgvk-spatial-layer-role-tests)
-    fgvk_register_portable_policy_test(
-        fgvk-spatial-layer-role-tests spatial-layer-role)
-
     add_executable(fgvk-presentation-policy-tests
         "tests/presentation_policy_tests.cpp")
     target_include_directories(fgvk-presentation-policy-tests
@@ -584,23 +559,15 @@ if(FGVK_BUILD_VK_LAYER)
 
     set(FGVK_LAYER_MANIFEST_FILE
         "VkLayer_FGVK_render${FGVK_LAYER_MANIFEST_SUFFIX}.json")
-    set(FGVK_SCALING_LAYER_MANIFEST_FILE
-        "VkLayer_FGVK_spatial_scaling${FGVK_LAYER_MANIFEST_SUFFIX}.json")
     configure_file(
         "VkLayer_FGVK_render.json.in"
         "${FGVK_LAYER_MANIFEST_FILE}"
-        @ONLY)
-    configure_file(
-        "VkLayer_FGVK_spatial_scaling.json.in"
-        "${FGVK_SCALING_LAYER_MANIFEST_FILE}"
         @ONLY)
 
     # framegen-vulkan-managed SDR launches use a private manifest directory, matching the
     # proven v2 launch boundary. Relative paths containing a directory need one
     # more parent traversal; a bare loader name remains valid as-is.
     set(FGVK_PUBLIC_LAYER_LIBRARY_PATH "${FGVK_LAYER_LIBRARY_PATH}")
-    set(FGVK_PUBLIC_SCALING_LAYER_LIBRARY_PATH
-        "${FGVK_SCALING_LAYER_LIBRARY_PATH}")
     if(IS_ABSOLUTE "${FGVK_PUBLIC_LAYER_LIBRARY_PATH}")
         set(FGVK_LAYER_LIBRARY_PATH "${FGVK_PUBLIC_LAYER_LIBRARY_PATH}")
     elseif(FGVK_PUBLIC_LAYER_LIBRARY_PATH MATCHES "/")
@@ -608,32 +575,14 @@ if(FGVK_BUILD_VK_LAYER)
     else()
         set(FGVK_LAYER_LIBRARY_PATH "${FGVK_PUBLIC_LAYER_LIBRARY_PATH}")
     endif()
-    if(IS_ABSOLUTE "${FGVK_PUBLIC_SCALING_LAYER_LIBRARY_PATH}")
-        set(FGVK_SCALING_LAYER_LIBRARY_PATH
-            "${FGVK_PUBLIC_SCALING_LAYER_LIBRARY_PATH}")
-    elseif(FGVK_PUBLIC_SCALING_LAYER_LIBRARY_PATH MATCHES "/")
-        set(FGVK_SCALING_LAYER_LIBRARY_PATH
-            "../${FGVK_PUBLIC_SCALING_LAYER_LIBRARY_PATH}")
-    else()
-        set(FGVK_SCALING_LAYER_LIBRARY_PATH
-            "${FGVK_PUBLIC_SCALING_LAYER_LIBRARY_PATH}")
-    endif()
     file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/private-manifest")
     configure_file(
         "VkLayer_FGVK_render.json.in"
         "${CMAKE_CURRENT_BINARY_DIR}/private-manifest/${FGVK_LAYER_MANIFEST_FILE}"
         @ONLY)
-    file(MAKE_DIRECTORY
-        "${CMAKE_CURRENT_BINARY_DIR}/private-scaling-manifest")
-    configure_file(
-        "VkLayer_FGVK_spatial_scaling.json.in"
-        "${CMAKE_CURRENT_BINARY_DIR}/private-scaling-manifest/${FGVK_SCALING_LAYER_MANIFEST_FILE}"
-        @ONLY)
     set(FGVK_LAYER_LIBRARY_PATH "${FGVK_PUBLIC_LAYER_LIBRARY_PATH}")
-    set(FGVK_SCALING_LAYER_LIBRARY_PATH
-        "${FGVK_PUBLIC_SCALING_LAYER_LIBRARY_PATH}")
 
-    install(TARGETS fgvk-render fgvk-render-scaling
+    install(TARGETS fgvk-render
         LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}")
     install(FILES "${CMAKE_CURRENT_BINARY_DIR}/${FGVK_LAYER_MANIFEST_FILE}"
         DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/vulkan/implicit_layer.d")
@@ -641,11 +590,4 @@ if(FGVK_BUILD_VK_LAYER)
         "${CMAKE_CURRENT_BINARY_DIR}/private-manifest/${FGVK_LAYER_MANIFEST_FILE}"
         DESTINATION
             "${CMAKE_INSTALL_DATAROOTDIR}/framegen-vulkan/vulkan/implicit_layer.d")
-    install(FILES
-        "${CMAKE_CURRENT_BINARY_DIR}/${FGVK_SCALING_LAYER_MANIFEST_FILE}"
-        DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/vulkan/implicit_layer.d")
-    install(FILES
-        "${CMAKE_CURRENT_BINARY_DIR}/private-scaling-manifest/${FGVK_SCALING_LAYER_MANIFEST_FILE}"
-        DESTINATION
-            "${CMAKE_INSTALL_DATAROOTDIR}/framegen-vulkan/vulkan/spatial_scaling.d")
 endif()

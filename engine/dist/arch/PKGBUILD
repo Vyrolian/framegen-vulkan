@@ -13,7 +13,7 @@
 pkgname=framegen-vulkan-bin
 pkgver=4.6.0
 pkgrel=1
-pkgdesc="Frame generation and spatial scaling Vulkan layers for Linux games"
+pkgdesc="Frame generation Vulkan layer for Linux games"
 arch=('x86_64')
 url="https://github.com/eugeniosegala/MAKO"
 license=('GPL-3.0-or-later')
@@ -140,21 +140,15 @@ package() {
         bin/fgvk-installer
         bin/fgvk
         libexec/framegen-vulkan/fgvk-launch
-        lib/libfgvk-render-scaling.so
         lib/libfgvk-render.so
-        lib32/libfgvk-render-scaling.so
         lib32/libfgvk-render.so
         share/doc/framegen-vulkan/ASSET_PROVENANCE.md
         share/doc/framegen-vulkan/LICENSE.md
         share/doc/framegen-vulkan/THIRD_PARTY_NOTICES.md
         share/framegen-vulkan/vulkan/implicit_layer.d/VkLayer_FGVK_render.json
         share/framegen-vulkan/vulkan/implicit_layer.d/VkLayer_FGVK_render.x86.json
-        share/framegen-vulkan/vulkan/spatial_scaling.d/VkLayer_FGVK_spatial_scaling.json
-        share/framegen-vulkan/vulkan/spatial_scaling.d/VkLayer_FGVK_spatial_scaling.x86.json
         share/vulkan/implicit_layer.d/VkLayer_FGVK_render.json
         share/vulkan/implicit_layer.d/VkLayer_FGVK_render.x86.json
-        share/vulkan/implicit_layer.d/VkLayer_FGVK_spatial_scaling.json
-        share/vulkan/implicit_layer.d/VkLayer_FGVK_spatial_scaling.x86.json
     )
     for required_path in "${required_paths[@]}"; do
         if [[ ! -f "$required_path" ]]; then

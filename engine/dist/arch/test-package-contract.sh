@@ -61,16 +61,12 @@ touch \
     "$package_root/usr/bin/fgvk-diagnostics" \
     "$package_root/usr/libexec/framegen-vulkan/fgvk-launch" \
     "$package_root/usr/lib/libfgvk-render.so" \
-    "$package_root/usr/lib/libfgvk-render-scaling.so" \
-    "$package_root/usr/lib32/libfgvk-render.so" \
-    "$package_root/usr/lib32/libfgvk-render-scaling.so"
+    "$package_root/usr/lib32/libfgvk-render.so"
 for binary_path in \
     usr/bin/fgvk \
     usr/bin/fgvk-cli \
     usr/lib/libfgvk-render.so \
-    usr/lib/libfgvk-render-scaling.so \
-    usr/lib32/libfgvk-render.so \
-    usr/lib32/libfgvk-render-scaling.so; do
+    usr/lib32/libfgvk-render.so; do
     printf '\177ELF' > "$package_root/$binary_path"
 done
 if [[ "${FGVK_TEST_ADD_NEW_ELF:-0}" == 1 ]]; then

@@ -202,7 +202,7 @@ build_layer() {
     shift 2
     local build_cli=OFF
     local install_libdir=lib
-    local build_targets=(fgvk-render fgvk-render-scaling)
+    local build_targets=(fgvk-render)
 
     if [[ "$architecture" == "64-bit" ]]; then
         build_cli=ON
@@ -226,7 +226,6 @@ build_layer() {
         -DFGVK_EXPERIMENTAL_LSFG_FP16="$experimental_lsfg_fp16" \
         -DFGVK_LSFG_FP16_TOOLS_SOURCE="$lsfg_fp16_tools_source" \
         -DFGVK_LAYER_LIBRARY_PATH="../$install_libdir/libfgvk-render.so" \
-        -DFGVK_SCALING_LAYER_LIBRARY_PATH="../$install_libdir/libfgvk-render-scaling.so" \
         "$@"
 
     if [[ "$experimental_lsfg_fp16" == ON ]]; then
@@ -240,13 +239,8 @@ build_layer() {
     cmake --build "$target_build_dir" --parallel "$jobs" --target "${build_targets[@]}"
 
     local layer_path="$target_build_dir/fgvk-render/libfgvk-render.so"
-    local scaling_layer_path="$target_build_dir/fgvk-render/libfgvk-render-scaling.so"
     if [[ ! -f "$layer_path" ]]; then
         echo "Expected $architecture layer output is missing: $layer_path" >&2
-        exit 1
-    fi
-    if [[ ! -f "$scaling_layer_path" ]]; then
-        echo "Expected $architecture spatial layer output is missing: $scaling_layer_path" >&2
         exit 1
     fi
     echo "Incremental $architecture layer build ready: $layer_path"

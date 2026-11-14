@@ -131,18 +131,6 @@ namespace {
             retiredSwapchains;
     }* instance_info; // NOLINT (global variable)
 
-    enum class FixedSurfaceCapabilityRelayOperation : uint32_t {
-        BeginCapability,
-        ConsumeCapability,
-        BeginCreate,
-        ConsumeCreate,
-    };
-
-#if defined(FGVK_LAYER_ROLE_SPATIAL_SCALING)
-    thread_local FixedSurfaceCapabilityRelaySlot fixedSurfaceCapabilityRelay;
-    thread_local FixedSurfaceCapabilityRelaySlot spatialCreateRelay;
-#endif
-
     bool initializeLayerInfo();
 
     bool finalizeRetiredSwapchain(
@@ -554,7 +542,7 @@ namespace {
             if (needsX11Adapter && !(instance_info && instance_info->scalingSurfaces) &&
                     needsGamescopeScalingSurface(
                     layer_info->root.scalingSurfaceConnectionProvisioned(),
-                    true, spatialScalingLayer, splitLayerChainEnabled(),
+                    true, false, false,
                     environment("GAMESCOPE_WAYLAND_DISPLAY"),
                     environment("WAYLAND_DISPLAY"), environment("XDG_RUNTIME_DIR"),
                     std::getenv("WAYLAND_SOCKET") != nullptr)) {
@@ -941,7 +929,7 @@ namespace {
             // FGVK_PACING_PROFILE_GPU_SPLIT=1). Negotiate a supported
             // calibration alias and known clock domains without adding any feature node.
             std::vector<const char*> copyCalibrationExtensions;
-            if (frameGenerationLayer && frameGenerationInteropEnabled &&
+            if (frameGenerationInteropEnabled &&
                     (present_diagnostics::pacingCopyProfileEnabled() || present_diagnostics::pacingGpuSplitProfileEnabled())) {
                 const auto supported = lowerDeviceExtensions(physdev);
                 const char* calibrationExtension{};
@@ -1547,10 +1535,7 @@ namespace {
     // get optional function pointer override
     PFN_vkVoidFunction getProcAddr(const std::string& name) {
         // The application role also observes actual serialized completion
-        // pacing when diagnostics are off. Lower spatial roles forward waits
-        // untouched and must not count or classify the same call twice.
-        if (isPresentWaitCommand(name) && !frameGenerationLayer)
-            return nullptr;
+        // pacing when diagnostics are off.
         auto it = layer_info->map.find(name);
         if (it == layer_info->map.end()) return nullptr;
 
@@ -1679,220 +1664,7 @@ namespace {
     }
 }
 
-#if defined(FGVK_LAYER_ROLE_SPATIAL_SCALING)
-// The split roles are separate DSOs, and Gamescope WSI may replace the surface
-// handle between them. Export only a same-thread, one-shot capability relay
-// from the lower spatial role. The upper role brackets one downstream query;
-// current split layout 2 uses the immutable result to own the combined
-// scaler/frame-generation context without moving the lower capability owner.
-extern "C" __attribute__((visibility("default"))) VkBool32
-fgvkSpatialScalingLookupFixedContract(
-        const uint32_t rawOperation,
-        const VkPhysicalDevice physicalDevice,
-        VkSurfaceKHR* const lowerSurface,
-        VkExtent2D* const source,
-        VkExtent2D* const presentation,
-        float* const factor,
-        uint64_t* const policyRevision,
-        uint64_t* const queryGeneration,
-        VkBool32* const spatialSurfaceScalingSupported,
-        VkBool32* const variableSurface,
-        VkBool32* const memoryBudgetConstrained,
-        uint32_t* const inactiveReason) noexcept {
-    const auto operation = static_cast<FixedSurfaceCapabilityRelayOperation>(
-        rawOperation
-    );
-    FixedSurfaceCapabilityRelaySlot* slot{};
-    if (operation ==
-            FixedSurfaceCapabilityRelayOperation::BeginCapability ||
-            operation ==
-            FixedSurfaceCapabilityRelayOperation::ConsumeCapability) {
-        slot = &fixedSurfaceCapabilityRelay;
-    } else if (operation ==
-            FixedSurfaceCapabilityRelayOperation::BeginCreate ||
-            operation == FixedSurfaceCapabilityRelayOperation::ConsumeCreate) {
-        slot = &spatialCreateRelay;
-    }
-    if (!slot)
-        return VK_FALSE;
-
-    if (operation == FixedSurfaceCapabilityRelayOperation::BeginCapability ||
-            operation == FixedSurfaceCapabilityRelayOperation::BeginCreate) {
-        slot->begin();
-        return VK_TRUE;
-    }
-    if (!lowerSurface || !source || !presentation || !factor ||
-            !policyRevision || !queryGeneration ||
-            !spatialSurfaceScalingSupported || !variableSurface ||
-            !memoryBudgetConstrained || !inactiveReason) {
-        slot->begin();
-        return VK_FALSE;
-    }
-
-    const auto record = slot->consume(physicalDevice);
-    if (!record)
-        return VK_FALSE;
-
-    *lowerSurface = record->lowerSurface;
-    *source = record->contract.extents.source;
-    *presentation = record->contract.extents.presentation;
-    *factor = record->contract.factor;
-    *policyRevision = record->contract.policyRevision;
-    *queryGeneration = record->contract.queryGeneration;
-    const auto metadata = fixedSurfaceScalingContractRelayMetadata(
-        record->contract
-    );
-    *spatialSurfaceScalingSupported =
-        metadata.spatialSurfaceScalingSupported;
-    *variableSurface = metadata.variableSurface;
-    *memoryBudgetConstrained = metadata.memoryBudgetConstrained;
-    *inactiveReason = metadata.inactiveReason;
-    return VK_TRUE;
-}
-#endif
-
 namespace {
-    using LowerFixedSurfaceContractLookup = VkBool32 (*) (
-        uint32_t, VkPhysicalDevice, VkSurfaceKHR*, VkExtent2D*, VkExtent2D*,
-        float*, uint64_t*, uint64_t*, VkBool32*, VkBool32*, VkBool32*,
-        uint32_t*
-    );
-
-    constexpr std::string_view lowerFixedSurfaceContractSymbol =
-        "fgvkSpatialScalingLookupFixedContract";
-    constexpr std::string_view lowerSpatialLayerLibrary =
-        "libfgvk-render-scaling.so";
-
-    struct LowerFixedSurfaceContractLookupState {
-        void* handle{nullptr};
-        LowerFixedSurfaceContractLookup lookup{nullptr};
-        VkPhysicalDevice physicalDevice{VK_NULL_HANDLE};
-        FixedSurfaceCapabilityRelayOperation beginOperation{
-            FixedSurfaceCapabilityRelayOperation::BeginCapability
-        };
-        FixedSurfaceCapabilityRelayOperation consumeOperation{
-            FixedSurfaceCapabilityRelayOperation::ConsumeCapability
-        };
-        bool armed{false};
-
-        LowerFixedSurfaceContractLookupState() = default;
-        LowerFixedSurfaceContractLookupState(
-                const FixedSurfaceCapabilityRelayOperation beginOperation,
-                const FixedSurfaceCapabilityRelayOperation consumeOperation) :
-            beginOperation(beginOperation), consumeOperation(consumeOperation) {}
-        LowerFixedSurfaceContractLookupState(
-            const LowerFixedSurfaceContractLookupState&
-        ) = delete;
-        LowerFixedSurfaceContractLookupState& operator=(
-            const LowerFixedSurfaceContractLookupState&
-        ) = delete;
-
-        ~LowerFixedSurfaceContractLookupState() {
-            reset();
-            if (handle)
-                dlclose(handle);
-        }
-
-        void reset() noexcept {
-            if (armed && lookup) {
-                static_cast<void>(lookup(
-                    static_cast<uint32_t>(
-                        this->beginOperation
-                    ),
-                    physicalDevice, nullptr, nullptr, nullptr, nullptr,
-                    nullptr, nullptr, nullptr, nullptr, nullptr, nullptr
-                ));
-            }
-            armed = false;
-        }
-
-        void begin(const VkPhysicalDevice requestedPhysicalDevice) noexcept {
-            physicalDevice = requestedPhysicalDevice;
-            if (!lookup)
-                return;
-            armed = lookup(
-                static_cast<uint32_t>(
-                    this->beginOperation
-                ),
-                physicalDevice, nullptr, nullptr, nullptr, nullptr, nullptr,
-                nullptr, nullptr, nullptr, nullptr, nullptr
-            ) == VK_TRUE;
-        }
-
-        [[nodiscard]] std::optional<FixedSurfaceCapabilityRelayRecord>
-        consume() noexcept {
-            if (!armed || !lookup)
-                return std::nullopt;
-
-            FixedSurfaceCapabilityRelayRecord record{
-                .physicalDevice = physicalDevice,
-            };
-            FixedSurfaceScalingContractRelayMetadata metadata;
-            const VkBool32 found = lookup(
-                static_cast<uint32_t>(
-                    this->consumeOperation
-                ),
-                physicalDevice, &record.lowerSurface,
-                &record.contract.extents.source,
-                &record.contract.extents.presentation,
-                &record.contract.factor, &record.contract.policyRevision,
-                &record.contract.queryGeneration,
-                &metadata.spatialSurfaceScalingSupported,
-                &metadata.variableSurface, &metadata.memoryBudgetConstrained,
-                &metadata.inactiveReason
-            );
-            armed = false;
-            if (found != VK_TRUE ||
-                    !applyFixedSurfaceScalingContractRelayMetadata(
-                        record.contract, metadata
-                    )) {
-                return std::nullopt;
-            }
-            return record;
-        }
-    };
-
-    int findLowerFixedSurfaceContractLookup(
-            struct dl_phdr_info* const info, const size_t,
-            void* const rawState) {
-        auto& state = *static_cast<LowerFixedSurfaceContractLookupState*>(
-            rawState
-        );
-        const std::string_view libraryPath(
-            info && info->dlpi_name ? info->dlpi_name : ""
-        );
-        if (!libraryPath.ends_with(lowerSpatialLayerLibrary))
-            return 0;
-
-        void* const handle = dlopen(
-            libraryPath.data(), RTLD_NOW | RTLD_LOCAL | RTLD_NOLOAD
-        );
-        if (!handle)
-            return 0;
-        const auto lookup = reinterpret_cast<LowerFixedSurfaceContractLookup>(
-            dlsym(handle, lowerFixedSurfaceContractSymbol.data())
-        );
-        if (!lookup) {
-            dlclose(handle);
-            return 0;
-        }
-        state.handle = handle;
-        state.lookup = lookup;
-        return 1;
-    }
-
-    void beginLowerFixedSurfaceCapabilityRelay(
-            LowerFixedSurfaceContractLookupState& state,
-            const VkPhysicalDevice physicalDevice) {
-        if (!spatialScalingCapabilityRelayByLayer())
-            return;
-
-        dl_iterate_phdr(findLowerFixedSurfaceContractLookup, &state);
-        if (!state.lookup)
-            return;
-        state.begin(physicalDevice);
-    }
-
     struct SurfaceScalingEligibilityResult {
         bool supported{false};
         bool firstObservation{false};
@@ -2138,41 +1910,14 @@ namespace {
     [[nodiscard]] bool spatialSurfaceScalingSupported(
             const VkSurfaceKHR surface) {
         return spatialSplitSurfaceScalingSupported(
-            spatialScalingLayer, surfaceOrigin(surface)
+            false, surfaceOrigin(surface)
         );
-    }
-
-    void logUnprovenSplitSurfaceOnce(const VkSurfaceKHR surface) {
-        if (!instance_info || !spatialScalingLayer)
-            return;
-        bool firstObservation{};
-        const auto origin = surfaceOrigin(surface);
-        {
-            const std::lock_guard lock(instance_info->surfaceScalingMutex);
-            firstObservation = instance_info->unprovenSplitSurfacesLogged
-                .insert(surface).second;
-        }
-        if (firstObservation) {
-            std::cerr << "framegen-vulkan: spatial scaling split surface policy: "
-                      << "role=" << layerRoleName
-                      << "; surface=" << surface
-                      << "; origin=" << spatialSurfaceOriginName(origin)
-                      << "; gamescope_wsi_surface_proven=0"
-                      << "; action=native"
-                      << "; inactive_reason="
-                      << spatialScalingInactiveReasonName(
-                          SpatialScalingInactiveReason::
-                              GamescopeWsiSurfaceUnproven
-                      ) << '\n';
-        }
     }
 
     VkResult maybeVirtualizeSurfaceCapabilities(
             const VkPhysicalDevice physicalDevice,
             const VkSurfaceKHR surface,
-            VkSurfaceCapabilitiesKHR& capabilities,
-            const std::optional<FixedSurfaceCapabilityRelayRecord>&
-                lowerRelay) {
+            VkSurfaceCapabilitiesKHR& capabilities) {
         if (!layer_info || !instance_info) {
             return VK_SUCCESS;
         }
@@ -2188,45 +1933,16 @@ namespace {
                 return *result;
             }
         }
-        if (!spatialScalingCapabilityOwnedByLayer() &&
-                !spatialScalingCapabilityRelayByLayer()) {
-            clearFixedSurfaceScalingContract(physicalDevice, surface);
-            return VK_SUCCESS;
-        }
         if (!spatialSurfaceScalingSupported(surface)) {
             clearFixedSurfaceScalingContract(physicalDevice, surface);
-            logUnprovenSplitSurfaceOnce(surface);
             return VK_SUCCESS;
         }
         try {
             auto candidate = capabilities;
-            const auto relayInput = capabilities.currentExtent;
-            const FixedSurfaceScalingContract* const lowerContract =
-                lowerRelay ? &lowerRelay->contract : nullptr;
-            if (spatialScalingCapabilityRelayByLayer() &&
-                    (!lowerContract || !prepareFixedSurfaceCapabilityRelay(
-                        candidate, *lowerContract
-                    ))) {
-                clearFixedSurfaceScalingContract(physicalDevice, surface);
-                return VK_SUCCESS;
-            }
             const auto selection =
                 layer_info->root.modifySurfaceCapabilities(candidate);
             if (!selection) {
                 clearFixedSurfaceScalingContract(physicalDevice, surface);
-                return VK_SUCCESS;
-            }
-            if (lowerContract &&
-                    (!sameExtent(
-                        selection->extents.source,
-                        lowerContract->extents.source
-                    ) || !sameExtent(
-                        selection->extents.presentation,
-                        lowerContract->extents.presentation
-                    ) || selection->factor != lowerContract->factor)) {
-                clearFixedSurfaceScalingContract(physicalDevice, surface);
-                std::cerr << "framegen-vulkan: spatial scaling capability relay "
-                             "failed closed: reason=lower-contract-mismatch\n";
                 return VK_SUCCESS;
             }
             const auto eligibility = supportsSpatialScalingSurface(
@@ -2267,11 +1983,6 @@ namespace {
                 instance_info->fixedSurfaceScalingContracts[physicalDevice]
                     .insert_or_assign(surface, publishedContract);
             }
-#if defined(FGVK_LAYER_ROLE_SPATIAL_SCALING)
-            fixedSurfaceCapabilityRelay.publish(
-                physicalDevice, surface, publishedContract
-            );
-#endif
             if (eligibility.firstObservation) {
                 std::cerr << "framegen-vulkan: spatial scaling surface virtualized: "
                           << "role=" << layerRoleName
@@ -2289,21 +2000,6 @@ namespace {
                           << eligibility.advertisedFormatCount
                           << "; compatible_formats="
                           << eligibility.compatibleFormatCount;
-                if (lowerContract) {
-                    std::cerr << "; relay_input=" << relayInput.width << 'x'
-                              << relayInput.height
-                              << "; relay_mode="
-                              << (sameExtent(
-                                      relayInput,
-                                      lowerContract->extents.source
-                                  )
-                                      ? "source-normalized"
-                                      : "presentation-preserved")
-                              << "; relay_surface_mode="
-                              << (lowerRelay->lowerSurface == surface
-                                      ? "shared"
-                                      : "aliased");
-                }
                 std::cerr << '\n';
             }
             capabilities = candidate;
@@ -2322,18 +2018,13 @@ namespace {
         if (!instance_info ||
                 !instance_info->funcs.GetPhysicalDeviceSurfaceCapabilitiesKHR)
             return VK_ERROR_INITIALIZATION_FAILED;
-        LowerFixedSurfaceContractLookupState lowerRelayState;
-        beginLowerFixedSurfaceCapabilityRelay(
-            lowerRelayState, physicalDevice
-        );
         const auto result =
             instance_info->funcs.GetPhysicalDeviceSurfaceCapabilitiesKHR(
                 physicalDevice, surface, capabilities
             );
-        const auto lowerRelay = lowerRelayState.consume();
         if (result == VK_SUCCESS && capabilities) {
             return maybeVirtualizeSurfaceCapabilities(
-                physicalDevice, surface, *capabilities, lowerRelay
+                physicalDevice, surface, *capabilities
             );
         } else {
             clearFixedSurfaceScalingContract(physicalDevice, surface);
@@ -2445,16 +2136,11 @@ namespace {
             );
             return VK_ERROR_EXTENSION_NOT_PRESENT;
         }
-        LowerFixedSurfaceContractLookupState lowerRelayState;
-        beginLowerFixedSurfaceCapabilityRelay(
-            lowerRelayState, physicalDevice
-        );
         const auto result = lower(physicalDevice, surfaceInfo, capabilities);
-        const auto lowerRelay = lowerRelayState.consume();
         if (result == VK_SUCCESS) {
             return maybeVirtualizeSurfaceCapabilities(
                 physicalDevice, surfaceInfo->surface,
-                capabilities->surfaceCapabilities, lowerRelay
+                capabilities->surfaceCapabilities
             );
         } else {
             clearFixedSurfaceScalingContract(
@@ -2555,7 +2241,7 @@ namespace {
         const bool diagnostics = present_diagnostics::pacingWaylandProfileEnabled() ||
             present_diagnostics::pacingDisplayProbeEnabled();
         if (result == VK_SUCCESS && createInfo && surface && instance_info &&
-                !spatialScalingLayer && diagnostics) {
+                diagnostics) {
             try {
                 auto observer = WaylandPresentationFeedback::create(createInfo->display, createInfo->surface, diagnostics);
                 if (observer) {
@@ -2880,16 +2566,6 @@ namespace {
                               << '\n';
                 }
             }
-            LowerFixedSurfaceContractLookupState lowerCreateRelayState(
-                FixedSurfaceCapabilityRelayOperation::BeginCreate,
-                FixedSurfaceCapabilityRelayOperation::ConsumeCreate
-            );
-            if (spatialScalingOwnedByLayer() &&
-                    spatialScalingCapabilityRelayByLayer()) {
-                beginLowerFixedSurfaceCapabilityRelay(
-                    lowerCreateRelayState, it->second.physdev()
-                );
-            }
             bool spatialScalingActivationSupported =
                 spatialSurfaceScalingSupported(info->surface);
             auto modification =
@@ -2900,18 +2576,6 @@ namespace {
                     spatialScalingActivationSupported,
                     instance_info->scalingSurfaces &&
                         instance_info->scalingSurfaces->owns(info->surface),
-                    [&](const FixedSurfaceScalingContract& contract) {
-#if defined(FGVK_LAYER_ROLE_SPATIAL_SCALING)
-                        if (spatialScalingCapabilityOwnedByLayer() &&
-                                !spatialScalingOwnedByLayer()) {
-                            spatialCreateRelay.publish(
-                                it->second.physdev(), info->surface, contract
-                            );
-                        }
-#else
-                        static_cast<void>(contract);
-#endif
-                    },
                     [&, newInfo = &newInfo]() {
                         auto driverInfo = *newInfo;
                         if (instance_info->scalingSurfaces) {
@@ -3006,112 +2670,6 @@ namespace {
                         lowerSwapchainCreated = true;
                     }
                 );
-            const auto lowerCreateRelay = lowerCreateRelayState.consume();
-            const auto lowerCreateDecision = lowerCreateRelay
-                ? classifySpatialCreateRelay(
-                    lowerCreateRelay->contract, info->imageExtent
-                )
-                : SpatialCreateRelayDecision::Unavailable;
-            const bool lowerCreateSplitDecision = lowerCreateDecision ==
-                SpatialCreateRelayDecision::Split;
-            const bool lowerCreateNativeDecision = lowerCreateDecision ==
-                SpatialCreateRelayDecision::Native;
-            if (lowerCreateSplitDecision) {
-                const bool relayAdjustedUpperPrediction =
-                    !modification.spatialScalingActive ||
-                    !sameExtent(
-                        modification.applicationExtent,
-                        lowerCreateRelay->contract.extents.source
-                    ) ||
-                    !sameExtent(
-                        modification.presentationExtent,
-                        lowerCreateRelay->contract.extents.presentation
-                    );
-                modification.applicationExtent =
-                    lowerCreateRelay->contract.extents.source;
-                modification.presentationExtent =
-                    lowerCreateRelay->contract.extents.presentation;
-                modification.spatialScalingActive = true;
-                modification.variableSurface =
-                    lowerCreateRelay->contract.variableSurface;
-                modification.spatialScalingMemoryConstrained =
-                    lowerCreateRelay->contract.memoryBudgetConstrained;
-                modification.spatialScalingInactiveReason =
-                    SpatialScalingInactiveReason::None;
-                newInfo.imageExtent = modification.presentationExtent;
-                std::cerr << "framegen-vulkan: spatial scaling create relay applied: "
-                          << "role=" << layerRoleName
-                          << "; source="
-                          << modification.applicationExtent.width << 'x'
-                          << modification.applicationExtent.height
-                          << "; presentation="
-                          << modification.presentationExtent.width << 'x'
-                          << modification.presentationExtent.height
-                          << "; relay_surface_mode="
-                          << (lowerCreateRelay->lowerSurface == info->surface
-                                ? "shared" : "aliased")
-                          << "; ownership=upper-combined-role"
-                          << "; surface_extent_mode="
-                          << (modification.variableSurface
-                                ? "variable" : "fixed")
-                          << "; memory_budget_constrained="
-                          << modification.spatialScalingMemoryConstrained
-                          << "; source_presentation_split=1"
-                          << "; active=1"
-                          << "; relay_adjusted_upper_prediction="
-                          << relayAdjustedUpperPrediction
-                          << "; pipeline=combined-cost-aware\n";
-            } else if (lowerCreateNativeDecision) {
-                // The lower extent owner is authoritative even when the upper
-                // role could independently derive a variable-surface split.
-                // A native result means WSI did not provide a safe compositor
-                // presentation surface, so discard the upper prediction and
-                // keep frame generation on the application's exact extent.
-                modification.applicationExtent = info->imageExtent;
-                modification.presentationExtent = info->imageExtent;
-                modification.spatialScalingActive = false;
-                modification.variableSurface =
-                    lowerCreateRelay->contract.variableSurface;
-                modification.spatialScalingMemoryConstrained = false;
-                modification.spatialScalingInactiveReason =
-                    lowerCreateRelay->contract.inactiveReason;
-                newInfo.imageExtent = info->imageExtent;
-                spatialScalingActivationSupported = lowerCreateRelay->contract
-                    .spatialSurfaceScalingSupported;
-                std::cerr << "framegen-vulkan: spatial scaling create relay applied: "
-                          << "role=" << layerRoleName
-                          << "; source=" << info->imageExtent.width << 'x'
-                          << info->imageExtent.height
-                          << "; presentation=" << info->imageExtent.width << 'x'
-                          << info->imageExtent.height
-                          << "; relay_surface_mode="
-                          << (lowerCreateRelay->lowerSurface == info->surface
-                                ? "shared" : "aliased")
-                          << "; ownership=upper-combined-role"
-                          << "; source_presentation_split=0"
-                          << "; active=0"
-                          << "; action=native"
-                          << "; inactive_reason="
-                          << spatialScalingInactiveReasonName(
-                                modification.spatialScalingInactiveReason
-                             )
-                          << '\n';
-            } else if (shouldRejectUncontractedSpatialCreate(
-                    layer_info->root.scalingEngineProvisioned(),
-                    modification.spatialScalingActive,
-                    lowerCreateSplitDecision || lowerCreateNativeDecision)) {
-                std::cerr << "framegen-vulkan: spatial scaling create relay unavailable: "
-                          << "role=" << layerRoleName
-                          << "; requested=" << info->imageExtent.width << 'x'
-                          << info->imageExtent.height
-                          << "; action=reject-transient-native-context"
-                          << "; inactive_reason=no-lower-create-contract\n";
-                throw ls::vulkan_error(
-                    VK_ERROR_INITIALIZATION_FAILED,
-                    "the combined scaling/frame-generation owner did not "
-                    "receive the lower WSI extent contract"
-                );
-            }
             const auto commitVariableSurfaceScaling = [&]() {
                 const std::lock_guard lock(
                     instance_info->surfaceScalingMutex
@@ -3124,11 +2682,10 @@ namespace {
                 // before the upper resource owner can consume the relay.
                 const bool spatialScalingExtentSelected =
                     modification.spatialScalingActive ||
-                    (spatialScalingCapabilityOwnedByLayer() &&
-                        !sameExtent(
-                            modification.applicationExtent,
-                            modification.presentationExtent
-                        ));
+                    !sameExtent(
+                        modification.applicationExtent,
+                        modification.presentationExtent
+                    );
                 const auto committedRollback =
                     committedVariableSurfaceRollbackExtents(
                         previousVariableExtents,

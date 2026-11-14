@@ -83,8 +83,6 @@ class EnvironmentTests(unittest.TestCase):
         "MANGOHUD_CONFIG": "fps_limit=60",
         "ENABLE_FGVK": "1",
         "DISABLE_FGVK": "1",
-        "ENABLE_FGVK_SPATIAL_SCALING": "1",
-        "DISABLE_FGVK_SPATIAL_SCALING": "1",
         "DISABLE_LAYER_NV_PRESENT_1": "1",
         "VK_INSTANCE_LAYERS": "VK_LAYER_KHRONOS_validation",
         "VK_LAYER_PATH": "/layers",
@@ -118,7 +116,6 @@ class EnvironmentTests(unittest.TestCase):
     def test_baseline_environment(self):
         env = compare.build_child_env({}, "baseline", Path("/session"))
         self.assertEqual(env["DISABLE_FGVK"], "1")
-        self.assertEqual(env["DISABLE_FGVK_SPATIAL_SCALING"], "1")
         self.assertEqual(env["NVPRESENT_ENABLE_SMOOTH_MOTION"], "0")
         self.assertEqual(env["DISABLE_LAYER_NV_PRESENT_1"], "1")
         self.assertNotIn("ENABLE_FGVK", env)
@@ -129,7 +126,6 @@ class EnvironmentTests(unittest.TestCase):
         env = compare.build_child_env({}, "smooth-motion", Path("/session"))
         self.assertEqual(env["NVPRESENT_ENABLE_SMOOTH_MOTION"], "1")
         self.assertEqual(env["DISABLE_FGVK"], "1")
-        self.assertEqual(env["DISABLE_FGVK_SPATIAL_SCALING"], "1")
         self.assertNotIn("DISABLE_LAYER_NV_PRESENT_1", env)
         self.assertNotIn("ENABLE_FGVK", env)
 

@@ -23,13 +23,13 @@ SPEC.loader.exec_module(profiler)
 
 class ProfilerTests(unittest.TestCase):
     def test_modes_preserve_wrapper_environment_and_do_not_stack_fg(self):
-        original = dict(ENABLE_FGVK="1", ENABLE_FGVK_SPATIAL_SCALING="1",
+        original = dict(ENABLE_FGVK="1",
                         FGVK_PACING_PROFILE_TRACE="1", FGVK_PACING_PROFILE_GPU="1",
                         FGVK_PACING_PROFILE_COPY="1",
                         NVPRESENT_ENABLE_SMOOTH_MOTION="1", DISABLE_LAYER_NV_PRESENT_1="",
                         MANGOHUD_CONFIG="fps_limit=60,no_display", MANGOHUD_CONFIGFILE="/my/config",
                         NVPRESENT_QUEUE_FAMILY="1", CUSTOM_SECRET="keep-in-child",
-                        VK_INSTANCE_LAYERS="VK_LAYER_FGVK_render:VK_LAYER_other:VK_LAYER_FGVK_spatial_scaling")
+                        VK_INSTANCE_LAYERS="VK_LAYER_FGVK_render:VK_LAYER_other")
         for mode in ("baseline", "fgvk", "smooth-motion"):
             env = profiler.environment(original, mode, Path("/tmp/logs"), 30, 60, 0)
             self.assertEqual(env["FGVK_PACING_PROFILE_TRACE"], "0")
@@ -46,7 +46,6 @@ class ProfilerTests(unittest.TestCase):
                 self.assertEqual(env["VK_INSTANCE_LAYERS"], original["VK_INSTANCE_LAYERS"])
             else:
                 self.assertEqual(env["DISABLE_FGVK"], "1")
-                self.assertEqual(env["DISABLE_FGVK_SPATIAL_SCALING"], "1")
                 self.assertEqual(env["VK_INSTANCE_LAYERS"], "VK_LAYER_other")
             self.assertEqual("DISABLE_LAYER_NV_PRESENT_1" in env, mode != "smooth-motion")
         self.assertEqual(original["FGVK_PACING_PROFILE_TRACE"], "1")
