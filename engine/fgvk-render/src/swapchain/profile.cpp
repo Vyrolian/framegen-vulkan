@@ -263,17 +263,6 @@ ProfileUpdateDecision Swapchain::updateProfile(
         (this->profile.adaptive_auto_base_fps_cap !=
             plan.appliedProfile.adaptive_auto_base_fps_cap ||
          fractionalPriorityStyleChanged);
-    if (decision.gpuHeadroomChanged && plan.appliedProfile.gpu_headroom_percent == 0 &&
-            this->gpuHeadroomResult.capFps > 0 && plan.appliedProfile.adaptive && this->adaptiveScheduler)
-        this->adaptiveScheduler->requestHeadroomRecovery(DiagnosticsClock::now(), this->gpuHeadroom.sourceCeilingFps());
-    if (decision.gpuHeadroomChanged || decision.generationModeChanged ||
-            decision.baseFpsCapChanged || decision.generationPolicyChanged || enabling || disabling) {
-        this->gpuHeadroom.reset();
-        this->gpuHeadroomResult = {};
-        this->lastGpuHeadroomDiagnostic.reset();
-    }
-    if ((decision.gpuHeadroomChanged || enabling) && !this->gpuLoadMonitor)
-        this->gpuLoadMonitorInitialized = false;
     const auto profileUpdateNow = DiagnosticsClock::now();
     this->profile = std::move(plan.appliedProfile);
     this->configuredFixedGeneratedFrames = fixedGeneratedFrameCount(
@@ -287,7 +276,7 @@ ProfileUpdateDecision Swapchain::updateProfile(
         this->diagnosticsState.fixedGeneratedFrames = 0;
         this->diagnosticsState.fixedSkippedFrames = 0;
     }
-    if (decision.gpuHeadroomChanged || decision.baseFpsCapChanged || decision.generationPolicyChanged ||
+    if (decision.baseFpsCapChanged || decision.generationPolicyChanged ||
             decision.generationModeChanged || enabling || disabling) {
         this->realFramePacer.reset();
         this->smoothCadenceBaseCap.reset();
@@ -385,7 +374,6 @@ ProfileUpdateDecision Swapchain::updateProfile(
                   << " adaptive=" << this->profile.adaptive
                   << " target_fps=" << this->profile.target_fps
                   << " multiplier=" << this->profile.multiplier
-                  << " gpu_headroom_percent=" << this->profile.gpu_headroom_percent
                   << " base_fps_cap=" << this->profile.base_fps_cap
                   << " adaptive_auto_base_fps_cap="
                   << this->profile.adaptive_auto_base_fps_cap

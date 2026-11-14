@@ -174,7 +174,6 @@ class ConfigAndManifestTests(unittest.TestCase):
                 "base_fps_cap": 0,
                 "adaptive_stable_cadence": False,
                 "dynamic_cadence_recovery": False,
-                "gpu_headroom_percent": 0,
                 "flow_scale": 1.0,
                 "performance_mode": False,
             }],

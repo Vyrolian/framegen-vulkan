@@ -44,7 +44,6 @@ void Swapchain::publishRuntimeStatus(const std::string_view reason) noexcept {
         .frameGenerationActive = effectiveFrameGenerationEnabled(
             this->profile
         ) && !this->destinationImages.empty(),
-        .gpuHeadroomState = this->gpuHeadroomResult.state,
         .frameGenerationPrivatePending =
             this->frameGenerationTransition.pendingRequest(),
         .swapchainRecreationPending =

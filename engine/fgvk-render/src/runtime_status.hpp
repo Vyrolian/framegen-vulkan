@@ -52,7 +52,6 @@ namespace fgvk::layer {
         ls::GameConf appliedProfile;
         size_t appliedGeneratedCapacity{0};
         bool frameGenerationActive{false};
-        std::string_view gpuHeadroomState{"off"};
         bool frameGenerationPrivatePending{false};
         bool swapchainRecreationPending{false};
         bool processRestartPending{false};

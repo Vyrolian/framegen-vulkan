@@ -55,7 +55,6 @@ namespace {
             left.swapchain_image_count_compatibility ==
                 right.swapchain_image_count_compatibility &&
             left.base_fps_cap == right.base_fps_cap &&
-            left.gpu_headroom_percent == right.gpu_headroom_percent &&
             left.adaptive == right.adaptive &&
             left.adaptive_auto_base_fps_cap ==
                 right.adaptive_auto_base_fps_cap &&
@@ -75,42 +74,20 @@ namespace {
             left.pacing == right.pacing;
     }
 
-    void testGpuHeadroom(const std::filesystem::path& directory) {
-        const auto path = directory / "headroom.toml";
-        for (const auto reserve : ls::GameConfLimits::gpuHeadroomPercentPresets) {
-            ls::ConfigFile config;
-            ls::GameConf profile;
-            profile.name = "headroom";
-            profile.gpu_headroom_percent = reserve;
-            config.profiles() = {profile};
-            config.write(path);
-            const ls::ConfigFile loaded(path);
-            expect(loaded.profiles().size() == 1 &&
-                    loaded.profiles().front().gpu_headroom_percent == reserve,
-                "Headroom survives profile persistence");
+    // GPU Headroom was removed. Files that still carry its key load whatever
+    // value they hold, and rewriting a configuration drops the key.
+    void testRetiredHeadroomKey(const std::filesystem::path& directory) {
+        const auto path = directory / "retired-headroom.toml";
+        for (const auto value : {"15", "7"}) {
+            writeText(path, "version = 2\n[[profile]]\nname = 'game'\ngpu_headroom_percent = " + std::string(value) + "\n");
+            const ls::ConfigFile retired(path);
+            expect(retired.profiles().size() == 1 &&
+                    retired.profiles().front().name == "game",
+                "A retired GPU Headroom key must not reject the file");
+            retired.write(path);
+            expect(readText(path).find("gpu_headroom_percent") == std::string::npos,
+                "Rewriting a configuration must drop the retired GPU Headroom key");
         }
-        for (const auto value : {"-5", "21", "7", "5.5", "true", "'10'", "4294967306"}) {
-            writeText(path, "version = 2\n[[profile]]\nname = 'invalid'\ngpu_headroom_percent = " + std::string(value) + "\n");
-            bool rejected = false;
-            try { const ls::ConfigFile invalid(path); } catch (const std::exception&) { rejected = true; }
-            expect(rejected, "Invalid TOML headroom must not silently enable a different reserve");
-        }
-        setenv("FGVK_ENV", "1", 1);
-        setenv("FGVK_GPU_HEADROOM_PERCENT", "15", 1);
-        expect(ls::WatchedConfig{}.get().profiles().front().gpu_headroom_percent == 15,
-            "Environment supports GPU Headroom");
-        setenv("FGVK_DYNAMIC_CADENCE_RECOVERY", "1", 1);
-        expect(ls::WatchedConfig{}.get().profiles().front().gpu_headroom_percent == 0,
-            "Dynamic Cadence Recovery remains exclusive with headroom");
-        unsetenv("FGVK_DYNAMIC_CADENCE_RECOVERY");
-        for (const auto value : {"-5", "7", "5.5", "10junk", "4294967306"}) {
-            setenv("FGVK_GPU_HEADROOM_PERCENT", value, 1);
-            bool rejected = false;
-            try { const ls::WatchedConfig invalid; } catch (const std::exception&) { rejected = true; }
-            expect(rejected, "Malformed or overflowing environment reserve is rejected");
-        }
-        unsetenv("FGVK_GPU_HEADROOM_PERCENT");
-        unsetenv("FGVK_ENV");
     }
 
     void testOptionalLosslessDll(const std::filesystem::path& directory) {
@@ -285,7 +262,7 @@ int main() {
     std::filesystem::create_directories(directory);
 
     unsetenv("FGVK_ENV");
-    testGpuHeadroom(directory);
+    testRetiredHeadroomKey(directory);
     testOptionalLosslessDll(directory);
     testRetiredPowerTables(directory);
     testLegacyRootSelectionIsIgnored(directory);

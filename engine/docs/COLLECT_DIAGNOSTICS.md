@@ -110,12 +110,6 @@ python3 engine/scripts/profile-framegen.py compare ./mako-profile ./smooth-motio
 
 The comparison reports power/load/memory and each MangoHud stream's frame-time distribution separately, warning about mismatched scenario, Reflex, GPU, window and sampling labels. It never merges launcher/game logs. MangoHud layer order can put its counter before or after generation, so frame domain defaults to `unknown`; use `--frame-domain source` or `output` only after independently verifying that boundary for that launch. Output FPS cannot establish real-source throughput loss, actual scanout cadence or generated-frame acceptance. Frame time is not input latency. These captures explicitly leave input-to-display latency and GPU execution milliseconds unavailable; they cannot establish either implementation's latency advantage. This shared sampler replaces neither framegen-vulkan's detailed attribution tools nor a physical input-latency measurement.
 
-## GPU Headroom evidence
-
-Reports retain Headroom cap changes and any Adaptive efficiency trial cancelled because the cap made its output target unreachable. A cancellation restores the proven workload and is not a presentation failure.
-
-Compare the same scene with GPU Headroom Off and On. Collect a report after each run and note the reserve, Fixed/Adaptive mode, multiplier ceiling and any game FPS cap. Brief utilization spikes can still reach 100%; the readings cover the whole GPU and do not measure per-game GPU time or power. See [presentation records](WSI-ISOLATION.md#interpreting-presentation-records) for the retained fields and controller states.
-
 ## Detailed game frame trace
 
 For a supporting local Renderer build, prepend `FGVK_PACING_PROFILE_TRACE=1` to the existing game launch command, preserving its arguments and graphics settings. After the process exits, retain the raw private capture path printed by framegen-vulkan; filtering or tailing a long capture can remove frame identities needed for exact joins.

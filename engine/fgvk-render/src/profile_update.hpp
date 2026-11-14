@@ -32,7 +32,6 @@ namespace fgvk::layer {
         bool generationModeChanged{false};
         bool fixedMultiplierChanged{false};
         bool baseFpsCapChanged{false};
-        bool gpuHeadroomChanged{false};
         bool dynamicCadenceProbeIntervalChanged{false};
         bool frameGenerationBackendChanged{false};
         bool generatedFrameCapacityExceeded{false};
@@ -57,7 +56,7 @@ namespace fgvk::layer {
         return decision.generationPolicyChanged ||
             decision.generationModeChanged ||
             decision.fixedMultiplierChanged ||
-            decision.baseFpsCapChanged || decision.gpuHeadroomChanged;
+            decision.baseFpsCapChanged;
     }
 
     struct ProcessStaticProfileProjection {
@@ -309,7 +308,7 @@ namespace fgvk::layer {
         return nativeOutputPacingEligible && !anotherTimingOwner && !recovering &&
             effectiveFrameGenerationEnabled(profile) &&
             !profile.adaptive && (profile.adaptive_stable_cadence || detachedOutput) &&
-            !profile.dynamic_cadence_recovery && profile.gpu_headroom_percent == 0;
+            !profile.dynamic_cadence_recovery;
     }
 
     /// Use the existing cap interval for Fractional, below-refresh automatic
@@ -342,7 +341,7 @@ namespace fgvk::layer {
                          (compositorOutputTiming &&
                           profile.target_fps == *displayRefreshHz))));
         return !profile.dynamic_cadence_recovery &&
-            (profile.base_fps_cap > 0 || profile.gpu_headroom_percent > 0) &&
+            profile.base_fps_cap > 0 &&
             profile.multiplier >= ls::GameConfLimits::minimumMultiplier &&
             profile.multiplier <= ls::GameConfLimits::maximumMultiplier &&
             (directUnthrottled || nativeFifo || (displayRefreshHz &&
@@ -542,11 +541,8 @@ namespace fgvk::layer {
     /// explicit priorities and Steady retain their existing output policy.
     [[nodiscard]] inline GamescopeBridgeOutputPolicy gamescopeBridgeOutputPolicy(
             const ls::GameConf& profile, const std::optional<uint32_t> refreshHz,
-            const AdaptiveSchedulerSnapshot& scheduler = {},
-            const double gpuHeadroomCap = 0.0) {
+            const AdaptiveSchedulerSnapshot& scheduler = {}) {
         double baseFpsCap = effectiveBaseFpsCap(profile);
-        if (gpuHeadroomCap > 0.0)
-            baseFpsCap = baseFpsCap > 0.0 ? std::min(baseFpsCap, gpuHeadroomCap) : gpuHeadroomCap;
         const bool nativeAutomatic = fractionalNativePresentationEligible(profile) &&
             scheduler.phase == AdaptiveSchedulerPhase::NearTargetNative &&
             scheduler.generationLimit == 0;
@@ -689,9 +685,6 @@ namespace fgvk::layer {
         const bool baseFpsCapChanged =
             effectiveBaseFpsCap(current) !=
                 effectiveBaseFpsCap(applied);
-        const bool gpuHeadroomChanged = current.gpu_headroom_percent != applied.gpu_headroom_percent &&
-            (effectiveFrameGenerationEnabled(current) ||
-             effectiveFrameGenerationEnabled(applied));
         const bool dynamicCadenceProbeIntervalChanged =
             current.dynamic_cadence_probe_interval_seconds !=
                 applied.dynamic_cadence_probe_interval_seconds &&
@@ -716,7 +709,7 @@ namespace fgvk::layer {
         const bool liveChange = frameGenerationChanged ||
                 generationPolicyChanged ||
                 generationModeChanged || fixedMultiplierChanged ||
-                baseFpsCapChanged || gpuHeadroomChanged || dynamicCadenceProbeIntervalChanged ||
+                baseFpsCapChanged || dynamicCadenceProbeIntervalChanged ||
                 frameGenerationPrivateRebuild;
 
         ProfileUpdateAction action = ProfileUpdateAction::NoRuntimeChange;
@@ -735,7 +728,6 @@ namespace fgvk::layer {
                 .generationModeChanged = generationModeChanged,
                 .fixedMultiplierChanged = fixedMultiplierChanged,
                 .baseFpsCapChanged = baseFpsCapChanged,
-                .gpuHeadroomChanged = gpuHeadroomChanged,
                 .dynamicCadenceProbeIntervalChanged =
                     dynamicCadenceProbeIntervalChanged,
                 .frameGenerationBackendChanged =

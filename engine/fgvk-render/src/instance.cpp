@@ -461,13 +461,6 @@ ConfigurationUpdateResult Root::update(const bool forceConfigurationPoll) {
         this->active_profile = std::move(*runtimeProfile);
     else
         this->active_profile = std::nullopt;
-    for (const auto& device : this->gpuLoadDevices) {
-        try {
-            device.monitor->setEnabled(this->active_profile &&
-                this->active_profile->frame_generation_enabled &&
-                this->active_profile->gpu_headroom_percent > 0);
-        } catch (...) { device.monitor->setEnabled(false); }
-    }
 
     const auto currentProfileName = this->active_profile
         ? std::optional<std::string>{this->active_profile->name}
@@ -760,22 +753,6 @@ namespace {
         }
         return paths;
     }
-}
-
-std::shared_ptr<present_diagnostics::GpuLoadMonitor> Root::gpuLoadForDevice(const vk::Vulkan& vk) noexcept {
-    try {
-        const auto accounting = vk.deviceMemoryAccounting();
-        for (const auto& device : this->gpuLoadDevices)
-            if (device.accounting == accounting)
-                return device.monitor;
-        if (this->gpuLoadDevices.size() >= 4)
-            return {};
-        auto monitor = std::make_shared<present_diagnostics::GpuLoadMonitor>(healthPathsForDevice(vk));
-        monitor->setEnabled(this->active_profile && this->active_profile->gpu_headroom_percent > 0 &&
-            this->active_profile->frame_generation_enabled);
-        this->gpuLoadDevices.push_back({accounting, monitor});
-        return monitor;
-    } catch (...) { return {}; }
 }
 
 void Root::startRuntimeHealth(const vk::Vulkan& vk) noexcept {

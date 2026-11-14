@@ -102,7 +102,6 @@ namespace ls {
         static constexpr bool frameGenerationEnabled = true;
         static constexpr bool swapchainImageCountCompatibility = false;
         static constexpr uint32_t baseFpsCap = 0;
-        static constexpr uint32_t gpuHeadroomPercent = 0;
         static constexpr bool adaptive = false;
         static constexpr bool adaptiveAutoBaseFpsCap = false;
         static constexpr AdaptiveFractionalRealFramePriority
@@ -125,7 +124,6 @@ namespace ls {
     struct GameConfLimits {
         static constexpr size_t minimumMultiplier = 2;
         static constexpr size_t maximumMultiplier = 5;
-        static constexpr std::array<uint32_t, 5> gpuHeadroomPercentPresets{0, 5, 10, 15, 20};
         static constexpr uint32_t minimumBaseFpsCap = 0;
         static constexpr uint32_t maximumBaseFpsCap = 1000;
         static constexpr uint32_t minimumTargetFps = 10;
@@ -165,8 +163,6 @@ namespace ls {
         };
         /// maximum application-present rate before frame generation; zero disables it
         uint32_t base_fps_cap{GameConfDefaults::baseFpsCap};
-        /// soft GPU utilization reserve: 0 (off), 5, 10, 15 or 20 percent
-        uint32_t gpu_headroom_percent{GameConfDefaults::gpuHeadroomPercent};
         /// dynamically vary the generated-frame count toward a target framerate
         bool adaptive{GameConfDefaults::adaptive};
         /// cap Adaptive's real-frame input to half its target for even 2x cadence

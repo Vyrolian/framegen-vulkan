@@ -207,7 +207,6 @@ def render_config(global_dll: str) -> str:
         "base_fps_cap = 0",
         "adaptive_stable_cadence = false",
         "dynamic_cadence_recovery = false",
-        "gpu_headroom_percent = 0",
         "flow_scale = 1.0",
         "performance_mode = false",
         "",

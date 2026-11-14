@@ -4,6 +4,7 @@
 - Gamescope support is removed. Gamescope sessions start the game without frame generation. The feedback reader, the VRR lease helper, the compatibility record, and the `gamescope_vrr_mode` and `frame_generation_refresh_threshold` keys and overrides are retired; existing keys are accepted and ignored.
 - The retired scaling keys (`scaling_enabled`, `scaling_method`, `scaling_factor`, `scaling_supersampling`, and `scaling_sharpness`) are accepted and ignored, so old `conf.toml` files still load; framegen-vulkan no longer writes them.
 - The AC/battery profile tables (`[profile.handheld]` and `[profile.docked]`) are retired; old `conf.toml` files still load, the tables are ignored, and framegen-vulkan no longer writes them.
+- GPU Headroom is removed. Old `conf.toml` files still load; `gpu_headroom_percent` is accepted and ignored, the `FGVK_GPU_HEADROOM_PERCENT` override is no longer read, and framegen-vulkan no longer writes the key.
 
 ## What's new in MAKO Renderer v4.6.0
 

@@ -3,7 +3,6 @@
 #pragma once
 
 #include "fgvk-common/vulkan/device_memory_accounting.hpp"
-#include "gpu_headroom.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -62,25 +61,6 @@ struct RuntimeHealthSample {
 RuntimeHealthSample readRuntimeHealth(const RuntimeHealthPaths& paths);
 std::optional<uint64_t> readGpuBusyPercent(const RuntimeHealthPaths& paths);
 
-// Explicitly opted-in control telemetry, independent of diagnostic logging.
-// Root shares one monitor per actual Vulkan device. The default-off path has
-// no worker or polling; disabling suspends a previously created worker.
-class GpuLoadMonitor {
-public:
-    explicit GpuLoadMonitor(RuntimeHealthPaths paths);
-    ~GpuLoadMonitor();
-    void setEnabled(bool enabled);
-    [[nodiscard]] GpuHeadroomLoad latest() const;
-private:
-    void run(std::stop_token stop);
-    RuntimeHealthPaths paths;
-    std::atomic<uint64_t> packed{1023};
-    std::mutex mutex;
-    std::condition_variable_any wake;
-    bool enabled{};
-    uint64_t epoch{};
-    std::jthread worker;
-};
 // Reduce polling when collection/output is slow, without changing the game's
 // pacing, settings, or recovery. Healthy collection keeps the five-second rate.
 std::chrono::milliseconds runtimeHealthDelay(std::chrono::milliseconds normal,

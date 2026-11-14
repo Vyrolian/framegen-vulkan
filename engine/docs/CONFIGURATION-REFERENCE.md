@@ -73,28 +73,17 @@ The `gamescope_vrr_mode` and `frame_generation_refresh_threshold` keys and the `
 
 `[profile.handheld]` and `[profile.docked]` tables in old files are accepted and ignored.
 
+`gpu_headroom_percent` and its `FGVK_GPU_HEADROOM_PERCENT` override were removed with GPU Headroom. Old files still load; the key is accepted and ignored, and framegen-vulkan does not write it.
+
 ### Performance and device selection
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `gpu_headroom_percent` | `0` | GPU Headroom reserve: `0` (Off), `5`, `10`, `15`, or `20` percent. Live, Frame Generation only; see below. |
 | `flow_scale` | `0.8` | LSFG motion-estimation resolution from 0.25–1.0. Lower values reduce GPU cost and may reduce quality. |
 | `performance_mode` | `false` | Uses the lighter LSFG model. |
 | `ultra_performance` | `false` | Restart-bound lighter preset using 70% Flow Scale and the lighter model. Respects the global precision choice. |
 | `gpu` | Automatic | Optional GPU name, vendor/device ID, or PCI bus ID. Cross-GPU Frame Generation is unsupported. |
 | `pacing` | `none` | Compatibility field; `none` is the only supported value. |
-
-### GPU Headroom
-
-GPU Headroom is a soft utilization target for the application's Vulkan GPU. A 10% reserve aims for roughly 90% utilization. It requires readable AMD `gpu_busy_percent` telemetry for that exact DRM render node; unsupported devices, missing permissions and stale readings retain normal pacing. Gamescope is not required. Readings cover the whole GPU, including the compositor and other applications, so this is neither a game-only meter nor a power or temperature limit.
-
-Changes apply live while Frame Generation is active. Off stops Headroom sampling and removes only its additional cap; existing manual and Adaptive caps still apply. Brief spikes may reach 100%. Loading pauses and unavailable telemetry release the extra cap so stale measurements cannot keep throttling a new scene.
-
-Fixed retains its selected multiplier, so reserving capacity may lower both real and output FPS. Releasing Headroom does not force a native-frame probe: ordinary Fixed/FIFO pacing can retain that generated workload after the scene becomes lighter, including with Headroom Off. Use Adaptive when restoring a higher real-frame rate after load changes is important. Adaptive can use more generated frames within its configured ceiling and existing qualification rules. Neither policy changes model quality, Flow Scale or clocks. The controller never deliberately caps below 20 real FPS; Adaptive additionally respects `Target FPS / available maximum multiplier`. For example, a 90 FPS target with a 2× ceiling cannot trade away real frames below 45 FPS. A higher permitted multiplier allows more room but can increase interpolation artifacts and input latency. The utilization target is not guaranteed when generation is expensive, another process consumes the GPU, or the floor is reached.
-
-GPU Headroom is dormant with Frame Generation disabled or refresh-paused, during confirmed Steam-menu suspension, and during ordered-acquire recovery. Dynamic Cadence Recovery is mutually exclusive: enabling Headroom disables Recovery; enabling Recovery clears Headroom. Profile and separate power-mode settings preserve the reserve. Live Status distinguishes unavailable telemetry and a reached real-frame floor; diagnostics record decisions independently of the saved setting.
-
-See [Adaptive validation](ADAPTIVE-VALIDATION.md#gpu-headroom) for controller sampling and recovery, and [Runtime transitions](RUNTIME-TRANSITIONS.md) for when edits take effect.
 
 ## Explicit launch selection
 
@@ -124,8 +113,6 @@ These keys live in `${XDG_CONFIG_HOME:-$HOME/.config}/framegen-vulkan/launcher.c
 A logging key exports its variable only when the caller has not already set that variable, so a value in the launch options always wins, including `=0`. The Logging section of the `fgvk` settings window writes the five `log_*` keys.
 
 ## Environment-only configuration
-
-With `FGVK_ENV=1`, `FGVK_GPU_HEADROOM_PERCENT=0|5|10|15|20` selects the same reserve. Other values are rejected.
 
 Set `FGVK_ENV=1` to build one profile from environment variables instead of TOML:
 

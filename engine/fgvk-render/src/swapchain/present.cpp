@@ -380,57 +380,6 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
 #endif
 
     const auto limiterArrival = DiagnosticsClock::now();
-    if (this->profile.gpu_headroom_percent > 0 || this->gpuHeadroomResult.state != "off") {
-        const bool headroomEnabled = this->profile.gpu_headroom_percent > 0 &&
-            !this->destinationImages.empty() &&
-            !this->recoveryState.orderedAcquireRecovery.active() &&
-            effectiveFrameGenerationEnabled(this->profile);
-        const auto headroomLoad = headroomEnabled && this->gpuLoadMonitor
-            ? this->gpuLoadMonitor->latest() : GpuHeadroomLoad{};
-        // Sample first: a worker publication between the old arrival clock
-        // and this load must not look like invalid future telemetry.
-        const auto headroomNow = DiagnosticsClock::now();
-        const double headroomFloor = std::max(20.0, this->profile.adaptive
-            ? static_cast<double>(this->profile.target_fps) / static_cast<double>(
-                std::max(size_t{1}, std::min(this->profile.adaptive_max_multiplier,
-                    std::min(this->destinationImages.size(),
-                        this->adaptiveOrderedWsiGeneratedCapacityLimit.value_or(this->destinationImages.size())) + 1)))
-            : 20.0);
-        const auto previousHeadroom = this->gpuHeadroomResult;
-        const double previousHeadroomCeiling = this->gpuHeadroom.sourceCeilingFps();
-        this->gpuHeadroomResult = this->gpuHeadroom.update(headroomNow,
-            headroomEnabled ? this->profile.gpu_headroom_percent : 0, headroomLoad, headroomFloor);
-        if (!headroomEnabled && this->profile.gpu_headroom_percent > 0)
-            this->gpuHeadroomResult.state = "inactive";
-        if (this->profile.adaptive && this->adaptiveScheduler && previousHeadroom.capFps > 0 &&
-                this->gpuHeadroomResult.capFps == 0 &&
-                (this->gpuHeadroomResult.state == "within-budget" ||
-                 this->gpuHeadroomResult.state == "telemetry-unavailable"))
-            this->adaptiveScheduler->requestHeadroomRecovery(headroomNow, previousHeadroomCeiling);
-        if (previousHeadroom.state != this->gpuHeadroomResult.state)
-            this->publishRuntimeStatus("gpu-headroom");
-        if ((previousHeadroom.capFps > 0) != (this->gpuHeadroomResult.capFps > 0))
-            this->realFramePacer.reset();
-        if (presentDiagnosticsEnabled() && this->profile.gpu_headroom_percent > 0 &&
-                (!this->lastGpuHeadroomDiagnostic ||
-                 limiterArrival - *this->lastGpuHeadroomDiagnostic >= std::chrono::seconds(2))) {
-            this->lastGpuHeadroomDiagnostic = limiterArrival;
-            std::ostringstream line;
-            line.imbue(std::locale::classic());
-            line << "framegen-vulkan: present diagnostics: operation=gpu-headroom"
-                 << " context=" << this->diagnosticsState.contextId
-                 << " state=" << this->gpuHeadroomResult.state
-                 << " reserve_percent=" << this->profile.gpu_headroom_percent
-                 << " target_utilization_percent=" << 100 - this->profile.gpu_headroom_percent
-                 << " gpu_scope=application-device gpu_metrics_scope=whole-device"
-                 << " measured_utilization_percent=";
-            if (headroomLoad.percent) line << *headroomLoad.percent;
-            else line << "unknown";
-            line << " source_cap_fps=" << this->gpuHeadroomResult.capFps
-                 << " source_floor_fps=" << headroomFloor << '\n';
-            std::cerr << line.str();
-        }
-    }
     AdaptiveSchedulerSnapshot schedulerSnapshot;
     std::optional<size_t> handoffGenerationLimit;
     bool cadenceBaseCapEligible = false;
@@ -445,7 +394,7 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
             this->privateOrderedTransport,
             this->recoveryState.orderedAcquireRecovery.active(),
             std::nullopt
-        ) && !automaticBaseCapSuppressed && this->gpuHeadroomResult.capFps <= 0;
+        ) && !automaticBaseCapSuppressed;
         handoffGenerationLimit = smoothCadencePacerHandoffGenerationLimit(
             this->profile,
             this->privateOrderedTransport,
@@ -488,8 +437,6 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
                 : "scheduler-or-transport-guard-restored"
         );
     }
-    if (this->gpuHeadroomResult.capFps > 0)
-        handoffGenerationLimit.reset();
     const auto handoff = this->smoothCadencePacerHandoff.update(
         limiterArrival, handoffGenerationLimit, false
     );
@@ -524,9 +471,6 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         : cadenceBaseCap.framesPerSecond.value_or(
             effectiveBaseFpsCap(this->profile, schedulerSnapshot)
         );
-    if (this->gpuHeadroomResult.capFps > 0)
-        baseFpsCap = baseFpsCap > 0 ? std::min(baseFpsCap, this->gpuHeadroomResult.capFps)
-            : this->gpuHeadroomResult.capFps;
     // Refresh bounds the automatic cap only. Query on each of the first 64
     // presents until a rate is known, then once per 240 presents, from the
     // owner that already has it.
@@ -608,8 +552,7 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
     const bool uncappedAutoCapEligible =
         effectiveFrameGenerationEnabled(this->profile) &&
         !this->profile.adaptive && !this->profile.adaptive_stable_cadence &&
-        !this->profile.dynamic_cadence_recovery && this->profile.gpu_headroom_percent == 0 &&
-        this->gpuHeadroomResult.capFps <= 0 && !handoff.active &&
+        !this->profile.dynamic_cadence_recovery && !handoff.active &&
         !this->recoveryState.orderedAcquireRecovery.active() &&
         detachedOutputTransport && this->profile.multiplier >= 2;
     const bool userCapBinding = baseFpsCap > 0 &&
@@ -645,7 +588,7 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
     // queue by one frame and costs about 0.3 s of render-fence holds near the
     // GPU limit.
     const auto limiterDeadline = this->realFramePacer.schedule(
-        limiterArrival, baseFpsCap, this->gpuHeadroomResult.capFps > 0 || autoCapRetune
+        limiterArrival, baseFpsCap, autoCapRetune
     );
     const bool ownedTimingControlsOutput = this->presentTiming.controlsOutput(0);
     std::optional<uint32_t> sourceRefreshHz;
@@ -675,7 +618,7 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
     // by that wait; keep the ordinary hold so the cap clock cannot run away.
     const bool releaseGated = this->releaseGate.active() &&
         detachedOutputTransport && !this->profile.adaptive &&
-        !this->profile.dynamic_cadence_recovery && this->gpuHeadroomResult.capFps <= 0 &&
+        !this->profile.dynamic_cadence_recovery &&
         !this->recoveryState.orderedAcquireRecovery.active() &&
         limiterDeadline - limiterArrival <= 3 * capInterval;
     bool readyOutputPacing = fixedReadyOutputPacingEligible(
@@ -813,8 +756,7 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         .originalPresentDeadline = sourceDeadlinePacing
             ? std::optional{limiterDeadline} : std::nullopt,
         .deferredOutputEligible = (readyOutputPacing || releaseGated ||
-            (sourceDeadlinePacing && !this->profile.adaptive &&
-                this->profile.gpu_headroom_percent == 0)) && detachedOutputTransport,
+            (sourceDeadlinePacing && !this->profile.adaptive)) && detachedOutputTransport,
         .profiler = this->pacingProfile.get(),
     };
     struct OutputWaitObservation {

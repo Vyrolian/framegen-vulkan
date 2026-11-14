@@ -248,13 +248,6 @@ if(BUILD_TESTING)
     add_test(NAME runtime-health COMMAND fgvk-runtime-health-tests)
     fgvk_register_portable_policy_test(fgvk-runtime-health-tests runtime-health)
 
-    add_executable(fgvk-gpu-headroom-tests
-        "tests/gpu_headroom_tests.cpp" "src/runtime_health.cpp")
-    target_link_libraries(fgvk-gpu-headroom-tests PRIVATE fgvk-common Threads::Threads)
-    target_include_directories(fgvk-gpu-headroom-tests PRIVATE "src")
-    add_test(NAME gpu-headroom COMMAND fgvk-gpu-headroom-tests)
-    fgvk_register_portable_policy_test(fgvk-gpu-headroom-tests gpu-headroom)
-
     add_executable(fgvk-device-selection-tests
         "tests/device_selection_tests.cpp")
     target_include_directories(fgvk-device-selection-tests

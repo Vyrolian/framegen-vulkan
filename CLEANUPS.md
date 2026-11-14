@@ -2,11 +2,11 @@
 
 This document owns framegen-vulkan's transitional compatibility and cleanup policy. It is not a general backlog. Add an entry when a change temporarily accepts, imports, rewrites, or rejects an older persisted representation and remove the entry when the compatibility code is removed.
 
-GPU Headroom adds optional `gpu_headroom_percent` (default `0`) to version-2 profiles and schema-5 runtime profile snapshots, and `gpu_headroom_state` to schema-5 context records. Readers must accept older records with reserve `0` and state `unavailable`, and must not infer support from a saved toggle. Keep these absent-field defaults until supported older Renderer installations can no longer produce schema-5 records. Configuration round-trip and runtime-reader tests cover the compatibility boundary. No persisted-value migration is needed.
-
 The persisted `allow_fp16` boolean remains the canonical global precision choice; upgrades preserve both true and false values. The corrected runtime applies false even under Ultra Performance and across LSFG and framegen-vulkan Scaler, and reports unavailable true requests rather than silently selecting FP32. No stored-value rewrite is needed or performed.
 
 AC/battery profile tables (`[profile.handheld]` and `[profile.docked]`) are retired, accepted and ignored.
+
+GPU Headroom is retired: old files accept and ignore `gpu_headroom_percent`, `FGVK_GPU_HEADROOM_PERCENT` is no longer read, and framegen-vulkan no longer writes the key or the schema-5 `gpu_headroom_state` and profile `gpu_headroom_percent` fields; `schema_version` stays 5 because nothing in the repository reads the removed fields.
 
 The optional `adaptive_target_refresh_rate` boolean defaults to false for existing configuration and for older schema-5 runtime records. No saved-target migration is required: display feedback affects only the applied target, while `target_fps` remains the requested manual fallback. Native configuration and runtime-status regression tests preserve these defaults and distinguish requested and applied targets.
 

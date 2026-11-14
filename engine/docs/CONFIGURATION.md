@@ -84,26 +84,17 @@ For games that switch between 30 FPS cutscenes and 60 FPS gameplay on a 60 Hz di
 | --- | --- |
 | `ultra_performance = true` (restart) | Uses 70% Flow Scale and the lighter model. |
 | `flow_scale` | 25–100% motion-estimation resolution; lower saves GPU work at a quality cost. Ultra Performance fixes it at 70%. |
-| `gpu_headroom_percent` | Live, Frame Generation-only reserve that reduces real FPS to keep spare GPU capacity; see below. Off by default. |
 | `performance_mode = true` | Uses the lighter Frame Generation model, which reduces GPU work with potentially more artifacts. |
 | `allow_fp16` (restart, `[global]`) | FP16 for supported Frame Generation models; `false` uses FP32. |
 | `pacing_correction` (restart, `[global]`) | On by default. Measures when each output gets the GPU after its present and moves real frames so generated frames sit midway between them. `false` keeps the uncorrected timing. |
 | `dll` (restart) | Lossless.dll path override; leave unset for automatic detection. |
 | `gpu` (restart) | Optional GPU name, vendor/device ID, or PCI bus ID. Multi-GPU Frame Generation is unsupported. |
 
-### GPU Headroom
-
-Set `gpu_headroom_percent` to 5, 10, 15, or 20 to reserve that share of GPU capacity. The reserve targets roughly 90% utilization at 10%, including the compositor and other applications. It applies live while Frame Generation is active. Setting it to 0 removes the additional cap and stops utilization sampling.
-
-framegen-vulkan smooths readings and gradually reduces real FPS when usage stays high. Adaptive can use more generated frames within its qualified multiplier ceiling; Fixed keeps its multiplier, so output FPS can fall too. Adaptive is preferable when you want to regain real FPS as scenes become lighter. Brief spikes can still reach 100%, and the reserve is not a power or temperature limit.
-
-Supported AMD telemetry must be readable for the game's GPU. Missing readings restore ordinary pacing. Existing caps and a minimum real-frame rate limit how much load framegen-vulkan can remove. GPU Headroom is mutually exclusive with `dynamic_cadence_recovery`. See the [setting reference](CONFIGURATION-REFERENCE.md#gpu-headroom) for floors and compatibility limits.
-
 ## Compatibility
 
 | Setting | What it does |
 | --- | --- |
-| `dynamic_cadence_recovery` | Off by default. Rechecks games that change native FPS by briefly reducing generated work; these checks can lower output FPS or cause hitches under sustained GPU load. Clears base caps and GPU Headroom, and resets real-frame priority. |
+| `dynamic_cadence_recovery` | Off by default. Rechecks games that change native FPS by briefly reducing generated work; these checks can lower output FPS or cause hitches under sustained GPU load. Clears base caps and resets real-frame priority. |
 | `dynamic_cadence_probe_interval_seconds` | 0.1–3 seconds between recovery checks; default 2. Shorter intervals react sooner but can hitch more often. |
 | `swapchain_image_count_compatibility` (restart) | May help games that fail to start, with less generated-frame headroom. |
 
@@ -113,12 +104,14 @@ HDR swapchains run without frame generation; `disable_hdr_exposure` in old launc
 
 `[profile.handheld]` and `[profile.docked]` tables in old files are accepted and ignored.
 
+`gpu_headroom_percent` in old files is accepted and ignored.
+
 ## Applying changes
 
 | Timing | Common settings |
 | --- | --- |
 | Restart | Enabling `frame_generation_provisioned`; `dll`; `allow_fp16`; `pacing_correction`; `gpu`; `ultra_performance`; `swapchain_image_count_compatibility`; launcher compatibility settings |
-| Live | `frame_generation_enabled`; most Frame Generation timing and cap settings; `flow_scale`; `performance_mode`; `gpu_headroom_percent` |
+| Live | `frame_generation_enabled`; most Frame Generation timing and cap settings; `flow_scale`; `performance_mode` |
 | May wait for resolution change or restart | Changes needing more Frame Generation capacity |
 
 Some live changes rebuild resources and may briefly hitch. See [Runtime transitions](RUNTIME-TRANSITIONS.md) for details.

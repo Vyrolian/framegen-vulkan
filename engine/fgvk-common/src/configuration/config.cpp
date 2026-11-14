@@ -4,7 +4,6 @@
 #include "atomic_write.hpp"
 #include "fgvk-common/helpers/errors.hpp"
 
-#include <charconv>
 #include <cstdint>
 #include <cstdlib>
 #include <exception>
@@ -42,7 +41,6 @@ frame_generation_provisioned = true
 frame_generation_enabled = true
 swapchain_image_count_compatibility = false
 base_fps_cap = 0
-gpu_headroom_percent = 0
 adaptive = false
 adaptive_auto_base_fps_cap = false
 adaptive_fractional_real_frame_priority = 'auto'
@@ -87,7 +85,6 @@ ConfigFile::ConfigFile() {
         .swapchain_image_count_compatibility =
             GameConfDefaults::swapchainImageCountCompatibility,
         .base_fps_cap = GameConfDefaults::baseFpsCap,
-        .gpu_headroom_percent = GameConfDefaults::gpuHeadroomPercent,
         .adaptive = GameConfDefaults::adaptive,
         .adaptive_auto_base_fps_cap =
             GameConfDefaults::adaptiveAutoBaseFpsCap,
@@ -170,8 +167,6 @@ namespace {
                     GameConfLimits::maximumMultiplier
                 )
             );
-        if (conf.gpu_headroom_percent > 20 || conf.gpu_headroom_percent % 5 != 0)
-            throw ls::error("gpu_headroom_percent must be 0, 5, 10, 15 or 20");
         if (conf.base_fps_cap > GameConfLimits::maximumBaseFpsCap)
             throw ls::error(
                 "base_fps_cap must be " + std::to_string(
@@ -242,13 +237,6 @@ namespace {
     }
     /// parse a game profile configuration
     GameConf parseGameConf(const toml::table& tbl) {
-        uint32_t headroom = GameConfDefaults::gpuHeadroomPercent;
-        if (tbl.contains("gpu_headroom_percent")) {
-            const auto value = tbl["gpu_headroom_percent"].value<int64_t>();
-            if (!tbl["gpu_headroom_percent"].is_integer() || !value || *value < 0 || *value > 20 || *value % 5 != 0)
-                throw ls::error("gpu_headroom_percent must be 0, 5, 10, 15 or 20");
-            headroom = static_cast<uint32_t>(*value);
-        }
         GameConf conf{
             .name = tbl["name"].value_or<std::string>("unnamed"),
             .active_in = activityFromString(tbl["active_in"]),
@@ -266,7 +254,6 @@ namespace {
                     GameConfDefaults::swapchainImageCountCompatibility
                 ),
             .base_fps_cap = tbl["base_fps_cap"].value_or(GameConfDefaults::baseFpsCap),
-            .gpu_headroom_percent = headroom,
             .adaptive = tbl["adaptive"].value_or(GameConfDefaults::adaptive),
             .adaptive_auto_base_fps_cap =
                 tbl["adaptive_auto_base_fps_cap"].value_or(
@@ -316,7 +303,6 @@ namespace {
             conf.adaptive_fractional_real_frame_priority =
                 AdaptiveFractionalRealFramePriority::Auto;
             conf.base_fps_cap = 0;
-            conf.gpu_headroom_percent = 0;
         }
         return conf;
     }
@@ -347,7 +333,6 @@ namespace {
             conf.swapchain_image_count_compatibility
         );
         profile.insert("base_fps_cap", static_cast<int64_t>(conf.base_fps_cap));
-        profile.insert("gpu_headroom_percent", static_cast<int64_t>(conf.gpu_headroom_percent));
         profile.insert("adaptive", conf.adaptive);
         profile.insert(
             "adaptive_auto_base_fps_cap", conf.adaptive_auto_base_fps_cap
@@ -409,7 +394,6 @@ namespace {
             .swapchain_image_count_compatibility =
                 GameConfDefaults::swapchainImageCountCompatibility,
             .base_fps_cap = GameConfDefaults::baseFpsCap,
-            .gpu_headroom_percent = GameConfDefaults::gpuHeadroomPercent,
             .adaptive = GameConfDefaults::adaptive,
             .adaptive_auto_base_fps_cap =
                 GameConfDefaults::adaptiveAutoBaseFpsCap,
@@ -445,12 +429,6 @@ namespace {
         if (swapchain_image_count_compatibility) {
             conf.swapchain_image_count_compatibility =
                 std::string(swapchain_image_count_compatibility) != "0";
-        }
-        if (const char* headroom = std::getenv("FGVK_GPU_HEADROOM_PERCENT")) {
-            const std::string_view input(headroom);
-            const auto parsed = std::from_chars(input.data(), input.data() + input.size(), conf.gpu_headroom_percent);
-            if (parsed.ec != std::errc{} || parsed.ptr != input.data() + input.size())
-                throw ls::error("FGVK_GPU_HEADROOM_PERCENT must be 0, 5, 10, 15 or 20");
         }
         const char* base_fps_cap = std::getenv("FGVK_BASE_FPS_CAP");
         if (base_fps_cap)
@@ -512,7 +490,6 @@ namespace {
             conf.adaptive_fractional_real_frame_priority =
                 AdaptiveFractionalRealFramePriority::Auto;
             conf.base_fps_cap = 0;
-            conf.gpu_headroom_percent = 0;
         }
         return conf;
     }

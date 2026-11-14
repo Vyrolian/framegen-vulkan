@@ -309,8 +309,7 @@ VkResult Swapchain::queuePresentWithRetirementFence(
         const auto policy = gamescopeBridgeOutputPolicy(this->profile, ceiling,
             this->adaptiveScheduler &&
                     fractionalNativePresentationEligible(this->profile)
-                ? this->adaptiveScheduler->snapshot() : AdaptiveSchedulerSnapshot{},
-            this->gpuHeadroomResult.capFps);
+                ? this->adaptiveScheduler->snapshot() : AdaptiveSchedulerSnapshot{});
         this->wsiPresentTimeline.observeSourceBatch(DiagnosticsClock::now(), this->frameState.realFrameIndex);
         const auto slot = this->wsiPresentTimeline.schedule(DiagnosticsClock::now(),
             this->presentTiming.outputRate(policy.outputFps), refresh,

@@ -134,8 +134,7 @@ Swapchain::PresentationFramePlan Swapchain::prepareFramePlan(
             this->profile.adaptive && !this->smoothCadencePacerHandoff.active()
                 ? this->smoothCadenceBaseCap.activeGenerationLimit()
                 : std::nullopt,
-            this->orderedPresentationDeadline,
-            this->gpuHeadroomResult.capFps
+            this->orderedPresentationDeadline
         )
         : AdaptiveFramePlan{};
     const size_t fixedGeneratedFrameCount = schedulerEnabled

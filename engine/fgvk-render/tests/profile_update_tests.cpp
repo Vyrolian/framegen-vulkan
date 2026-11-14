@@ -42,33 +42,6 @@ namespace {
 }
 
 int main() {
-    {
-        ls::GameConf fixed;
-        fixed.multiplier = 2;
-        auto enabled = fixed;
-        enabled.gpu_headroom_percent = 10;
-        auto plan = planProfileUpdate(fixed, enabled, 2, true);
-        expect(plan.decision.gpuHeadroomChanged && plan.decision.action == ProfileUpdateAction::ApplyLive &&
-            !plan.decision.frameGenerationPrivateRebuild && !plan.decision.generationPolicyChanged,
-            "Headroom is live without private resource or scheduler replacement");
-        expect(profileUpdateInvalidatesTransientGenerationRecovery(plan.decision),
-            "Headroom toggle starts a new source pacing episode");
-        expect(baseCapPacesOutputs(enabled, 35, true, 90),
-            "Fixed headroom participates in existing evenly spaced output preparation");
-        expect(gamescopeBridgeOutputPolicy(enabled, 90, {}, 35).outputFps == 70,
-            "Owned output clocks follow Fixed headroom's actual source cap");
-        enabled.adaptive = true;
-        enabled.target_fps = 90;
-        expect(gamescopeBridgeOutputPolicy(enabled, 90, {}, 35).outputFps == 90,
-            "Adaptive retains its generated output target");
-        fixed.frame_generation_enabled = false;
-        enabled = fixed;
-        enabled.gpu_headroom_percent = 20;
-        plan = planProfileUpdate(fixed, enabled, 2, true);
-        expect(!plan.decision.gpuHeadroomChanged && plan.appliedProfile.gpu_headroom_percent == 20,
-            "Headroom is saved dormant with Frame Generation disabled");
-    }
-
     const auto resolveDisplayTarget = [](const ls::GameConf& applied,
             const ls::GameConf& requested, std::optional<uint32_t> refresh) {
         return planProfileUpdate(applied, requested, 3, true, false, refresh);
@@ -256,10 +229,6 @@ int main() {
         expect(!fixedReadyOutputPacingEligible(direct, true, false, false), "Fixed pacing replaced cadence recovery");
         expect(!fixedReadyOutputPacingEligible(direct, true, false, false, true), "detached pacing replaced cadence recovery");
         direct.dynamic_cadence_recovery = false;
-        direct.gpu_headroom_percent = 10;
-        expect(!fixedReadyOutputPacingEligible(direct, true, false, false), "Fixed pacing replaced GPU Headroom");
-        expect(!fixedReadyOutputPacingEligible(direct, true, false, false, true), "detached pacing replaced GPU Headroom");
-        direct.gpu_headroom_percent = 0;
         direct.frame_generation_enabled = false;
         expect(!fixedReadyOutputPacingEligible(direct, true, false, false), "generation Off added output waits");
         expect(!fixedReadyOutputPacingEligible(direct, true, false, false, true), "generation Off added detached pacing");
