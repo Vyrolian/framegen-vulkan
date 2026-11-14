@@ -72,10 +72,7 @@ namespace {
             left.ultra_performance == right.ultra_performance &&
             left.flow_scale == right.flow_scale &&
             left.performance_mode == right.performance_mode &&
-            left.pacing == right.pacing &&
-            left.power_profiles.size() == right.power_profiles.size() &&
-            std::equal(left.power_profiles.begin(), left.power_profiles.end(),
-                right.power_profiles.begin(), sameGameConf);
+            left.pacing == right.pacing;
     }
 
     void testGpuHeadroom(const std::filesystem::path& directory) {
@@ -85,22 +82,12 @@ namespace {
             ls::GameConf profile;
             profile.name = "headroom";
             profile.gpu_headroom_percent = reserve;
-            auto handheld = profile;
-            handheld.name = "handheld";
-            handheld.gpu_headroom_percent = 20;
-            auto docked = profile;
-            docked.name = "docked";
-            docked.gpu_headroom_percent = 5;
-            profile.power_profiles = {handheld, docked};
             config.profiles() = {profile};
             config.write(path);
             const ls::ConfigFile loaded(path);
             expect(loaded.profiles().size() == 1 &&
-                    loaded.profiles().front().gpu_headroom_percent == reserve &&
-                    loaded.profiles().front().power_profiles.size() == 2 &&
-                    loaded.profiles().front().power_profiles.front().gpu_headroom_percent == 20 &&
-                    loaded.profiles().front().power_profiles.back().gpu_headroom_percent == 5,
-                "Headroom survives profile and power-profile persistence");
+                    loaded.profiles().front().gpu_headroom_percent == reserve,
+                "Headroom survives profile persistence");
         }
         for (const auto value : {"-5", "21", "7", "5.5", "true", "'10'", "4294967306"}) {
             writeText(path, "version = 2\n[[profile]]\nname = 'invalid'\ngpu_headroom_percent = " + std::string(value) + "\n");
@@ -161,94 +148,41 @@ namespace {
         unsetenv("FGVK_FRAME_GENERATION_PROVISIONED");
     }
 
-    void testPowerProfiles(const std::filesystem::path& directory) {
-        const auto root = directory / "power_supply";
-        std::filesystem::create_directories(root / "AC");
-        writeText(root / "AC/type", "USB_C\n");
-        writeText(root / "AC/online", "0\n");
-        expect(ls::detectPowerSource(root) == ls::PowerSource::Unknown,
-            "An offline supply without a system battery must be unknown");
-        std::filesystem::create_directories(root / "BAT");
-        writeText(root / "BAT/type", "Battery\n");
-        writeText(root / "BAT/status", "Full\n");
-        expect(ls::detectPowerSource(root) == ls::PowerSource::Handheld,
-            "A full battery must not imply AC power");
-        writeText(root / "BAT/scope", "Device\n");
-        expect(ls::detectPowerSource(root) == ls::PowerSource::Unknown,
-            "Peripheral batteries must not select Handheld");
-        writeText(root / "BAT/scope", "System\n");
-        const auto path = directory / "power.toml";
+    // AC/battery profile tables are retired. Old files still load, the tables
+    // are ignored, and a rewrite leaves them out.
+    void testRetiredPowerTables(const std::filesystem::path& directory) {
+        const auto path = directory / "retired-power-tables.toml";
         writeText(path, R"(version = 2
-[global]
-allow_fp16 = false
 [[profile]]
 name = "game"
 active_in = "Game.exe"
-gpu = "Other GPU"
-adaptive = true
 target_fps = 90
 [profile.handheld]
 target_fps = 60
-adaptive_target_refresh_rate = true
-gpu = ""
 [profile.docked]
 target_fps = 144
 )");
-        ls::ConfigFile parsed(path);
-        expect(parsed.profiles().front().power_profiles.size() == 2,
-            "Both native power tables must be parsed");
-        parsed.write(path);
-        const ls::ConfigFile roundTrip(path);
-        expect(roundTrip.profiles().front().power_profiles[0].adaptive &&
-                roundTrip.profiles().front().power_profiles[0]
-                    .adaptive_target_refresh_rate &&
-                !roundTrip.profiles().front().adaptive_target_refresh_rate &&
-                !roundTrip.profiles().front().power_profiles[1]
-                    .adaptive_target_refresh_rate &&
-                !roundTrip.profiles().front().power_profiles[0].gpu &&
-                roundTrip.profiles().front().power_profiles[1].target_fps == 144,
-            "Sparse power settings must inherit and round-trip, including cleared GPUs");
+        const ls::ConfigFile retired(path);
+        expect(retired.profiles().size() == 1 &&
+                retired.profiles().front().target_fps == 90,
+            "Retired AC/battery tables must be accepted and ignored");
         ls::Identification identity;
         identity.override = "game";
-        for (const auto source : {ls::PowerSource::Unknown, ls::PowerSource::Handheld, ls::PowerSource::Docked}) {
-            parsed.power_source = source;
-            const auto selected = ls::findProfile(parsed, identity);
-            expect(selected && selected->second.target_fps ==
-                    (source == ls::PowerSource::Unknown ? 90U : source == ls::PowerSource::Handheld ? 60U : 144U) &&
-                    selected->second.name == "game" && selected->second.active_in.front() == "Game.exe" &&
-                    selected->second.power_profiles.empty(),
-                "Explicit profile selection must resolve power without changing identity");
-        }
-        setenv("FGVK_CONFIG", path.c_str(), 1);
-        ls::WatchedConfig watched(root);
-        expect(watched.get().power_source == ls::PowerSource::Handheld,
-            "The startup watcher must select battery settings");
-        const auto timestamp = std::filesystem::last_write_time(path);
-        writeText(root / "AC/online", "1\n");
-        std::this_thread::sleep_for(std::chrono::milliseconds(2050));
-        bool changed = watched.update();
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-        while (watched.get().power_source != ls::PowerSource::Docked &&
-                std::chrono::steady_clock::now() < deadline) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-            changed = watched.update() || changed;
-        }
-        expect(changed && watched.get().power_source == ls::PowerSource::Docked &&
-                std::filesystem::last_write_time(path) == timestamp,
-            "A power transition must reload selection without rewriting TOML");
-        writeText(root / "AC/online", "unknown\n");
-        std::this_thread::sleep_for(std::chrono::milliseconds(2050));
-        expect(!watched.update() && watched.get().power_source == ls::PowerSource::Docked,
-            "Transient power read failures must retain the confirmed runtime source");
-        for (const auto invalid : {"[profile.handheld]\ntarget_fps = 60\n",
-                "[profile.handheld]\nname = 'other'\n[profile.docked]\n",
-                "[profile.handheld]\ntarget_fps = 0\n[profile.docked]\n"}) {
-            writeText(path, std::string("version = 2\n[[profile]]\nname = 'game'\n") + invalid);
-            bool rejected = false;
-            try { static_cast<void>(ls::ConfigFile(path)); }
-            catch (const std::exception&) { rejected = true; }
-            expect(rejected, "Invalid power profiles must be rejected");
-        }
+        const auto selected = ls::findProfile(retired, identity);
+        expect(selected && selected->second.target_fps == 90 &&
+                selected->second.name == "game" &&
+                selected->second.active_in.front() == "Game.exe",
+            "Retired AC/battery tables must not change profile matching");
+        retired.write(path);
+        const auto rewritten = readText(path);
+        expect(rewritten.find("handheld") == std::string::npos &&
+                rewritten.find("docked") == std::string::npos,
+            "Rewriting a configuration must drop the retired AC/battery tables");
+        const auto handheldOnly = directory / "retired-handheld.toml";
+        writeText(handheldOnly,
+            "version = 2\n[[profile]]\nname = 'game'\n[profile.handheld]\ntarget_fps = 60\n");
+        expect(ls::ConfigFile(handheldOnly).profiles().front().name == "game",
+            "A lone retired handheld table must not reject the file");
     }
 
     // Native Remote Play used to write a root selection key. Files that still
@@ -353,7 +287,7 @@ int main() {
     unsetenv("FGVK_ENV");
     testGpuHeadroom(directory);
     testOptionalLosslessDll(directory);
-    testPowerProfiles(directory);
+    testRetiredPowerTables(directory);
     testLegacyRootSelectionIsIgnored(directory);
 
     const auto defaultPath = directory / "default.toml";

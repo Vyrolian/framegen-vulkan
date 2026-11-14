@@ -2,17 +2,13 @@
 
 #include "fgvk-common/configuration/config.hpp"
 #include "atomic_write.hpp"
-#include "power_source.hpp"
 #include "fgvk-common/helpers/errors.hpp"
 
-#include <algorithm>
 #include <charconv>
 #include <cstdint>
 #include <cstdlib>
 #include <exception>
 #include <filesystem>
-#include <fstream>
-#include <iostream>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -546,23 +542,6 @@ ConfigFile::ConfigFile(const std::filesystem::path& path) {
         for (const auto& profile : *profiles.as_array()) {
             const auto& base = *profile.as_table();
             auto conf = parseGameConf(base);
-            if (base.contains("handheld") || base.contains("docked")) {
-                for (const auto* mode : {"handheld", "docked"}) {
-                    const auto* settings = base[mode].as_table();
-                    if (!settings)
-                        throw ls::error("power profiles require handheld and docked tables");
-                    auto merged = base;
-                    merged.erase("handheld");
-                    merged.erase("docked");
-                    for (const auto& [key, value] : *settings) {
-                        if (key == "name" || key == "active_in" ||
-                                key == "handheld" || key == "docked")
-                            throw ls::error("power profile identity must remain shared");
-                        merged.insert_or_assign(key, value);
-                    }
-                    conf.power_profiles.push_back(parseGameConf(merged));
-                }
-            }
             this->profileConfs.push_back(std::move(conf));
         }
     }
@@ -582,15 +561,6 @@ void ConfigFile::write(const std::filesystem::path& path) const {
     toml::array profiles;
     for (const auto& conf : this->profileConfs) {
         auto profile = gameConfTable(conf);
-        if (conf.power_profiles.size() == 2) {
-            for (size_t index = 0; index < 2; ++index) {
-                auto settings = gameConfTable(conf.power_profiles[index]);
-                settings.erase("name");
-                settings.erase("active_in");
-                settings.insert_or_assign("gpu", conf.power_profiles[index].gpu.value_or(""));
-                profile.insert(index == 0 ? "handheld" : "docked", settings);
-            }
-        }
 
         profiles.push_back(profile);
     }
@@ -609,8 +579,8 @@ void ConfigFile::write(const std::filesystem::path& path) const {
     }
 }
 
-WatchedConfig::WatchedConfig(std::filesystem::path powerRoot)
-    : powerSupplyRoot(std::move(powerRoot)), path(findConfigurationFile()) {
+WatchedConfig::WatchedConfig()
+    : path(findConfigurationFile()) {
     if (std::getenv("FGVK_ENV")) {
         auto& config = this->configFile;
         config.global() = parseGlobalConfFromEnv();
@@ -624,67 +594,24 @@ WatchedConfig::WatchedConfig(std::filesystem::path powerRoot)
 
     this->configFile = ConfigFile(this->path);
     this->last_timestamp = std::filesystem::last_write_time(this->path);
-    this->configurePowerMonitoring(true);
 }
 
 WatchedConfig::~WatchedConfig() = default;
 WatchedConfig::WatchedConfig(WatchedConfig&&) noexcept = default;
 WatchedConfig& WatchedConfig::operator=(WatchedConfig&&) noexcept = default;
 
-void WatchedConfig::configurePowerMonitoring(const bool startup) {
-    const bool wasEnabled = this->powerProfilesEnabled;
-    this->powerProfilesEnabled = std::any_of(
-        this->configFile.profiles().begin(), this->configFile.profiles().end(),
-        [](const auto& profile) { return !profile.power_profiles.empty(); });
-    if (!this->powerProfilesEnabled) return;
-
-    if (!this->powerMonitor) {
-        try {
-            this->powerMonitor = std::make_unique<detail::PowerSourceMonitor>(
-                this->powerSupplyRoot);
-        } catch (const std::exception& error) {
-            std::cerr << "framegen-vulkan: power source monitor unavailable; "
-                         "retaining the last confirmed settings: "
-                      << error.what() << '\n';
-            return;
-        }
-        if (startup) this->powerMonitor->waitForInitialSample();
-    } else if (!wasEnabled) {
-        this->powerMonitor->requestSample();
-    }
-    if (!wasEnabled)
-        this->nextPowerPoll = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-    const auto source = this->powerMonitor->sample();
-    if (source != PowerSource::Unknown) this->configFile.power_source = source;
-}
-
-bool WatchedConfig::updatePowerSource() {
-    if (!this->powerProfilesEnabled || !this->powerMonitor) return false;
-    const auto now = std::chrono::steady_clock::now();
-    if (now >= this->nextPowerPoll) {
-        this->nextPowerPoll = now + std::chrono::seconds(2);
-        this->powerMonitor->requestSample();
-    }
-    const auto source = this->powerMonitor->sample();
-    if (source == PowerSource::Unknown || source == this->configFile.power_source)
-        return false;
-    this->configFile.power_source = source;
-    return true;
-}
-
 bool WatchedConfig::update() {
     if (std::getenv("FGVK_ENV"))
         return false;
 
-    const bool powerChanged = this->updatePowerSource();
     const auto now = std::filesystem::last_write_time(this->path);
     if (now == this->last_timestamp)
-        return powerChanged;
+        return false;
 
     const auto retryNow = std::chrono::steady_clock::now();
     if (this->failed_timestamp && *this->failed_timestamp == now &&
             retryNow < this->next_parse_retry)
-        return powerChanged;
+        return false;
 
     // Advance the observed timestamp only after parsing succeeds. An external
     // editor may briefly expose a partially-written TOML file; retaining the old stamp
@@ -695,14 +622,11 @@ bool WatchedConfig::update() {
     } catch (...) {
         this->failed_timestamp = now;
         this->next_parse_retry = retryNow + configurationParseRetryDelay;
-        if (powerChanged) return true;
         throw;
     }
-    new_config.power_source = this->configFile.power_source;
     this->configFile = std::move(new_config);
     this->last_timestamp = now;
     this->failed_timestamp.reset();
-    this->configurePowerMonitoring(false);
     return true;
 }
 
@@ -726,54 +650,4 @@ std::filesystem::path ls::findConfigurationFile() {
 
     // finally, use system-wide config
     return "/etc/framegen-vulkan/conf.toml";
-}
-
-PowerSource ls::detectPowerSource(const std::filesystem::path& root) {
-    const auto read = [](const std::filesystem::path& path) {
-        std::ifstream stream(path);
-        std::string value;
-        std::getline(stream, value);
-        return value;
-    };
-    std::error_code error;
-    std::filesystem::directory_iterator entries(root, error);
-    if (error) return PowerSource::Unknown;
-    bool battery = false;
-    bool powered = false;
-    bool supply = false;
-    bool incomplete = false;
-    size_t count = 0;
-    for (auto end = std::filesystem::directory_iterator{}; entries != end;
-            entries.increment(error)) {
-        if (error || ++count > 64) return PowerSource::Unknown;
-        const auto path = entries->path();
-        if (read(path / "scope") == "Device") continue;
-        const auto type = read(path / "type");
-        if (type == "Battery") {
-            if (read(path / "present") != "0") battery = true;
-        } else if (type == "Mains" || type == "USB" || type == "USB_C" ||
-                type == "USB_PD" || type == "USB_DCP" || type == "USB_CDP" ||
-                type == "USB_ACA" || type == "Wireless") {
-            supply = true;
-            const auto online = read(path / "online");
-            if (online == "1") powered = true;
-            if (online != "0") incomplete = true;
-        } else if (type.empty()) {
-            incomplete = true;
-        }
-    }
-    if (error) return PowerSource::Unknown;
-    if (powered) return PowerSource::Docked;
-    return battery && supply && !incomplete
-        ? PowerSource::Handheld : PowerSource::Unknown;
-}
-
-GameConf ls::profileForPowerSource(const GameConf& profile, const PowerSource source) {
-    auto result = profile.power_profiles.size() == 2 && source != PowerSource::Unknown
-        ? profile.power_profiles[source == PowerSource::Handheld ? 0 : 1]
-        : profile;
-    result.name = profile.name;
-    result.active_in = profile.active_in;
-    result.power_profiles.clear();
-    return result;
 }

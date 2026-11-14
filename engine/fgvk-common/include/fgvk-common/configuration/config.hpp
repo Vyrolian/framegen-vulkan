@@ -7,15 +7,12 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
-#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
 
 namespace ls {
-
-    namespace detail { class PowerSourceMonitor; }
 
     /// global configuration
     struct GlobalConf {
@@ -146,12 +143,6 @@ namespace ls {
         static constexpr float maximumFlowScale = 1.0F;
     };
 
-    enum class PowerSource : uint8_t { Unknown, Handheld, Docked };
-
-    /// Read system power supplies; a dock/display connection alone is irrelevant.
-    [[nodiscard]] PowerSource detectPowerSource(
-        const std::filesystem::path& root = "/sys/class/power_supply");
-
     /// game profile configuration
     struct GameConf {
         /// name of the profile
@@ -207,12 +198,7 @@ namespace ls {
         bool performance_mode{GameConfDefaults::performanceMode};
         /// pacing method
         Pacing pacing{GameConfDefaults::pacing};
-        /// Optional handheld/docked settings, in that order. Identity stays shared.
-        std::vector<GameConf> power_profiles;
     };
-
-    [[nodiscard]] GameConf profileForPowerSource(
-        const GameConf& profile, PowerSource source);
 
     /// Flow scale selected for backend construction after applying presets.
     [[nodiscard]] constexpr float effectiveFlowScale(
@@ -268,8 +254,6 @@ namespace ls {
         /// @return list of game profiles
         [[nodiscard]] const auto& profiles() const { return this->profileConfs; }
 
-        PowerSource power_source{PowerSource::Unknown};
-
         /// write the configuration back to file
         /// @param path path to configuration file
         /// @throws ls::error on failure
@@ -284,7 +268,7 @@ namespace ls {
     public:
         /// create a new configuration watcher
         /// @throws ls::error on failure
-        explicit WatchedConfig(std::filesystem::path powerSupplyRoot = "/sys/class/power_supply");
+        explicit WatchedConfig();
         ~WatchedConfig();
 
         WatchedConfig(const WatchedConfig&) = delete;
@@ -301,14 +285,7 @@ namespace ls {
         /// @return configuration file
         [[nodiscard]] const auto& get() const { return this->configFile; }
     private:
-        void configurePowerMonitoring(bool startup);
-        bool updatePowerSource();
-
         ConfigFile configFile;
-        std::filesystem::path powerSupplyRoot;
-        std::chrono::steady_clock::time_point nextPowerPoll;
-        bool powerProfilesEnabled{false};
-        std::unique_ptr<detail::PowerSourceMonitor> powerMonitor;
 
         std::filesystem::path path;
         std::chrono::time_point<std::chrono::file_clock> last_timestamp;

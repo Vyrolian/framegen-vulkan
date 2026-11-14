@@ -2,7 +2,6 @@ set(COMMON_SOURCES
     "src/configuration/config.cpp"
     "src/configuration/detection.cpp"
     "src/configuration/launch.cpp"
-    "src/configuration/power_source.cpp"
     "src/helpers/errors.cpp"
     "src/helpers/paths.cpp"
     "src/quality/image_quality.cpp"
@@ -67,14 +66,6 @@ if(BUILD_TESTING)
     target_include_directories(fgvk-config-tests PRIVATE src)
     add_test(NAME watched-configuration
         COMMAND fgvk-config-tests)
-
-    add_executable(fgvk-power-source-monitor-tests
-        "tests/power_source_monitor_tests.cpp")
-    target_link_libraries(fgvk-power-source-monitor-tests PRIVATE fgvk-common)
-    target_include_directories(fgvk-power-source-monitor-tests PRIVATE src)
-    add_test(NAME power-source-monitor COMMAND fgvk-power-source-monitor-tests)
-    set_tests_properties(power-source-monitor PROPERTIES
-        LABELS "portable-policy" TIMEOUT 15)
 
     add_executable(fgvk-launch-config-tests
         "tests/launch_config_tests.cpp")

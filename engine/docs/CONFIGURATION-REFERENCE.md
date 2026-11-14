@@ -25,26 +25,6 @@ frame_generation_enabled = true
 multiplier = 2
 ```
 
-### AC and battery settings
-
-Both optional `handheld` and `docked` tables must exist when enabled. They inherit omitted Renderer values from the preceding profile and cannot override its name or matches. DLL, FP16, and launcher settings stay shared.
-
-```toml
-[[profile]]
-name = "My game"
-active_in = ["Game.exe"]
-adaptive = true
-target_fps = 90
-
-[profile.handheld]
-target_fps = 60
-
-[profile.docked]
-target_fps = 120
-```
-
-Battery selects Handheld; confirmed AC selects Docked. Unavailable startup detection uses Base; failures during play retain the last confirmed source. Use current matching editors, as older versions may discard these tables.
-
 ### Launcher exclusions
 
 Known launchers and helpers stay inactive while their child games can match. The [shared registry](../fgvk-common/launcher_exclusions.json) owns the exact exclusions; generic `Launcher.exe` is not globally excluded. If only a launcher is detected, wait for gameplay and match the game executable instead. Maintainers can find registry changes in [the compatibility ledger](../../CLEANUPS.md).
@@ -90,6 +70,8 @@ See [Adaptive validation](ADAPTIVE-VALIDATION.md) for scheduling details.
 The spatial scaler was removed. `scaling_enabled`, `scaling_method`, `scaling_factor`, `scaling_supersampling`, and `scaling_sharpness` (and their `FGVK_SCALING_*` environment variables) are retired. They are accepted and ignored, so old files still load, and framegen-vulkan does not write them.
 
 The `gamescope_vrr_mode` and `frame_generation_refresh_threshold` keys and the `FGVK_GAMESCOPE_VRR_MODE` and `FGVK_FRAME_GENERATION_REFRESH_THRESHOLD` overrides were removed with Gamescope support. Existing files still load; the keys and overrides are ignored, and the keys are omitted when the file is next written.
+
+`[profile.handheld]` and `[profile.docked]` tables in old files are accepted and ignored.
 
 ### Performance and device selection
 

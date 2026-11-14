@@ -56,24 +56,6 @@ Typed values apply when you press Enter or leave the field. Sliders apply when y
 
 Each `[[profile]]` has a unique `name`. `active_in` lists executable names, process names, or executable-path suffixes. Copy a profile block to create a variant for another game.
 
-### AC and battery settings
-
-Optional `[profile.handheld]` and `[profile.docked]` tables override selected values while the device is on battery or charging. Battery selects handheld; confirmed AC power selects docked. If startup power detection fails, the base profile applies. DLL, FP16, shader, and launcher settings stay shared. Both tables must exist when enabled.
-
-```toml
-[[profile]]
-name = "My game"
-active_in = ["Game.exe"]
-adaptive = true
-target_fps = 90
-
-[profile.handheld]
-target_fps = 60
-
-[profile.docked]
-target_fps = 120
-```
-
 ### Launcher exclusions
 
 Known launchers and helpers stay inactive while their child games can match. The [shared registry](../fgvk-common/launcher_exclusions.json) owns the exact exclusions; the generic `Launcher.exe` name is not excluded globally. If only a launcher is detected, wait for gameplay and try again.
@@ -128,6 +110,8 @@ Supported AMD telemetry must be readable for the game's GPU. Missing readings re
 Keep the defaults unless a game needs a change.
 
 HDR swapchains run without frame generation; `disable_hdr_exposure` in old launcher files is ignored.
+
+`[profile.handheld]` and `[profile.docked]` tables in old files are accepted and ignored.
 
 ## Applying changes
 

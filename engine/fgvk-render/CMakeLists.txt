@@ -159,7 +159,6 @@ if(BUILD_TESTING)
     # Keep portable build and CTest membership together so the shell runner
     # cannot drift when another policy test is added.
     add_custom_target(fgvk-portable-policy-test-binaries)
-    add_dependencies(fgvk-portable-policy-test-binaries fgvk-power-source-monitor-tests)
     function(fgvk_register_portable_policy_test target test_name)
         add_dependencies(fgvk-portable-policy-test-binaries ${target})
         set_tests_properties(${test_name} PROPERTIES
@@ -274,14 +273,6 @@ if(BUILD_TESTING)
         COMMAND fgvk-profile-update-tests)
     fgvk_register_portable_policy_test(
         fgvk-profile-update-tests profile-update)
-
-    add_executable(fgvk-power-profile-update-tests
-        "tests/power_profile_update_tests.cpp")
-    target_link_libraries(fgvk-power-profile-update-tests PRIVATE fgvk-common)
-    target_include_directories(fgvk-power-profile-update-tests PRIVATE "src")
-    add_test(NAME power-profile-update COMMAND fgvk-power-profile-update-tests)
-    fgvk_register_portable_policy_test(
-        fgvk-power-profile-update-tests power-profile-update)
 
     add_executable(fgvk-swapchain-retirement-tests
         "tests/swapchain_retirement_tests.cpp")

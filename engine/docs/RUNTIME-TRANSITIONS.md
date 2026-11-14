@@ -6,7 +6,7 @@ This guide defines how a saved profile becomes running Renderer state. The [conf
 
 A setting belongs to the earliest boundary that can safely establish all state it affects.
 
-Saving a clone under a new name changes the runtime profile identity without resetting unchanged live policy. Subsequent edits and power-source changes use the same projection and live-update planner for every profile; selecting a new profile does not bypass startup resources, private handoffs, or restart requirements. Ordinary local matching remains unchanged.
+Saving a clone under a new name changes the runtime profile identity without resetting unchanged live policy. Subsequent edits use the same projection and live-update planner for every profile; selecting a new profile does not bypass startup resources, private handoffs, or restart requirements. Ordinary local matching remains unchanged.
 
 | Boundary | State | Completion |
 | --- | --- | --- |
@@ -23,15 +23,15 @@ The process-wide backend is created lazily when the first active swapchain needs
 `Root::update()` is reached from application presentation, but work is bounded and change-driven:
 
 1. Presentation feedback updates its owned state independently.
-2. Configuration is checked at most every 250 ms. When any saved profile has AC/battery sets, the watcher requests a background system-supply reading at most every two seconds and consumes the last confirmed source through an atomic cache. Startup allows up to 50 ms for the first reading, then uses Base if it is still unavailable. No power-supply I/O or worker join runs in presentation; a stalled read retains confirmed state and cannot accumulate requests or workers. Watchers without power sets create no sampler. Removing the sets leaves an existing worker idle after its outstanding read; re-enabling them requests a fresh sample. The worker is joined at watcher teardown before its code and state can be unloaded; that lifetime join can wait for an outstanding driver read to return. An unchanged file is not reparsed.
-3. A changed file is parsed and profile matching is repeated. A confirmed power-source change repeats matching against the existing configuration, without a file write or parse. The resolved power set retains the profile identity and enters the same transition planner.
+2. Configuration is checked at most every 250 ms. An unchanged file is not reparsed.
+3. A changed file is parsed and profile matching is repeated.
 4. Process-static fields are projected back to their applied values while compatible fields continue.
 5. Each live swapchain receives a `ProfileUpdatePlan` based on its applied profile, private resources, generated capacity, and current extent support.
 6. The live-safe merge is applied with only the necessary state resets; other values stay pending at their owning boundary.
 
 Every application-owned swapchain creation forces one configuration freshness check so a replacement cannot combine new upper-layer policy with a stale lower-layer snapshot.
 
-AC/battery selection resolves the complete `GameConf` before this update flow; it does not maintain a separate list of live settings or apply a second transition policy. New Renderer fields use the normal parser, writer, editor, and lifetime owner and travel with their selected power set. `power-profile-update` exercises matching, saved inactive-mode edits, same-name power changes, mixed live/private/restart requests, pending extents, reversion, and missing startup provisioning through these production owners.
+New Renderer fields use the normal parser, writer, editor, and lifetime owner.
 
 ## Requested, applied, and pending state
 
@@ -165,7 +165,7 @@ Exported image-memory and timeline-semaphore descriptors are scoped until the ba
 
 | Responsibility | Source of truth |
 | --- | --- |
-| Parsing, watched configuration, and background power sampling | `fgvk-common/src/configuration/config.cpp`, `fgvk-common/src/configuration/power_source.*`, `fgvk-common/include/fgvk-common/configuration/config.hpp` |
+| Parsing and watched configuration | `fgvk-common/src/configuration/config.cpp`, `fgvk-common/include/fgvk-common/configuration/config.hpp` |
 | Polling, profile selection, and backend baselines | `fgvk-render/src/instance.*` |
 | Merge and transition classification | `fgvk-render/src/profile_update.hpp` |
 | Private transitions and live application | `fgvk-render/src/runtime_transition.hpp`, `fgvk-render/src/swapchain/resources.cpp`, `fgvk-render/src/swapchain/profile.cpp` |

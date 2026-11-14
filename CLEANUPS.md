@@ -6,7 +6,7 @@ GPU Headroom adds optional `gpu_headroom_percent` (default `0`) to version-2 pro
 
 The persisted `allow_fp16` boolean remains the canonical global precision choice; upgrades preserve both true and false values. The corrected runtime applies false even under Ultra Performance and across LSFG and framegen-vulkan Scaler, and reports unavailable true requests rather than silently selecting FP32. No stored-value rewrite is needed or performed.
 
-Optional AC/battery profile tables extend Renderer configuration version 2 without rewriting existing profiles. Profiles without these tables retain their previous behavior; opting in clones the existing native settings and opting out restores the retained base. No legacy-value migration is required. Older editors may discard these optional tables, so the configuration guides require matching current components.
+AC/battery profile tables (`[profile.handheld]` and `[profile.docked]`) are retired, accepted and ignored.
 
 The optional `adaptive_target_refresh_rate` boolean defaults to false for existing configuration and for older schema-5 runtime records. No saved-target migration is required: display feedback affects only the applied target, while `target_fps` remains the requested manual fallback. Native configuration and runtime-status regression tests preserve these defaults and distinguish requested and applied targets.
 
