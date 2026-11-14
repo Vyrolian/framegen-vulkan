@@ -874,5 +874,79 @@ class VulkanSetupTests(unittest.TestCase):
             self.assertEqual(runtime.read_text(), text)
 
 
+class WindowFieldTests(unittest.TestCase):
+    """Summary lines from current logs carry text and signed fields that the report must accept."""
+    prefix = "framegen-vulkan: present diagnostics: operation=pacing-profile "
+    base = ("version=2 pid=10 context=20 sample_end_monotonic_ms=16871525 window_ms=1004.13 "
+            "present_mode=0 sources=128 swapchain=0x3000 wsi=wayland wayland_requested=1 "
+            "output_attempts=215 source_interval_samples=128 source_interval_mean_ms=7.8 "
+            "source_interval_max_ms=20 internal_images=1 configured_multiplier=2 "
+            "frame_generation_enabled=1 swapchain_present_mode=2 ")
+    current = ("application_present_modes=immediate:75 real_present_modes=immediate:128 "
+               "generated_present_modes=immediate:89 real_offset_us=-120")
+
+    def read(self, lines):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "capture.log"
+            path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            return report.read_windows(path)
+
+    def test_text_fields_and_signed_offsets_are_accepted(self):
+        windows, invalid = self.read([self.prefix + self.base + self.current + " real_offset_samples=3"])
+        self.assertEqual(invalid, 0)
+        self.assertEqual(len(windows), 1)
+        values = windows[0].values
+        self.assertEqual(values["application_present_modes"], "immediate:75")
+        self.assertEqual(values["generated_present_modes"], "immediate:89")
+        self.assertEqual(values["real_offset_us"], -120.0)
+        self.assertEqual(values["window_ms"], 1004.13)
+        self.assertEqual(values["sources"], 128.0)
+        text = report.report(windows)
+        self.assertIn("PID 10, context 20: 1 windows", text)
+        self.assertIn("Source: 127.47 frames/s", text)
+
+    def test_empty_mode_fields_and_negative_present_mode_sentinel_are_accepted(self):
+        line = self.prefix + self.base.replace("present_mode=0", "present_mode=-1") + \
+            "application_present_modes=- real_present_modes= generated_present_modes= real_offset_us=0"
+        windows, invalid = self.read([line])
+        self.assertEqual((len(windows), invalid), (1, 0))
+        self.assertEqual(windows[0].values["present_mode"], -1.0)
+        self.assertEqual(windows[0].values["application_present_modes"], "-")
+
+    def test_computed_fields_still_reject_bad_values(self):
+        cases = {
+            "negative count": self.base.replace("sources=128", "sources=-1") + self.current,
+            "negative duration": self.base + self.current + " worst_source_interval_ms=-5",
+            "text in a computed field": self.base.replace("window_ms=1004.13", "window_ms=abc") + self.current,
+            "nan duration": self.base + self.current + " source_interval_max_ms=nan",
+            "negative unsigned offset": self.base + self.current.replace("real_offset_us=-120", "output_wait_us=-1"),
+        }
+        for name, body in cases.items():
+            with self.subTest(name):
+                windows, invalid = self.read([self.prefix + body])
+                self.assertEqual((len(windows), invalid), (0, 1))
+
+    def test_timing_counts_are_numbers_inside_the_report(self):
+        timing = ("timing_driver_attempts=1 timing_application_attempts=0 timing_ext_attempts=0 "
+                  "timing_google_attempts=0 timing_bridge_attempts=0 present_target_discontinuities=2 "
+                  "present_target_interval_samples=3 present_target_interval_mean_ms=16.5 "
+                  "present_target_interval_max_ms=17")
+        windows, invalid = self.read([self.prefix + self.base + self.current + " " + timing])
+        self.assertEqual((len(windows), invalid), (1, 0))
+        text = report.report(windows)
+        self.assertIn("Lower-present timing attempts: driver=1", text)
+        self.assertIn("Repeated/backwards requested targets: 2", text)
+
+    def test_command_line_reports_a_current_log(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "capture.log"
+            path.write_text(self.prefix + self.base + self.current + "\n", encoding="utf-8")
+            result = subprocess.run([sys.executable, "-I", str(SCRIPT), str(path)],
+                                    capture_output=True, text=True, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("No supported pacing-profile windows", result.stdout)
+        self.assertIn("PID 10, context 20: 1 windows", result.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()

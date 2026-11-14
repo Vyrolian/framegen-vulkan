@@ -2,7 +2,7 @@
 
 use std::ops::RangeInclusive;
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use egui::text::{LayoutJob, TextWrapping};
 use egui::{
@@ -12,6 +12,7 @@ use egui::{
 
 use crate::config::{self, Config, ConfigView, FpsMemory, Mode, Profile, ProfileKey, Settings};
 use crate::launcher_conf::{LauncherConf, Logging, Switch};
+use crate::live::{self, Row, View};
 use crate::picker::Picker;
 use crate::processes;
 use crate::state;
@@ -98,6 +99,8 @@ pub struct App {
     /// Exists only while the "Pick a running program" window is open for the selected profile.
     picker: Option<Picker>,
     last_poll: Instant,
+    /// The Live section's reader of the newest fresh pacing log. Polled with `last_poll`.
+    live: live::Follower,
     /// Where the selected profile's name is remembered. `None` when no state directory is known.
     state_path: Option<PathBuf>,
     /// The profile name last selected, or loaded from the state file at start.
@@ -129,6 +132,10 @@ impl App {
             new_game: String::new(),
             picker: None,
             last_poll: Instant::now(),
+            live: live::Follower::new(
+                live::log_directory(|key| std::env::var_os(key)),
+                live::own_uid(),
+            ),
             state_path,
             remembered,
             restored: false,
@@ -191,6 +198,7 @@ impl App {
                 }
                 // The launcher settings are separate from conf.toml, so this section shows
                 // whatever state the profile file is in.
+                self.live_readings(ui);
                 self.logging(ui);
             });
     }
@@ -658,6 +666,34 @@ impl App {
         );
     }
 
+    /// Readings from the pacing log of the game that is running, refreshed by the poll in `logic`.
+    /// Nothing is read from processes or windows: the log file is the only input.
+    fn live_readings(&mut self, ui: &mut Ui) {
+        section(ui, "Live");
+        match self.live.view() {
+            View::NoGame => hint(ui, "No game is logging right now"),
+            View::Readings(rows) => {
+                for row in rows {
+                    match row {
+                        Row::Text(text) => {
+                            ui.label(text);
+                        }
+                        Row::Needs { reading, checkbox } => {
+                            ui.horizontal(|ui| {
+                                ui.label(format!("{reading}:"));
+                                ui.label(
+                                    RichText::new(format!("needs \"{checkbox}\""))
+                                        .small()
+                                        .color(theme::SUBTEXT0),
+                                );
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     /// Logging switches in `launcher.conf`. The launcher exports them as renderer variables when it
     /// starts a game. A file that fails the strict rules is shown as an error and left unchanged.
     fn logging(&mut self, ui: &mut Ui) {
@@ -691,6 +727,7 @@ impl eframe::App for App {
             return;
         }
         self.last_poll = Instant::now();
+        self.live.poll(SystemTime::now());
         if !self.has_pending() {
             if self.config.changed_on_disk() {
                 self.config.reload();

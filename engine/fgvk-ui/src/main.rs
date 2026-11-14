@@ -4,6 +4,7 @@ mod app;
 mod config;
 mod launch;
 mod launcher_conf;
+mod live;
 mod picker;
 mod processes;
 mod state;

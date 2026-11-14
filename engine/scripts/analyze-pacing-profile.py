@@ -11,11 +11,26 @@ import re
 from typing import NamedTuple
 
 
+# A summary field that parses as a number becomes a float; any other field, such as the
+# present-mode lists, stays text, so the report never adds text. The fields the report sums or
+# compares (COMPUTED_FIELDS and the COMPUTED_SUFFIXES families) must be finite numbers, non-negative
+# unless listed in SIGNED_FIELDS. A text value in one of them rejects the window. Other numeric
+# fields are never validated, so a newer field cannot reject a window.
+COMPUTED_FIELDS = frozenset({"sources", "present_mode", "output_trace_dropped", "wayland_requested",
+                             "wait_capture", "gpu_requested", "fifo_caller_timing_sources",
+                             "smooth_cadence", "frame_generation_enabled", "configured_multiplier",
+                             "adaptive", "present_target_discontinuities"})
+COMPUTED_SUFFIXES = ("_ms", "_us", "_samples", "_attempts", "_fps")
+# present_mode is an int64 that the layer reports as -1 when no mode is known; real_offset_us is signed.
+SIGNED_FIELDS = frozenset({"present_mode", "real_offset_us"})
+IDENTITY_FIELDS = ("pid", "context", "version", "swapchain", "wsi")
+
+
 class Window(NamedTuple):
     pid: int
     context: int
     version: int
-    values: dict[str, float]
+    values: "dict[str, float | str]"
     swapchain: str = ""
     wsi: str = "unknown"
 
@@ -35,10 +50,21 @@ def read_windows(path: Path) -> tuple[list[Window], int]:
                 pid, context, version = (int(fields[key]) for key in ("pid", "context", "version"))
                 if min(pid, context) < 0 or version not in (1, 2):
                     raise ValueError("unsupported identity or version")
-                values = {key: float(value) for key, value in fields.items()
-                          if key not in ("pid", "context", "version", "swapchain", "wsi")}
-                if not all(math.isfinite(value) and value >= 0 for value in values.values()):
-                    raise ValueError("invalid measurement")
+                values: dict[str, float | str] = {}
+                for key, text in fields.items():
+                    if key in IDENTITY_FIELDS:
+                        continue
+                    computed = key in COMPUTED_FIELDS or key.endswith(COMPUTED_SUFFIXES)
+                    try:
+                        value = float(text)
+                    except ValueError:
+                        if computed:
+                            raise
+                        values[key] = text
+                        continue
+                    if computed and (not math.isfinite(value) or (value < 0 and key not in SIGNED_FIELDS)):
+                        raise ValueError("invalid measurement")
+                    values[key] = value
                 if not all(key in values for key in required) or values["window_ms"] <= 0:
                     raise ValueError("incomplete window")
                 wsi = fields.get("wsi", "unknown")
