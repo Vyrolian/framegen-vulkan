@@ -15,13 +15,11 @@ suite_names=(
     quality
     repeatability
     performance
-    spatial-performance
     runtime-overhead
     sync-validation
     pacing
     recovery
     external-recovery
-    gamescope-e2e
     direct-desktop-e2e
     sustained-health
     proton-e2e
@@ -37,10 +35,10 @@ Bridge options:
   --gym-repo PATH  Use an explicit fgvk Gym checkout.
   --require        Fail when fgvk Gym is absent; use for required hardware runs.
   --suite NAME     Select vulkan (default), quality, repeatability, performance,
-                   spatial-performance, runtime-overhead, sync-validation, pacing, recovery,
-                   external-recovery, gamescope-e2e, direct-desktop-e2e,
+                   runtime-overhead, sync-validation, pacing, recovery,
+                   external-recovery, direct-desktop-e2e,
                    sustained-health, proton-e2e, proton-compatibility, or constraints.
-  --all-suites     Run all sixteen suites sequentially with the forwarded Gym options.
+  --all-suites     Run all fourteen suites sequentially with the forwarded Gym options.
   --list-suites    Print the canonical bridge suite names without requiring Gym.
   -h, --help       Show this bridge help.
 
@@ -134,13 +132,11 @@ resolve_runner() {
         quality) runner="$gym_repo/scripts/run-amd-quality-regression.sh" ;;
         repeatability) runner="$gym_repo/scripts/run-quality-repeatability.sh" ;;
         performance) runner="$gym_repo/scripts/run-render-performance.sh" ;;
-        spatial-performance) runner="$gym_repo/scripts/run-spatial-performance.sh" ;;
         runtime-overhead) runner="$gym_repo/scripts/run-runtime-overhead.sh" ;;
         sync-validation) runner="$gym_repo/scripts/run-synchronization-validation.sh" ;;
         pacing) runner="$gym_repo/scripts/run-vrr-pacing-matrix.sh" ;;
         recovery) runner="$gym_repo/scripts/run-runtime-recovery-matrix.sh" ;;
         external-recovery) runner="$gym_repo/scripts/run-external-recovery.sh" ;;
-        gamescope-e2e) runner="$gym_repo/scripts/run-gamescope-end-to-end.sh" ;;
         direct-desktop-e2e) runner="$gym_repo/scripts/run-direct-desktop-end-to-end.sh" ;;
         sustained-health) runner="$gym_repo/scripts/run-sustained-health.sh" ;;
         proton-e2e) runner="$gym_repo/scripts/run-proton-end-to-end.sh" ;;

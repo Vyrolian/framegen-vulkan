@@ -42,7 +42,7 @@ void Swapchain::publishRuntimeStatus(const std::string_view reason) noexcept {
         .appliedProfile = this->profile,
         .appliedGeneratedCapacity = this->destinationImages.size(),
         .frameGenerationActive = effectiveFrameGenerationEnabled(
-            this->profile, this->gamescopeRefreshHz
+            this->profile
         ) && !this->destinationImages.empty(),
         .gpuHeadroomState = this->gpuHeadroomResult.state,
         .frameGenerationPrivatePending =

@@ -22,20 +22,6 @@ MAKO Renderer descends directly from PancakeTAS's GPL-3.0-or-later lsfg-vk versi
 
 Copyright in the incorporated portions remains with the respective lsfg-vk copyright holders. The incorporated source files identify themselves as `GPL-3.0-or-later`, and MAKO remains distributed under that license. The MIT License used for lsfg-vk version 1 does not describe MAKO Renderer's version 2 lineage.
 
-## Gamescope surface protocol
-
-[`engine/gamescope-compatibility.json`](engine/gamescope-compatibility.json) owns the protocol revision/hash and compatibility review record; [ongoing maintenance](MAINTENANCE.md) describes how to update it alongside this notice.
-
-MAKO Renderer's optional scaling surface adapter declares the association, swapchain feedback, HDR and version-one/version-two presentation timing requests and events from Valve's [Gamescope swapchain protocol at commit `2b5cf191d1047d6895516a834de8a72ac1c342f3`](https://github.com/ValveSoftware/gamescope/blob/2b5cf191d1047d6895516a834de8a72ac1c342f3/protocol/gamescope-swapchain.xml). This protocol material carries the following MIT notice:
-
-Copyright © 2023 Joshua Ashton for Valve Software
-
-Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice (including the next paragraph) shall be included in all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-
 ## Wayland presentation feedback protocol
 
 MAKO Renderer's optional native Wayland diagnostic observer declares the version-one requests and events of the stable [presentation-time protocol](https://gitlab.freedesktop.org/wayland/wayland-protocols/-/blob/main/stable/presentation-time/presentation-time.xml). The protocol material carries the following MIT notice:

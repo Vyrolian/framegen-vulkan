@@ -39,9 +39,9 @@ To check configuration errors:
 fgvk-cli validate --config ~/.config/framegen-vulkan/conf.toml
 ```
 
-## Gamescope WSI and overlays
+## Gamescope sessions
 
-Use [supported graphics integrations](LAYER-CHAINING.md).
+Gamescope sessions are not supported: `fgvk` starts the game without frame generation. Use [supported graphics integrations](LAYER-CHAINING.md) for other setups.
 
 ## Collect diagnostics
 

@@ -38,9 +38,6 @@ using namespace fgvk::layer::present_detail;
 VkResult Swapchain::presentGeneratedFrames(
         const PresentInvocation& invocation,
         const PresentationFramePlan& plan) {
-    const bool adaptiveVariableRefreshBounded =
-        plan.adaptiveOrderedDeliveryPolicy ==
-            AdaptiveOrderedDeliveryPolicy::VariableRefreshBounded;
     auto maximumAcquireDuration = plan.preacquireDuration;
     auto totalAcquireDuration = plan.preacquireDuration;
     auto generatedSubmitDuration = DiagnosticsClock::duration::zero();
@@ -49,7 +46,7 @@ VkResult Swapchain::presentGeneratedFrames(
     bool acquireDeadlineExceeded = false;
     std::optional<VkResult> deferredAcquireError;
     const GeneratedPresentPNextChain generatedChain(
-        this->gamescopeDetected ? nullptr : invocation.nextChain);
+        invocation.nextChain);
     const int64_t generatedMode = [&]() -> int64_t {
         const auto found = present_diagnostics::applicationPresentMode(
             VK_PRESENT_MODE_MAX_ENUM_KHR, generatedChain.head());
@@ -177,7 +174,7 @@ VkResult Swapchain::presentGeneratedFrames(
                 plan.scheduledGeneratedFrames.size() == 1 &&
                 !plan.generatedImagesPreacquired &&
                 !this->frameContentCapture && !this->nativeCopyProfile &&
-                !this->gamescopeDetected && this->deferredPresent &&
+                this->deferredPresent &&
                 this->recordGeneratedCopies(invocation.vk, this->currentRenderSlot())) {
             auto& slot = this->currentRenderSlot();
             // The staging copy stays on the game queue, ahead of the source copy
@@ -267,7 +264,7 @@ VkResult Swapchain::presentGeneratedFrames(
             // one generated image is available again.
             const uint64_t acquireTimeout = this->generatedAcquireStalled ? 0 :
                 orderedGeneratedImageAcquireTimeout(
-                    this->gamescopeRefreshHz, remainingAcquireBudget
+                    std::nullopt, remainingAcquireBudget
                 );
             lastAcquireTimeout = acquireTimeout;
             if (acquireBudgetExhausted) {
@@ -322,7 +319,7 @@ VkResult Swapchain::presentGeneratedFrames(
                         invocation.vk.df().AcquireNextImageKHR(
                             invocation.vk.dev(), invocation.swapchain,
                             this->generatedAcquireStalled ? 0 :
-                                orderedGeneratedImageAcquireTimeout(this->gamescopeRefreshHz, remaining),
+                                orderedGeneratedImageAcquireTimeout(std::nullopt, remaining),
                             pass.acquireSemaphore.handle(), VK_NULL_HANDLE, &acquiredImageIndex);
                 }
             }
@@ -389,25 +386,12 @@ VkResult Swapchain::presentGeneratedFrames(
             // healthy batches disappear from Adaptive's multiplier evaluation
             // even though generated outputs were lost.
             this->reportAdaptiveDelivery(plan, i);
-            if (adaptiveVariableRefreshBounded) {
-                const bool logPressure = this->recoveryState
-                    .generatedImageAdmission.reportUnavailable();
-                this->handleGeneratedImageAdmissionPressure(
-                    plan, i, logPressure, false,
-                    false,
-                    lastAcquireTimeout,
-                    "adaptive-fallback"
-                );
-            } else {
-                reportOrderedAcquire(
-                    !acquireBudgetExhausted, acquireBudgetExhausted, i
-                );
-            }
+            reportOrderedAcquire(
+                !acquireBudgetExhausted, acquireBudgetExhausted, i
+            );
             // Backend work is already scheduled on this ordered path, so drain
             // its final timeline value. Fixed-refresh Adaptive retains the 3.3
-            // ordered recovery contract. A bounded VRR timeout instead arms
-            // zero-wait admission for later frames without changing the
-            // scheduler's validated load. Fixed and explicit recovery probes
+            // ordered recovery contract. Fixed and explicit recovery probes
             // retain their direct transport contracts.
             const size_t skippedFrames =
                 plan.scheduledGeneratedFrames.size() - i;
@@ -709,25 +693,9 @@ VkResult Swapchain::presentGeneratedFrames(
         "present-total", this->frameState.realFrameIndex,
         this->frameState.sequenceIndex, invocation.started, result
     );
-    if (adaptiveVariableRefreshBounded) {
-        if (plan.scheduledGeneratedFrames.size() ==
-                plan.requestedGeneratedFrames.size()) {
-            const size_t requiredStableBatches =
-                adaptiveVariableRefreshBounded
-                    ? generatedImageAdmissionRecoveryBatches(
-                        this->info.images.size(),
-                        plan.requestedGeneratedFrames.size()
-                    )
-                    : 1;
-            this->reportGeneratedImageAdmissionAvailable(
-                requiredStableBatches
-            );
-        }
-    } else {
-        reportOrderedAcquire(
-            false, false, plan.scheduledGeneratedFrames.size()
-        );
-    }
+    reportOrderedAcquire(
+        false, false, plan.scheduledGeneratedFrames.size()
+    );
     this->reportAdaptiveDelivery(
         plan, plan.scheduledGeneratedFrames.size()
     );

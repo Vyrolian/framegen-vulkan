@@ -22,7 +22,7 @@ Boundary docs (`engine/docs/`): `RENDERER-ARCHITECTURE`, `CONFIGURATION` / `CONF
 
 - `just --list` shows entry points. C++ changes: `just test-engine-portable` (CTest); scheduling/presentation also `just test-engine-sanitized`. Settings window and entry point: `just test-fgvk-ui` (`cargo test --locked` in `engine/fgvk-ui`). Tooling: `just test-diagnostics-helper`.
 - The device is resource-constrained: watch CPU/GPU cost, memory, sync and hot paths. Keep at most two build jobs while the user may be gaming.
-- Report what passed and what was not tested (hardware, AMD/FP16, Flatpak, Gamescope). A skipped GPU test is not evidence.
+- Report what passed and what was not tested (hardware, AMD/FP16, Flatpak). A skipped GPU test is not evidence.
 
 ## Generated files and protected inputs
 

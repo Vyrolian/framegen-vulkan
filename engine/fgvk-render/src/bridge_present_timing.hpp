@@ -82,7 +82,7 @@ namespace fgvk::layer::present_diagnostics {
             entry.valid = false;
             ++window.feedbacks;
             window.lateLatchFeedbacks += lateLatch;
-            // Gamescope may report a target vblank slightly before the request.
+            // A compositor may report a target vblank slightly before the request.
             window.lateness.add(actual >= desired ? milliseconds(actual - desired)
                                                   : -milliseconds(desired - actual));
             if (previousActual) {

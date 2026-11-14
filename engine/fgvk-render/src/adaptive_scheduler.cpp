@@ -2357,30 +2357,6 @@ size_t AdaptiveScheduler::validatedGenerationLimit() const {
     return std::min(generationLimit, configuredLimit);
 }
 
-bool AdaptiveScheduler::refreshHigherLoadRetry(const TimePoint now) {
-    auto& ramp = this->state.ramp;
-    const auto retainedLimit = this->validatedGenerationLimit();
-    if (retainedLimit == 0 || ramp.consecutiveFailures == 0 ||
-            ramp.lastFailedLimit <= retainedLimit || ramp.evaluationAt ||
-            ramp.pacedLoad.until || this->state.rearm.required ||
-            this->discontinuityRecoveryActive())
-        return false;
-
-    // Explicit presentation policy changes invalidate failed higher-workload
-    // evidence, not the current qualified load or source/history state. The
-    // ordinary delay and continuous delivered lower-load sample still gate
-    // the next trial, including when this change occurs under Steam UI focus.
-    ramp.lastFailedLimit = 0;
-    ramp.consecutiveFailures = 0;
-    ramp.failedBaselineBaseFps = 0.0;
-    ramp.nextAt = now + adaptiveRecoveryHigherProbeDelay;
-    ramp.lowerLoadSample.reset();
-    ramp.targetDeficitSince.reset();
-    this->diagnostics->recoveryResume(retainedLimit,
-        adaptiveRecoveryHigherProbeDelay, "gamescope-vrr-policy-change");
-    return true;
-}
-
 void AdaptiveScheduler::restoreGenerationLimit(
         const std::chrono::steady_clock::time_point now,
         const size_t generationLimit,
@@ -2676,79 +2652,6 @@ void AdaptiveScheduler::beginStabilization(
     this->resetTiming(now);
     if (!alreadyStabilizing)
         this->diagnostics->stabilization(reason, stabilizationDuration);
-}
-
-void AdaptiveScheduler::resumeAfterExternalInterruption(
-        const TimePoint now, const bool confirmedReturn) {
-    // The caller did not feed menu-throttled frames into the scheduler. Keep
-    // the last proven level, abandon interrupted experiments and remeasure
-    // source cadence without retaining their elapsed timers or stale history.
-    const auto retainedLimit = this->validatedGenerationLimit();
-    const auto rejectedLoadRetryAt = this->state.ramp.consecutiveFailures > 0
-        ? this->state.ramp.nextAt : std::nullopt;
-    auto rejectedFirstProbe = retainedLimit == 0 &&
-            this->state.rearm.consecutiveProbeFailures > 0
-        ? std::make_optional(this->state.rearm) : std::nullopt;
-    const double retainedBaseFps = this->state.stableCadence.limit &&
-            *this->state.stableCadence.limit == retainedLimit &&
-            this->state.stableCadence.baselineBaseFps > 0.0
-        ? this->state.stableCadence.baselineBaseFps
-        : this->state.cadence.smoothedIntervalSeconds > 0.0
-            ? 1.0 / this->state.cadence.smoothedIntervalSeconds
-            : 0.0;
-    // A confirmed return can reuse proven capacity after fresh temporal
-    // history. Unknown focus and newly reset policies have no such proof.
-    // The caller's transport and fence guards still apply.
-    const bool fastResume = confirmedReturn && retainedLimit > 0 &&
-        this->config.recoveryPolicy == AdaptiveRecoveryPolicy::OrderedSdr;
-    const bool retainedLoadMetTarget = retainedBaseFps *
-        static_cast<double>(retainedLimit + 1) >=
-        static_cast<double>(this->config.targetFps) * adaptiveTargetSatisfiedRatio;
-    if (fastResume && retainedLoadMetTarget) {
-        // Keep the proven lower-load measurement through the bounded recovery
-        // interval. A temporarily slow return must not lower the comparison
-        // baseline and make extra generated work look beneficial.
-        this->state.menuReturnLoadGuard.active = true;
-        this->state.menuReturnLoadGuard.provenGenerationLimit = retainedLimit;
-        this->state.menuReturnLoadGuard.baselineBaseFps = retainedBaseFps;
-    } else {
-        this->state.menuReturnLoadGuard.reset();
-    }
-    const auto remainingStabilization =
-        this->state.stabilization.until.value_or(now) - now;
-    // A menu event cannot advance an existing transport/lifecycle deadline.
-    // With no such deadline, the fixed three-frame history contract is the
-    // only wait before the proven workload resumes.
-    this->beginStabilization(now, "gamescope-focus-return", fastResume
-        ? std::max<Clock::duration>(Clock::duration::zero(),
-            remainingStabilization)
-        : adaptiveStabilizationDuration);
-    // Menu timing is not evidence that a rejected higher workload became
-    // cheaper. Stabilization replaces nextAt, so restore the failed trial's
-    // deadline before retaining its failure count and lower-load baseline.
-    // An expired deadline still observes the ordinary post-return probe delay.
-    if (rejectedLoadRetryAt) {
-        this->state.ramp.nextAt = std::max(*rejectedLoadRetryAt,
-            this->state.stabilization.until.value_or(now) +
-                adaptiveRecoveryHigherProbeDelay);
-    }
-    this->restoreGenerationLimit(now, retainedLimit, "gamescope-focus-return",
-        std::nullopt, 0.0, true);
-    if (rejectedFirstProbe) {
-        // Native fallback has its own rejection cooldown. Preserve both its
-        // deadline and escalation, but never count menu time as stable source
-        // evidence or turn an interrupted trial into a throughput failure.
-        this->state.rearm.consecutiveProbeFailures =
-            rejectedFirstProbe->consecutiveProbeFailures;
-        if (rejectedFirstProbe->required &&
-                rejectedFirstProbe->reason == "ramp-rejected") {
-            this->state.rearm = std::move(*rejectedFirstProbe);
-            this->state.rearm.stableSince.reset();
-        }
-    }
-    // A second menu may interrupt the first warm-up after only one frame.
-    // Every return needs fresh history, not the remainder of the old gap.
-    this->beginHistoryWarmup(historyWarmupFrameCount(), true);
 }
 
 void AdaptiveScheduler::beginTransportRecovery(

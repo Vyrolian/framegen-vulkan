@@ -24,10 +24,9 @@ mkdir -p "$test_data_home" "$test_config_home"
 export XDG_CONFIG_HOME="$test_config_home"
 overlay_enabled_config="$test_root/overlay-enabled.conf"
 printf '%s\n' 'version=1' 'disable_steam_overlay=0' > "$overlay_enabled_config"
-# The fake Gamescope names below must not resolve to a live compositor socket
-# when this portable test runs alongside a real Gym session.
-export XDG_RUNTIME_DIR="$test_root/runtime"
-mkdir -m 700 "$XDG_RUNTIME_DIR"
+# Gamescope sessions are detected from this variable alone. Clear it so every
+# case below is a desktop launch; the early-exit case sets its own.
+unset GAMESCOPE_WAYLAND_DISPLAY
 expected_layer_path="$install_prefix/share/framegen-vulkan/vulkan/implicit_layer.d"
 if [[ ! -d "$expected_layer_path" && -d "$test_data_home/framegen-vulkan/vulkan/implicit_layer.d" ]]; then
     expected_layer_path="$test_data_home/framegen-vulkan/vulkan/implicit_layer.d"
@@ -38,7 +37,6 @@ fi
 default_output="$({
     env -u ENABLE_FGVK -u DISABLE_FGVK \
         -u ENABLE_VKBASALT -u DISABLE_VKBASALT -u VKBASALT_CONFIG_FILE -u VKBASALT_CONFIG_RELOAD \
-        -u ENABLE_GAMESCOPE_WSI -u DISABLE_GAMESCOPE_WSI \
         -u DXVK_HDR \
         -u DISABLE_LSFG -u DISABLE_LSFGVK \
         -u FGVK_ALLOW_COMPETING_LAYERS \
@@ -52,8 +50,6 @@ default_output="$({
                 "${ENABLE_FGVK:-unset}" \
                 "${DISABLE_LSFG:-unset}" \
                 "${DISABLE_LSFGVK:-unset}" \
-                "${DISABLE_GAMESCOPE_WSI:-unset}" \
-                "${ENABLE_GAMESCOPE_WSI:-unset}" \
                 "${DXVK_HDR:-unset}" \
                 "${VK_IMPLICIT_LAYER_PATH:-unset}" \
                 "${VK_ADD_IMPLICIT_LAYER_PATH:-unset}" \
@@ -67,7 +63,7 @@ default_output="$({
         ' _ "argument with spaces" '$literal'
 } 2>&1)" || fail "default launch failed: $default_output"
 
-expected_default="$(printf '1\n1\n1\n1\nunset\nunset\n%s\nunset\nVK_LAYER_existing\nunset\n1\nunset\nunset\nprofile with spaces\nargument with spaces\n$literal' "$expected_layer_path")"
+expected_default="$(printf '1\n1\n1\nunset\n%s\nunset\nVK_LAYER_existing\nunset\n1\nunset\nunset\nprofile with spaces\nargument with spaces\n$literal' "$expected_layer_path")"
 if [[ "$default_output" != "$expected_default" ]]; then
     fail "default environment or argument forwarding changed:\n$default_output"
 fi
@@ -96,7 +92,11 @@ if [[ "$desktop_overlay_output" != "$expected_desktop_overlay" ]]; then
     fail "Desktop Steam overlay was not ordered after framegen-vulkan:\n$desktop_overlay_output"
 fi
 
-gaming_overlay_output="$({
+# A Gamescope session is not supported. The launcher must print one notice and
+# exec the command with its environment untouched, so no framegen-vulkan
+# setting, layer or preload change reaches the child.
+gamescope_stderr="$test_root/gamescope.stderr"
+gamescope_output="$(
     FGVK_LAUNCH_CONFIG="$overlay_enabled_config" \
     ENABLE_VK_LAYER_VALVE_steam_overlay_1=1 \
         GAMESCOPE_WAYLAND_DISPLAY=gamescope-0 \
@@ -105,12 +105,19 @@ gaming_overlay_output="$({
         "$launcher" bash -c '
             printf "%s\n" \
                 "${ENABLE_FGVK:-unset}" \
+                "${VK_IMPLICIT_LAYER_PATH:-unset}" \
                 "${VK_INSTANCE_LAYERS:-unset}" \
-                "${VK_LAYER_PATH:-unset}"
-        '
-} 2>&1)" || fail "Gaming Mode overlay boundary failed: $gaming_overlay_output"
-if [[ "$gaming_overlay_output" != $'1\nunset\nunset' ]]; then
-    fail "Gaming Mode unexpectedly used Desktop Steam overlay preservation:\n$gaming_overlay_output"
+                "${VK_LAYER_PATH:-unset}" \
+                "${ENABLE_VK_LAYER_VALVE_steam_overlay_1:-unset}" \
+                "${FGVK_LAUNCH_CONFIG:-unset}"
+        ' 2> "$gamescope_stderr"
+)" || fail "Gamescope early exit failed"
+expected_gamescope="$(printf 'unset\nunset\nunset\nunset\n1\n%s' "$overlay_enabled_config")"
+if [[ "$gamescope_output" != "$expected_gamescope" ]]; then
+    fail "Gamescope session changed the launch environment:\n$gamescope_output"
+fi
+if [[ "$(cat "$gamescope_stderr")" != "framegen-vulkan: Gamescope sessions are not supported; starting without frame generation" ]]; then
+    fail "Gamescope early-exit notice was not printed exactly once:\n$(cat "$gamescope_stderr")"
 fi
 
 fake_flatpak="$test_root/flatpak"
@@ -142,7 +149,6 @@ cp "$test_root/preload/64/gameoverlayrenderer.so" "$test_root/preload/32/gameove
 "$preload_compiler" "$preload_fixture" -ldl -o "$test_root/preload/probe"
 for separator in ':' ' ' $'\t' $'\n' $'\r' $'\v' $'\f'; do
     preload_output="$(
-        GAMESCOPE_WAYLAND_DISPLAY=gamescope-0 \
         XDG_DATA_HOME="$test_data_home" \
         LD_PRELOAD="$test_root/preload/64/gameoverlayrenderer.so${separator}$test_root/preload/retained.so${separator}$test_root/preload/32/gameoverlayrenderer.so" \
         "$launcher" "$test_root/preload/probe" 2> "$test_root/preload/stderr"
@@ -151,7 +157,6 @@ for separator in ':' ' ' $'\t' $'\n' $'\r' $'\v' $'\f'; do
         fail "isolated launch retained an orphaned hook or lost another preload: $preload_output"
 done
 preload_output="$(
-    GAMESCOPE_WAYLAND_DISPLAY=gamescope-0 \
     XDG_DATA_HOME="$test_data_home" \
     FGVK_PRESENT_DIAGNOSTICS=1 \
     LD_PRELOAD="$test_root/preload/64/gameoverlayrenderer.so" \
@@ -161,7 +166,6 @@ preload_output="$(
 [[ "$(cat "$test_root/preload/stderr")" == *'operation=launch-environment'*'steam_overlay_preload_removed=1'* ]] ||
     fail "launch diagnostics did not report removal"
 preload_output="$(
-    GAMESCOPE_WAYLAND_DISPLAY=gamescope-0 \
     XDG_DATA_HOME="$test_data_home" \
     LD_PRELOAD="$test_root/preload/64/gameoverlayrenderer.so:$test_root/preload/retained.so" \
     "$launcher" "$test_root/preload/probe" 2> "$test_root/preload/stderr"
@@ -189,7 +193,7 @@ desktop_disabled_output="$(
 rm -f "$steam_overlay_dir/steamoverlay_x86_64.json"
 
 allow_output="$({
-    DISABLE_LSFG=1 DISABLE_LSFGVK=1 ENABLE_GAMESCOPE_WSI=1 \
+    DISABLE_LSFG=1 DISABLE_LSFGVK=1 \
         DXVK_HDR=1 \
         XDG_DATA_HOME="$test_data_home" \
         VK_IMPLICIT_LAYER_PATH="/caller/override" \
@@ -200,8 +204,6 @@ allow_output="$({
                 "${ENABLE_FGVK:-unset}" \
                 "${DISABLE_LSFG:-unset}" \
                 "${DISABLE_LSFGVK:-unset}" \
-                "${DISABLE_GAMESCOPE_WSI:-unset}" \
-                "${ENABLE_GAMESCOPE_WSI:-unset}" \
                 "${DXVK_HDR:-unset}" \
                 "${VK_IMPLICIT_LAYER_PATH:-unset}" \
                 "${VK_ADD_IMPLICIT_LAYER_PATH:-unset}" \
@@ -209,7 +211,7 @@ allow_output="$({
         '
 } 2>&1)" || fail "advanced opt-out launch failed: $allow_output"
 
-expected_allow="$(printf '1\nunset\nunset\n1\nunset\nunset\n%s\nunset\nunset' "$expected_layer_path")"
+expected_allow="$(printf '1\nunset\nunset\nunset\n%s\nunset\nunset' "$expected_layer_path")"
 if [[ "$allow_output" != "$expected_allow" ]]; then
     fail "advanced opt-out did not remove only the conflict guards:\n$allow_output"
 fi
@@ -308,9 +310,9 @@ fi
 for disable_hdr in 0 1; do
     printf '%s\n' 'version=1' "disable_hdr_exposure=$disable_hdr" > "$launch_config"
     hdr_output="$(FGVK_LAUNCH_CONFIG="$launch_config" DXVK_HDR=1 "$launcher" bash -c \
-        'printf "%s %s" "${DXVK_HDR:-unset}" "$DISABLE_GAMESCOPE_WSI"')"
-    expected_hdr="unset 1"
-    [[ "$hdr_output" == "$expected_hdr" ]] || fail "HDR toggle changed WSI ownership: $hdr_output"
+        'printf "%s" "${DXVK_HDR:-unset}"')"
+    expected_hdr="unset"
+    [[ "$hdr_output" == "$expected_hdr" ]] || fail "retired HDR key changed DXVK_HDR ownership: $hdr_output"
 done
 
 printf '%s\n' 'version=1' 'unknown_setting=1' > "$launch_config"

@@ -155,7 +155,7 @@ namespace fgvk::layer {
     }
 
     /// Build a lower-facing VkSwapchainCreateInfoKHR pNext chain without
-    /// modifying any caller-owned input node. Gamescope normally puts the
+    /// modifying any caller-owned input node. Lower WSI layers commonly put the
     /// maintenance1 present-mode node at the head, but a legal caller may put
     /// known swapchain-create structures before it in immutable storage. Copy
     /// that prefix and share the untouched suffix. An unknown prefix fails

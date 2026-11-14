@@ -29,7 +29,7 @@ bool Swapchain::resetGenerationScheduler(
         const DiagnosticsClock::time_point now,
         const std::string_view reason) {
     const auto policy = generationSchedulerPolicy(
-        this->profile, this->gamescopeRefreshHz
+        this->profile
     );
     if (!policy || this->destinationImages.empty()) {
         this->adaptiveScheduler.reset();
@@ -58,16 +58,16 @@ bool Swapchain::resetGenerationScheduler(
             .qualifyTargetNativeCadence = policy->qualifyTargetNativeCadence,
             .validateIntegerPacing = this->profile.adaptive &&
                 policy->stableCadence && adaptiveTargetMatchesRefresh(
-                    policy->targetFps, this->gamescopeRefreshHz) &&
+                    policy->targetFps, std::nullopt) &&
                 (this->profile.adaptive_auto_base_fps_cap ||
-                 effectiveBaseFpsCap(this->profile, this->gamescopeRefreshHz)
+                 effectiveBaseFpsCap(this->profile)
                     <= 0.0),
             .dynamicCadenceRecovery = policy->dynamicCadenceRecovery,
             .dynamicCadenceProbeInterval =
                 ls::dynamicCadenceProbeIntervalDuration(
                     policy->dynamicCadenceProbeIntervalSeconds
                 ),
-            .displayRefreshFps = this->gamescopeRefreshHz,
+            .displayRefreshFps = std::nullopt,
             .recoveryPolicy = this->privateOrderedTransport
                 ? AdaptiveRecoveryPolicy::OrderedSdr
                 : AdaptiveRecoveryPolicy::Conservative,
@@ -77,63 +77,6 @@ bool Swapchain::resetGenerationScheduler(
     this->adaptiveScheduler->beginStabilization(now, reason);
     this->recoveryState.historyWarmupRemaining = 0;
     return true;
-}
-
-void Swapchain::applyGamescopeFocus(const DiagnosticsClock::time_point now) {
-    const auto focused = this->gamescopeFocus.fresh(now)
-        ? this->gamescopeFocus.gameFocused : std::nullopt;
-    const bool eligible = this->privateOrderedTransport &&
-        effectiveFrameGenerationEnabled(this->profile, this->gamescopeRefreshHz) &&
-        this->colorPipeline.generationSupported;
-    const bool suspended = eligible && focused == false;
-    const bool returned = this->gamescopeFocus.fresh(now) &&
-        this->gamescopeFocus.gameFocused == true &&
-        this->gamescopeFocus.returnSequence != this->lastFocusReturnSequence;
-    if (returned)
-        this->lastFocusReturnSequence = this->gamescopeFocus.returnSequence;
-    if ((this->steamMenuSuspended && !suspended) || (eligible && returned)) {
-        const bool applyDeferredPolicy =
-            this->generationPolicyResetGate.consumeOnResume();
-        if (applyDeferredPolicy) {
-            static_cast<void>(this->resetGenerationScheduler(
-                now, "configuration-update-after-gamescope-return"
-            ));
-        } else if (this->adaptiveScheduler) {
-            this->adaptiveScheduler->resumeAfterExternalInterruption(now, returned);
-        }
-        this->ensureHistoryWarmup(true);
-        this->fixedRefreshBudget.reset();
-        this->realFramePacer.reset();
-        this->smoothCadenceBaseCap.reset();
-        this->smoothCadencePacerHandoff.pauseForExternalInterruption();
-        if (returned)
-            this->recoveryState.orderedAcquireRecovery
-                .armTransitionRecreation();
-    }
-    if (suspended && !this->steamMenuSuspended) {
-        this->smoothCadencePacerHandoff.pauseForExternalInterruption();
-        // Likewise, an incomplete generated-image guard or native drain
-        // belongs to the pre-menu transport. The return must qualify any
-        // renewed acquire pressure from fresh gameplay presents.
-        this->recoveryState.orderedAcquireRecovery.
-            pauseForExternalInterruption();
-    }
-    this->steamMenuSuspended = suspended;
-    if (present_diagnostics::enabled() &&
-            (!this->focusReported || focused != this->lastReportedGameFocus || returned)) {
-        try {
-            std::ostringstream line;
-            line << "framegen-vulkan: present diagnostics: operation=gamescope-focus"
-                  << " context=" << this->diagnosticsState.contextId
-                  << " state=" << (!focused ? "unknown" : *focused ? "game" : "steam-ui")
-                  << " return_sequence=" << this->gamescopeFocus.returnSequence
-                  << " resumed=" << returned
-                  << " generation_suspended=" << suspended << '\n';
-            std::cerr << line.str();
-        } catch (...) {}
-        this->focusReported = true;
-        this->lastReportedGameFocus = focused;
-    }
 }
 
 ProfileUpdateDecision Swapchain::updateProfile(
@@ -166,7 +109,7 @@ ProfileUpdateDecision Swapchain::updateProfile(
         this->profile, nextProfile, this->destinationImages.size(),
         resourcesAvailable,
         privateFrameGenerationRebuildAvailable,
-        this->gamescopeRefreshHz
+        std::nullopt
     );
     auto decision = plan.decision;
     if (decision.frameGenerationPrivateRebuild) {
@@ -220,7 +163,7 @@ ProfileUpdateDecision Swapchain::updateProfile(
             decision,
             this->instance && resourcesAvailable &&
                 this->colorPipeline.generationSupported,
-            this->presentRetirementEnabled(), this->gamescopeDetected
+            this->presentRetirementEnabled()
         );
     this->liveProfileResourceRecreation.update(
         this->profile,
@@ -298,10 +241,10 @@ ProfileUpdateDecision Swapchain::updateProfile(
 
     const bool hadGenerationScheduler = this->adaptiveScheduler.has_value();
     const bool generationWasEnabled = effectiveFrameGenerationEnabled(
-        this->profile, this->gamescopeRefreshHz
+        this->profile
     );
     const bool generationWillBeEnabled = effectiveFrameGenerationEnabled(
-        plan.appliedProfile, this->gamescopeRefreshHz
+        plan.appliedProfile
     );
     const bool enabling = !generationWasEnabled && generationWillBeEnabled;
     const bool disabling = generationWasEnabled && !generationWillBeEnabled;
@@ -332,10 +275,6 @@ ProfileUpdateDecision Swapchain::updateProfile(
     if ((decision.gpuHeadroomChanged || enabling) && !this->gpuLoadMonitor)
         this->gpuLoadMonitorInitialized = false;
     const auto profileUpdateNow = DiagnosticsClock::now();
-    const bool confirmedSteamMenuSuspension =
-        this->privateOrderedTransport &&
-        this->gamescopeFocus.fresh(profileUpdateNow) &&
-        this->gamescopeFocus.gameFocused == false;
     this->profile = std::move(plan.appliedProfile);
     this->configuredFixedGeneratedFrames = fixedGeneratedFrameCount(
         this->profile.multiplier, this->destinationImages.size()
@@ -363,7 +302,6 @@ ProfileUpdateDecision Swapchain::updateProfile(
     }
 
     if (disabling) {
-        this->generationPolicyResetGate.cancel();
         this->recoveryState.historyWarmupRemaining = 0;
         this->recoveryState.orderedAcquireRecovery.reset();
         if (this->adaptiveScheduler)
@@ -374,19 +312,19 @@ ProfileUpdateDecision Swapchain::updateProfile(
         this->recoveryState.generatedImageAdmission.reset();
         this->recoveryState.orderedAcquireRecovery.reset();
         this->recoveryState.historyWarmupRemaining =
-            generationSchedulerPolicy(this->profile, this->gamescopeRefreshHz)
+            generationSchedulerPolicy(this->profile)
             ? 0
             : AdaptiveScheduler::historyWarmupFrameCount();
     }
 
     const bool transportLoadTransition = this->privateOrderedTransport &&
         effectiveFrameGenerationEnabled(
-            this->profile, this->gamescopeRefreshHz
+            this->profile
         ) && (decision.generationPolicyChanged ||
               decision.generationModeChanged ||
               decision.fixedMultiplierChanged || cadenceStyleChanged ||
               enabling);
-    if (transportLoadTransition && !confirmedSteamMenuSuspension) {
+    if (transportLoadTransition) {
         this->recoveryState.orderedAcquireRecovery
             .armTransitionRecreation();
         if (present_diagnostics::enabled()) {
@@ -399,7 +337,7 @@ ProfileUpdateDecision Swapchain::updateProfile(
     }
 
     const bool schedulerPolicyAvailable = generationSchedulerPolicy(
-        this->profile, this->gamescopeRefreshHz
+        this->profile
     ).has_value();
     const bool fixedSchedulerPolicyChanged = !this->profile.adaptive &&
         decision.fixedMultiplierChanged;
@@ -409,22 +347,10 @@ ProfileUpdateDecision Swapchain::updateProfile(
              fixedSchedulerPolicyChanged ||
              decision.baseFpsCapChanged || enabling);
     if (resetSchedulerPolicy) {
-        const bool alreadyDeferred =
-            this->generationPolicyResetGate.pending();
-        if (this->generationPolicyResetGate.request(
-                confirmedSteamMenuSuspension)) {
-            static_cast<void>(this->resetGenerationScheduler(
-                profileUpdateNow, "configuration-update"
-            ));
-        } else if (!alreadyDeferred && present_diagnostics::enabled()) {
-            std::cerr << "framegen-vulkan: present diagnostics: "
-                         "operation=generation-policy-reset-deferred"
-                      << " context=" << this->diagnosticsState.contextId
-                      << " evidence=gamescope-steam-ui"
-                      << " action=coalesce-until-gameplay-return\n";
-        }
+        static_cast<void>(this->resetGenerationScheduler(
+            profileUpdateNow, "configuration-update"
+        ));
     } else if (hadGenerationScheduler && !schedulerPolicyAvailable) {
-        this->generationPolicyResetGate.cancel();
         this->adaptiveScheduler.reset();
         this->recoveryState.historyWarmupRemaining =
             AdaptiveScheduler::historyWarmupFrameCount();
@@ -439,7 +365,7 @@ ProfileUpdateDecision Swapchain::updateProfile(
     }
 
     const auto updatedGenerationPolicy = generationSchedulerPolicy(
-        this->profile, this->gamescopeRefreshHz
+        this->profile
     );
     const bool updatedDynamicCadenceRecoveryActive =
         this->privateOrderedTransport && updatedGenerationPolicy &&
@@ -452,11 +378,9 @@ ProfileUpdateDecision Swapchain::updateProfile(
                   << " transition=live"
                   << " frame_generation_enabled="
                   << this->profile.frame_generation_enabled
-                  << " frame_generation_refresh_threshold="
-                  << this->profile.frame_generation_refresh_threshold
                   << " effective_frame_generation_enabled="
                   << effectiveFrameGenerationEnabled(
-                        this->profile, this->gamescopeRefreshHz
+                        this->profile
                      )
                   << " adaptive=" << this->profile.adaptive
                   << " target_fps=" << this->profile.target_fps
@@ -470,7 +394,7 @@ ProfileUpdateDecision Swapchain::updateProfile(
                       this->profile.adaptive_fractional_real_frame_priority
                   )
                   << " effective_base_fps_cap="
-                  << effectiveBaseFpsCap(this->profile, this->gamescopeRefreshHz)
+                  << effectiveBaseFpsCap(this->profile)
                   << " adaptive_max_multiplier="
                   << this->profile.adaptive_max_multiplier
                   << " stable_cadence="
@@ -531,10 +455,10 @@ bool Swapchain::requestLiveProfileResourceRecreationAfterPresent(
 bool Swapchain::requestOrderedAcquireRecreationAfterPresent(
         const VkResult lowerPresentResult,
         const bool surfaceRequestAvailable) {
-    if (!surfaceRequestAvailable || this->steamMenuSuspended ||
+    if (!surfaceRequestAvailable ||
             !this->privateOrderedTransport ||
             !effectiveFrameGenerationEnabled(
-                this->profile, this->gamescopeRefreshHz
+                this->profile
             ) ||
             (lowerPresentResult != VK_SUCCESS &&
              lowerPresentResult != VK_SUBOPTIMAL_KHR) ||
@@ -556,173 +480,6 @@ bool Swapchain::requestOrderedAcquireRecreationAfterPresent(
                   << " delivery=one-shot-per-context-after-retirement-fence-attachment\n";
     }
     return true;
-}
-
-void Swapchain::updateGamescopeRefreshRate(
-        const std::optional<uint32_t> refreshHz) {
-    if (refreshHz == this->gamescopeRefreshHz)
-        return;
-    const bool generationWasEnabled = effectiveFrameGenerationEnabled(
-        this->profile, this->gamescopeRefreshHz
-    );
-    this->gamescopeRefreshHz = refreshHz;
-    const auto previousTarget = this->profile.target_fps;
-    this->profile.target_fps = adaptiveTargetFpsForDisplay(
-        this->runtimeStatusState.requestedProfile.target_fps,
-        this->profile.adaptive, this->profile.adaptive_target_refresh_rate,
-        refreshHz
-    );
-    const bool automaticTargetChanged = previousTarget != this->profile.target_fps;
-    const auto refreshUpdateNow = DiagnosticsClock::now();
-    const bool confirmedSteamMenuSuspension =
-        this->privateOrderedTransport &&
-        this->gamescopeFocus.fresh(refreshUpdateNow) &&
-        this->gamescopeFocus.gameFocused == false;
-    if (automaticTargetChanged) {
-        this->recoveryState.generatedImageAdmission.reset();
-        this->recoveryState.orderedAcquireRecovery.reset();
-    }
-    this->realFramePacer.reset();
-    this->smoothCadenceBaseCap.reset();
-    this->smoothCadencePacerHandoff.reset();
-    const bool generationIsEnabled = effectiveFrameGenerationEnabled(
-        this->profile, this->gamescopeRefreshHz
-    );
-    const bool generationAvailabilityChanged =
-        generationWasEnabled != generationIsEnabled;
-    this->fixedRefreshBudget.reset();
-    if (generationAvailabilityChanged) {
-        this->diagnosticsState.fixedWindowStarted.reset();
-        this->diagnosticsState.fixedRealFrames = 0;
-        this->diagnosticsState.fixedGeneratedFrames = 0;
-        this->diagnosticsState.fixedSkippedFrames = 0;
-        if (!generationIsEnabled) {
-            this->generationPolicyResetGate.cancel();
-            this->recoveryState.historyWarmupRemaining = 0;
-            this->recoveryState.orderedAcquireRecovery.reset();
-            if (this->adaptiveScheduler)
-                this->adaptiveScheduler->cancelHistoryWarmup();
-        } else {
-            this->recoveryState.generatedImageAdmission.reset();
-            this->recoveryState.orderedAcquireRecovery.reset();
-            if (this->generationPolicyResetGate.request(
-                    confirmedSteamMenuSuspension) &&
-                    !this->resetGenerationScheduler(
-                        refreshUpdateNow, "refresh-rate-threshold")) {
-                this->recoveryState.historyWarmupRemaining =
-                    AdaptiveScheduler::historyWarmupFrameCount();
-            }
-        }
-    } else if (generationIsEnabled &&
-            ((this->profile.adaptive &&
-              (this->profile.adaptive_stable_cadence || automaticTargetChanged)) ||
-             (!this->profile.adaptive &&
-              this->profile.dynamic_cadence_recovery))) {
-        if (this->generationPolicyResetGate.request(
-                confirmedSteamMenuSuspension) &&
-                !this->resetGenerationScheduler(
-                    refreshUpdateNow, "gamescope-refresh-change")) {
-            this->recoveryState.historyWarmupRemaining =
-                AdaptiveScheduler::historyWarmupFrameCount();
-        }
-    }
-    if (present_diagnostics::enabled()) {
-        std::cerr << "framegen-vulkan: present diagnostics: "
-                     "operation=gamescope-refresh-rate-applied"
-                  << " context=" << this->diagnosticsState.contextId
-                  << " refresh_hz=" << refreshHz.value_or(0)
-                  << " frame_generation_refresh_threshold="
-                  << this->profile.frame_generation_refresh_threshold
-                  << " effective_frame_generation_enabled="
-                  << generationIsEnabled << '\n';
-    }
-    this->publishRuntimeStatus("gamescope-refresh-rate");
-}
-
-void Swapchain::updateGamescopePresentationFeedback(
-        const GamescopePresentationFeedback& feedback) {
-    if (feedback == this->gamescopePresentationFeedback)
-        return;
-
-    const auto previous = this->gamescopePresentationFeedback;
-    this->gamescopePresentationFeedback = feedback;
-    if (this->adaptiveScheduler && gamescopeHigherLoadRetryChanged(
-            this->profile, this->privateOrderedTransport,
-            this->recoveryState.orderedAcquireRecovery.active(),
-            this->gamescopeRefreshHz, previous, feedback)) {
-        static_cast<void>(this->adaptiveScheduler->refreshHigherLoadRetry(
-            DiagnosticsClock::now()));
-    }
-    const auto schedulerSnapshot = this->adaptiveScheduler
-        ? this->adaptiveScheduler->snapshot()
-        : AdaptiveSchedulerSnapshot{};
-    const bool pacingOwnerChanged = gamescopePresentationPacingOwnerChanged(
-        this->profile,
-        this->privateOrderedTransport,
-        this->recoveryState.orderedAcquireRecovery.active(),
-        this->gamescopeRefreshHz,
-        schedulerSnapshot,
-        this->smoothCadencePacerHandoff.activeGenerationLimit(),
-        previous,
-        this->gamescopePresentationFeedback
-    );
-    const bool fixedRefreshFifoEligible =
-        fixedSmoothCadenceFifoEligible(
-            this->profile,
-            this->privateOrderedTransport,
-            this->recoveryState.orderedAcquireRecovery.active(),
-            this->gamescopeRefreshHz
-        ) || smoothCadencePacerHandoffGenerationLimit(
-            this->profile,
-            this->privateOrderedTransport,
-            this->recoveryState.orderedAcquireRecovery.active(),
-            this->gamescopeRefreshHz,
-            schedulerSnapshot,
-            this->gamescopePresentationFeedback,
-            this->smoothCadencePacerHandoff.activeGenerationLimit()
-        ) || smoothCadenceBaseCapEligible(
-            this->profile,
-            this->privateOrderedTransport,
-            this->recoveryState.orderedAcquireRecovery.active(),
-            this->gamescopeRefreshHz,
-            this->gamescopePresentationFeedback
-        );
-    if (pacingOwnerChanged) {
-        // The configured mode, multiplier and validated Adaptive level remain
-        // authoritative. Only affected pacing helpers reset; an eligible
-        // Steady or Fractional FIFO handoff survives VRR feedback.
-        this->fixedRefreshBudget.reset();
-        this->realFramePacer.reset();
-        this->smoothCadenceBaseCap.reset();
-        this->smoothCadencePacerHandoff.reset();
-    }
-
-    if (present_diagnostics::enabled()) {
-        const auto writeBoolean = [](const std::optional<bool> value) {
-            return value ? (*value ? "1" : "0") : "unknown";
-        };
-        std::cerr << "framegen-vulkan: present diagnostics: "
-                     "operation=gamescope-presentation-feedback"
-                  << " context=" << this->diagnosticsState.contextId
-                  << " vrr_enabled="
-                  << writeBoolean(feedback.vrrEnabled)
-                  << " vrr_capable="
-                  << writeBoolean(feedback.vrrCapable)
-                  << " vrr_active="
-                  << writeBoolean(feedback.vrrActive)
-                  << " allow_tearing="
-                  << writeBoolean(feedback.allowTearing)
-                  << " pacing_owner="
-                  << (fixedRefreshFifoEligible
-                        ? "fixed-refresh-fifo-eligible"
-                        : "fgvk-target-clock")
-                  << " action="
-                  << (pacingOwnerChanged
-                        ? "reset-pacer-only"
-                        : "diagnostic-only")
-                  << " scheduler_reset=0"
-                  << " recreation=0\n";
-    }
 }
 
 void Swapchain::disableFrameGeneration() {

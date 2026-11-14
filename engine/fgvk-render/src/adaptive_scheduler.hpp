@@ -214,10 +214,6 @@ namespace fgvk::layer {
         void beginTransportRecovery(
             TimePoint now, bool classifyGeneratedLoadFailure = false);
         [[nodiscard]] bool rejectActiveRampForTransportMiss(TimePoint now);
-        void resumeAfterExternalInterruption(TimePoint now, bool confirmedReturn);
-        // The presentation owner calls only for a confirmed policy change.
-        // Preserve the qualified rung and remeasure before another trial.
-        [[nodiscard]] bool refreshHigherLoadRetry(TimePoint now);
         void restoreGenerationLimit(TimePoint now, size_t generationLimit,
             std::string_view reason,
             std::optional<size_t> monitoredFallbackLimit = std::nullopt,

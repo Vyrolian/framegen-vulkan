@@ -28,7 +28,6 @@ namespace fgvk::layer {
     struct ProfileUpdateDecision {
         ProfileUpdateAction action{ProfileUpdateAction::NoRuntimeChange};
         bool frameGenerationChanged{false};
-        bool refreshRateThresholdChanged{false};
         bool generationPolicyChanged{false};
         bool generationModeChanged{false};
         bool fixedMultiplierChanged{false};
@@ -46,36 +45,6 @@ namespace fgvk::layer {
     struct ProfileUpdatePlan {
         ls::GameConf appliedProfile;
         ProfileUpdateDecision decision;
-    };
-
-    /// A confirmed Steam-menu suspension is already a scheduling boundary.
-    /// Coalesce any number of live policy writes behind that boundary and
-    /// construct only the final scheduler policy when gameplay resumes.
-    class GenerationPolicyResetGate {
-    public:
-        [[nodiscard]] bool request(const bool generationSuspended) noexcept {
-            if (generationSuspended) {
-                this->deferred = true;
-                return false;
-            }
-            this->deferred = false;
-            return true;
-        }
-
-        [[nodiscard]] bool consumeOnResume() noexcept {
-            return std::exchange(this->deferred, false);
-        }
-
-        void cancel() noexcept {
-            this->deferred = false;
-        }
-
-        [[nodiscard]] bool pending() const noexcept {
-            return this->deferred;
-        }
-
-    private:
-        bool deferred{false};
     };
 
     /// A live change which reshapes generated work starts a new transport
@@ -261,19 +230,17 @@ namespace fgvk::layer {
 
     /// A recreation request is safe only when the resource owner's final
     /// present is protected by swapchain-maintenance1 retirement proof.
-    /// Gamescope-detected contexts never use that path.
     [[nodiscard]] inline bool guardedLiveProfileResourceRecreationAvailable(
             const ProfileUpdateDecision& decision,
             const bool frameGenerationResourcesAvailable,
-            const bool presentRetirementEnabled,
-            const bool gamescopeDetected) {
+            const bool presentRetirementEnabled) {
         if (!presentRetirementEnabled ||
                 !liveProfileResourceRecreationAvailable(
                     decision, frameGenerationResourcesAvailable
                 )) {
             return false;
         }
-        return !gamescopeDetected;
+        return true;
     }
 
     /// A natural swapchain recreation reuses Root's process-wide backend. Keep
@@ -324,18 +291,11 @@ namespace fgvk::layer {
                 ls::AdaptiveFractionalRealFramePriority::Auto;
     }
 
-    /// Preserve the user's live Frame Generation switch while applying the
-    /// optional display guard. Missing Gamescope feedback fails open so an
-    /// unsupported compositor cannot silently disable synthesis.
+    /// Preserve the user's live Frame Generation switch.
     [[nodiscard]] inline bool effectiveFrameGenerationEnabled(
-            const ls::GameConf& profile,
-            const std::optional<uint32_t> gamescopeRefreshHz) {
-        if (!profile.frame_generation_provisioned ||
-                !profile.frame_generation_enabled)
-            return false;
-        return profile.frame_generation_refresh_threshold == 0 ||
-            !gamescopeRefreshHz ||
-            *gamescopeRefreshHz > profile.frame_generation_refresh_threshold;
+            const ls::GameConf& profile) {
+        return profile.frame_generation_provisioned &&
+            profile.frame_generation_enabled;
     }
 
     /// Smooth Cadence opts into ready-output spacing. A Fixed batch that the
@@ -347,7 +307,7 @@ namespace fgvk::layer {
             const bool anotherTimingOwner, const bool recovering,
             const bool detachedOutput = false) {
         return nativeOutputPacingEligible && !anotherTimingOwner && !recovering &&
-            effectiveFrameGenerationEnabled(profile, std::nullopt) &&
+            effectiveFrameGenerationEnabled(profile) &&
             !profile.adaptive && (profile.adaptive_stable_cadence || detachedOutput) &&
             !profile.dynamic_cadence_recovery && profile.gpu_headroom_percent == 0;
     }
@@ -363,12 +323,12 @@ namespace fgvk::layer {
     [[nodiscard]] inline bool baseCapPacesOutputs(
             const ls::GameConf& profile, const double effectiveCap,
             const bool outputSpacingEligible,
-            const std::optional<uint32_t> gamescopeRefreshHz = std::nullopt,
+            const std::optional<uint32_t> displayRefreshHz = std::nullopt,
             const bool compositorOutputTiming = false,
             const bool directUnthrottled = false,
             const bool nativeFifo = false,
             const bool applicationTimingOwner = false) {
-        if (!effectiveFrameGenerationEnabled(profile, gamescopeRefreshHz) ||
+        if (!effectiveFrameGenerationEnabled(profile) ||
                 !outputSpacingEligible || !std::isfinite(effectiveCap) ||
                 effectiveCap <= 0.0)
             return false;
@@ -377,32 +337,28 @@ namespace fgvk::layer {
         if (profile.adaptive)
             return static_cast<double>(profile.target_fps) > effectiveCap &&
                 (!profile.adaptive_auto_base_fps_cap || directUnthrottled ||
-                    (gamescopeRefreshHz &&
-                        (profile.target_fps < *gamescopeRefreshHz ||
+                    (displayRefreshHz &&
+                        (profile.target_fps < *displayRefreshHz ||
                          (compositorOutputTiming &&
-                          profile.target_fps == *gamescopeRefreshHz))));
+                          profile.target_fps == *displayRefreshHz))));
         return !profile.dynamic_cadence_recovery &&
             (profile.base_fps_cap > 0 || profile.gpu_headroom_percent > 0) &&
             profile.multiplier >= ls::GameConfLimits::minimumMultiplier &&
             profile.multiplier <= ls::GameConfLimits::maximumMultiplier &&
-            (directUnthrottled || nativeFifo || (gamescopeRefreshHz &&
-                effectiveCap * profile.multiplier <= *gamescopeRefreshHz));
+            (directUnthrottled || nativeFifo || (displayRefreshHz &&
+                effectiveCap * profile.multiplier <= *displayRefreshHz));
     }
 
     /// Auto-cap aligns the common healthy path with an exact 2x cadence.
     /// Explicit Fractional priority instead selects its target-relative cap.
     /// Adaptive can still raise its multiplier when the game falls below this
     /// ceiling. Keep the engine's 10 FPS policy floor for unusually low targets.
-    /// The display guard releases both target-derived Adaptive caps while
-    /// preserving the saved manual cap. Explicit Off keeps all caps dormant.
+    /// Explicit Off keeps all caps dormant.
     [[nodiscard]] inline double effectiveBaseFpsCap(
-            const ls::GameConf& profile,
-            const std::optional<uint32_t> gamescopeRefreshHz = std::nullopt) {
+            const ls::GameConf& profile) {
         if (!profile.frame_generation_provisioned ||
                 !profile.frame_generation_enabled)
             return 0.0;
-        if (!effectiveFrameGenerationEnabled(profile, gamescopeRefreshHz))
-            return static_cast<double>(profile.base_fps_cap);
         if (profile.adaptive && profile.adaptive_auto_base_fps_cap) {
             return std::max(
                 adaptiveMinimumBaseFps,
@@ -420,29 +376,14 @@ namespace fgvk::layer {
     /// verification runs after the configured cap has been restored.
     [[nodiscard]] inline double effectiveBaseFpsCap(
             const ls::GameConf& profile,
-            const AdaptiveSchedulerSnapshot& scheduler,
-            const std::optional<uint32_t> gamescopeRefreshHz = std::nullopt) {
-        if (!effectiveFrameGenerationEnabled(profile, gamescopeRefreshHz))
-            return effectiveBaseFpsCap(profile, gamescopeRefreshHz);
+            const AdaptiveSchedulerSnapshot& scheduler) {
+        if (!effectiveFrameGenerationEnabled(profile))
+            return effectiveBaseFpsCap(profile);
         if (profile.adaptive && profile.adaptive_auto_base_fps_cap &&
                 scheduler.automaticBaseCapSuppressed) {
             return 0.0;
         }
-        return effectiveBaseFpsCap(profile, gamescopeRefreshHz);
-    }
-
-    /// Ordered-SDR rescue can release an automatic cap after FIFO masks source
-    /// headroom. Under explicit VRR, retain the configured automatic cap
-    /// outside a qualified FIFO handoff, without resetting the
-    /// scheduler or discarding its validated multiplier.
-    [[nodiscard]] inline double effectiveBaseFpsCap(
-            const ls::GameConf& profile,
-            const AdaptiveSchedulerSnapshot& scheduler,
-            const GamescopePresentationFeedback& presentationFeedback,
-            const std::optional<uint32_t> gamescopeRefreshHz = std::nullopt) {
-        if (presentationFeedback.variableRefreshRequested())
-            return effectiveBaseFpsCap(profile, gamescopeRefreshHz);
-        return effectiveBaseFpsCap(profile, scheduler, gamescopeRefreshHz);
+        return effectiveBaseFpsCap(profile);
     }
 
     [[nodiscard]] inline bool dynamicCadenceRecoveryEnabled(
@@ -451,18 +392,15 @@ namespace fgvk::layer {
             effectiveBaseFpsCap(profile) <= 0.0;
     }
 
-    /// A proven Steady 2x cadence keeps its established FIFO handoff. Under
-    /// VRR, Steady may request a validated higher full batch, while Fractional
-    /// may hand off only an already accepted constant integer cadence with no
-    /// competing real-frame cap. Probe and transport guards restore pacing.
+    /// A proven Steady 2x cadence keeps its established FIFO handoff. Probe and
+    /// transport guards restore pacing.
     [[nodiscard]] inline std::optional<size_t>
     smoothCadencePacerHandoffGenerationLimit(
             const ls::GameConf& profile,
             const bool privateOrderedTransport,
             const bool orderedAcquireRecoveryActive,
-            const std::optional<uint32_t> gamescopeRefreshHz,
+            const std::optional<uint32_t> displayRefreshHz,
             const AdaptiveSchedulerSnapshot& scheduler,
-            const GamescopePresentationFeedback& presentationFeedback = {},
             const std::optional<size_t> activeGenerationLimit = std::nullopt) {
         const size_t generationLimit = scheduler.stableCadenceLimit.value_or(
             scheduler.validatedGenerationLimit
@@ -473,29 +411,9 @@ namespace fgvk::layer {
         const double targetFps = static_cast<double>(profile.target_fps);
         const double projectedOutputFps = scheduler.smoothedBaseFps *
             static_cast<double>(generationLimit + 1);
-        const bool higherVrrRung = generationLimit > 1 &&
-            presentationFeedback.variableRefreshRequested() &&
-            scheduler.validatedGenerationLimit >= generationLimit &&
-            (scheduler.phase == AdaptiveSchedulerPhase::Active ||
-             scheduler.phase == AdaptiveSchedulerPhase::StableCadence) &&
-            !scheduler.efficiencyProbeGenerationLimit &&
-            (!scheduler.stableCadenceEvaluationActive ||
-             activeGenerationLimit == generationLimit);
         const bool provenTwoX = generationLimit == 1 &&
             scheduler.phase == AdaptiveSchedulerPhase::StableCadence &&
             !scheduler.stableCadenceEvaluationActive;
-        const bool acceptedFractionalVrrInteger =
-            !profile.adaptive_auto_base_fps_cap &&
-            effectiveBaseFpsCap(profile, gamescopeRefreshHz) <= 0.0 &&
-            !profile.dynamic_cadence_recovery &&
-            presentationFeedback.variableRefreshRequested() &&
-            scheduler.phase == AdaptiveSchedulerPhase::StableCadence &&
-            scheduler.stableCadenceLimit == generationLimit &&
-            scheduler.validatedGenerationLimit >= generationLimit &&
-            scheduler.generationLimit >= generationLimit &&
-            !scheduler.stableCadenceEvaluationActive &&
-            !scheduler.efficiencyProbeGenerationLimit &&
-            !scheduler.targetOutputClockActive;
         const bool entryCadenceMatched =
             projectedOutputFps >= targetFps * 0.98 &&
             projectedOutputFps <= targetFps *
@@ -508,62 +426,15 @@ namespace fgvk::layer {
             activeGenerationLimit == generationLimit;
         const bool eligible = profile.adaptive &&
             profile.adaptive_stable_cadence &&
-            effectiveFrameGenerationEnabled(profile, gamescopeRefreshHz) &&
+            effectiveFrameGenerationEnabled(profile) &&
             privateOrderedTransport &&
             !orderedAcquireRecoveryActive &&
             adaptiveTargetMatchesRefresh(
-                profile.target_fps, gamescopeRefreshHz
+                profile.target_fps, displayRefreshHz
             ) &&
-            ((profile.adaptive_auto_base_fps_cap &&
-              (provenTwoX || higherVrrRung)) ||
-             acceptedFractionalVrrInteger) &&
+            profile.adaptive_auto_base_fps_cap && provenTwoX &&
             (entryCadenceMatched || retainActiveHandoff);
         return eligible ? std::optional<size_t>{generationLimit} : std::nullopt;
-    }
-
-    /// A lower-load probe deliberately releases a higher Steady VRR FIFO
-    /// handoff. Preserve its retry eligibility unless a transport or scheduler
-    /// safety guard also failed during the probe.
-    [[nodiscard]] inline bool smoothCadencePacerHandoffPlannedProbe(
-            const ls::GameConf& profile,
-            const bool privateOrderedTransport,
-            const bool orderedAcquireRecoveryActive,
-            const std::optional<uint32_t> gamescopeRefreshHz,
-            const AdaptiveSchedulerSnapshot& scheduler,
-            const GamescopePresentationFeedback& presentationFeedback,
-            const std::optional<size_t> activeGenerationLimit) {
-        return profile.adaptive &&
-            (profile.adaptive_auto_base_fps_cap ||
-             (effectiveBaseFpsCap(profile, gamescopeRefreshHz) <= 0.0 &&
-              scheduler.pacedLoadValidationPending &&
-              scheduler.efficiencyProbeGenerationLimit) ||
-             (activeGenerationLimit &&
-              scheduler.pacedLoadRollbackGenerationLimit ==
-                  activeGenerationLimit)) &&
-            profile.adaptive_stable_cadence &&
-            effectiveFrameGenerationEnabled(profile, gamescopeRefreshHz) &&
-            privateOrderedTransport &&
-            !orderedAcquireRecoveryActive &&
-            adaptiveTargetMatchesRefresh(
-                profile.target_fps, gamescopeRefreshHz
-            ) &&
-            presentationFeedback.variableRefreshRequested() &&
-            activeGenerationLimit && *activeGenerationLimit > 1 &&
-            (scheduler.phase == AdaptiveSchedulerPhase::Active ||
-             scheduler.phase == AdaptiveSchedulerPhase::StableCadence) &&
-            ((scheduler.efficiencyProbeGenerationLimit &&
-              *scheduler.efficiencyProbeGenerationLimit <
-                  *activeGenerationLimit) ||
-             scheduler.pacedLoadRollbackGenerationLimit ==
-                 activeGenerationLimit) &&
-            (scheduler.validatedGenerationLimit >= *activeGenerationLimit ||
-             scheduler.pacedLoadRollbackGenerationLimit ==
-                 activeGenerationLimit) &&
-            !scheduler.rampEvaluationActive &&
-            !scheduler.stableCadenceEvaluationActive &&
-            !scheduler.nativeCadenceProbeActive &&
-            !scheduler.rearmRequired &&
-            !scheduler.discontinuityRecoveryActive;
     }
 
     /// Integer-cadence base-cap refinement is limited to the same ordered,
@@ -574,83 +445,16 @@ namespace fgvk::layer {
             const ls::GameConf& profile,
             const bool privateOrderedTransport,
             const bool orderedAcquireRecoveryActive,
-            const std::optional<uint32_t> gamescopeRefreshHz,
-            const GamescopePresentationFeedback& presentationFeedback = {}) {
+            const std::optional<uint32_t> displayRefreshHz) {
         return profile.adaptive &&
             profile.adaptive_auto_base_fps_cap &&
             profile.adaptive_stable_cadence &&
-            effectiveFrameGenerationEnabled(profile, gamescopeRefreshHz) &&
+            effectiveFrameGenerationEnabled(profile) &&
             privateOrderedTransport &&
             !orderedAcquireRecoveryActive &&
-            presentationFeedback.fixedRefreshPacingEligible() &&
             adaptiveTargetMatchesRefresh(
-                profile.target_fps, gamescopeRefreshHz
+                profile.target_fps, displayRefreshHz
             );
-    }
-
-    /// Fixed Smooth Cadence lets ordered FIFO pace a full multiplier instead
-    /// of sleeping in the application's present call, including when
-    /// Gamescope requests VRR. Explicit caps and recovery retain their
-    /// existing output budget; the caller also verifies that the private
-    /// output pool can deliver the selected multiplier.
-    [[nodiscard]] inline bool fixedSmoothCadenceFifoEligible(
-            const ls::GameConf& profile,
-            const bool privateOrderedTransport,
-            const bool orderedAcquireRecoveryActive,
-            const std::optional<uint32_t> gamescopeRefreshHz) {
-        return !profile.adaptive &&
-            profile.adaptive_stable_cadence &&
-            profile.base_fps_cap == 0 &&
-            !profile.dynamic_cadence_recovery &&
-            profile.multiplier >= 2 &&
-            effectiveFrameGenerationEnabled(profile, gamescopeRefreshHz) &&
-            privateOrderedTransport &&
-            !orderedAcquireRecoveryActive &&
-            gamescopeRefreshHz.has_value() && *gamescopeRefreshHz > 0;
-    }
-
-    /// A compositor presentation update resets pacing only when it changes
-    /// Steady Adaptive's fixed-refresh cap eligibility. Eligible Steady or
-    /// Fractional FIFO handoffs and Fixed Smooth Cadence retain their owner.
-    [[nodiscard]] inline bool gamescopePresentationPacingOwnerChanged(
-            const ls::GameConf& profile,
-            const bool privateOrderedTransport,
-            const bool orderedAcquireRecoveryActive,
-            const std::optional<uint32_t> gamescopeRefreshHz,
-            const AdaptiveSchedulerSnapshot& scheduler,
-            const std::optional<size_t> activeGenerationLimit,
-            const GamescopePresentationFeedback& previous,
-            const GamescopePresentationFeedback& current) {
-        if (smoothCadencePacerHandoffGenerationLimit(
-                    profile, privateOrderedTransport,
-                    orderedAcquireRecoveryActive, gamescopeRefreshHz,
-                    scheduler, current, activeGenerationLimit))
-            return false;
-        return smoothCadenceBaseCapEligible(
-                    profile, privateOrderedTransport,
-                    orderedAcquireRecoveryActive, gamescopeRefreshHz,
-                    previous) !=
-                smoothCadenceBaseCapEligible(
-                    profile, privateOrderedTransport,
-                    orderedAcquireRecoveryActive, gamescopeRefreshHz,
-                    current);
-    }
-
-    /// An explicit Steam VRR preference change permits a fresh higher-load
-    /// trial. Active feedback alone can flap under overlays; initial/missing
-    /// feedback and incapable connectors cannot invalidate workload evidence.
-    [[nodiscard]] inline bool gamescopeHigherLoadRetryChanged(
-            const ls::GameConf& profile, const bool privateOrderedTransport,
-            const bool orderedAcquireRecoveryActive,
-            const std::optional<uint32_t> gamescopeRefreshHz,
-            const GamescopePresentationFeedback& previous,
-            const GamescopePresentationFeedback& current) {
-        return profile.adaptive && privateOrderedTransport &&
-            !orderedAcquireRecoveryActive &&
-            effectiveFrameGenerationEnabled(profile, gamescopeRefreshHz) &&
-            previous.vrrEnabled.has_value() && current.vrrEnabled.has_value() &&
-            previous.vrrEnabled != current.vrrEnabled &&
-            previous.vrrCapable != false && current.vrrCapable != false;
     }
 
     /// Only Fractional Automatic can release the generated presentation ceiling.
@@ -705,13 +509,10 @@ namespace fgvk::layer {
         );
     }
 
-    /// Adaptive owns the resolved applied output target. Fixed + Dynamic Cadence
-    /// Recovery instead follows a confirmed Gamescope refresh rate and treats
-    /// the selected Fixed multiplier as a ceiling. Without that external
-    /// signal, Fixed remains exact rather than borrowing a hidden target.
+    /// Adaptive owns the resolved applied output target. Fixed keeps the
+    /// selected multiplier exact rather than borrowing a hidden target.
     [[nodiscard]] inline std::optional<GenerationSchedulerPolicy>
-    generationSchedulerPolicy(const ls::GameConf& profile,
-            const std::optional<uint32_t> gamescopeRefreshHz) {
+    generationSchedulerPolicy(const ls::GameConf& profile) {
         if (profile.adaptive) {
             return GenerationSchedulerPolicy{
                 .targetFps = profile.target_fps,
@@ -726,25 +527,7 @@ namespace fgvk::layer {
                     profile.dynamic_cadence_probe_interval_seconds,
             };
         }
-        if (!dynamicCadenceRecoveryEnabled(profile) ||
-                !gamescopeRefreshHz ||
-                *gamescopeRefreshHz < ls::GameConfLimits::minimumTargetFps ||
-                *gamescopeRefreshHz > ls::GameConfLimits::maximumTargetFps ||
-                profile.multiplier <
-                    ls::GameConfLimits::minimumAdaptiveMaxMultiplier ||
-                profile.multiplier >
-                    ls::GameConfLimits::maximumAdaptiveMaxMultiplier) {
-            return std::nullopt;
-        }
-        return GenerationSchedulerPolicy{
-            .targetFps = *gamescopeRefreshHz,
-            .maximumMultiplier = profile.multiplier,
-            .stableCadence = false,
-            .nearTargetNativePreference = false,
-            .dynamicCadenceRecovery = true,
-            .dynamicCadenceProbeIntervalSeconds =
-                profile.dynamic_cadence_probe_interval_seconds,
-        };
+        return std::nullopt;
     }
 
     struct GamescopeBridgeOutputPolicy {
@@ -761,14 +544,14 @@ namespace fgvk::layer {
             const ls::GameConf& profile, const std::optional<uint32_t> refreshHz,
             const AdaptiveSchedulerSnapshot& scheduler = {},
             const double gpuHeadroomCap = 0.0) {
-        double baseFpsCap = effectiveBaseFpsCap(profile, refreshHz);
+        double baseFpsCap = effectiveBaseFpsCap(profile);
         if (gpuHeadroomCap > 0.0)
             baseFpsCap = baseFpsCap > 0.0 ? std::min(baseFpsCap, gpuHeadroomCap) : gpuHeadroomCap;
         const bool nativeAutomatic = fractionalNativePresentationEligible(profile) &&
             scheduler.phase == AdaptiveSchedulerPhase::NearTargetNative &&
             scheduler.generationLimit == 0;
         const bool generatedTimeline =
-            effectiveFrameGenerationEnabled(profile, refreshHz) && !nativeAutomatic;
+            effectiveFrameGenerationEnabled(profile) && !nativeAutomatic;
         double outputFps = static_cast<double>(refreshHz.value_or(0));
         if (generatedTimeline) {
             if (profile.adaptive)
@@ -899,19 +682,16 @@ namespace fgvk::layer {
             next.target_fps, applied.adaptive,
             applied.adaptive_target_refresh_rate, displayRefreshHz
         );
-        const bool refreshRateThresholdChanged =
-            current.frame_generation_refresh_threshold !=
-                applied.frame_generation_refresh_threshold;
         const bool generationModeChanged = current.adaptive != applied.adaptive;
         const bool fixedMultiplierChanged =
             current.multiplier != applied.multiplier &&
             (!current.adaptive || !applied.adaptive);
         const bool baseFpsCapChanged =
-            effectiveBaseFpsCap(current, displayRefreshHz) !=
-                effectiveBaseFpsCap(applied, displayRefreshHz);
+            effectiveBaseFpsCap(current) !=
+                effectiveBaseFpsCap(applied);
         const bool gpuHeadroomChanged = current.gpu_headroom_percent != applied.gpu_headroom_percent &&
-            (effectiveFrameGenerationEnabled(current, displayRefreshHz) ||
-             effectiveFrameGenerationEnabled(applied, displayRefreshHz));
+            (effectiveFrameGenerationEnabled(current) ||
+             effectiveFrameGenerationEnabled(applied));
         const bool dynamicCadenceProbeIntervalChanged =
             current.dynamic_cadence_probe_interval_seconds !=
                 applied.dynamic_cadence_probe_interval_seconds &&
@@ -923,18 +703,17 @@ namespace fgvk::layer {
             current.adaptive_stable_cadence !=
                 applied.adaptive_stable_cadence ||
             (current.adaptive && applied.adaptive && (
-                // Equal numeric caps can still change scheduler and VRR
-                // ownership between Fractional and Steady.
+                // Equal numeric caps can still change scheduler ownership
+                // between Fractional and Steady.
                 (current.adaptive_auto_base_fps_cap !=
                     applied.adaptive_auto_base_fps_cap &&
-                 (effectiveFrameGenerationEnabled(current, displayRefreshHz) ||
-                  effectiveFrameGenerationEnabled(applied, displayRefreshHz))) ||
+                 (effectiveFrameGenerationEnabled(current) ||
+                  effectiveFrameGenerationEnabled(applied))) ||
                 current.target_fps != applied.target_fps ||
                 current.adaptive_max_multiplier !=
                     applied.adaptive_max_multiplier
             ));
         const bool liveChange = frameGenerationChanged ||
-            refreshRateThresholdChanged ||
                 generationPolicyChanged ||
                 generationModeChanged || fixedMultiplierChanged ||
                 baseFpsCapChanged || gpuHeadroomChanged || dynamicCadenceProbeIntervalChanged ||
@@ -952,8 +731,6 @@ namespace fgvk::layer {
             .decision = {
                 .action = action,
                 .frameGenerationChanged = frameGenerationChanged,
-                .refreshRateThresholdChanged =
-                    refreshRateThresholdChanged,
                 .generationPolicyChanged = generationPolicyChanged,
                 .generationModeChanged = generationModeChanged,
                 .fixedMultiplierChanged = fixedMultiplierChanged,

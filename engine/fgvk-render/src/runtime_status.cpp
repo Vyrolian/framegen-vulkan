@@ -253,14 +253,10 @@ namespace {
         else
             stream << "null";
         stream << ",\"multiplier\":" << profile.multiplier
-               << ",\"gamescope_vrr_mode\":"
-               << jsonString(ls::gamescopeVrrModeName(profile.gamescope_vrr_mode))
                << ",\"frame_generation_provisioned\":"
                << profile.frame_generation_provisioned
                << ",\"frame_generation_enabled\":"
                << profile.frame_generation_enabled
-               << ",\"frame_generation_refresh_threshold\":"
-               << profile.frame_generation_refresh_threshold
                << ",\"gpu_headroom_percent\":" << profile.gpu_headroom_percent
                << ",\"base_fps_cap\":" << profile.base_fps_cap
                << ",\"adaptive\":" << profile.adaptive

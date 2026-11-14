@@ -18,10 +18,9 @@ namespace fgvk::layer {
     /// and outputs are spaced on the CPU. FIFO_LATEST_READY latches the newest ready
     /// image at each refresh and drops older ones, like MAILBOX with ready-time selection.
     [[nodiscard]] constexpr bool directUnthrottledPresentation(
-            const bool gamescopeDetected, const VkPresentModeKHR mode) noexcept {
-        return !gamescopeDetected &&
-            (mode == VK_PRESENT_MODE_MAILBOX_KHR || mode == VK_PRESENT_MODE_IMMEDIATE_KHR ||
-             mode == VK_PRESENT_MODE_FIFO_LATEST_READY_KHR);
+            const VkPresentModeKHR mode) noexcept {
+        return mode == VK_PRESENT_MODE_MAILBOX_KHR || mode == VK_PRESENT_MODE_IMMEDIATE_KHR ||
+            mode == VK_PRESENT_MODE_FIFO_LATEST_READY_KHR;
     }
 
     /// The application's VK_EXT_swapchain_maintenance1 present-mode group (the modes
@@ -31,8 +30,7 @@ namespace fgvk::layer {
         bool fifo{false};
     };
 
-    [[nodiscard]] inline PresentModeGroup presentModeGroup(const void* createChain,
-            const bool gamescopeDetected) noexcept {
+    [[nodiscard]] inline PresentModeGroup presentModeGroup(const void* createChain) noexcept {
         PresentModeGroup group{};
         for (const auto* node = static_cast<const VkBaseInStructure*>(createChain); node; node = node->pNext) {
             if (node->sType != VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_MODES_CREATE_INFO_EXT)
@@ -40,7 +38,7 @@ namespace fgvk::layer {
             const auto* modes = reinterpret_cast<const VkSwapchainPresentModesCreateInfoEXT*>(node);
             for (uint32_t i = 0; modes->pPresentModes && i < modes->presentModeCount; ++i) {
                 const auto mode = modes->pPresentModes[i];
-                group.unthrottled |= directUnthrottledPresentation(gamescopeDetected, mode);
+                group.unthrottled |= directUnthrottledPresentation(mode);
                 group.fifo |= mode == VK_PRESENT_MODE_FIFO_KHR || mode == VK_PRESENT_MODE_FIFO_RELAXED_KHR;
             }
         }
@@ -59,17 +57,16 @@ namespace fgvk::layer {
     /// namespace. Source-cap and ready-output policies decide whether existing
     /// caller timing permits that spacing.
     [[nodiscard]] constexpr bool nativeFifoOutputPacingEligible(
-            const bool gamescopeDetected, const VkPresentModeKHR mode) noexcept {
-        return !gamescopeDetected && mode == VK_PRESENT_MODE_FIFO_KHR;
+            const VkPresentModeKHR mode) noexcept {
+        return mode == VK_PRESENT_MODE_FIFO_KHR;
     }
 
     /// One native presentation queue for the complete context lifetime.
     /// Clock changes, incomplete batches and live FG changes must not
     /// split successive present requests between application/private queues.
     [[nodiscard]] constexpr bool nativePrivatePresentQueueEligible(
-            const bool gamescopeDetected,
             const bool privateQueueAvailable) noexcept {
-        return !gamescopeDetected && privateQueueAvailable;
+        return privateQueueAvailable;
     }
 
     [[nodiscard]] inline bool shouldRetrySwapchainWithApplicationMinimum(

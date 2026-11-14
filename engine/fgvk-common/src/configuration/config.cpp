@@ -45,7 +45,6 @@ multiplier = 4
 frame_generation_provisioned = true
 frame_generation_enabled = true
 swapchain_image_count_compatibility = false
-frame_generation_refresh_threshold = 0
 base_fps_cap = 0
 gpu_headroom_percent = 0
 adaptive = false
@@ -55,7 +54,6 @@ target_fps = 120
 adaptive_target_refresh_rate = false
 adaptive_max_multiplier = 3
 adaptive_stable_cadence = true
-gamescope_vrr_mode = 'follow-steam'
 dynamic_cadence_recovery = false
 dynamic_cadence_probe_interval_seconds = 2
 ultra_performance = false
@@ -92,8 +90,6 @@ ConfigFile::ConfigFile() {
         .frame_generation_enabled = GameConfDefaults::frameGenerationEnabled,
         .swapchain_image_count_compatibility =
             GameConfDefaults::swapchainImageCountCompatibility,
-        .frame_generation_refresh_threshold =
-            GameConfDefaults::frameGenerationRefreshThreshold,
         .base_fps_cap = GameConfDefaults::baseFpsCap,
         .gpu_headroom_percent = GameConfDefaults::gpuHeadroomPercent,
         .adaptive = GameConfDefaults::adaptive,
@@ -104,7 +100,6 @@ ConfigFile::ConfigFile() {
         .target_fps = GameConfDefaults::targetFps,
         .adaptive_max_multiplier = GameConfDefaults::adaptiveMaxMultiplier,
         .adaptive_stable_cadence = GameConfDefaults::adaptiveStableCadence,
-        .gamescope_vrr_mode = GameConfDefaults::gamescopeVrrMode,
         .dynamic_cadence_recovery = GameConfDefaults::dynamicCadenceRecovery,
         .dynamic_cadence_probe_interval_seconds =
             GameConfDefaults::dynamicCadenceProbeIntervalSeconds,
@@ -158,11 +153,6 @@ namespace {
             return Pacing::None;
         throw ls::error("unknown pacing method: " + str);
     }
-    GamescopeVrrMode gamescopeVrrModeFromString(const std::string& value) {
-        if (const auto mode = gamescopeVrrModeFromName(value))
-            return *mode;
-        throw ls::error("unknown Gamescope VRR mode: " + value);
-    }
     AdaptiveFractionalRealFramePriority
     adaptiveFractionalRealFramePriorityFromString(const std::string& value) {
         if (const auto priority =
@@ -196,18 +186,6 @@ namespace {
                     GameConfLimits::maximumBaseFpsCap
                 )
             );
-        if (conf.frame_generation_refresh_threshold >
-                GameConfLimits::maximumFrameGenerationRefreshThreshold) {
-            throw ls::error(
-                "frame_generation_refresh_threshold must be " + std::to_string(
-                    GameConfLimits::minimumFrameGenerationRefreshThreshold
-                ) + " or between " + std::to_string(
-                    GameConfLimits::minimumFrameGenerationRefreshThreshold + 1
-                ) + " and " + std::to_string(
-                    GameConfLimits::maximumFrameGenerationRefreshThreshold
-                )
-            );
-        }
         if (conf.target_fps < GameConfLimits::minimumTargetFps ||
                 conf.target_fps > GameConfLimits::maximumTargetFps) {
             throw ls::error(
@@ -291,10 +269,6 @@ namespace {
                 tbl["swapchain_image_count_compatibility"].value_or(
                     GameConfDefaults::swapchainImageCountCompatibility
                 ),
-            .frame_generation_refresh_threshold =
-                tbl["frame_generation_refresh_threshold"].value_or(
-                    GameConfDefaults::frameGenerationRefreshThreshold
-                ),
             .base_fps_cap = tbl["base_fps_cap"].value_or(GameConfDefaults::baseFpsCap),
             .gpu_headroom_percent = headroom,
             .adaptive = tbl["adaptive"].value_or(GameConfDefaults::adaptive),
@@ -321,11 +295,6 @@ namespace {
             ),
             .adaptive_stable_cadence = tbl["adaptive_stable_cadence"].value_or(
                 GameConfDefaults::adaptiveStableCadence
-            ),
-            .gamescope_vrr_mode = gamescopeVrrModeFromString(
-                tbl["gamescope_vrr_mode"].value_or<std::string>(
-                    gamescopeVrrModeName(GameConfDefaults::gamescopeVrrMode)
-                )
             ),
             .dynamic_cadence_recovery = tbl["dynamic_cadence_recovery"].value_or(
                 GameConfDefaults::dynamicCadenceRecovery
@@ -381,10 +350,6 @@ namespace {
             "swapchain_image_count_compatibility",
             conf.swapchain_image_count_compatibility
         );
-        profile.insert(
-            "frame_generation_refresh_threshold",
-            static_cast<int64_t>(conf.frame_generation_refresh_threshold)
-        );
         profile.insert("base_fps_cap", static_cast<int64_t>(conf.base_fps_cap));
         profile.insert("gpu_headroom_percent", static_cast<int64_t>(conf.gpu_headroom_percent));
         profile.insert("adaptive", conf.adaptive);
@@ -401,7 +366,6 @@ namespace {
         profile.insert("adaptive_target_refresh_rate", conf.adaptive_target_refresh_rate);
         profile.insert("adaptive_max_multiplier", static_cast<int64_t>(conf.adaptive_max_multiplier));
         profile.insert("adaptive_stable_cadence", conf.adaptive_stable_cadence);
-        profile.insert("gamescope_vrr_mode", gamescopeVrrModeName(conf.gamescope_vrr_mode));
         profile.insert("dynamic_cadence_recovery", conf.dynamic_cadence_recovery);
         profile.insert(
             "dynamic_cadence_probe_interval_seconds",
@@ -448,8 +412,6 @@ namespace {
             .frame_generation_enabled = GameConfDefaults::frameGenerationEnabled,
             .swapchain_image_count_compatibility =
                 GameConfDefaults::swapchainImageCountCompatibility,
-            .frame_generation_refresh_threshold =
-                GameConfDefaults::frameGenerationRefreshThreshold,
             .base_fps_cap = GameConfDefaults::baseFpsCap,
             .gpu_headroom_percent = GameConfDefaults::gpuHeadroomPercent,
             .adaptive = GameConfDefaults::adaptive,
@@ -460,7 +422,6 @@ namespace {
             .target_fps = GameConfDefaults::targetFps,
             .adaptive_max_multiplier = GameConfDefaults::adaptiveMaxMultiplier,
             .adaptive_stable_cadence = GameConfDefaults::adaptiveStableCadence,
-            .gamescope_vrr_mode = GameConfDefaults::gamescopeVrrMode,
             .dynamic_cadence_recovery = GameConfDefaults::dynamicCadenceRecovery,
             .dynamic_cadence_probe_interval_seconds =
                 GameConfDefaults::dynamicCadenceProbeIntervalSeconds,
@@ -488,13 +449,6 @@ namespace {
         if (swapchain_image_count_compatibility) {
             conf.swapchain_image_count_compatibility =
                 std::string(swapchain_image_count_compatibility) != "0";
-        }
-        const char* frame_generation_refresh_threshold =
-            std::getenv("FGVK_FRAME_GENERATION_REFRESH_THRESHOLD");
-        if (frame_generation_refresh_threshold) {
-            conf.frame_generation_refresh_threshold = static_cast<uint32_t>(
-                std::stoul(frame_generation_refresh_threshold)
-            );
         }
         if (const char* headroom = std::getenv("FGVK_GPU_HEADROOM_PERCENT")) {
             const std::string_view input(headroom);
@@ -534,13 +488,6 @@ namespace {
         const char* adaptive_stable_cadence = std::getenv("FGVK_ADAPTIVE_STABLE_CADENCE");
         if (adaptive_stable_cadence)
             conf.adaptive_stable_cadence = std::string(adaptive_stable_cadence) != "0";
-        const char* gamescope_vrr_mode = std::getenv("FGVK_GAMESCOPE_VRR_MODE");
-        if (gamescope_vrr_mode) {
-            const auto mode = gamescopeVrrModeFromName(gamescope_vrr_mode);
-            if (!mode) throw ls::error("unknown Gamescope VRR mode: " +
-                std::string(gamescope_vrr_mode));
-            conf.gamescope_vrr_mode = *mode;
-        }
         const char* dynamic_cadence_recovery =
             std::getenv("FGVK_DYNAMIC_CADENCE_RECOVERY");
         if (dynamic_cadence_recovery) {

@@ -98,15 +98,15 @@ if(BUILD_TESTING)
     add_test(NAME backend-hot-path
         COMMAND fgvk-backend-hot-path-tests)
 
-    add_executable(fgvk-backend-ls1-spirv-patch-tests
+    add_executable(fgvk-backend-spirv-patch-tests
         "tests/ls1_spirv_patch_tests.cpp"
         "src/extraction/spirv_image_format.cpp")
-    target_include_directories(fgvk-backend-ls1-spirv-patch-tests
+    target_include_directories(fgvk-backend-spirv-patch-tests
         PRIVATE src)
-    target_link_libraries(fgvk-backend-ls1-spirv-patch-tests
+    target_link_libraries(fgvk-backend-spirv-patch-tests
         PRIVATE fgvk-common)
-    add_test(NAME backend-ls1-spirv-patch
-        COMMAND fgvk-backend-ls1-spirv-patch-tests)
+    add_test(NAME backend-spirv-patch
+        COMMAND fgvk-backend-spirv-patch-tests)
 
     add_executable(fgvk-backend-dll-inspection-tests
         "tests/dll_inspection_tests.cpp")

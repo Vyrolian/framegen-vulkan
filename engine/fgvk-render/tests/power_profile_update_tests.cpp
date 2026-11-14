@@ -71,7 +71,6 @@ int main() {
     docked.target_fps = 144;
     docked.base_fps_cap = 90;
     docked.adaptive_stable_cadence = true;
-    docked.gamescope_vrr_mode = ls::GamescopeVrrMode::On;
     base.power_profiles = {handheld, docked};
     ls::ConfigFile file;
     file.profiles() = {base};
@@ -108,7 +107,6 @@ int main() {
             plan.appliedProfile.target_fps == 144 &&
             effectiveBaseFpsCap(plan.appliedProfile) == 90 &&
             plan.appliedProfile.adaptive_stable_cadence &&
-            plan.appliedProfile.gamescope_vrr_mode == ls::GamescopeVrrMode::On &&
             !plan.decision.processRestartDeferred &&
             !plan.decision.swapchainRecreationDeferred,
         "An AC switch with the same profile name must use the normal live-policy planner");

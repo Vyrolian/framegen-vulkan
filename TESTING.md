@@ -1,6 +1,6 @@
 # Testing framegen-vulkan
 
-framegen-vulkan separates deterministic product checks from real-hardware evidence. Portable tests are required for every change, but they do not prove Vulkan presentation, image quality, Gamescope behavior, or game compatibility.
+framegen-vulkan separates deterministic product checks from real-hardware evidence. Portable tests are required for every change, but they do not prove Vulkan presentation, image quality, or game compatibility.
 
 ## Ownership
 
@@ -12,7 +12,7 @@ framegen-vulkan separates deterministic product checks from real-hardware eviden
 
 Portable framegen-vulkan tests must not require fgvk Gym, `Lossless.dll`, an AMD GPU, Gamescope, or a compositor. fgvk Gym consumes framegen-vulkan's public executable and diagnostic boundaries; it must not copy production C++, shaders, thresholds, or configuration owners.
 
-[Ongoing maintenance](MAINTENANCE.md) maps upstream dependencies to their owners, update triggers and validation obligations. Record exact runtime/build identities with hardware evidence and keep them separate from build pins and source reviews. The [Gamescope compatibility record](engine/gamescope-compatibility.json) tracks supported protocol versions and scoped review/validation entries; an empty hardware list means no qualifying evidence has been entered there.
+[Ongoing maintenance](MAINTENANCE.md) maps upstream dependencies to their owners, update triggers and validation obligations. Record exact runtime/build identities with hardware evidence and keep them separate from build pins and source reviews.
 
 ## Validation cycles
 
@@ -42,8 +42,6 @@ The owning component tests remain authoritative for their detailed invariants.
 
 `steamos-build-tools` exercises the prerequisite installer with temporary host files and stubbed commands. It covers the nonzero `disabled` status from SteamOS, preservation/restoration of the initial read-only state, transaction/restoration failures, and rejection of invalid status results before mutation. It does not install system packages or change the real root filesystem.
 
-`gamescope-compatibility-record` runs in Renderer CTest and the portable policy suite. It checks the recorded protocol versions against the adapter's interface declarations and negotiation cap, and checks immutable provenance against the third-party notice. Run it directly with `just check-gamescope-compatibility`. Its optional `--upstream-protocol` input also compares the recorded XML hash and every declared request/event name, opcode order and wire signature. This gate uses no network or compositor; existing bridge fixtures and actual Gamescope qualification remain separate evidence.
-
 The `fgvk` settings-window crate tests (`just test-fgvk-ui`) cover profile and games-list parsing, the process picker, and argument routing. Routing tests check that no argument opens the window, that every argument reaches the launch helper unchanged, and that a missing helper exits with status 127. They do not open the window or start a game.
 
 When testing the optional forced-FP16 native build, configure `BUILD_TESTING=ON` and `FGVK_EXPERIMENTAL_LSFG_FP16=ON` with the pinned sources described in [Building from source](engine/docs/BUILDING-FROM-SOURCE.md#experimental-forced-lsfg-fp16). Its additional `backend-experimental-lsfg-fp16` test uses original synthetic SPIR-V to check half arithmetic, preserved bindings, FP32 sampling and bit-pattern calculations through memory stores/loads, byte-identical FP32 image preparation/reconstruction, native FP16 priority, FP16-off isolation, selected modes, cache replacement, and validation failures. Run ordinary CTest as well to retain strict-build coverage. GPU quality and synchronization evidence must distinguish forced conversion from native FP16, preserve failing image-quality results, and state which actual DLL branches were available. Add warmed throughput evidence when precision protection changes the amount of half arithmetic; stage counts alone do not establish performance.
@@ -62,7 +60,7 @@ just test
 just test-engine-sanitized
 ```
 
-The focused Renderer policy script compiles Vulkan-facing policies and the optional Gamescope surface adapter against a local client fixture, so it needs Vulkan, X11, and XCB headers even though it does not need a Vulkan device, compositor, or Wayland development package. The full Renderer suite additionally needs the Vulkan loader:
+The focused Renderer policy script compiles Vulkan-facing policies, so it needs Vulkan, X11, and XCB headers even though it does not need a Vulkan device, compositor, or Wayland development package. The full Renderer suite additionally needs the Vulkan loader:
 
 ```bash
 cmake -S engine -B engine/build/local -DBUILD_TESTING=ON
@@ -74,7 +72,7 @@ Shader changes must regenerate their adjacent embedded payloads with the owning 
 
 AC/battery tests join parsing/serialization, matching, cached system-supply detection, and the production transition planner in `watched-configuration`, `power-source-monitor`, and `power-profile-update`. Held reads and FIFO fixtures cover bounded startup fallback, stalled/failed reads, idle/re-enabled workers, teardown, and configuration edits without queued retries or supply I/O on presentation. Transition cases include same-name power switches, inactive edits, mixed live/private/restart changes, pending extents, reversion, and absent startup resources.  `contentPowerReload.test.tsx` joins real session/configuration/save-queue hooks for manual and automatic switches and failed-write reconciliation; virtual build metadata allows clean-checkout tests. Real unplug/replug, Flatpak sysfs visibility, and game transitions require hardware evidence.
 
-Display-refresh matching is covered by `profile-update` and native round trips. Cases retain disabled defaults, 10–1000 FPS bounds, missing-feedback fallback, saved manual targets/caps, Fixed isolation, target-dependent caps, private-resource growth, superseding live edits, and older status records. Refresh guards cover Steady/all Fractional priorities, VRR/stale state, pause/resume, explicit Off, unavailable provisioning, and cancellation of pending pacing delays. Gamescope refresh changes and real display hotplug require game evidence; non-Gamescope sessions keep the fallback.
+Display-refresh matching is covered by `profile-update` and native round trips. Cases retain disabled defaults, 10–1000 FPS bounds, missing-feedback fallback, saved manual targets/caps, Fixed isolation, target-dependent caps, private-resource growth, superseding live edits, and older status records. Real display hotplug requires game evidence.
 
 Custom shader coverage uses `standalone-launch-configuration`. Synthetic files exercise discovery/import, aliases, paths, option merging, legacy-chain preservation, mixed ordering, profile copies, and invalid input. Deletion removes selected custom registrations while protecting bundled/reserved effects and source files, retaining shared power settings, draining saves, and rolling back sidecar failures. Actual compilation/pixels, Flatpak access, and game compatibility need runtime qualification.
 
@@ -96,7 +94,7 @@ Frame Generation diagnostic profiling adds `cli-profile-timing-contract` coverag
 
 `command-buffer-submit-storage` checks ordered multi-command submissions, binary/timeline semaphore composition, inline and overflow storage, queue selection, completion-fence placement and propagated driver failures without retries. It also runs in the portable sanitizer lane. Backend submission changes additionally need Gym synchronization validation, temporal sequences with history-only steps and changing output counts, independent output repeatability and paired throughput evidence. Portable marshalling tests alone do not establish GPU execution order or displayed pacing.
 
-Long-session timing coverage in `presentation-policy` advances the production source pacer and ordered timeline through two simulated hours at 45, 60, 90, and 120 FPS with a large clock origin, checks bounded deadlines and rounding, and confirms late-frame rebasing. `gamescope-scaling-surface` covers bounded application acquire/present CPU windows, caller and swapchain isolation, long gaps, status classification, and exactly-once acquisition forwarding with preserved results and output indices. The diagnostics collector tests retain the new boundaries in the applicable focused presets. These tests do not reproduce an hour-long game's asynchronous GPU, driver, compositor, resource growth, or thermal behavior; qualify those on hardware.
+Long-session timing coverage in `presentation-policy` advances the production source pacer and ordered timeline through two simulated hours at 45, 60, 90, and 120 FPS with a large clock origin, checks bounded deadlines and rounding, and confirms late-frame rebasing. The diagnostics collector tests retain the new boundaries in the applicable focused presets. These tests do not reproduce an hour-long game's asynchronous GPU, driver, compositor, resource growth, or thermal behavior; qualify those on hardware.
 
 `runtime-health` uses temporary proc/sysfs trees for exact Vulkan DRM-node selection, parsing/units/valid zeros, unknown or malformed measurements, bounded reads/FDs, special-file refusal, ambiguous sensors, privacy, and separate internal/exported/imported accounting. Worker tests cover baseline sampling, output failure recovery, retained accounting lifetime, and idle-wait cancellation. Collector fixtures retain health/unavailable records and bounded first/latest context across long tails, process/layer isolation, eviction, legacy prefixes, and deduplication. Steam Deck field availability, Flatpak permissions, sampling overhead, and slowdown causes require `runtime-overhead` and sustained game evidence.
 
@@ -116,7 +114,7 @@ The report's repeated `--presentation-window START:END` comparisons additionally
 
 That entry point also checks `analyze-frame-content.py` binary identity, partial tails, schema/size refusal, and, when the offline optional NumPy dependency is available, translated-texture midpoint estimates, exact duplicate detection and refusal to bridge missing source history. The `FrameContentCapture` producer additionally requires full Renderer CTest and portable sanitizer checks, plus an actual game capture to qualify GPU readback, image layouts, trigger timing, overhead and temporal content. Passing report tests cannot prove frame-generation correctness. The producer records only through existing copy commands and reads after the existing render fence; default operation must allocate no capture GPU resources.
 
-`color-pipeline` verifies SDR format precision and passthrough for non-sRGB colour spaces. The `gamescope-feedback-reader` fixture verifies that no HDR capability queries are made while output geometry, refresh, focus and VRR monitoring remain active. Real hardware is required to qualify display output and cadence.
+`color-pipeline` verifies SDR format precision and passthrough for non-sRGB colour spaces. Real hardware is required to qualify display output and cadence.
 
 `external-fd-ownership` checks transfer-only images without views and preserves export/cleanup and views for other usages. Its recorded-copy fixture checks that external uploads discard old contents and release after the copy, readback acquires before the copy, and internal images retain local ownership. It does not simulate a driver or prove cross-instance visibility; shared-image changes also need Gym synchronization, temporal reuse and output-repeatability evidence. `descriptor-pool-capacity` covers sparse/empty layouts, exact capacity, destruction and creation failure. Both run in the portable sanitizer lane.
 
@@ -165,10 +163,10 @@ Retained evidence may be reused when the exact Renderer/package identity and sou
 | Present/frame tails, process CPU/RSS, Vulkan allocations, or “feels heavy” reports | `runtime-overhead` |
 | Barriers, image transitions, command recording, or exported-resource synchronization | `sync-validation` |
 | Initialization or unexplained pixel instability | `repeatability` |
-| Fixed/Steady/Fractional cadence, Gamescope VRR feedback, pacing-owner transitions, or completion timing | `pacing`; add `recovery` when recovery, stalls, or swapchain lifetime changed |
+| Fixed/Steady/Fractional cadence, pacing-owner transitions, or completion timing | `pacing`; add `recovery` when recovery, stalls, or swapchain lifetime changed |
 | Recovery, stalls, acquire pressure, or swapchain lifetime | `recovery`; add `vulkan` if construction changed |
 | External full-cover overlay pause/throttle or workload-proven source-return recovery | `external-recovery` |
-| Native compositor, WSI, cross-layer live transition, or resolution lifecycle | `gamescope-e2e` |
+| Native compositor, WSI, cross-layer live transition, or resolution lifecycle | `direct-desktop-e2e` |
 | Native direct Frame Generation or Steam Desktop Proton Frame Generation and extent-override fallback | `direct-desktop-e2e` |
 | Repeated private-resource memory plateau or sustained thermal/performance health | `sustained-health` |
 | D3D11/DXVK or D3D12/VKD3D-Proton translation | `proton-e2e` |

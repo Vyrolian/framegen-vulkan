@@ -44,10 +44,6 @@ generate-flatpak-runtimes:
 check-flatpak-runtimes:
     python3 scripts/generate-flatpak-runtimes.py --check
 
-# Check Gamescope protocol provenance and supported versions without network access.
-check-gamescope-compatibility:
-    python3 engine/scripts/check-gamescope-compatibility.py
-
 # Generate Flatpak's build-only Vulkan-Headers module from the shared pin.
 generate-flatpak-headers:
     python3 engine/scripts/generate-flatpak-vulkan-headers.py
@@ -152,10 +148,6 @@ test-engine-gym-repeatability *args:
 test-engine-gym-performance *args:
     ./engine/scripts/run-fgvk-gym.sh --suite performance {{args}}
 
-# Measure each production spatial scaler with Vulkan timestamp queries.
-test-engine-gym-spatial-performance *args:
-    ./engine/scripts/run-fgvk-gym.sh --suite spatial-performance {{args}}
-
 # Compare framegen-vulkan-idle and active live presentation overhead on the same workload.
 test-engine-gym-runtime-overhead *args:
     ./engine/scripts/run-fgvk-gym.sh --suite runtime-overhead {{args}}
@@ -164,7 +156,7 @@ test-engine-gym-runtime-overhead *args:
 test-engine-gym-sync-validation *args:
     ./engine/scripts/run-fgvk-gym.sh --suite sync-validation {{args}}
 
-# Exercise Fixed/Steady/Fractional pacing across synthetic Gamescope VRR feedback.
+# Exercise Fixed/Steady/Fractional pacing across synthetic refresh and timing cases.
 test-engine-gym-pacing *args:
     ./engine/scripts/run-fgvk-gym.sh --suite pacing {{args}}
 
@@ -175,10 +167,6 @@ test-engine-gym-recovery *args:
 # Exercise full-cover overlay pause/throttle recovery after workload-proven source return.
 test-engine-gym-external-recovery *args:
     ./engine/scripts/run-fgvk-gym.sh --suite external-recovery {{args}}
-
-# Run the high-cost real Gamescope compositor + WSI + framegen-vulkan end-to-end lane.
-test-engine-gym-gamescope-e2e *args:
-    ./engine/scripts/run-fgvk-gym.sh --suite gamescope-e2e {{args}}
 
 # Run native Vulkan and Steam Runtime/Proton through the combined Renderer outside Gamescope.
 test-engine-gym-direct-desktop-e2e *args:

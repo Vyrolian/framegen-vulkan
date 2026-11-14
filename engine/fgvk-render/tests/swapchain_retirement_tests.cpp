@@ -42,9 +42,6 @@ namespace {
             std::exit(1);
         }
     }
-    uint32_t pendingTimings = 0;
-    uint32_t timingCalls = 0;
-    bool timingQueryFails = false;
     uint32_t submitCalls{};
     uint32_t consumedWaits{};
     uint32_t failSubmit{};
@@ -159,21 +156,6 @@ namespace {
         recordPresentResult(noResults, 0, VK_SUCCESS);
     }
     }
-    VkResult VKAPI_CALL queryTiming(VkDevice, VkSwapchainKHR, uint32_t* count,
-            VkPastPresentationTimingGOOGLE* output) {
-        ++timingCalls;
-        if (timingQueryFails)
-            return VK_ERROR_SURFACE_LOST_KHR;
-        if (!output) {
-            expect(*count == 0, "timing enumeration supplied a stale count");
-            *count = pendingTimings;
-            return VK_SUCCESS;
-        }
-        expect(*count <= pendingTimings && *count <= 128,
-            "feedback drain exceeded available records or bounded storage");
-        pendingTimings -= *count;
-        return pendingTimings ? VK_INCOMPLETE : VK_SUCCESS;
-    }
 }
 
 int main() {
@@ -246,94 +228,6 @@ int main() {
     expect(!selectSwapchainMaintenance1Extension(true, true, false) &&
             !selectSwapchainMaintenance1Extension(false, false, true),
         "maintenance1 was selected without both extension and feature support");
-
-    const VkDeviceCreateInfo untimedDevice{
-        .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
-    };
-    expect(displayTimingControlsOutput(true, true, 120) &&
-            !displayTimingControlsOutput(true, true, 0) &&
-            !displayTimingControlsOutput(false, true, 120) &&
-            !displayTimingControlsOutput(true, false, 120),
-        "legacy timing capability cannot suppress direct pacing without an ordered refresh clock");
-    expect(rendererOwnsDisplayTiming(untimedDevice, true, true) &&
-            !rendererOwnsDisplayTiming(untimedDevice, false, true) &&
-            !rendererOwnsDisplayTiming(untimedDevice, true, false),
-        "WSI timing did not require both runtime eligibility and capability");
-    for (const char* extension : {VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME,
-            "VK_EXT_present_timing"}) {
-        auto appTimedDevice = untimedDevice;
-        appTimedDevice.enabledExtensionCount = 1;
-        appTimedDevice.ppEnabledExtensionNames = &extension;
-        expect(!rendererOwnsDisplayTiming(appTimedDevice, true, true),
-            "framegen-vulkan took an application's timing-feedback namespace");
-    }
-    // A client can serialize source production on its real-frame present ID.
-    // Adding framegen-vulkan's future timestamp then feeds the generated-output lead back
-    // into the next source frame, even though the client owns no timing API.
-    // Extension availability alone does not enable that completion contract.
-    const std::array<const char*, 4> waitExtensions{
-        VK_KHR_SWAPCHAIN_EXTENSION_NAME, VK_KHR_PRESENT_ID_EXTENSION_NAME,
-        VK_KHR_PRESENT_WAIT_EXTENSION_NAME, "VK_KHR_present_wait2",
-    };
-    auto completionPacedDevice = untimedDevice;
-    completionPacedDevice.enabledExtensionCount =
-        static_cast<uint32_t>(waitExtensions.size());
-    completionPacedDevice.ppEnabledExtensionNames = waitExtensions.data();
-    expect(rendererOwnsDisplayTiming(completionPacedDevice, true, true),
-        "present-wait extension names alone disabled framegen-vulkan timing");
-    VkPhysicalDevicePresentWaitFeaturesKHR presentWait{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_FEATURES_KHR,
-        .presentWait = VK_TRUE,
-    };
-    VkPhysicalDeviceTimelineSemaphoreFeatures timeline{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES,
-        .pNext = &presentWait,
-        .timelineSemaphore = VK_TRUE,
-    };
-    const VkPhysicalDeviceFeatures2 deviceFeatures{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
-        .pNext = &timeline,
-    };
-    completionPacedDevice.pNext = &deviceFeatures;
-    expect(!rendererOwnsDisplayTiming(completionPacedDevice, true, true),
-        "WSI timestamps delayed an application's enabled present-wait contract");
-    expect(deviceFeatures.pNext == &timeline && timeline.pNext == &presentWait &&
-            timeline.timelineSemaphore == VK_TRUE &&
-            presentWait.presentWait == VK_TRUE && !presentWait.pNext,
-        "WSI eligibility rewrote the application's feature chain");
-    presentWait.presentWait = VK_FALSE;
-    expect(rendererOwnsDisplayTiming(completionPacedDevice, true, true),
-        "a disabled present-wait feature disabled framegen-vulkan timing");
-#if defined(VK_KHR_present_wait2)
-    VkPhysicalDevicePresentWait2FeaturesKHR presentWait2{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_2_FEATURES_KHR,
-        .presentWait2 = VK_TRUE,
-    };
-    presentWait.pNext = &presentWait2;
-    expect(!rendererOwnsDisplayTiming(completionPacedDevice, true, true),
-        "WSI timestamps delayed an application's enabled present-wait2 contract");
-    expect(presentWait.pNext == &presentWait2 &&
-            presentWait2.presentWait2 == VK_TRUE && !presentWait2.pNext,
-        "WSI eligibility rewrote the application's present-wait2 feature");
-    presentWait2.presentWait2 = VK_FALSE;
-    expect(rendererOwnsDisplayTiming(completionPacedDevice, true, true),
-        "disabled completion features disabled asynchronous WSI timing");
-#endif
-    for (const uint32_t pending : {0U, 1U, 127U, 128U, 10000U}) {
-        pendingTimings = pending;
-        timingCalls = 0;
-        expect(discardOwnedDisplayTiming(queryTiming, VK_NULL_HANDLE,
-                VK_NULL_HANDLE), "bounded timing drain rejected valid feedback");
-        expect(timingCalls == (pending ? 2U : 1U) &&
-                pendingTimings == (pending > 128 ? pending - 128 : 0),
-            "timing drain looped, over-erased or left available bounded feedback");
-    }
-    timingCalls = 0;
-    timingQueryFails = true;
-    expect(!discardOwnedDisplayTiming(nullptr, VK_NULL_HANDLE, VK_NULL_HANDLE) &&
-            !discardOwnedDisplayTiming(queryTiming, VK_NULL_HANDLE, VK_NULL_HANDLE) &&
-            timingCalls == 1,
-        "failed timing feedback did not stop bounded ownership");
 
     const std::array<const char*, 1> swapchainExtensions{
         VK_KHR_SWAPCHAIN_EXTENSION_NAME,

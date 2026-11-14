@@ -780,49 +780,6 @@ void ApplicationPresentScope::deferredJoinFinished() {
         this->joinDuration = Clock::now() - this->joinStarted;
 }
 
-void logBridgeTiming(const uint64_t bridgeId, const VkSwapchainKHR swapchain,
-        const BridgePresentTiming::Window& window,
-        const size_t outstanding, const uint64_t refreshCycleNs,
-        const uint32_t timingVersion, const uint64_t refreshIntervalNs) {
-    std::ostringstream line;
-    line << "framegen-vulkan: present diagnostics: operation=gamescope-bridge-timing"
-         << " bridge=" << bridgeId << " pid=" << getpid()
-         << " swapchain=" << swapchain
-         << " timestamp_source=compositor-reported"
-         << " timing_protocol=" << timingVersion << " timestamp_kind=prediction"
-         << " requests=" << window.requests << " feedbacks=" << window.feedbacks
-         << " outstanding=" << outstanding << " unmatched=" << window.unmatched
-         << " overwritten=" << window.overwritten << " discontinuities=" << window.discontinuities
-         << " nonconsecutive_ids=" << window.nonconsecutiveIds
-         << " repeated_timestamps=" << window.repeatedTimestamps
-         << " backwards_timestamps=" << window.backwardsTimestamps
-         << " late_latch_feedbacks=" << window.lateLatchFeedbacks
-         << " dropped=" << window.dropped
-         << " invalid_stages=" << window.invalidStages
-         << " unavailable_stages=" << window.unavailableStages
-         << " queue_ready_samples=" << window.queueReady.count
-         << " queue_ready_mean_ms=" << window.queueReady.mean()
-         << " queue_ready_max_ms=" << window.queueReady.maximum
-         << " compositor_hold_samples=" << window.compositorHold.count
-         << " compositor_hold_mean_ms=" << window.compositorHold.mean()
-         << " compositor_hold_max_ms=" << window.compositorHold.maximum
-         << " requested_interval_samples=" << window.requestedInterval.count
-         << " requested_interval_mean_ms=" << window.requestedInterval.mean()
-         << " requested_interval_stddev_ms=" << window.requestedInterval.deviation()
-         << " requested_interval_max_ms=" << window.requestedInterval.maximum
-         << " reported_interval_samples=" << window.reportedInterval.count
-         << " reported_interval_mean_ms=" << window.reportedInterval.mean()
-         << " reported_interval_stddev_ms=" << window.reportedInterval.deviation()
-         << " reported_interval_max_ms=" << window.reportedInterval.maximum
-         << " lateness_mean_ms=" << window.lateness.mean()
-         << " lateness_max_ms=" << window.lateness.maximum
-         << " submit_lateness_mean_ms=" << window.submitLateness.mean()
-         << " submit_lateness_max_ms=" << window.submitLateness.maximum
-         << " refresh_cycle_ns=" << refreshCycleNs
-         << " refresh_interval_ns=" << refreshIntervalNs << '\n';
-    std::cerr << line.str();
-}
-
 void recordApplicationPresentWait(const VkDevice device, const VkSwapchainKHR swapchain,
         const PresentWaitApi api, const uint64_t presentId, const uint64_t timeout,
         const VkResult result, const Clock::time_point started,

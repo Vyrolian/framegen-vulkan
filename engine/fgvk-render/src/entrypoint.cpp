@@ -72,7 +72,6 @@ namespace {
         std::unordered_map<VkDevice, std::shared_ptr<DeferredPresentQueue>> deferredPresentQueues;
         std::unordered_set<VkDevice> nativeDevices;
         std::unordered_set<VkDevice> presentRetirementDevices;
-        std::unordered_set<VkDevice> gamescopeTimingDevices;
         std::unordered_set<VkDevice> presentTimingDevices;
         std::unordered_set<VkDevice> presentMeteringDevices;
         std::unordered_set<VkDevice> copyCalibrationDevices;
@@ -84,7 +83,7 @@ namespace {
         };
         std::unordered_map<VkQueue, QueueIdentity> queueIdentities;
         std::mutex surfaceStateMutex; // guards surfaceOrigins and waylandPresentation
-        std::unordered_map<VkSurfaceKHR, SpatialSurfaceOrigin> surfaceOrigins;
+        std::unordered_map<VkSurfaceKHR, SurfaceOrigin> surfaceOrigins;
         std::unordered_map<VkSurfaceKHR, std::shared_ptr<WaylandPresentationFeedback>> waylandPresentation;
         std::unordered_map<VkSwapchainKHR, ls::R<vk::Vulkan>> swapchains;
         std::unordered_map<VkSwapchainKHR, SwapchainInfo> swapchainInfos;
@@ -407,26 +406,6 @@ namespace {
         return selected;
     }
 
-    bool supportedGamescopeDisplayTiming(const VkPhysicalDevice physicalDevice,
-            const VkDeviceCreateInfo& createInfo) {
-        if (!rendererOwnsDisplayTiming(createInfo,
-                layer_info->root.gamescopeWsiTimingProvisioned(), true))
-            return false;
-        uint32_t count{};
-        if (instance_info->funcs.EnumerateDeviceExtensionProperties(
-                physicalDevice, nullptr, &count, nullptr) != VK_SUCCESS)
-            return false;
-        std::vector<VkExtensionProperties> extensions(count);
-        if (instance_info->funcs.EnumerateDeviceExtensionProperties(
-                physicalDevice, nullptr, &count, extensions.data()) != VK_SUCCESS)
-            return false;
-        extensions.resize(count);
-        return std::ranges::any_of(extensions, [](const auto& extension) {
-            return std::string_view(extension.extensionName) ==
-                VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME;
-        });
-    }
-
     // create instance
     VkResult myvkCreateInstance(
             const VkInstanceCreateInfo* info,
@@ -741,8 +720,6 @@ namespace {
             }
         }
 #endif
-        const bool gamescopeDisplayTiming = presentationDevice &&
-            supportedGamescopeDisplayTiming(physdev, *info);
         bool presentRetirementEnabled = false;
         bool shaderFloat16Enabled = false;
         bool lowerDeviceCreated = false;
@@ -850,7 +827,6 @@ namespace {
             layer_info->root.modifyDeviceCreateInfo(
                 newInfo,
                 swapchainMaintenance1Extension.value_or(nullptr),
-                gamescopeDisplayTiming,
                 [&, newInfo = &newInfo]() {
                     presentRetirementEnabled =
                         swapchainMaintenance1Enabled(*newInfo);
@@ -878,8 +854,6 @@ namespace {
 
         if (presentRetirementEnabled)
             instance_info->presentRetirementDevices.insert(*device);
-        if (gamescopeDisplayTiming)
-            instance_info->gamescopeTimingDevices.insert(*device);
         if (ownedPresentTiming)
             instance_info->presentTimingDevices.insert(*device);
         if (presentMeteringEnabled)
@@ -914,7 +888,6 @@ namespace {
                 layerDeviceInserted = false;
             }
             instance_info->presentRetirementDevices.erase(*device);
-            instance_info->gamescopeTimingDevices.erase(*device);
             instance_info->presentTimingDevices.erase(*device);
             instance_info->presentMeteringDevices.erase(*device);
             instance_info->copyCalibrationDevices.erase(*device);
@@ -1281,7 +1254,6 @@ namespace {
         );
         instance_info->nativeDevices.erase(device);
         instance_info->presentRetirementDevices.erase(device);
-        instance_info->gamescopeTimingDevices.erase(device);
         instance_info->presentTimingDevices.erase(device);
         instance_info->presentMeteringDevices.erase(device);
         instance_info->copyCalibrationDevices.erase(device);
@@ -1328,9 +1300,9 @@ namespace {
         vkDestroyInstance(instance, alloc);
 
         // The Vulkan loader may unload this shared object as soon as the final
-        // vkDestroyInstance() wrapper returns. Root owns a Gamescope feedback
-        // monitor thread, so leaving the process-global LayerInfo allocated
-        // lets that worker resume inside unmapped layer code after dlclose().
+        // vkDestroyInstance() wrapper returns. Root and its deferred-present
+        // workers own threads, so leaving the process-global LayerInfo allocated
+        // lets those workers resume inside unmapped layer code after dlclose().
         // Destroy all layer-owned state, including joining the monitor, while
         // our code is still resident. A later loader negotiation can recreate
         // the state if the application opens another Vulkan instance.
@@ -1540,7 +1512,7 @@ namespace {
 namespace {
     void recordSurfaceOrigin(
             const VkSurfaceKHR surface,
-            const SpatialSurfaceOrigin origin) {
+            const SurfaceOrigin origin) {
         if (!instance_info || surface == VK_NULL_HANDLE)
             return;
         bool inserted{};
@@ -1555,21 +1527,19 @@ namespace {
                          "operation=surface-provenance"
                       << " role=" << layerRoleName
                       << " surface=" << surface
-                      << " origin=" << spatialSurfaceOriginName(origin)
-                      << " gamescope_wsi_surface_proven="
-                      << (origin == SpatialSurfaceOrigin::Wayland ? 1 : 0)
+                      << " origin=" << surfaceOriginName(origin)
                       << '\n';
         }
     }
 
-    [[nodiscard]] SpatialSurfaceOrigin surfaceOrigin(
+    [[nodiscard]] SurfaceOrigin surfaceOrigin(
             const VkSurfaceKHR surface) {
         if (!instance_info)
-            return SpatialSurfaceOrigin::Unknown;
+            return SurfaceOrigin::Unknown;
         const std::lock_guard lock(instance_info->surfaceStateMutex);
         const auto origin = instance_info->surfaceOrigins.find(surface);
         return origin == instance_info->surfaceOrigins.end()
-            ? SpatialSurfaceOrigin::Unknown : origin->second;
+            ? SurfaceOrigin::Unknown : origin->second;
     }
 
     void myvkDestroySurfaceKHR(
@@ -1618,7 +1588,7 @@ namespace {
             const VkAllocationCallbacks* alloc,
             VkSurfaceKHR* surface,
             const char* entrypoint,
-            const SpatialSurfaceOrigin origin) {
+            const SurfaceOrigin origin) {
         const auto lower = reinterpret_cast<CreateSurface>(
             layer_info->GetInstanceProcAddr(instance, entrypoint)
         );
@@ -1640,7 +1610,7 @@ namespace {
         const auto result = createSurfaceAndRecord<
             CreateWaylandSurface
         >(instance, createInfo, alloc, surface, "vkCreateWaylandSurfaceKHR",
-            SpatialSurfaceOrigin::Wayland);
+            SurfaceOrigin::Wayland);
         // FGVK_PACING_PROFILE_DISPLAY=0 keeps the profile but leaves the display probe out (A/B run).
         const bool diagnostics = present_diagnostics::pacingWaylandProfileEnabled() ||
             present_diagnostics::pacingDisplayProbeEnabled();
@@ -1665,7 +1635,7 @@ namespace {
         return createSurfaceAndRecord<
             CreateXcbSurface
         >(instance, createInfo, alloc, surface, "vkCreateXcbSurfaceKHR",
-            SpatialSurfaceOrigin::Xcb);
+            SurfaceOrigin::Xcb);
     }
 
     VkResult myvkCreateXlibSurfaceKHR(
@@ -1676,7 +1646,7 @@ namespace {
         return createSurfaceAndRecord<
             CreateXlibSurface
         >(instance, createInfo, alloc, surface, "vkCreateXlibSurfaceKHR",
-            SpatialSurfaceOrigin::Xlib);
+            SurfaceOrigin::Xlib);
     }
 
     InternalSwapchainImages* internalImagesFor(const VkSwapchainKHR swapchain) {
@@ -1717,7 +1687,6 @@ namespace {
                 .adaptive = profile.adaptive,
                 .deferredPresentQueue = static_cast<bool>(swapchainInfo.deferredPresentQueue),
                 .diagnosticCopyPath = internalDiagnosticCopyPathConfigured(),
-                .gamescopeDetected = context.gamescopeDetectedAtCreation(),
                 .applicationExtent = swapchainInfo.applicationExtent,
                 .lowerExtent = swapchainInfo.extent,
                 .applicationFormat = application.imageFormat,
@@ -1972,8 +1941,6 @@ namespace {
                 .waylandPresentation = std::move(waylandPresentation),
                 .deferredPresentQueue = instance_info->deferredPresentQueues.contains(device)
                     ? instance_info->deferredPresentQueues.at(device) : nullptr,
-                .gamescopeDisplayTiming =
-                    instance_info->gamescopeTimingDevices.contains(device),
                 .ownedPresentTiming = ownedPresentTiming,
                 .presentMetering = instance_info->presentMeteringDevices.contains(device),
                 .applicationPresentTiming = instance_info->applicationTimingDevices.contains(device),
@@ -2002,8 +1969,7 @@ namespace {
                 .applicationExtent = modification.applicationExtent,
                 .extent = newInfo.imageExtent,
                 .incomingPresentMode = info->presentMode,
-                .presentMode = modification.gamescopeProtocolPresentMode
-                    .value_or(newInfo.presentMode),
+                .presentMode = newInfo.presentMode,
                 .privateOrderedTransport =
                     modification.privateOrderedTransport,
                 .replacement = swapchainCreateIsReplacement(

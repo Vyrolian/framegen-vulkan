@@ -1,6 +1,7 @@
 ## Unreleased: spatial scaling removed
 
 - The renderer no longer contains spatial scaling, the LS1 and framegen-vulkan Scaler paths, or the Gamescope scaling bridge.
+- Gamescope support is removed. Gamescope sessions start the game without frame generation. The feedback reader, the VRR lease helper, the compatibility record, and the `gamescope_vrr_mode` and `frame_generation_refresh_threshold` keys and overrides are retired; existing keys are accepted and ignored.
 - The retired scaling keys (`scaling_enabled`, `scaling_method`, `scaling_factor`, `scaling_supersampling`, and `scaling_sharpness`) are accepted and ignored, so old `conf.toml` files still load; framegen-vulkan no longer writes them.
 
 ## What's new in MAKO Renderer v4.6.0

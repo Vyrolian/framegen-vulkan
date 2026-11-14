@@ -130,9 +130,7 @@ Swapchain::PresentationFramePlan Swapchain::prepareFramePlan(
             !plan.historyWarmupActive
         ? this->adaptiveScheduler->planFrame(
             presentNow, orderedAcquireRecoveryProbe,
-            this->gamescopePresentationFeedback.variableRefreshRequested()
-                ? this->smoothCadencePacerHandoff.activeGenerationLimit()
-                : std::nullopt,
+            std::nullopt,
             this->profile.adaptive && !this->smoothCadencePacerHandoff.active()
                 ? this->smoothCadenceBaseCap.activeGenerationLimit()
                 : std::nullopt,
@@ -140,21 +138,12 @@ Swapchain::PresentationFramePlan Swapchain::prepareFramePlan(
             this->gpuHeadroomResult.capFps
         )
         : AdaptiveFramePlan{};
-    const bool fixedSmoothCadenceFullMultiplier = !schedulerEnabled &&
-        fixedSmoothCadenceFifoEligible(
-            this->profile,
-            this->privateOrderedTransport,
-            orderedAcquireRecoveryProbe ||
-                this->recoveryState.orderedAcquireRecovery.active(),
-            this->gamescopeRefreshHz
-        ) && this->configuredFixedGeneratedFrames + 1 ==
-            this->profile.multiplier;
     const size_t fixedGeneratedFrameCount = schedulerEnabled
         ? 0
         : this->fixedRefreshBudget.plan(
-            presentNow, this->gamescopeRefreshHz,
+            presentNow, std::nullopt,
             this->configuredFixedGeneratedFrames,
-            fixedSmoothCadenceFullMultiplier
+            false
         );
     // Fixed is a user-selected workload. Only explicit menu/lifecycle
     // transitions and direct transport failures may interrupt it; ordinary

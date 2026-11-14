@@ -25,44 +25,6 @@ namespace fgvk::layer {
         return frameGenerationProvisioned;
     }
 
-    /// Capability alone is not a pacing owner: legacy targets need the known
-    /// refresh clock. Source-cap preparation must use the same gate as present.
-    [[nodiscard]] constexpr bool displayTimingControlsOutput(
-            const bool timingAvailable, const bool orderedTransport,
-            const uint32_t refreshHz) noexcept {
-        return timingAvailable && orderedTransport && refreshHz > 0;
-    }
-
-    [[nodiscard]] inline bool rendererOwnsDisplayTiming(
-            const VkDeviceCreateInfo& createInfo,
-            const bool gamescopeWsiEligible, const bool extensionSupported) {
-        if (!gamescopeWsiEligible || !extensionSupported)
-            return false;
-        // A client may wait for its real present before producing the next
-        // source. Our generated-output lead would then throttle that source.
-        // Keep its wait contract and leave presentation timing to the client.
-        return !applicationOwnsPresentationTiming(createInfo);
-    }
-
-    // Consume only framegen-vulkan-owned feedback. Query the available count first:
-    // older WSI implementations erase the supplied capacity, rather than the
-    // returned count. Storage and calls are bounded even on those versions.
-    [[nodiscard]] inline bool discardOwnedDisplayTiming(
-            const PFN_vkGetPastPresentationTimingGOOGLE query,
-            const VkDevice device, const VkSwapchainKHR swapchain) {
-        if (!query)
-            return false;
-        uint32_t count = 0;
-        if (query(device, swapchain, &count, nullptr) != VK_SUCCESS)
-            return false;
-        if (count == 0)
-            return true;
-        std::array<VkPastPresentationTimingGOOGLE, 128> feedback{};
-        count = std::min(count, static_cast<uint32_t>(feedback.size()));
-        const auto result = query(device, swapchain, &count, feedback.data());
-        return result == VK_SUCCESS || result == VK_INCOMPLETE;
-    }
-
     // VK_KHR_swapchain_maintenance1 promoted the EXT extension without
     // changing its structure layouts or sType values. Freedesktop 23.08's
     // Vulkan headers predate the KHR spelling, so keep the ABI-facing types on
@@ -88,7 +50,7 @@ namespace fgvk::layer {
             PFN_vkEnumerateInstanceExtensionProperties enumerate,
             const PFN_vkEnumerateInstanceExtensionProperties loaderEnumerate) {
         InstanceExtensionQuery query;
-        // Some layers (including Gamescope WSI) do not expose global
+        // Some layers (including some compositor WSI layers) do not expose global
         // enumeration at all. The loader owns driver enumeration before
         // an instance exists, so use it when the layer has no entrypoint.
         if (!enumerate)
@@ -149,7 +111,7 @@ namespace fgvk::layer {
 #endif
 
     // The maintenance fence is the Vulkan lifetime proof. The grace interval
-    // additionally lets an upper Gamescope WSI/protocol event loop observe a
+    // additionally lets an upper compositor WSI/protocol event loop observe a
     // replacement presentation before the retired lower WSI is destroyed.
     inline constexpr auto swapchainRetirementGracePeriod =
         std::chrono::milliseconds(50);
@@ -181,8 +143,8 @@ namespace fgvk::layer {
     /// creating the replacement and consequently pass a null oldSwapchain to
     /// the lower layer. If framegen-vulkan retained that exact lower swapchain for
     /// maintenance-fence completion, finish its proven retirement before the
-    /// replacement create. Passing the retained handle back through Gamescope
-    /// as oldSwapchain can deadlock its WSI replacement path.
+    /// replacement create. Passing the retained handle back through a compositor
+    /// WSI layer as oldSwapchain can deadlock its WSI replacement path.
     [[nodiscard]] constexpr bool
     shouldRetireRetainedSwapchainBeforeNullOldReplacement(
             const VkSwapchainKHR requestedOldSwapchain,
@@ -199,7 +161,7 @@ namespace fgvk::layer {
 
     /// Replacement recovery is independent of the handle passed to the lower
     /// WSI. A completed destroy-before-create retirement remains a known
-    /// replacement even though Gamescope must receive a null oldSwapchain.
+    /// replacement even though the compositor WSI layer must receive a null oldSwapchain.
     [[nodiscard]] constexpr bool swapchainCreateIsReplacement(
             const VkSwapchainKHR requestedOldSwapchain,
             const bool retiredNullOldReplacement) noexcept {
@@ -208,7 +170,7 @@ namespace fgvk::layer {
     }
 
     /// Prefer the promoted extension name when the driver advertises it, then
-    /// fall back to the EXT predecessor used by current Gamescope/RADV stacks.
+    /// fall back to the EXT predecessor used by current RADV stacks.
     /// The feature bit is mandatory for either spelling.
     [[nodiscard]] constexpr const char*
     selectSwapchainMaintenance1Extension(
@@ -284,7 +246,7 @@ namespace fgvk::layer {
         return false;
     }
 
-    /// The Gamescope WSI layer enables swapchain-maintenance1 before calling
+    /// An upper WSI layer enables swapchain-maintenance1 before calling
     /// framegen-vulkan. Preserve that negotiated device contract explicitly rather than
     /// inferring support later from the physical device or environment.
     [[nodiscard]] inline bool swapchainMaintenance1Enabled(

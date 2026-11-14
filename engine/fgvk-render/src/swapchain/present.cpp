@@ -143,7 +143,7 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
             const auto window = owner.pacingProfile->finishSource(now);
             if (window) present_diagnostics::logPacingProfile(
                 owner.diagnosticsState.contextId, owner.currentPresentMode, now, *window, swapchain,
-                spatialSurfaceOriginName(owner.info.surfaceOrigin), static_cast<bool>(owner.info.waylandPresentation));
+                surfaceOriginName(owner.info.surfaceOrigin), static_cast<bool>(owner.info.waylandPresentation));
             owner.pacingProfile->publicationCost(DiagnosticsClock::now() - now);
         }
     } profileCompletion{*this, swapchain};
@@ -234,8 +234,8 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
             } catch (...) {}
         }
     }
-    // Match the immutable create-time choice. Ordered SDR filters Gamescope's
-    // dynamic MAILBOX override so the private transport stays ordered.
+    // Match the immutable create-time choice. Ordered SDR filters the
+    // application's dynamic MAILBOX override so the private transport stays ordered.
     // Feedback cannot change the game-owned swapchain's creation contract.
     // Build a filtered copy of the present-chain prefix: Vulkan input chains
     // are const and may be shared or stored in read-only memory.
@@ -374,18 +374,17 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         }
     }
     const bool directUnthrottled = directUnthrottledPresentation(
-        this->gamescopeDetected, this->currentPresentMode);
+        this->currentPresentMode);
 #if defined(VK_EXT_present_timing) && defined(VK_KHR_present_id2)
     this->presentTiming.observePresentMode(lowerNextChain);
 #endif
 
     const auto limiterArrival = DiagnosticsClock::now();
-    this->applyGamescopeFocus(limiterArrival);
     if (this->profile.gpu_headroom_percent > 0 || this->gpuHeadroomResult.state != "off") {
         const bool headroomEnabled = this->profile.gpu_headroom_percent > 0 &&
-            !this->steamMenuSuspended && !this->destinationImages.empty() &&
+            !this->destinationImages.empty() &&
             !this->recoveryState.orderedAcquireRecovery.active() &&
-            effectiveFrameGenerationEnabled(this->profile, this->gamescopeRefreshHz);
+            effectiveFrameGenerationEnabled(this->profile);
         const auto headroomLoad = headroomEnabled && this->gpuLoadMonitor
             ? this->gpuLoadMonitor->latest() : GpuHeadroomLoad{};
         // Sample first: a worker publication between the old arrival clock
@@ -436,28 +435,23 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
     std::optional<size_t> handoffGenerationLimit;
     bool cadenceBaseCapEligible = false;
     bool automaticBaseCapSuppressed = false;
-    if (this->adaptiveScheduler && !this->steamMenuSuspended) {
+    if (this->adaptiveScheduler) {
         schedulerSnapshot = this->adaptiveScheduler->snapshot();
         automaticBaseCapSuppressed =
-            effectiveBaseFpsCap(
-                this->profile, schedulerSnapshot,
-                this->gamescopePresentationFeedback, this->gamescopeRefreshHz
-            ) <= 0.0 &&
-            effectiveBaseFpsCap(this->profile, this->gamescopeRefreshHz) > 0.0;
+            effectiveBaseFpsCap(this->profile, schedulerSnapshot) <= 0.0 &&
+            effectiveBaseFpsCap(this->profile) > 0.0;
         cadenceBaseCapEligible = smoothCadenceBaseCapEligible(
             this->profile,
             this->privateOrderedTransport,
             this->recoveryState.orderedAcquireRecovery.active(),
-            this->gamescopeRefreshHz,
-            this->gamescopePresentationFeedback
+            std::nullopt
         ) && !automaticBaseCapSuppressed && this->gpuHeadroomResult.capFps <= 0;
         handoffGenerationLimit = smoothCadencePacerHandoffGenerationLimit(
             this->profile,
             this->privateOrderedTransport,
             this->recoveryState.orderedAcquireRecovery.active(),
-            this->gamescopeRefreshHz,
+            std::nullopt,
             schedulerSnapshot,
-            this->gamescopePresentationFeedback,
             this->smoothCadencePacerHandoff.activeGenerationLimit()
         );
     }
@@ -494,21 +488,10 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
                 : "scheduler-or-transport-guard-restored"
         );
     }
-    const bool plannedVrrProbePause = this->gpuHeadroomResult.capFps <= 0 &&
-        !handoffGenerationLimit &&
-        smoothCadencePacerHandoffPlannedProbe(
-            this->profile,
-            this->privateOrderedTransport,
-            this->recoveryState.orderedAcquireRecovery.active(),
-            this->gamescopeRefreshHz,
-            schedulerSnapshot,
-            this->gamescopePresentationFeedback,
-            this->smoothCadencePacerHandoff.activeGenerationLimit()
-        );
     if (this->gpuHeadroomResult.capFps > 0)
         handoffGenerationLimit.reset();
     const auto handoff = this->smoothCadencePacerHandoff.update(
-        limiterArrival, handoffGenerationLimit, plannedVrrProbePause
+        limiterArrival, handoffGenerationLimit, false
     );
     if (handoff.changed) {
         this->realFramePacer.reset();
@@ -527,25 +510,19 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
                     : (handoff.generationLimit == 1
                         ? "ordered-fifo-target-match"
                         : "ordered-vrr-full-rung"))
-                : (plannedVrrProbePause
-                    ? "planned-vrr-efficiency-probe"
-                    : "guard-restored-long-retry")
+                : "guard-restored-long-retry"
         );
     }
     // Transport half of worker admission; the pacing half is decided below.
     const bool detachedOutputTransport =
         !(this->deferredPresent && this->deferredPresent->serialWaitObserved()) &&
         detachedOutputModeAdmits(directUnthrottled, this->currentPresentMode) &&
-        !this->gamescopeDetected &&
         DeferredPresent::supportsChain(lowerNextChain) &&
         this->info.deferredPresentQueue && queue == vk.queue();
-    double baseFpsCap = this->steamMenuSuspended || handoff.active
+    double baseFpsCap = handoff.active
         ? 0.0
         : cadenceBaseCap.framesPerSecond.value_or(
-            effectiveBaseFpsCap(
-                this->profile, schedulerSnapshot,
-                this->gamescopePresentationFeedback, this->gamescopeRefreshHz
-            )
+            effectiveBaseFpsCap(this->profile, schedulerSnapshot)
         );
     if (this->gpuHeadroomResult.capFps > 0)
         baseFpsCap = baseFpsCap > 0 ? std::min(baseFpsCap, this->gpuHeadroomResult.capFps)
@@ -593,13 +570,8 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
                     refreshSource = "application-unconfirmed";
                 }
             }
-        } else
-#endif
-        if (this->gamescopeRefreshHz) {
-            refreshHz = static_cast<double>(*this->gamescopeRefreshHz);
-            refreshSource = "gamescope";
-            branch = "gamescope";
         }
+#endif
         if (refreshHz <= 0)
             refreshSource = "none";
         const bool feedbackConfirmed = this->presentFeedback.confirmed();
@@ -634,10 +606,10 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
     const double autoCapCeiling = this->applicationRefreshHz > 0 && this->profile.multiplier > 0
         ? this->applicationRefreshHz / static_cast<double>(this->profile.multiplier) : 0.0;
     const bool uncappedAutoCapEligible =
-        effectiveFrameGenerationEnabled(this->profile, std::nullopt) &&
+        effectiveFrameGenerationEnabled(this->profile) &&
         !this->profile.adaptive && !this->profile.adaptive_stable_cadence &&
         !this->profile.dynamic_cadence_recovery && this->profile.gpu_headroom_percent == 0 &&
-        this->gpuHeadroomResult.capFps <= 0 && !this->steamMenuSuspended && !handoff.active &&
+        this->gpuHeadroomResult.capFps <= 0 && !handoff.active &&
         !this->recoveryState.orderedAcquireRecovery.active() &&
         detachedOutputTransport && this->profile.multiplier >= 2;
     const bool userCapBinding = baseFpsCap > 0 &&
@@ -675,11 +647,10 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
     const auto limiterDeadline = this->realFramePacer.schedule(
         limiterArrival, baseFpsCap, this->gpuHeadroomResult.capFps > 0 || autoCapRetune
     );
-    const bool ownedTimingControlsOutput = this->presentTiming.controlsOutput(
-        this->gamescopeRefreshHz.value_or(0));
-    auto sourceRefreshHz = this->gamescopeRefreshHz;
+    const bool ownedTimingControlsOutput = this->presentTiming.controlsOutput(0);
+    std::optional<uint32_t> sourceRefreshHz;
 #if defined(VK_EXT_present_timing) && defined(VK_KHR_present_id2)
-    if (!sourceRefreshHz && ownedTimingControlsOutput) {
+    if (ownedTimingControlsOutput) {
         const double refresh = this->presentTiming.refreshRate(0);
         if (OrderedPresentTimeline::validRate(refresh))
             sourceRefreshHz = static_cast<uint32_t>(std::round(refresh));
@@ -687,13 +658,10 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
 #endif
     // These transports already own an output clock. Preparing inside a
     // target-matched automatic cap must not add another CPU output clock.
-    const bool compositorOutputTiming =
-        displayTimingControlsOutput(this->wsiPresentTimingQuery != nullptr,
-            this->privateOrderedTransport, this->gamescopeRefreshHz.value_or(0)) ||
-        ownedTimingControlsOutput;
+    const bool compositorOutputTiming = ownedTimingControlsOutput;
     const bool applicationTimingOwner = hasPresentTiming(lowerNextChain);
-    const bool nativeFifoOutputPacing = !compositorOutputTiming && nativeFifoOutputPacingEligible(
-        this->gamescopeDetected, this->currentPresentMode);
+    const bool nativeFifoOutputPacing = !compositorOutputTiming &&
+        nativeFifoOutputPacingEligible(this->currentPresentMode);
     const auto capInterval = baseFpsCap > 0
         ? std::chrono::duration_cast<DiagnosticsClock::duration>(
             std::chrono::duration<double>(1.0 / baseFpsCap))
@@ -708,12 +676,12 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
     const bool releaseGated = this->releaseGate.active() &&
         detachedOutputTransport && !this->profile.adaptive &&
         !this->profile.dynamic_cadence_recovery && this->gpuHeadroomResult.capFps <= 0 &&
-        !this->steamMenuSuspended && !this->recoveryState.orderedAcquireRecovery.active() &&
+        !this->recoveryState.orderedAcquireRecovery.active() &&
         limiterDeadline - limiterArrival <= 3 * capInterval;
     bool readyOutputPacing = fixedReadyOutputPacingEligible(
         this->profile, directUnthrottled || nativeFifoOutputPacing,
         compositorOutputTiming || applicationTimingOwner,
-        this->steamMenuSuspended || this->recoveryState.orderedAcquireRecovery.active(),
+        this->recoveryState.orderedAcquireRecovery.active(),
         detachedOutputTransport) &&
         !(this->deferredPresent && this->deferredPresent->serialWaitObserved());
     const auto completionWait = this->deferredPresent
@@ -877,16 +845,10 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
     // to the driver without copies, model scheduling or generated images. A
     // scaling-engine process may still attach its preallocated WSI-retirement
     // fence so natural resolution changes remain safe.
-    if (!effectiveFrameGenerationEnabled(
-            this->profile, this->gamescopeRefreshHz) ||
+    if (!effectiveFrameGenerationEnabled(this->profile) ||
             !this->colorPipeline.generationSupported) {
         return this->presentNativeFrame(invocation);
     }
-    // No scheduler observations, multiplier probes, generated acquisitions or
-    // interpolation while Gamescope confirms Steam owns input. Keep the real
-    // frame, and retain all GPU ownership guards.
-    if (this->steamMenuSuspended)
-        return this->presentNativeFrame(invocation);
     const auto replacementStabilization =
         this->recoveryState.replacementBackendStabilization.beforeFrame(
             presentNow
@@ -1022,28 +984,6 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
             this->info.images.size(),
             plan.requestedGeneratedFrames.size()
         );
-    plan.adaptiveOrderedDeliveryPolicy =
-        selectAdaptiveOrderedDeliveryPolicy(
-            this->profile.adaptive, this->privateOrderedTransport,
-            orderedAcquireRecoveryProbe,
-            headroomTightOrderedBatch,
-            this->gamescopePresentationFeedback,
-            plan.requestedGeneratedFrames.size()
-        );
-    if (plan.adaptiveOrderedDeliveryPolicy ==
-            AdaptiveOrderedDeliveryPolicy::VariableRefreshBounded) {
-        plan.configuredAcquireTimeout =
-            adaptiveVariableRefreshDeliveryAcquireBudget(
-                plan.adaptiveOrderedDeliveryPolicy,
-                plan.configuredAcquireTimeout
-            );
-    }
-    const bool adaptivePressureRetry =
-        adaptiveOrderedDeliveryNeedsPressurePreflight(
-            plan.adaptiveOrderedDeliveryPolicy,
-            this->recoveryState.generatedImageAdmission.underPressure(),
-            plan.requestedGeneratedFrames.size()
-        );
     const bool nativeFirstOrderedBatch = headroomTightOrderedBatch;
     if (nativeFirstOrderedBatch &&
             !this->diagnosticsState.orderedGeneratedAdmissionPolicyLogged &&
@@ -1059,11 +999,9 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
                   << " acquire_timeout_ns=0"
                   << " action=native-first\n";
     }
-    if (nativeFirstOrderedBatch ||
-            adaptivePressureRetry) {
+    if (nativeFirstOrderedBatch) {
         this->preacquireGeneratedImages(
-            invocation, plan, true, !adaptivePressureRetry, 0,
-            !adaptivePressureRetry
+            invocation, plan, true, true, 0, true
         );
     }
     size_t scheduledGeneratedFrameCount = plan.generatedImagesPreacquired
@@ -1083,7 +1021,7 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         // leaving recovery permanently probe-pending.
         const uint64_t recoveryAcquireTimeout = boundedOrderedAcquireProbe
             ? orderedRecoveryAcquireTimeout(
-                this->gamescopeRefreshHz, plan.configuredAcquireTimeout
+                std::nullopt, plan.configuredAcquireTimeout
             )
             : 0;
         this->preacquireGeneratedImages(
@@ -1210,7 +1148,7 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
             DiagnosticsClock::now(), limiterDeadline,
             this->profile.adaptive
                 ? std::min<double>(this->profile.target_fps,
-                    this->gamescopeRefreshHz.value_or(this->profile.target_fps))
+                    this->profile.target_fps)
                 : baseFpsCap * this->profile.multiplier,
             plan.scheduledGeneratedFrames.size() + 1,
             this->adaptiveScheduler &&

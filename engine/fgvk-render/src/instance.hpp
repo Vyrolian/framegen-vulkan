@@ -7,7 +7,6 @@
 #include "fgvk-common/helpers/errors.hpp"
 #include "fgvk-common/helpers/pointers.hpp"
 #include "fgvk-common/vulkan/vulkan.hpp"
-#include "gamescope_feedback.hpp"
 #include "runtime_transition.hpp"
 #include "runtime_health.hpp"
 #include "swapchain/swapchain.hpp"
@@ -34,13 +33,10 @@ namespace fgvk::layer {
         size_t recreationRequestedContexts{0};
         bool processProfileChangeDeferred{false};
         bool globalChangeDeferred{false};
-        bool refreshRateChanged{false};
     };
 
     struct SwapchainCreateModification {
         bool privateOrderedTransport{false};
-        std::optional<VkPresentModeKHR> gamescopeProtocolPresentMode;
-        uint32_t gamescopePresentRefreshHz{0};
         bool swapchainImageCountCompatibility{false};
         VkExtent2D applicationExtent{};
         VkExtent2D presentationExtent{};
@@ -63,11 +59,6 @@ namespace fgvk::layer {
         [[nodiscard]] bool frameGenerationInteropProvisioned() const {
             return this->frameGenerationInteropProvisionedAtStartup;
         }
-        [[nodiscard]] bool gamescopeWsiTimingProvisioned() const {
-            return this->frameGenerationInteropProvisioned() &&
-                this->gamescopeDetected &&
-                !this->presentationEnvironment.gamescopeWsiDisabled;
-        }
 
         [[nodiscard]] bool fp16RequestedAtStartup() const {
             return this->fp16AtStartup;
@@ -87,11 +78,9 @@ namespace fgvk::layer {
         /// modify device create info
         /// @param createInfo original create info
         /// @param swapchainMaintenance1Extension optional supported spelling
-        /// @param gamescopeDisplayTiming enable framegen-vulkan-owned WSI output timestamps
         /// @param finish function to call after modification
         void modifyDeviceCreateInfo(VkDeviceCreateInfo& createInfo,
             const char* swapchainMaintenance1Extension,
-            bool gamescopeDisplayTiming,
             const std::function<void(void)>& finish) const;
 
         /// modify swapchain create info
@@ -147,16 +136,6 @@ namespace fgvk::layer {
         std::optional<ls::GlobalConf> backendGlobal;
         std::optional<ls::GameConf> backendProfile;
         std::unordered_map<VkSwapchainKHR, Swapchain> swapchains;
-        PresentationEnvironmentPolicy presentationEnvironment;
-        bool gamescopeEnvironmentDetected{false};
-        GamescopeFeedbackReader gamescopeFeedbackReader;
-        GamescopeFocusFeedback gamescopeFocus;
-        bool gamescopeDetected{false};
-        std::optional<uint32_t> gamescopeRefreshHz;
-        GamescopePresentationFeedback gamescopePresentationFeedback;
-        std::optional<uint32_t> lastGamescopeRefreshHz;
-        std::string lastGamescopeFeedbackDiagnosticKey;
-        std::optional<std::chrono::steady_clock::time_point> lastGamescopeFeedbackPoll;
         std::optional<std::chrono::steady_clock::time_point> lastConfigurationPoll;
         uint64_t runtimeStateRevision{1};
         struct GpuLoadDevice {

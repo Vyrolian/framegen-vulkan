@@ -19,7 +19,6 @@ PRESENT_DIAGNOSTICS_RETAINED_SESSION_COUNT = 10
 FIXTURE = """\
 [Vulkan Loader] Loading VK_LAYER_FGVK_frame_generation
 [Vulkan Loader] Loading VK_LAYER_FGVK_render
-[Gamescope WSI] HDR output available
 framegen-vulkan: render layer active; identity=VK_LAYER_FGVK_render; build=1.0.0; fingerprint=abc123.dirty.12345678
 framegen-vulkan: present diagnostics: operation=launch-environment pid=4242 steam_overlay_preload_filter_requested=1 steam_overlay_preload_removed=2
 framegen-vulkan: present diagnostics: operation=process-identity pid=4242 executable=game.exe wine_executable=game.exe process_name=GameThread profile=fgvk identification=fallback build=1.0.0 fingerprint=abc123.dirty.12345678 steam_overlay_hook_loaded=0 steam_overlay_vulkan_loaded=0
@@ -29,10 +28,7 @@ framegen-vulkan: HDR scaling precision: input_format=64; output_format=97; compa
 framegen-vulkan: HDR shader precision: reduced=1; request_accepted=1
 framegen-vulkan: HDR shader source footprint: source=2560x1440; output=3840x2160; accepted=1
 framegen-vulkan: HDR10 transport: mode=packed-10-bit; nominal_bytes=16384000; nominal_bytes_saved=16384000; application_device_supported=1; backend_device_supported=1
-framegen-vulkan: Gamescope application HDR feedback stabilized: active=1; contexts_pending_recreation=1
-framegen-vulkan: Gamescope presentation feedback initialized: vrr_enabled=1; vrr_capable=1; vrr_active=1; allow_tearing=0
 framegen-vulkan: present diagnostics: operation=swapchain-context-create context=1 pid=4242 swapchain=1234 width=1280 height=800 application_width=854 application_height=532 frame_generation_width=1280 frame_generation_height=800 images=3 format=64 color_space=1000104008 present_mode=2 ordered_transport=1 active_contexts=1 inserted=1 live_profile_recreation=guarded-maintenance1-one-shot
-framegen-vulkan: present diagnostics: operation=gamescope-presentation-feedback context=1 vrr_enabled=1 vrr_capable=1 vrr_active=1 allow_tearing=0 pacing_owner=fgvk-target-clock action=reset-pacer-only scheduler_reset=0 recreation=0
 framegen-vulkan: present diagnostics: operation=runtime-transition-pending context=1 state_revision=2 reason=profile-resources frame_generation_backend_pending=1 flow_scale_pending=1 lighter_model_pending=1 generated_capacity_pending=1 available_generated_capacity=1 requested_generated_capacity=3 process_restart_required=0 action=signal-out-of-date-after-successful-present
 framegen-vulkan: present diagnostics: operation=runtime-transition-pending context=2 state_revision=4 reason=frame-generation-resources flow_scale_pending=1 lighter_model_pending=1 generated_capacity_pending=1 active_generated_capacity=1 requested_generated_capacity=4 action=prepare-private-context
 framegen-vulkan: present diagnostics: operation=runtime-transition-prepared context=2 state_revision=4 reason=frame-generation-resources requested_generated_capacity=4 requested_flow_scale=0.75 requested_lighter_model=1 action=drain-private-work
@@ -50,8 +46,6 @@ framegen-vulkan: present diagnostics: operation=replacement-backend-stabilizatio
 framegen-vulkan: present diagnostics: operation=runtime-state-applied context=2 state_revision=2 adaptive=1 target_fps=110 effective_flow_scale=0.75 lighter_model=1 generated_frame_capacity=3 hdr=1
 framegen-vulkan: presentation timing initialized; owner=renderer; transport=VK_EXT_present_timing; active=1
 framegen-vulkan: presentation timing fallback; owner=renderer; transport=VK_EXT_present_timing; reason=feedback-or-clock-unavailable
-framegen-vulkan: present diagnostics: operation=gamescope-bridge-timing bridge=12 pid=4242 timestamp_source=compositor-reported requests=120 feedbacks=118 outstanding=2 unmatched=0 nonconsecutive_ids=0 repeated_timestamps=94 backwards_timestamps=0 late_latch_feedbacks=23
-framegen-vulkan: present diagnostics: operation=gamescope-bridge-timing bridge=13 pid=4242 timing_protocol=2 timestamp_kind=prediction requests=120 feedbacks=117 dropped=1 outstanding=2 invalid_stages=0 unavailable_stages=1 queue_ready_samples=116 queue_ready_mean_ms=2.5 compositor_hold_samples=116 compositor_hold_mean_ms=8 refresh_interval_ns=18446744073709551615
 framegen-vulkan: present diagnostics: operation=application-present-mode context=2 swapchain=1234 requested_present_mode=0 dynamic_override=1 effective_present_mode=2 ordered_transport=1 bridge=1 action=diagnostic-only
 framegen-vulkan: present diagnostics: operation=application-present-wait waiter=19 pid=4242 device=55 swapchain=1234 api=KHR2 calls=60 successful=59 timeouts=1 errors=0 polls=1 first_present_id=20 last_present_id=79 duration_mean_ms=8.2 duration_max_ms=21.5 first_failure_result=2 first_failure_present_id=20 first_failure_timeout_ns=0 first_failure_duration_ms=0.02
 framegen-vulkan: present diagnostics: operation=application-acquire stream=20 pid=4242 device=55 swapchain=1234 api=KHR2 calls=45 entry_interval_samples=45 entry_interval_mean_ms=22.2 entry_interval_max_ms=72.2 duration_mean_ms=1.1 duration_max_ms=50.1 successful=45 timeouts=0 not_ready=0 errors=0 polls=0
@@ -540,7 +534,6 @@ class DiagnosticsHelperTests(unittest.TestCase):
             "ordered-acquire-recovered",
             "render-fence-budget-missed",
             "history-warmup",
-            "gamescope-focus",
             "runtime-transition-pending",
             "runtime-transition-prepared",
             "runtime-transition-failed",
@@ -559,7 +552,6 @@ class DiagnosticsHelperTests(unittest.TestCase):
             "lower-present-stall-recreation-requested",
             "lower-present-stall-recreation-budget",
             "adaptive-recovery-recreation-armed",
-            "gamescope-focus",
             "adaptive-recovery-recreation-requested",
             "adaptive-recovery-recreation-budget",
             # Older builds emitted this obsolete cooldown-reset record.
@@ -604,11 +596,6 @@ class DiagnosticsHelperTests(unittest.TestCase):
                     self.assertIn("steam_overlay_hook_loaded=0", result.stdout)
                     self.assertIn("steam_overlay_vulkan_loaded=0", result.stdout)
                     self.assertIn("operation=swapchain-context-create", result.stdout)
-                    self.assertIn("Gamescope presentation feedback initialized", result.stdout)
-                    self.assertIn("operation=gamescope-presentation-feedback", result.stdout)
-                    self.assertIn("pacing_owner=fgvk-target-clock", result.stdout)
-                    self.assertIn("scheduler_reset=0", result.stdout)
-                    self.assertIn("recreation=0", result.stdout)
                     self.assertIn("operation=replacement-backend-stabilization", result.stdout)
                     self.assertIn("frame_generation_width=1280", result.stdout)
 
@@ -654,14 +641,8 @@ class DiagnosticsHelperTests(unittest.TestCase):
             result = self._run("--log", str(path), "performance")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("operation=fixed-plan", result.stdout)
-        self.assertIn("operation=gamescope-bridge-timing", result.stdout)
         self.assertIn("presentation timing initialized; owner=renderer; transport=VK_EXT_present_timing; active=1", result.stdout)
         self.assertIn("presentation timing fallback; owner=renderer; transport=VK_EXT_present_timing; reason=feedback-or-clock-unavailable", result.stdout)
-        self.assertIn("repeated_timestamps=94", result.stdout)
-        self.assertIn("late_latch_feedbacks=23", result.stdout)
-        self.assertIn("timing_protocol=2 timestamp_kind=prediction", result.stdout)
-        self.assertIn("queue_ready_mean_ms=2.5", result.stdout)
-        self.assertIn("compositor_hold_mean_ms=8", result.stdout)
         self.assertIn("operation=application-present-mode", result.stdout)
         self.assertIn("operation=application-present-wait", result.stdout)
         self.assertIn("first_failure_result=2 first_failure_present_id=20 first_failure_timeout_ns=0 first_failure_duration_ms=0.02", result.stdout)
@@ -678,13 +659,12 @@ class DiagnosticsHelperTests(unittest.TestCase):
         self.assertIn("renderer-memory operation=private-context-applied", result.stdout)
         self.assertNotIn("adaptive-ramp", result.stdout)
 
-    def test_startup_includes_loader_gamescope_context_and_hdr(self):
+    def test_startup_includes_loader_and_hdr_context(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             path = self._fixture_path(Path(temporary_directory))
             result = self._run("--log", str(path), "startup")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("Vulkan Loader", result.stdout)
-        self.assertIn("Gamescope WSI", result.stdout)
         self.assertIn("swapchain-context-create", result.stdout)
         self.assertIn("mode=hdr10-pq", result.stdout)
         self.assertIn("HDR10 transport: mode=packed-10-bit", result.stdout)

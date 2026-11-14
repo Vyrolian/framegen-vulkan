@@ -29,7 +29,6 @@ PY
 
 "$script_dir/check-release-pin.sh" >/dev/null
 grep -Fq "'libx11'" "$script_dir/PKGBUILD"
-grep -Fq "'lib32-libx11'" "$script_dir/PKGBUILD"
 grep -Fq 'done < framegen-vulkan-install-manifest.txt' "$script_dir/PKGBUILD"
 grep -Fq 'pacman -Syu --noconfirm --needed fakeroot' \
     "$script_dir/verify-release-package.sh"

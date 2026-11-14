@@ -34,7 +34,7 @@ MangoHud reads its own configuration, normally `~/.config/MangoHud/MangoHud.conf
 
 ## XR Gaming / Breezy
 
-Gamescope effects and Vulkan-only mode use different paths; framegen-vulkan's WSI toggle does not select between them. Compatibility with glasses is unvalidated.
+Gamescope effects and Vulkan-only mode use different paths, and framegen-vulkan does not run in a Gamescope session. Compatibility with glasses is unvalidated.
 
 For Anchor/Follow lag, compare framegen-vulkan alone, XR alone, and both. Record the XR effect off for 30 seconds, on for 30 seconds, then off again, keeping the scene and settings unchanged. Send the actual Breezy runtime archive with [framegen-vulkan diagnostics](../../COLLECT_DIAGNOSTICS.md).
 

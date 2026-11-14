@@ -69,9 +69,7 @@ Apply the activation settings:
 flatpak override --user --env=ENABLE_FGVK=1 "$appid"
 flatpak override --user --env=DISABLE_LSFG=1 "$appid"
 flatpak override --user --env=DISABLE_LSFGVK=1 "$appid"
-flatpak override --user --env=DISABLE_GAMESCOPE_WSI=1 "$appid"
 flatpak override --user --env=DISABLE_VKBASALT=1 "$appid"
-flatpak override --user --unset-env=ENABLE_GAMESCOPE_WSI "$appid"
 flatpak override --user --env=VK_IMPLICIT_LAYER_PATH=/usr/lib/extensions/vulkan/fgvkrender/share/vulkan/implicit_layer.d "$appid"
 flatpak override --user --unset-env=VK_ADD_IMPLICIT_LAYER_PATH "$appid"
 ```
@@ -129,16 +127,6 @@ flatpak override --user --unset-env=DISABLE_FGVK "$appid"
 ```
 
 Avoid `flatpak override --reset`: it also removes unrelated app settings.
-
-## Gamescope VRR overrides
-
-For On/Off VRR requests, run this on the host as the game's user while playing:
-
-```bash
-~/.local/bin/fgvk-vrr-lease --watch-flatpak
-```
-
-Requires Gamescope and a VRR-capable display. **Follow Steam** needs no helper. Do not grant extra host-execution permissions to the sandbox.
 
 ## Building extensions
 

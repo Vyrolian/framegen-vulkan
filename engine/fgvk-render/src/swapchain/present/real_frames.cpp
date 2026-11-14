@@ -57,9 +57,7 @@ void Swapchain::recordPresentCadence(const DiagnosticsClock::time_point presentN
                     << " base_fps=" << realFps
                     << " multiplier=" << this->profile.multiplier
                     << " generated_per_real="
-                    << (effectiveFrameGenerationEnabled(
-                              this->profile, this->gamescopeRefreshHz
-                          )
+                    << (effectiveFrameGenerationEnabled(this->profile)
                           ? this->configuredFixedGeneratedFrames : 0)
                     << " observed_output_fps=" << observedOutputFps
                     << " generated_presented="
@@ -69,10 +67,8 @@ void Swapchain::recordPresentCadence(const DiagnosticsClock::time_point presentN
                     << " configured_adaptive_target_fps="
                     << this->profile.target_fps
                     << " target_applies=0"
-                    << " display_budget_hz="
-                    << this->gamescopeRefreshHz.value_or(0)
-                    << " display_budget_applies="
-                    << (this->gamescopeRefreshHz.value_or(0) > 0 ? 1 : 0)
+                    << " display_budget_hz=0"
+                    << " display_budget_applies=0"
                     << '\n';
             std::cerr << message.str();
             this->diagnosticsState.fixedWindowStarted = presentNow;

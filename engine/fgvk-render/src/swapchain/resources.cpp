@@ -55,7 +55,7 @@ namespace {
 
 void Swapchain::ensureFrameGenerationExecutionResources(
         const vk::Vulkan& vk) {
-    if (this->pacingProfile && present_diagnostics::pacingCopyProfileEnabled() && !this->gamescopeDetected &&
+    if (this->pacingProfile && present_diagnostics::pacingCopyProfileEnabled() &&
             !this->nativeCopyProfileInitialized) {
         this->nativeCopyProfileInitialized = true;
         try {
@@ -321,7 +321,7 @@ void Swapchain::commitFrameGenerationResources(
     this->ctx = std::move(resources.context);
     applyFrameGenerationResourceProfile(
         this->profile, resourceProfile,
-        this->runtimeStatusState.requestedProfile, this->gamescopeRefreshHz
+        this->runtimeStatusState.requestedProfile, std::nullopt
     );
 
     this->frameState.backendTimelineIndex = 1;

@@ -8,7 +8,7 @@ temporary_root="$(mktemp -d)"
 trap 'rm -rf -- "$temporary_root"' EXIT
 
 listed_suites="$($bridge --list-suites)"
-expected_suites=$'vulkan\nquality\nrepeatability\nperformance\nspatial-performance\nruntime-overhead\nsync-validation\npacing\nrecovery\nexternal-recovery\ngamescope-e2e\ndirect-desktop-e2e\nsustained-health\nproton-e2e\nproton-compatibility\nconstraints'
+expected_suites=$'vulkan\nquality\nrepeatability\nperformance\nruntime-overhead\nsync-validation\npacing\nrecovery\nexternal-recovery\ndirect-desktop-e2e\nsustained-health\nproton-e2e\nproton-compatibility\nconstraints'
 if [[ "$listed_suites" != "$expected_suites" ]]; then
     echo "Gym bridge suite inventory is not canonical." >&2
     exit 1
@@ -44,9 +44,6 @@ chmod +x "$fake_gym/scripts/run-quality-repeatability.sh"
 printf '%s\n' '#!/usr/bin/env bash' 'printf "performance:%s\\n" "$@"' \
     > "$fake_gym/scripts/run-render-performance.sh"
 chmod +x "$fake_gym/scripts/run-render-performance.sh"
-printf '%s\n' '#!/usr/bin/env bash' 'printf "spatial-performance:%s\\n" "$@"' \
-    > "$fake_gym/scripts/run-spatial-performance.sh"
-chmod +x "$fake_gym/scripts/run-spatial-performance.sh"
 printf '%s\n' '#!/usr/bin/env bash' 'printf "runtime-overhead:%s\\n" "$@"' \
     > "$fake_gym/scripts/run-runtime-overhead.sh"
 chmod +x "$fake_gym/scripts/run-runtime-overhead.sh"
@@ -62,9 +59,6 @@ chmod +x "$fake_gym/scripts/run-runtime-recovery-matrix.sh"
 printf '%s\n' '#!/usr/bin/env bash' 'printf "external-recovery:%s\\n" "$@"' \
     > "$fake_gym/scripts/run-external-recovery.sh"
 chmod +x "$fake_gym/scripts/run-external-recovery.sh"
-printf '%s\n' '#!/usr/bin/env bash' 'printf "gamescope-e2e:%s\\n" "$@"' \
-    > "$fake_gym/scripts/run-gamescope-end-to-end.sh"
-chmod +x "$fake_gym/scripts/run-gamescope-end-to-end.sh"
 printf '%s\n' '#!/usr/bin/env bash' 'printf "direct-desktop-e2e:%s\\n" "$@"' \
     > "$fake_gym/scripts/run-direct-desktop-end-to-end.sh"
 chmod +x "$fake_gym/scripts/run-direct-desktop-end-to-end.sh"
@@ -106,12 +100,6 @@ if [[ "$performance_forwarded" != "$performance_expected" ]]; then
     echo "Gym performance-suite arguments were not forwarded exactly." >&2
     exit 1
 fi
-spatial_performance_forwarded="$($bridge --gym-repo "$fake_gym" --suite spatial-performance --baseline /tmp/spatial.json)"
-spatial_performance_expected=$'spatial-performance:--baseline\nspatial-performance:/tmp/spatial.json'
-if [[ "$spatial_performance_forwarded" != "$spatial_performance_expected" ]]; then
-    echo "Gym spatial-performance arguments were not forwarded exactly." >&2
-    exit 1
-fi
 runtime_overhead_forwarded="$($bridge --gym-repo "$fake_gym" --suite runtime-overhead --tier fast)"
 runtime_overhead_expected=$'runtime-overhead:--tier\nruntime-overhead:fast'
 if [[ "$runtime_overhead_forwarded" != "$runtime_overhead_expected" ]]; then
@@ -140,12 +128,6 @@ external_recovery_forwarded="$($bridge --gym-repo "$fake_gym" --suite external-r
 external_recovery_expected=$'external-recovery:--filter\nexternal-recovery:^external-pause-'
 if [[ "$external_recovery_forwarded" != "$external_recovery_expected" ]]; then
     echo "Gym external-recovery arguments were not forwarded exactly." >&2
-    exit 1
-fi
-gamescope_e2e_forwarded="$($bridge --gym-repo "$fake_gym" --suite gamescope-e2e --filter '^gamescope-live-')"
-gamescope_e2e_expected=$'gamescope-e2e:--filter\ngamescope-e2e:^gamescope-live-'
-if [[ "$gamescope_e2e_forwarded" != "$gamescope_e2e_expected" ]]; then
-    echo "Gym Gamescope E2E arguments were not forwarded exactly." >&2
     exit 1
 fi
 direct_desktop_forwarded="$($bridge --gym-repo "$fake_gym" --suite direct-desktop-e2e --filter '^steam-desktop-dxvk-')"
@@ -180,9 +162,9 @@ if [[ "$constraints_forwarded" != "$constraints_expected" ]]; then
 fi
 
 all_suites_forwarded="$($bridge --gym-repo "$fake_gym" --all-suites --validate)"
-all_suites_expected=$'--validate\nquality:--validate\nrepeatability:--validate\nperformance:--validate\nspatial-performance:--validate\nruntime-overhead:--validate\nsync-validation:--validate\npacing:--validate\nrecovery:--validate\nexternal-recovery:--validate\ngamescope-e2e:--validate\ndirect-desktop-e2e:--validate\nsustained-health:--validate\nproton-e2e:--validate\nproton-compatibility:--validate\nconstraints:--validate'
+all_suites_expected=$'--validate\nquality:--validate\nrepeatability:--validate\nperformance:--validate\nruntime-overhead:--validate\nsync-validation:--validate\npacing:--validate\nrecovery:--validate\nexternal-recovery:--validate\ndirect-desktop-e2e:--validate\nsustained-health:--validate\nproton-e2e:--validate\nproton-compatibility:--validate\nconstraints:--validate'
 if [[ "$all_suites_forwarded" != "$all_suites_expected" ]]; then
-    echo "Gym all-suites validation did not invoke all sixteen runners exactly once." >&2
+    echo "Gym all-suites validation did not invoke all fourteen runners exactly once." >&2
     exit 1
 fi
 if "$bridge" --gym-repo "$fake_gym" --all-suites --suite quality --validate >/dev/null 2>&1; then

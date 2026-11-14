@@ -94,9 +94,6 @@ option(FGVK_TESTING_RENDERDOC  "Enable RenderDoc integration for testing purpose
 # === READ HERE FOR BUILD OPTIONS ===
 
 if(FGVK_BUILD_VK_LAYER)
-    install(PROGRAMS
-        "${CMAKE_CURRENT_SOURCE_DIR}/scripts/fgvk-vrr-lease"
-        DESTINATION "${CMAKE_INSTALL_BINDIR}")
     # The launch helper is private: `fgvk <command>` executes it, so it is not on PATH.
     install(PROGRAMS
         "${CMAKE_CURRENT_SOURCE_DIR}/scripts/fgvk-launch"
@@ -118,18 +115,6 @@ if(BUILD_TESTING AND UNIX)
             "${CMAKE_CURRENT_SOURCE_DIR}/scripts/test-fgvk-launch-mangohud.py")
     set_tests_properties(standalone-mangohud PROPERTIES LABELS "portable-policy")
     set_tests_properties(standalone-launcher PROPERTIES
-        LABELS "portable-policy")
-
-    add_test(NAME gamescope-vrr-lease
-        COMMAND "${FGVK_PYTHON3_EXECUTABLE}"
-            "${CMAKE_CURRENT_SOURCE_DIR}/scripts/test-fgvk-vrr-lease.py")
-    set_tests_properties(gamescope-vrr-lease PROPERTIES
-        LABELS "portable-policy")
-
-    add_test(NAME gamescope-compatibility-record
-        COMMAND "${FGVK_PYTHON3_EXECUTABLE}"
-            "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check-gamescope-compatibility.py")
-    set_tests_properties(gamescope-compatibility-record PROPERTIES
         LABELS "portable-policy")
 
     add_test(NAME steamos-build-tools

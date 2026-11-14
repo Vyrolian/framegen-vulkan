@@ -17,51 +17,6 @@
 
 namespace fgvk::layer {
 
-    /// Explicit Gamescope presentation state published on the verified
-    /// server-zero root. Keep the Steam preference, connector capability and
-    /// compositor-active feedback separate: an overlay may temporarily stop
-    /// adaptive scanout without changing the user's VRR policy.
-    struct GamescopePresentationFeedback {
-        std::optional<bool> vrrEnabled;
-        std::optional<bool> vrrCapable;
-        std::optional<bool> vrrActive;
-        std::optional<bool> allowTearing;
-
-        friend bool operator==(
-            const GamescopePresentationFeedback&,
-            const GamescopePresentationFeedback&) = default;
-
-        /// Select VRR-aware pacing from an explicit active signal or from a
-        /// requested policy whose capability is not conclusively absent.
-        /// Missing properties preserve framegen-vulkan's existing fixed-refresh policy.
-        [[nodiscard]] bool variableRefreshRequested() const noexcept {
-            return this->vrrActive == true ||
-                (this->vrrEnabled == true && this->vrrCapable != false);
-        }
-
-        [[nodiscard]] bool fixedRefreshPacingEligible() const noexcept {
-            return !this->variableRefreshRequested();
-        }
-    };
-
-    /// Gamescope updates root properties independently. A missing or malformed
-    /// read is not an explicit policy transition, so retain the last valid
-    /// value for that field instead of flapping pacing ownership.
-    [[nodiscard]] inline GamescopePresentationFeedback
-    mergeGamescopePresentationFeedback(
-            GamescopePresentationFeedback current,
-            const GamescopePresentationFeedback& sampled) noexcept {
-        if (sampled.vrrEnabled)
-            current.vrrEnabled = sampled.vrrEnabled;
-        if (sampled.vrrCapable)
-            current.vrrCapable = sampled.vrrCapable;
-        if (sampled.vrrActive)
-            current.vrrActive = sampled.vrrActive;
-        if (sampled.allowTearing)
-            current.allowTearing = sampled.allowTearing;
-        return current;
-    }
-
     /// Ordinary readiness checks preserve progress. A new interruption must
     /// discard partial pre-interruption history and start a complete warm-up.
     [[nodiscard]] constexpr size_t historyWarmupFramesAfterRequest(
@@ -84,23 +39,6 @@ namespace fgvk::layer {
         return explicitTransitionActive ? frameStarted : recoveryCompleted;
     }
 
-    struct GamescopeFocusFeedback {
-        using Clock = std::chrono::steady_clock;
-        std::optional<bool> gameFocused;
-        std::optional<Clock::time_point> sampledAt;
-        std::optional<Clock::time_point> openedAt;
-        std::optional<Clock::time_point> returnedAt;
-        uint64_t returnSequence{0};
-
-        [[nodiscard]] bool fresh(const Clock::time_point now) const {
-            return sampledAt && now >= *sampledAt &&
-                now - *sampledAt <= std::chrono::seconds{1};
-        }
-        [[nodiscard]] bool menuOpen(const Clock::time_point now) const {
-            return fresh(now) && gameFocused == false;
-        }
-    };
-
     /// framegen-vulkan's current presentation transport owns one swapchain per lower
     /// submit/present sequence. A Vulkan present batch supplies its binary
     /// waits and per-swapchain pNext arrays once for the whole batch, so it
@@ -118,16 +56,6 @@ namespace fgvk::layer {
         const std::string_view flag(value);
         return flag == "1" || flag == "true" ||
             flag == "yes" || flag == "on";
-    }
-
-    /// Gamescope WSI membership is fixed before Vulkan instance creation.
-    struct PresentationEnvironmentPolicy {
-        bool gamescopeWsiDisabled{false};
-    };
-
-    [[nodiscard]] inline PresentationEnvironmentPolicy
-    resolvePresentationEnvironmentPolicy(const char* gamescopeWsiDisable) {
-        return {.gamescopeWsiDisabled = environmentFlagEnabled(gamescopeWsiDisable)};
     }
 
     /// The real frame already belongs to the application's minimum. Ordered
@@ -159,69 +87,6 @@ namespace fgvk::layer {
         return maximumGeneratedFrames > 0 && !admissionUnderPressure &&
             !orderedGeneratedBatchNeedsNonblockingAdmission(
                 requestedMinImages, returnedImages, maximumGeneratedFrames);
-    }
-
-    enum class AdaptiveOrderedDeliveryPolicy {
-        NotApplicable,
-        VariableRefreshBounded,
-    };
-
-    /// Adapt normal Adaptive ordered delivery to the compositor's explicit
-    /// pacing owner. Allow Tearing is deliberately not an input: framegen-vulkan's lower
-    /// SDR swapchain is FIFO regardless of that Steam preference.
-    [[nodiscard]] inline AdaptiveOrderedDeliveryPolicy
-    selectAdaptiveOrderedDeliveryPolicy(
-            const bool adaptive,
-            const bool orderedTransport,
-            const bool orderedAcquireRecoveryProbe,
-            const bool headroomTightOrderedBatch,
-            const GamescopePresentationFeedback& presentationFeedback,
-            const size_t requestedGeneratedFrames) noexcept {
-        if (!adaptive || !orderedTransport || orderedAcquireRecoveryProbe ||
-                headroomTightOrderedBatch ||
-                requestedGeneratedFrames == 0) {
-            return AdaptiveOrderedDeliveryPolicy::NotApplicable;
-        }
-        return presentationFeedback.variableRefreshRequested()
-            ? AdaptiveOrderedDeliveryPolicy::VariableRefreshBounded
-            : AdaptiveOrderedDeliveryPolicy::NotApplicable;
-    }
-
-    /// Variable refresh retains the established finite application-present
-    /// ceiling because lower-image release is not locked to a fixed output
-    /// period. Fixed refresh retains the 3.3 ordered acquire contract and does
-    /// not call this helper. Preserve any shorter explicit ceiling and never
-    /// derive it from source cadence that may already include framegen-vulkan's own
-    /// acquire wait.
-    [[nodiscard]] inline std::optional<uint64_t>
-    adaptiveVariableRefreshDeliveryAcquireBudget(
-            const AdaptiveOrderedDeliveryPolicy policy,
-            const std::optional<uint64_t> configuredBudget) noexcept {
-        if (policy !=
-                AdaptiveOrderedDeliveryPolicy::VariableRefreshBounded) {
-            return configuredBudget;
-        }
-        constexpr uint64_t maximumVariableRefreshBudget = 50'000'000;
-        return std::min(
-            configuredBudget.value_or(maximumVariableRefreshBudget),
-            maximumVariableRefreshBudget
-        );
-    }
-
-    /// After one bounded Adaptive VRR acquire times out, retry lower-image
-    /// admission before backend work and without blocking. This circuit
-    /// breaker preserves the validated scheduler load while Gamescope is
-    /// temporarily holding every lower image, and automatically resumes as
-    /// soon as an image is available again.
-    [[nodiscard]] constexpr bool
-    adaptiveOrderedDeliveryNeedsPressurePreflight(
-            const AdaptiveOrderedDeliveryPolicy policy,
-            const bool generatedImageAdmissionUnderPressure,
-            const size_t requestedGeneratedFrames) noexcept {
-        return policy ==
-                AdaptiveOrderedDeliveryPolicy::VariableRefreshBounded &&
-            generatedImageAdmissionUnderPressure &&
-            requestedGeneratedFrames > 0;
     }
 
     /// Headroom preflight can reject an active multiplier experiment, but a
@@ -830,7 +695,7 @@ namespace fgvk::layer {
 
     public:
 
-        /// Gamescope reports when a ready output was first eligible to latch,
+        /// The compositor reports when a ready output was first eligible to latch,
         /// separately from the requested hold. Correct the lead
         /// by that difference: using submission-to-feedback elapsed time would
         /// count our already queued output spacing as new GPU work.

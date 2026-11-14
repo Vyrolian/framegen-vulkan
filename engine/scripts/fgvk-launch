@@ -170,6 +170,16 @@ case "$1" in
         ;;
 esac
 
+# Gamescope sessions are not supported. Decide before any environment change so
+# the command starts with its environment exactly as launched. The renderer
+# makes its own check and stays inactive when this one is bypassed.
+if [[ -n "${GAMESCOPE_WAYLAND_DISPLAY:-}" &&
+        ( -z "${WAYLAND_DISPLAY:-}" ||
+          "${WAYLAND_DISPLAY}" == "${GAMESCOPE_WAYLAND_DISPLAY}" ) ]]; then
+    echo "framegen-vulkan: Gamescope sessions are not supported; starting without frame generation" >&2
+    exec "$@"
+fi
+
 # Launcher-only compatibility settings must be established before the child
 # starts, but they are not Renderer profile values and must never be placed in
 # conf.toml. Parse the fixed key/value format without sourcing or
@@ -429,8 +439,8 @@ unset FGVK_ALLOW_COMPETING_LAYERS
 # Resolve the installed private manifest directory from this launcher. This is
 # the deterministic SDR boundary proven by framegen-vulkan v2: Steam's Vulkan Fossilize,
 # overlay, and system-wide presentation layers cannot bypass framegen-vulkan's device or
-# swapchain hooks. Gamescope and Steam's Game Mode UI remain outside this
-# application layer chain. Older packages fall back to their public manifest.
+# swapchain hooks. Steam's Game Mode UI remains outside this application layer
+# chain. Older packages fall back to their public manifest.
 # This helper lives at <prefix>/libexec/framegen-vulkan/fgvk-launch, so the
 # prefix is two directories above it.
 fgvk_launcher_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
@@ -450,19 +460,13 @@ fi
 # Gaming Mode keeps its compositor-owned performance display unchanged.
 fgvk_steam_overlay_layers=""
 fgvk_steam_overlay_layer_dir="$fgvk_data_home/vulkan/implicit_layer.d"
-fgvk_gamescope_session=0
 fgvk_flatpak_launch=0
 if [[ "${1##*/}" == flatpak && "${2:-}" == run ]]; then
     fgvk_flatpak_launch=1
 fi
-if [[ -n "${GAMESCOPE_WAYLAND_DISPLAY:-}" &&
-        ( -z "${WAYLAND_DISPLAY:-}" ||
-          "${WAYLAND_DISPLAY}" == "${GAMESCOPE_WAYLAND_DISPLAY}" ) ]]; then
-    fgvk_gamescope_session=1
-fi
 if [[ "$fgvk_disable_steam_overlay" != 1 &&
         "${ENABLE_VK_LAYER_VALVE_steam_overlay_1:-0}" == 1 &&
-        "$fgvk_gamescope_session" != 1 && "$fgvk_flatpak_launch" != 1 ]]; then
+        "$fgvk_flatpak_launch" != 1 ]]; then
     if [[ -r "$fgvk_steam_overlay_layer_dir/steamoverlay_x86_64.json" ]]; then
         fgvk_steam_overlay_layers=VK_LAYER_VALVE_steam_overlay_64
     fi
@@ -597,15 +601,7 @@ unset fgvk_steam_overlay_preload_filter_requested fgvk_disable_steam_overlay
 unset fgvk_launcher_dir fgvk_data_home fgvk_implicit_layer_path
 unset fgvk_existing_instance_layers
 unset fgvk_steam_overlay_layer_dir fgvk_steam_overlay_layer
-unset fgvk_steam_overlay_layers fgvk_gamescope_session fgvk_flatpak_launch
-
-# Gamescope WSI implements its own FIFO policy above framegen-vulkan, while framegen-vulkan expands
-# one application present into a generated/original sequence below it. Keeping
-# both policies active serializes the two lower presents and can collapse a
-# 60 FPS game to roughly 13 FPS. Suppress WSI inside this deterministic chain;
-# the Gamescope compositor itself remains active.
-export DISABLE_GAMESCOPE_WSI=1
-unset ENABLE_GAMESCOPE_WSI
+unset fgvk_steam_overlay_layers fgvk_flatpak_launch
 
 unset DXVK_HDR
 if [[ -n "${VK_INSTANCE_LAYERS:-}" &&
@@ -615,16 +611,6 @@ else
     export ENABLE_FGVK=1
 fi
 
-if [[ -n "${GAMESCOPE_WAYLAND_DISPLAY:-}" &&
-        ( -z "${WAYLAND_DISPLAY:-}" ||
-          "$WAYLAND_DISPLAY" == "$GAMESCOPE_WAYLAND_DISPLAY" ) ]]; then
-    fgvk_vrr_helper="$fgvk_install_prefix/bin/fgvk-vrr-lease"
-    if [[ -x "$fgvk_vrr_helper" ]]; then
-        export FGVK_VRR_LEASE_TOKEN="$$-$RANDOM-$RANDOM"
-        "$fgvk_vrr_helper" --start "$$" "$FGVK_VRR_LEASE_TOKEN" || :
-    fi
-    unset fgvk_vrr_helper
-fi
 unset fgvk_install_prefix
 
 exec "$@"

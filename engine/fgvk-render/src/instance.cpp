@@ -222,67 +222,14 @@ namespace {
         std::optional<std::string> previousValue;
     };
 
-    std::string gamescopeFeedbackDiagnosticKey(
-            const GamescopeFeedbackSample& sample) {
-        const auto booleanToken = [](const std::optional<bool> value) {
-            return value ? (*value ? "1" : "0") : "unknown";
-        };
-        return sample.status + '\n' + sample.display + '\n' +
-            sample.resolverStatus + '\n' + sample.resolverCandidates + '\n' +
-            std::to_string(sample.gamescopePid.value_or(UINT32_MAX)) + '\n' +
-            std::to_string(sample.xwaylandServerId.value_or(UINT32_MAX)) + '\n' +
-            std::to_string(sample.outputWidth.value_or(0)) + 'x' +
-            std::to_string(sample.outputHeight.value_or(0)) + '\n' +
-            std::to_string(sample.refreshHz.value_or(0)) + '\n' +
-            booleanToken(sample.presentation.vrrEnabled) + '\n' +
-            booleanToken(sample.presentation.vrrCapable) + '\n' +
-            booleanToken(sample.presentation.vrrActive) + '\n' +
-            booleanToken(sample.presentation.allowTearing);
-    }
-
-    void logGamescopeFeedbackDiagnostic(
-            const char* prefix,
-            const GamescopeFeedbackSample& sample) {
-        std::cerr << prefix << sample.status
-                  << "; display="
-                  << (sample.display.empty() ? "(unset)" : sample.display)
-                  << "; resolver="
-                  << (sample.resolverStatus.empty()
-                        ? "(unset)" : sample.resolverStatus)
-                  << "; gamescope_pid="
-                  << sample.gamescopePid.value_or(UINT32_MAX)
-                  << "; server_id="
-                  << sample.xwaylandServerId.value_or(UINT32_MAX)
-                  << "; refresh_hz="
-                  << sample.refreshHz.value_or(0)
-                  << "; presentation_target="
-                  << sample.outputWidth.value_or(0) << 'x'
-                  << sample.outputHeight.value_or(0)
-                  << "; vrr_enabled=";
-        if (sample.presentation.vrrEnabled)
-            std::cerr << (*sample.presentation.vrrEnabled ? 1 : 0);
-        else
-            std::cerr << "unknown";
-        std::cerr << "; vrr_capable=";
-        if (sample.presentation.vrrCapable)
-            std::cerr << (*sample.presentation.vrrCapable ? 1 : 0);
-        else
-            std::cerr << "unknown";
-        std::cerr << "; vrr_active=";
-        if (sample.presentation.vrrActive)
-            std::cerr << (*sample.presentation.vrrActive ? 1 : 0);
-        else
-            std::cerr << "unknown";
-        std::cerr << "; allow_tearing=";
-        if (sample.presentation.allowTearing)
-            std::cerr << (*sample.presentation.allowTearing ? 1 : 0);
-        else
-            std::cerr << "unknown";
-        std::cerr
-                  << "; candidates="
-                  << (sample.resolverCandidates.empty()
-                        ? "(none)" : sample.resolverCandidates)
-                  << '\n';
+    /// The one Gamescope check: a process started inside a Gamescope session
+    /// is outside framegen-vulkan's supported environments.
+    bool gamescopeSessionDetected() {
+        const char* gamescopeDisplay = std::getenv("GAMESCOPE_WAYLAND_DISPLAY");
+        if (gamescopeDisplay && *gamescopeDisplay)
+            return true;
+        return environmentFlagEnabled(std::getenv("ENABLE_GAMESCOPE_WSI")) ||
+            environmentFlagEnabled(std::getenv("STEAM_GAMESCOPE_HDR_SUPPORTED"));
     }
 
     /// helper function to add required extensions
@@ -305,38 +252,18 @@ namespace {
 }
 
 
-Root::Root() :
-    presentationEnvironment(resolvePresentationEnvironmentPolicy(
-        std::getenv("DISABLE_GAMESCOPE_WSI")
-    )),
-    gamescopeEnvironmentDetected(gamescopeProcessEnvironmentHint()) {
+Root::Root() {
     this->fp16AtStartup = this->config.get().global().allow_fp16;
     // S8b: restart-bound, before any device or worker reads realOffsetAuto().
     fgvk::layer::realOffsetAutoConfigured.store(this->config.get().global().pacing_correction,
         std::memory_order_relaxed);
     std::cerr << fgvkBuildIdentity << '\n';
 
-    std::cerr << "framegen-vulkan: presentation policy: gamescope_wsi="
-              << (this->presentationEnvironment.gamescopeWsiDisabled
-                    ? "isolated" : "allowed")
-              << "; gamescope_process_hint="
-              << (this->gamescopeEnvironmentDetected ? "present" : "absent")
-              << '\n';
-
-    const auto initialGamescopeFeedback =
-        this->gamescopeFeedbackReader.diagnosticSample();
-    this->gamescopeDetected = initialGamescopeFeedback.gamescopeDetected;
-    this->lastGamescopeRefreshHz = initialGamescopeFeedback.refreshHz;
-    this->gamescopeRefreshHz = initialGamescopeFeedback.refreshHz;
-    this->gamescopePresentationFeedback = initialGamescopeFeedback.presentation;
-    this->lastGamescopeFeedbackDiagnosticKey = gamescopeFeedbackDiagnosticKey(
-        initialGamescopeFeedback
-    );
-    this->lastGamescopeFeedbackPoll = std::chrono::steady_clock::now();
-    logGamescopeFeedbackDiagnostic(
-        "framegen-vulkan: Gamescope presentation feedback initialized: ",
-        initialGamescopeFeedback
-    );
+    if (gamescopeSessionDetected()) {
+        std::cerr << "framegen-vulkan: Gamescope sessions are not supported; "
+                     "the layer stays inactive\n";
+        return;
+    }
 
     // find active profile
     const auto identification = ls::identify();
@@ -420,50 +347,6 @@ Root::Root() :
 ConfigurationUpdateResult Root::update(const bool forceConfigurationPoll) {
     ConfigurationUpdateResult result;
     const auto now = std::chrono::steady_clock::now();
-    constexpr auto gamescopeFeedbackPollInterval = std::chrono::milliseconds(250);
-    if (!this->lastGamescopeFeedbackPoll ||
-            now - *this->lastGamescopeFeedbackPoll >= gamescopeFeedbackPollInterval) {
-        const auto gamescopeFeedbackSample =
-            this->gamescopeFeedbackReader.diagnosticSample();
-        this->gamescopeFocus = gamescopeFeedbackSample.focus;
-        for (auto& [swapchain, context] : this->swapchains) {
-            static_cast<void>(swapchain);
-            context.updateGamescopeFocus(this->gamescopeFocus);
-        }
-        this->gamescopeDetected = gamescopeFeedbackSample.gamescopeDetected;
-        const auto presentationFeedback =
-            mergeGamescopePresentationFeedback(
-                this->gamescopePresentationFeedback,
-                gamescopeFeedbackSample.presentation
-            );
-        if (presentationFeedback != this->gamescopePresentationFeedback) {
-            this->gamescopePresentationFeedback = presentationFeedback;
-            for (auto& [swapchain, context] : this->swapchains) {
-                static_cast<void>(swapchain);
-                context.updateGamescopePresentationFeedback(
-                    this->gamescopePresentationFeedback
-                );
-            }
-        }
-        if (gamescopeFeedbackSample.refreshHz != this->lastGamescopeRefreshHz) {
-            this->lastGamescopeRefreshHz = gamescopeFeedbackSample.refreshHz;
-            this->gamescopeRefreshHz = gamescopeFeedbackSample.refreshHz;
-            result.refreshRateChanged = true;
-            for (auto& [swapchain, context] : this->swapchains) {
-                static_cast<void>(swapchain);
-                context.updateGamescopeRefreshRate(this->gamescopeRefreshHz);
-            }
-        }
-        const auto diagnosticKey = gamescopeFeedbackDiagnosticKey(gamescopeFeedbackSample);
-        if (diagnosticKey != this->lastGamescopeFeedbackDiagnosticKey) {
-            this->lastGamescopeFeedbackDiagnosticKey = diagnosticKey;
-            logGamescopeFeedbackDiagnostic(
-                "framegen-vulkan: Gamescope presentation feedback status: ",
-                gamescopeFeedbackSample
-            );
-        }
-        this->lastGamescopeFeedbackPoll = now;
-    }
 
     // Configuration hot reload does not need a filesystem metadata query for
     // every presented frame. Keep the UI responsive while bounding the check
@@ -683,11 +566,9 @@ void Root::modifyInstanceCreateInfo(VkInstanceCreateInfo& createInfo,
 
 void Root::modifyDeviceCreateInfo(VkDeviceCreateInfo& createInfo,
         const char* const swapchainMaintenance1Extension,
-        const bool gamescopeDisplayTiming,
         const std::function<void(void)>& finish) const {
     const bool frameGenerationInterop = this->frameGenerationInteropProvisioned();
-    if (!frameGenerationInterop && !swapchainMaintenance1Extension &&
-            !gamescopeDisplayTiming) {
+    if (!frameGenerationInterop && !swapchainMaintenance1Extension) {
         finish();
         return;
     }
@@ -704,8 +585,6 @@ void Root::modifyDeviceCreateInfo(VkDeviceCreateInfo& createInfo,
     }
     if (swapchainMaintenance1Extension)
         requiredExtensions.push_back(swapchainMaintenance1Extension);
-    if (gamescopeDisplayTiming)
-        requiredExtensions.push_back(VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME);
     auto extensions = add_extensions(
         createInfo.ppEnabledExtensionNames,
         createInfo.enabledExtensionCount,
@@ -793,7 +672,6 @@ SwapchainCreateModification Root::modifySwapchainCreateInfo(const vk::Vulkan& vk
         contextProfile,
         caps.maxImageCount,
         prospectiveCreateInfo,
-        this->gamescopeDetected,
         vk.frameGenerationInteropEnabled(),
         caps.minImageCount
     ));
@@ -804,12 +682,11 @@ SwapchainCreateModification Root::modifySwapchainCreateInfo(const vk::Vulkan& vk
         contextProfile,
         caps.maxImageCount,
         createInfo,
-        this->gamescopeDetected,
         vk.frameGenerationInteropEnabled(),
         caps.minImageCount
     );
 
-    // Gamescope forwards both a MAILBOX base mode and a MAILBOX-only
+    // Some WSI layers forward both a MAILBOX base mode and a MAILBOX-only
     // maintenance1 compatibility list. The private SDR transport changes the
     // base mode to FIFO, so that list must not reach the lower driver: leaving
     // it attached makes the create description inconsistent and has surfaced
@@ -824,7 +701,7 @@ SwapchainCreateModification Root::modifySwapchainCreateInfo(const vk::Vulkan& vk
     if (!presentModes.valid()) {
         throw ls::error(
             "unsupported VkSwapchainCreateInfoKHR pNext prefix before "
-            "Gamescope present-mode filtering: " +
+            "present-mode filtering: " +
             std::to_string(presentModes.unsupportedStructureType())
         );
     }
@@ -958,14 +835,11 @@ void Root::createSwapchainContext(const vk::Vulkan& vk,
             !this->backend.has_value()) { // emplace backend late, due to loader bug
         try {
             // The backend owns a separate Vulkan instance. Prevent framegen-vulkan
-            // Renderer, Gamescope WSI, or a selected post-process layer from
-            // entering that internal instance while preserving caller values
-            // for the rest of the game process.
+            // Renderer or a selected post-process layer from entering that
+            // internal instance while preserving caller values for the rest of
+            // the game process.
             const ScopedEnvironmentOverride disableFgvk(
                 "DISABLE_FGVK", "1"
-            );
-            const ScopedEnvironmentOverride disableGamescopeWsi(
-                "DISABLE_GAMESCOPE_WSI", "1"
             );
             const ScopedEnvironmentOverride disableMangoHud(
                 "MANGOHUD", "0"
@@ -1036,9 +910,6 @@ void Root::createSwapchainContext(const vk::Vulkan& vk,
     const bool inserted = this->swapchains.emplace(swapchain,
         Swapchain(vk, frameGenerationBackend, std::move(contextProfile), info,
             this->fp16AtStartup,
-            this->gamescopeDetected,
-            this->gamescopeRefreshHz,
-            this->gamescopePresentationFeedback,
             this->runtimeStateRevision,
             swapchainMaintenance1Enabled)).second;
     const auto memoryAfter = vk.deviceMemorySnapshot();
@@ -1050,8 +921,6 @@ void Root::createSwapchainContext(const vk::Vulkan& vk,
     const auto contextImported = memoryDelta(
         memoryAfter.imported, memoryBefore.imported);
     const auto insertedContext = this->swapchains.find(swapchain);
-    if (insertedContext != this->swapchains.end())
-        insertedContext->second.updateGamescopeFocus(this->gamescopeFocus);
     const uint64_t diagnosticsContextId =
         insertedContext != this->swapchains.end()
         ? insertedContext->second.diagnosticsId()

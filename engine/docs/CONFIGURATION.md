@@ -86,16 +86,15 @@ Enable `frame_generation_provisioned` before launching to allow Frame Generation
 | --- | --- |
 | `multiplier` | Fixed output multiplier, 2–5. Start at 2. |
 | `adaptive = true` | Varies generation toward `target_fps` (10–1000), up to `adaptive_max_multiplier` (2–5). |
-| `adaptive_target_refresh_rate` | Uses Gamescope's refresh rate as the Adaptive target; `target_fps` applies when no feedback is available. |
+| `adaptive_target_refresh_rate` | Matches the Adaptive target to a confirmed display refresh rate. The native path has no such value yet, so `target_fps` applies. |
 | `adaptive_auto_base_fps_cap` | Steady Base Cap: initially caps real FPS at half the target for even cadence; may reduce responsiveness. |
 | `adaptive_fractional_real_frame_priority` | Real-frame priority for Fractional Adaptive, from low to very high. Automatic adds no priority cap. |
 | `adaptive_stable_cadence` | Favours consistent delivery; compare on and off for responsiveness. |
 | `base_fps_cap` | Limits real FPS. Off adds no manual cap; Steady or explicit Fractional caps take precedence. |
-| `gamescope_vrr_mode` | `follow-steam`, `on`, or `off` for Gamescope VRR during play, when the display supports it. |
 
 With Fractional Adaptive and automatic real-frame priority, sustained native FPS can exceed `target_fps` without generation when `base_fps_cap` is off or at least the target. For example, a 60 FPS target on a 90 Hz display allows native 75 FPS gameplay with the cap off or set to 90; a manual cap still limits faster sources.
 
-For games that switch between 30 FPS cutscenes and 60 FPS gameplay on a 60 Hz display, try Fractional Adaptive with a 2x ceiling, a 60 FPS target, and `dynamic_cadence_recovery = true`. Recovery clears base caps and selects automatic real-frame priority; keep those settings to let gameplay reach its native rate. Its checks can briefly lower output FPS or hitch. `frame_generation_refresh_threshold` checks display Hz, not the game's real FPS.
+For games that switch between 30 FPS cutscenes and 60 FPS gameplay on a 60 Hz display, try Fractional Adaptive with a 2x ceiling, a 60 FPS target, and `dynamic_cadence_recovery = true`. Recovery clears base caps and selects automatic real-frame priority; keep those settings to let gameplay reach its native rate. Its checks can briefly lower output FPS or hitch.
 
 ## Performance and device selection
 
@@ -116,13 +115,12 @@ Set `gpu_headroom_percent` to 5, 10, 15, or 20 to reserve that share of GPU capa
 
 framegen-vulkan smooths readings and gradually reduces real FPS when usage stays high. Adaptive can use more generated frames within its qualified multiplier ceiling; Fixed keeps its multiplier, so output FPS can fall too. Adaptive is preferable when you want to regain real FPS as scenes become lighter. Brief spikes can still reach 100%, and the reserve is not a power or temperature limit.
 
-Supported AMD telemetry must be readable for the game's GPU; Gamescope is optional. Missing readings restore ordinary pacing. Existing caps and a minimum real-frame rate limit how much load framegen-vulkan can remove. GPU Headroom is mutually exclusive with `dynamic_cadence_recovery`. See the [setting reference](CONFIGURATION-REFERENCE.md#gpu-headroom) for floors and compatibility limits.
+Supported AMD telemetry must be readable for the game's GPU. Missing readings restore ordinary pacing. Existing caps and a minimum real-frame rate limit how much load framegen-vulkan can remove. GPU Headroom is mutually exclusive with `dynamic_cadence_recovery`. See the [setting reference](CONFIGURATION-REFERENCE.md#gpu-headroom) for floors and compatibility limits.
 
 ## Compatibility
 
 | Setting | What it does |
 | --- | --- |
-| `frame_generation_refresh_threshold` | Pauses generation and Adaptive caps at or below the chosen Gamescope refresh; a manual `base_fps_cap` remains. |
 | `dynamic_cadence_recovery` | Off by default. Rechecks games that change native FPS by briefly reducing generated work; these checks can lower output FPS or cause hitches under sustained GPU load. Clears base caps and GPU Headroom, and resets real-frame priority. |
 | `dynamic_cadence_probe_interval_seconds` | 0.1–3 seconds between recovery checks; default 2. Shorter intervals react sooner but can hitch more often. |
 | `swapchain_image_count_compatibility` (restart) | May help games that fail to start, with less generated-frame headroom. |

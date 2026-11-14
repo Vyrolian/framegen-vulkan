@@ -66,7 +66,6 @@ std::optional<uint64_t> Swapchain::generatedImageAcquireTimeoutNs() {
 bool layer::context_ModifySwapchainCreateInfo(const ls::GameConf& profile,
         uint32_t maxImages,
         VkSwapchainCreateInfoKHR& createInfo,
-        const bool gamescopeDetected,
         const bool frameGenerationInteropEnabled,
         const uint32_t surfaceMinImages) {
     const auto colorPipeline = classifySwapchainColor(
@@ -78,10 +77,10 @@ bool layer::context_ModifySwapchainCreateInfo(const ls::GameConf& profile,
     // chain whose present-mode group can switch to an unthrottled mode (VKD3D-Proton
     // creates FIFO with {FIFO, IMMEDIATE} and sends IMMEDIATE per present with VSync
     // off) keeps its group and per-present nodes instead of the ordered FIFO transport.
-    const auto group = presentModeGroup(createInfo.pNext, gamescopeDetected);
+    const auto group = presentModeGroup(createInfo.pNext);
     const bool orderedSdrCandidate =
         frameGenerationProvisioned &&
-        !directUnthrottledPresentation(gamescopeDetected, createInfo.presentMode);
+        !directUnthrottledPresentation(createInfo.presentMode);
     const bool orderedFrameGenerationTransport = orderedSdrCandidate && !group.unthrottled;
 
     return applySwapchainCreateProvisioning(
@@ -89,7 +88,7 @@ bool layer::context_ModifySwapchainCreateInfo(const ls::GameConf& profile,
         frameGenerationProvisioned,
         orderedFrameGenerationTransport,
         profile.swapchain_image_count_compatibility,
-        gamescopeDetected ? 0 : surfaceMinImages,
+        surfaceMinImages,
         orderedSdrCandidate && group.unthrottled && group.fifo
     );
 }
@@ -97,27 +96,15 @@ bool layer::context_ModifySwapchainCreateInfo(const ls::GameConf& profile,
 Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance* backend,
             ls::GameConf profile, SwapchainInfo info,
             const bool fp16Requested,
-            const bool gamescopeDetected,
-            const std::optional<uint32_t> gamescopeRefreshHz,
-            GamescopePresentationFeedback gamescopePresentationFeedback,
             const uint64_t runtimeStateRevision,
             const bool swapchainMaintenance1Enabled) :
         instance(backend),
-        gamescopeDetected(gamescopeDetected),
         privateOrderedTransport(info.privateOrderedTransport),
         currentPresentMode(info.presentMode),
-        gamescopeRefreshHz(gamescopeRefreshHz),
-        gamescopePresentationFeedback(
-            std::move(gamescopePresentationFeedback)),
         colorPipeline(classifySwapchainColor(info.format, info.colorSpace)),
         fp16Requested(fp16Requested),
         profile(std::move(profile)), info(std::move(info)) {
     this->presentFeedback.configure(this->info.applicationPresentFeedback);
-    if (this->info.gamescopeDisplayTiming) {
-        this->wsiPresentTimingQuery = reinterpret_cast<
-            PFN_vkGetPastPresentationTimingGOOGLE>(vk.fi().GetDeviceProcAddr(
-                vk.dev(), "vkGetPastPresentationTimingGOOGLE"));
-    }
     this->diagnosticsState.contextId = allocateDiagnosticsContextId();
     if (vk.frameGenerationInteropEnabled() &&
             !this->profile.adaptive && this->profile.multiplier == 2 &&
@@ -135,7 +122,7 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance* backend,
     this->runtimeStatusState.requestedProfile = this->profile;
     this->profile.target_fps = adaptiveTargetFpsForDisplay(
         this->profile.target_fps, this->profile.adaptive,
-        this->profile.adaptive_target_refresh_rate, this->gamescopeRefreshHz
+        this->profile.adaptive_target_refresh_rate, std::nullopt
     );
     this->runtimeStatusState.stateRevision = runtimeStateRevision;
     const DiagnosticsContextScope diagnosticsContext(
@@ -166,10 +153,10 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance* backend,
     }
 
     const auto initialGenerationPolicy = generationSchedulerPolicy(
-        this->profile, this->gamescopeRefreshHz
+        this->profile
     );
     const bool initialFrameGenerationEnabled = effectiveFrameGenerationEnabled(
-        this->profile, this->gamescopeRefreshHz
+        this->profile
     );
     const bool initialDynamicCadenceRecoveryActive =
         this->privateOrderedTransport && initialGenerationPolicy &&
@@ -183,8 +170,6 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance* backend,
                   << " state_revision=" << runtimeStateRevision
                   << " frame_generation_enabled="
                   << this->profile.frame_generation_enabled
-                  << " frame_generation_refresh_threshold="
-                  << this->profile.frame_generation_refresh_threshold
                   << " effective_frame_generation_enabled="
                   << initialFrameGenerationEnabled
                   << " adaptive=" << this->profile.adaptive
@@ -199,7 +184,7 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance* backend,
                       this->profile.adaptive_fractional_real_frame_priority
                   )
                   << " effective_base_fps_cap="
-                  << effectiveBaseFpsCap(this->profile, this->gamescopeRefreshHz)
+                  << effectiveBaseFpsCap(this->profile)
                   << " adaptive_max_multiplier="
                   << this->profile.adaptive_max_multiplier
                   << " stable_cadence="
@@ -237,11 +222,6 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance* backend,
               << "; frame-generation="
               << (this->colorPipeline.generationSupported ? "supported" : "passthrough")
               << '\n';
-    if (this->gamescopeDetected && this->privateOrderedTransport) {
-        std::cerr << "framegen-vulkan: Gamescope SDR presentation transport: "
-                     "mode=fifo-ordered; source=fork-develop; "
-                     "dynamic-mode-switch=filtered\n";
-    }
     if (!this->colorPipeline.generationSupported) {
         std::cerr << "framegen-vulkan: frame generation disabled for this swapchain: "
                   << this->colorPipeline.reason << '\n';
@@ -322,12 +302,12 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance* backend,
             if (this->privateOrderedTransport) {
                 const auto recoveryAcquireTimeout =
                     orderedRecoveryAcquireTimeout(
-                        this->gamescopeRefreshHz,
+                        std::nullopt,
                         configuredAcquireTimeout
                     );
                 const auto perImageAcquireTimeout =
                     orderedGeneratedImageAcquireTimeout(
-                        this->gamescopeRefreshHz,
+                        std::nullopt,
                         configuredAcquireTimeout
                     );
                 std::cerr << formatOrderedAcquirePolicy(
@@ -339,9 +319,6 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance* backend,
                         OrderedAcquireRecovery::maximumRetryDelay()
                     ).count());
             }
-        }
-        if (this->gamescopeDetected) {
-            std::cerr << "framegen-vulkan: Gamescope uses the ordered presentation path\n";
         }
         if (configuredAcquireTimeout) {
             std::cerr << "framegen-vulkan: generated-image acquire timeout requested at "
@@ -355,7 +332,7 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance* backend,
             this->info.replacement ? "swapchain-recreation" : "startup"
         );
         const bool frameGenerationActive = effectiveFrameGenerationEnabled(
-            this->profile, this->gamescopeRefreshHz
+            this->profile
         ) && this->colorPipeline.generationSupported;
         this->recoveryState.replacementBackendStabilization.begin(
             this->info.replacement, frameGenerationActive,
@@ -363,7 +340,7 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance* backend,
         );
         if (schedulerEnabled) {
             const auto policy = generationSchedulerPolicy(
-                this->profile, this->gamescopeRefreshHz
+                this->profile
             ).value();
             std::cerr << "framegen-vulkan: target-driven frame generation enabled; mode="
                       << (this->profile.adaptive
@@ -380,11 +357,6 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance* backend,
                       << policy.dynamicCadenceProbeIntervalSeconds
                       << " s"
                       << '\n';
-        } else if (!this->profile.adaptive &&
-                this->profile.dynamic_cadence_recovery) {
-            std::cerr << "framegen-vulkan: Dynamic Cadence Recovery is unavailable "
-                         "for Fixed mode without a supported Gamescope refresh "
-                         "signal and 2x-5x multiplier; exact Fixed policy retained\n";
         }
     } catch (const std::exception& e) {
         // Swapchain creation belongs to the game. A failure in framegen-vulkan's optional

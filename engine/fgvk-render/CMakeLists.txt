@@ -7,7 +7,6 @@ set(PRESENT_RECORD_SOURCES
 
 set(LAYER_SOURCES
     "src/entrypoint.cpp"
-    "src/gamescope_feedback.cpp"
     "src/instance.cpp"
     "src/present_diagnostics.cpp"
     ${PRESENT_RECORD_SOURCES}
@@ -415,25 +414,6 @@ if(BUILD_TESTING)
         add_test(NAME wayland-presentation-feedback COMMAND ${CMAKE_COMMAND} -E env
             "LD_LIBRARY_PATH=$<TARGET_FILE_DIR:fgvk-wayland-presentation-fixture>" $<TARGET_FILE:fgvk-wayland-presentation-tests>)
         fgvk_register_portable_policy_test(fgvk-wayland-presentation-tests wayland-presentation-feedback)
-
-        add_library(fgvk-feedback-client-fixture SHARED
-            "tests/gamescope_feedback_client_fixture.cpp")
-        set_target_properties(fgvk-feedback-client-fixture PROPERTIES
-            OUTPUT_NAME "X11" SOVERSION 6
-            LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/feedback-client-fixture")
-        add_executable(fgvk-gamescope-feedback-reader-tests
-            "tests/gamescope_feedback_reader_tests.cpp"
-            "src/gamescope_feedback.cpp")
-        target_include_directories(fgvk-gamescope-feedback-reader-tests
-            PRIVATE "src" "../fgvk-common/include")
-        target_link_libraries(fgvk-gamescope-feedback-reader-tests
-            PRIVATE fgvk-feedback-client-fixture Threads::Threads ${CMAKE_DL_LIBS})
-        add_test(NAME gamescope-feedback-reader
-            COMMAND ${CMAKE_COMMAND} -E env
-                "LD_LIBRARY_PATH=$<TARGET_FILE_DIR:fgvk-feedback-client-fixture>"
-                $<TARGET_FILE:fgvk-gamescope-feedback-reader-tests>)
-        fgvk_register_portable_policy_test(
-            fgvk-gamescope-feedback-reader-tests gamescope-feedback-reader)
 
     endif()
 

@@ -277,7 +277,7 @@ VkResult Swapchain::queuePresentWithRetirementFence(
         .numFramesPerBatch = static_cast<uint32_t>(this->bridgeOutputBatchSize),
     };
     if (this->info.presentMetering && observation.generated &&
-            !this->gamescopeDetected && !this->profile.adaptive &&
+            !this->profile.adaptive &&
             this->configuredFixedGeneratedFrames == 1 && this->bridgeOutputBatchSize == 2)
         presentInfo.pNext = &metering;
 #endif
@@ -285,21 +285,6 @@ VkResult Swapchain::queuePresentWithRetirementFence(
     auto timingOwner = hasPresentTiming(incomingPresentInfo.pNext)
         ? PacingProfile::ApplicationTiming : PacingProfile::DriverTiming;
     std::optional<DiagnosticsClock::time_point> timingTarget;
-    // Use qualified scheduler state, not this frame's batch size: occasional
-    // real-only turns must not release Fractional output timing.
-    const auto outputPolicy = gamescopeBridgeOutputPolicy(
-        this->profile, this->gamescopeRefreshHz,
-        this->adaptiveScheduler && !this->steamMenuSuspended &&
-                fractionalNativePresentationEligible(this->profile)
-            ? this->adaptiveScheduler->snapshot() : AdaptiveSchedulerSnapshot{},
-        this->gpuHeadroomResult.capFps);
-    VkPresentTimeGOOGLE presentTime{};
-    VkPresentTimesInfoGOOGLE presentTimes{
-        .sType = VK_STRUCTURE_TYPE_PRESENT_TIMES_INFO_GOOGLE,
-        .pNext = presentInfo.pNext,
-        .swapchainCount = 1,
-        .pTimes = &presentTime,
-    };
 #if defined(VK_EXT_present_timing) && defined(VK_KHR_present_id2)
     VkPresentTimingInfoEXT timing{};
     uint64_t timingId{};
@@ -315,15 +300,14 @@ VkResult Swapchain::queuePresentWithRetirementFence(
         .swapchainCount = 1,
         .pTimingInfos = &timing,
     };
-    if (this->presentTiming.controlsOutput(this->gamescopeRefreshHz.value_or(0)) &&
+    if (this->presentTiming.controlsOutput(0) &&
             this->info.presentMode == VK_PRESENT_MODE_FIFO_KHR &&
             presentInfo.swapchainCount == 1 && !hasPresentTiming(presentInfo.pNext)) {
-        const double refresh = this->presentTiming.refreshRate(this->gamescopeRefreshHz.value_or(0));
-        const auto ceiling = this->gamescopeRefreshHz
-            ? this->gamescopeRefreshHz : (OrderedPresentTimeline::validRate(refresh)
-                ? std::optional{static_cast<uint32_t>(std::round(refresh))} : std::nullopt);
+        const double refresh = this->presentTiming.refreshRate(0);
+        const auto ceiling = OrderedPresentTimeline::validRate(refresh)
+            ? std::optional{static_cast<uint32_t>(std::round(refresh))} : std::nullopt;
         const auto policy = gamescopeBridgeOutputPolicy(this->profile, ceiling,
-            this->adaptiveScheduler && !this->steamMenuSuspended &&
+            this->adaptiveScheduler &&
                     fractionalNativePresentationEligible(this->profile)
                 ? this->adaptiveScheduler->snapshot() : AdaptiveSchedulerSnapshot{},
             this->gpuHeadroomResult.capFps);
@@ -342,43 +326,6 @@ VkResult Swapchain::queuePresentWithRetirementFence(
         }
     }
 #endif
-    if (displayTimingControlsOutput(this->wsiPresentTimingQuery != nullptr,
-            this->privateOrderedTransport, this->gamescopeRefreshHz.value_or(0)) &&
-            presentInfo.swapchainCount == 1 &&
-            !hasPresentTiming(presentInfo.pNext)) {
-        const auto slot = this->wsiPresentTimeline.schedule(
-            DiagnosticsClock::now(),
-            outputPolicy.outputFps,
-            *this->gamescopeRefreshHz, this->bridgeOutputBatchSize,
-            outputPolicy.generatedTimeline, this->outputSourceDeadline);
-        if (slot) {
-            this->orderedPresentationDeadline = slot->presentAt;
-            // Google timing creates feedback even when diagnostics are off.
-            // Drain our namespace in bounded batches so old WSI versions
-            // cannot retain a history proportional to session length.
-            if (++this->wsiTimingPresentsSinceDrain >= 32) {
-                this->wsiTimingPresentsSinceDrain = 0;
-                if (!discardOwnedDisplayTiming(this->wsiPresentTimingQuery,
-                        vk.dev(), presentInfo.pSwapchains[0])) {
-                    this->wsiPresentTimingQuery = nullptr;
-                    return this->queuePresentWithRetirementFence(
-                        vk, queue, incomingPresentInfo, observation);
-                }
-            }
-            std::this_thread::sleep_until(slot->submitAt);
-            presentTime.desiredPresentTime = static_cast<uint64_t>(
-                std::chrono::duration_cast<std::chrono::nanoseconds>(
-                    slot->presentAt.time_since_epoch()).count());
-            presentInfo.pNext = &presentTimes;
-            timingOwner = PacingProfile::GoogleTiming;
-            timingTarget = slot->presentAt;
-            if (!this->wsiPresentTimingLogged) {
-                std::cerr << "framegen-vulkan: Gamescope WSI ordered output timing enabled; "
-                             "owner=renderer; transport=VK_GOOGLE_display_timing\n";
-                this->wsiPresentTimingLogged = true;
-            }
-        }
-    }
     this->lastLowerPresentRetirementProtected = false;
     const auto lowerPresent = [&](VkPresentInfoKHR info) {
         if (this->pacingProfile)
@@ -445,7 +392,7 @@ VkResult Swapchain::queuePresentWithRetirementFence(
                         &feedbackId);
                 return vk.df().QueuePresentKHR(selectedQueue, &selectedInfo);
             };
-            if (nativePrivatePresentQueueEligible(this->gamescopeDetected,
+            if (nativePrivatePresentQueueEligible(
                     static_cast<bool>(this->info.deferredPresentQueue))) {
                 // Pin every native output from the first managed present,
                 // including synchronous first/generated/native/fallback and
@@ -469,7 +416,7 @@ VkResult Swapchain::queuePresentWithRetirementFence(
         };
         if (!this->pacingProfile) return submit();
         auto observed = observation;
-        observed.queue = nativePrivatePresentQueueEligible(this->gamescopeDetected,
+        observed.queue = nativePrivatePresentQueueEligible(
             static_cast<bool>(this->info.deferredPresentQueue))
             ? this->info.deferredPresentQueue->queue : queue;
         if (info.waitSemaphoreCount == 1 && info.pWaitSemaphores)

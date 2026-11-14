@@ -529,11 +529,6 @@ namespace fgvk::layer::present_diagnostics {
     void recordPresentPhaseTiming(uint64_t context, size_t frame, size_t sequence,
         Clock::time_point finished, const std::array<double, 9>& milliseconds) noexcept;
 
-    void logBridgeTiming(uint64_t bridgeId, VkSwapchainKHR swapchain,
-        const BridgePresentTiming::Window& window,
-        size_t outstanding, uint64_t refreshCycleNs,
-        uint32_t timingVersion = 1, uint64_t refreshIntervalNs = 0);
-
     enum class PresentWaitApi { Khr, Khr2 };
 
     enum class ApplicationFrameApi { AcquireKhr, AcquireKhr2, Present };

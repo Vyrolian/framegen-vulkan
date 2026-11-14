@@ -54,8 +54,6 @@ namespace {
             left.frame_generation_enabled == right.frame_generation_enabled &&
             left.swapchain_image_count_compatibility ==
                 right.swapchain_image_count_compatibility &&
-            left.frame_generation_refresh_threshold ==
-                right.frame_generation_refresh_threshold &&
             left.base_fps_cap == right.base_fps_cap &&
             left.gpu_headroom_percent == right.gpu_headroom_percent &&
             left.adaptive == right.adaptive &&
@@ -68,7 +66,6 @@ namespace {
                 right.adaptive_target_refresh_rate &&
             left.adaptive_max_multiplier == right.adaptive_max_multiplier &&
             left.adaptive_stable_cadence == right.adaptive_stable_cadence &&
-            left.gamescope_vrr_mode == right.gamescope_vrr_mode &&
             left.dynamic_cadence_recovery == right.dynamic_cadence_recovery &&
             left.dynamic_cadence_probe_interval_seconds ==
                 right.dynamic_cadence_probe_interval_seconds &&
@@ -298,7 +295,6 @@ removed_profile_option = true
 adaptive = false
 frame_generation_provisioned = false
 swapchain_image_count_compatibility = true
-frame_generation_refresh_threshold = 60
 base_fps_cap = 60
 adaptive_auto_base_fps_cap = true
 adaptive_fractional_real_frame_priority = "high"
@@ -322,8 +318,6 @@ int main() {
                 ls::GameConfDefaults::frameGenerationEnabled &&
             defaults.swapchain_image_count_compatibility ==
                 ls::GameConfDefaults::swapchainImageCountCompatibility &&
-            defaults.frame_generation_refresh_threshold ==
-                ls::GameConfDefaults::frameGenerationRefreshThreshold &&
             defaults.base_fps_cap == ls::GameConfDefaults::baseFpsCap &&
             defaults.adaptive == ls::GameConfDefaults::adaptive &&
             defaults.adaptive_auto_base_fps_cap ==
@@ -336,8 +330,6 @@ int main() {
                 ls::GameConfDefaults::adaptiveMaxMultiplier &&
             defaults.adaptive_stable_cadence ==
                 ls::GameConfDefaults::adaptiveStableCadence &&
-            defaults.gamescope_vrr_mode ==
-                ls::GameConfDefaults::gamescopeVrrMode &&
             defaults.dynamic_cadence_recovery ==
                 ls::GameConfDefaults::dynamicCadenceRecovery &&
             defaults.dynamic_cadence_probe_interval_seconds ==
@@ -456,8 +448,6 @@ int main() {
         "The accepted configuration must expose dynamic cadence recovery");
     expect(config.get().profiles().front().dynamic_cadence_probe_interval_seconds == 0.1F,
         "The accepted configuration must expose the cadence probe interval");
-    expect(config.get().profiles().front().frame_generation_refresh_threshold == 60,
-        "The accepted configuration must expose the refresh-rate threshold");
     expect(!config.get().profiles().front().frame_generation_provisioned &&
             config.get().profiles().front()
                 .swapchain_image_count_compatibility,
@@ -598,27 +588,6 @@ adaptive_fractional_real_frame_priority = "maximum"
     expect(invalidPriorityRejected,
         "Unknown Fractional real-frame priorities must be rejected");
 
-    const auto vrrPath = directory / "gamescope-vrr.toml";
-    writeText(vrrPath, R"(version = 2
-[[profile]]
-gamescope_vrr_mode = "off"
-)");
-    const ls::ConfigFile vrrConfiguration(vrrPath);
-    expect(vrrConfiguration.profiles().front().gamescope_vrr_mode ==
-            ls::GamescopeVrrMode::Off,
-        "Gamescope VRR mode did not preserve the off token");
-    const auto invalidVrrPath = directory / "invalid-gamescope-vrr.toml";
-    writeText(invalidVrrPath, R"(version = 2
-[[profile]]
-gamescope_vrr_mode = "automatic"
-)");
-    bool invalidVrrRejected = false;
-    try {
-        static_cast<void>(ls::ConfigFile(invalidVrrPath));
-    } catch (const std::exception&) {
-        invalidVrrRejected = true;
-    }
-    expect(invalidVrrRejected, "Unknown Gamescope VRR modes must be rejected");
 
     for (const std::string_view invalidInterval : {"0.09", "4"}) {
         const auto invalidIntervalPath = directory /
@@ -681,6 +650,37 @@ scaling_sharpness = 7.0
     expect(ls::ConfigFile(invalidRetiredPath).profiles().front().name ==
             "invalid-retired-scaling",
         "Out-of-range retired scaling values must not reject the file");
+
+    // Retired Gamescope keys stay accepted and ignored: an old file loads, a
+    // rewrite drops them, and the supported settings still round-trip.
+    const auto retiredGamescopePath = directory / "retired-gamescope.toml";
+    writeText(retiredGamescopePath, R"(version = 2
+[global]
+allow_fp16 = true
+[[profile]]
+name = "retired-gamescope"
+frame_generation_provisioned = false
+frame_generation_enabled = false
+frame_generation_refresh_threshold = 0
+gamescope_vrr_mode = "follow-steam"
+multiplier = 3
+flow_scale = 0.95
+)");
+    const ls::ConfigFile retiredGamescope(retiredGamescopePath);
+    const auto& retiredGamescopeProfile = retiredGamescope.profiles().front();
+    expect(retiredGamescopeProfile.name == "retired-gamescope" &&
+            !retiredGamescopeProfile.frame_generation_provisioned &&
+            retiredGamescopeProfile.multiplier == 3 &&
+            retiredGamescopeProfile.flow_scale == 0.95F,
+        "Retired Gamescope keys must not prevent loading the supported settings");
+    retiredGamescope.write(retiredGamescopePath);
+    const auto rewrittenGamescope = readText(retiredGamescopePath);
+    expect(rewrittenGamescope.find("frame_generation_refresh_threshold") == std::string::npos &&
+            rewrittenGamescope.find("gamescope_vrr_mode") == std::string::npos,
+        "Rewriting a configuration must drop the retired Gamescope keys");
+    expect(std::ranges::equal(retiredGamescope.profiles(),
+            ls::ConfigFile(retiredGamescopePath).profiles(), sameGameConf),
+        "Retired Gamescope keys must round-trip as absent settings");
 
     ls::ConfigFile detectionConfig;
     detectionConfig.profiles() = {
@@ -811,7 +811,6 @@ scaling_sharpness = 7.0
     setenv("FGVK_ADAPTIVE_TARGET_REFRESH_RATE", "1", 1);
     setenv("FGVK_DYNAMIC_CADENCE_RECOVERY", "1", 1);
     setenv("FGVK_DYNAMIC_CADENCE_PROBE_INTERVAL_SECONDS", "0.5", 1);
-    setenv("FGVK_FRAME_GENERATION_REFRESH_THRESHOLD", "130", 1);
     setenv("FGVK_FRAME_GENERATION_PROVISIONED", "0", 1);
     setenv("FGVK_ULTRA_PERFORMANCE", "1", 1);
     setenv("FGVK_SWAPCHAIN_IMAGE_COUNT_COMPATIBILITY", "1", 1);
@@ -824,8 +823,6 @@ scaling_sharpness = 7.0
     expect(environmentConfig.get().profiles().front().dynamic_cadence_recovery &&
             environmentConfig.get().profiles().front()
                 .dynamic_cadence_probe_interval_seconds == 0.5F &&
-            environmentConfig.get().profiles().front().frame_generation_refresh_threshold ==
-                130 &&
             !environmentConfig.get().profiles().front()
                 .frame_generation_provisioned &&
             environmentConfig.get().profiles().front().base_fps_cap == 0 &&
@@ -839,7 +836,6 @@ scaling_sharpness = 7.0
         "Environment configuration must expose cadence and swapchain policy");
     unsetenv("FGVK_DYNAMIC_CADENCE_RECOVERY");
     unsetenv("FGVK_DYNAMIC_CADENCE_PROBE_INTERVAL_SECONDS");
-    unsetenv("FGVK_FRAME_GENERATION_REFRESH_THRESHOLD");
     unsetenv("FGVK_FRAME_GENERATION_PROVISIONED");
     unsetenv("FGVK_ULTRA_PERFORMANCE");
     unsetenv("FGVK_SWAPCHAIN_IMAGE_COUNT_COMPATIBILITY");

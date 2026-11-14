@@ -94,7 +94,7 @@ int main() {
                 (displayApplied.target_fps != target),
             "Display transitions must reset Fractional scheduling only when the target changes");
         displayApplied = plan.appliedProfile;
-        expect(generationSchedulerPolicy(displayApplied, refresh)->targetFps == target,
+        expect(generationSchedulerPolicy(displayApplied)->targetFps == target,
             "Scheduler policy must consume the applied display target");
         auto steady = displayApplied;
         steady.adaptive_auto_base_fps_cap = true;
@@ -148,7 +148,7 @@ int main() {
         );
         const auto target = refresh && *refresh ? *refresh : 120U;
         expect(committed.adaptive && committed.target_fps == target &&
-                generationSchedulerPolicy(committed, refresh)->targetFps == target,
+                generationSchedulerPolicy(committed)->targetFps == target,
             "Private commit must resolve the new Adaptive policy from current refresh");
         committed.adaptive_auto_base_fps_cap = true;
         expect(effectiveBaseFpsCap(committed) == target / 2.0,
@@ -378,9 +378,6 @@ int main() {
     expect(!baseCapPacesOutputs(cappedFixedPacing, 30., true, 120),
         "disabled Fixed generation must not acquire output pacing");
     cappedFixedPacing.frame_generation_enabled = true;
-    cappedFixedPacing.frame_generation_refresh_threshold = 120;
-    expect(!baseCapPacesOutputs(cappedFixedPacing, 30., true, 120),
-        "refresh-paused Fixed generation must not acquire output pacing");
     auto bridgeProfile = ls::GameConf{};
     bridgeProfile.frame_generation_provisioned = true;
     bridgeProfile.frame_generation_enabled = true;
@@ -430,7 +427,7 @@ int main() {
         bridgeProfile.base_fps_cap = cap;
         const auto output = gamescopeBridgeOutputPolicy(bridgeProfile, 120, nativeScheduler);
         expect(output.outputFps == 120 && !output.generatedTimeline &&
-                effectiveBaseFpsCap(bridgeProfile, nativeScheduler, 120) == cap,
+                effectiveBaseFpsCap(bridgeProfile, nativeScheduler) == cap,
             "target-capable manual caps must release native output timing without releasing the cap");
         const auto unqualified = gamescopeBridgeOutputPolicy(bridgeProfile, 120);
         expect(unqualified.outputFps == 90 && unqualified.generatedTimeline,
@@ -461,11 +458,6 @@ int main() {
             !gamescopeBridgeOutputPolicy(bridgeProfile, 120).generatedTimeline,
         "live disabled generation must release its output ceiling");
     bridgeProfile.frame_generation_enabled = true;
-    bridgeProfile.frame_generation_refresh_threshold = 60;
-    expect(!gamescopeBridgeOutputPolicy(bridgeProfile, 60).generatedTimeline &&
-            gamescopeBridgeOutputPolicy(bridgeProfile, std::nullopt).generatedTimeline,
-        "refresh guards must preserve disabled and unavailable-feedback policy");
-    GenerationPolicyResetGate resetGate;
     // The existing source-cap transition must rebuild native eligibility in
     // both directions; no separate live-update or cap owner is needed.
     auto belowTargetCap = adaptiveProfile();
@@ -479,7 +471,7 @@ int main() {
             allowNative ? belowTargetCap : aboveTargetCap,
             allowNative ? aboveTargetCap : belowTargetCap, 4, true);
         expect(changedCap.decision.baseFpsCapChanged &&
-                generationSchedulerPolicy(changedCap.appliedProfile, 90)->
+                generationSchedulerPolicy(changedCap.appliedProfile)->
                     qualifyTargetNativeCadence == allowNative,
             "live cap changes must rebuild the scheduler with the new native eligibility");
     }
@@ -489,22 +481,6 @@ int main() {
         belowTargetCap, aboveTargetCap, 4, true);
     expect(dormantNativeOwnership.decision.action == ProfileUpdateAction::NoRuntimeChange,
         "disabled generation must leave native qualification edits dormant");
-    expect(!resetGate.pending() && !resetGate.consumeOnResume(),
-        "A fresh policy-reset gate must not invent deferred work");
-    expect(!resetGate.request(true) && resetGate.pending() &&
-            !resetGate.request(true) && resetGate.pending(),
-        "Steam-menu policy edits must coalesce behind one deferred reset");
-    expect(resetGate.consumeOnResume() && !resetGate.pending() &&
-            !resetGate.consumeOnResume(),
-        "Gameplay return must consume a deferred reset exactly once");
-    expect(!resetGate.request(true) && resetGate.request(false) &&
-            !resetGate.pending(),
-        "An immediate gameplay update must subsume older deferred work");
-    expect(!resetGate.request(true),
-        "The cancellation precondition must create deferred work");
-    resetGate.cancel();
-    expect(!resetGate.pending() && !resetGate.consumeOnResume(),
-        "Disabling scheduling must cancel a deferred reset");
 
     expect(!profileUpdateInvalidatesTransientGenerationRecovery({}) &&
             profileUpdateInvalidatesTransientGenerationRecovery({
@@ -588,169 +564,8 @@ int main() {
                 std::nullopt, requestedBackendProfile),
         "An applied or not-yet-constructed profile was marked pending");
 
-    expect(effectiveFrameGenerationEnabled(current, std::nullopt) &&
-            effectiveFrameGenerationEnabled(current, 60),
-        "An unset refresh threshold must preserve configured frame generation");
-    auto refreshGuarded = current;
-    refreshGuarded.frame_generation_refresh_threshold = 60;
-    expect(effectiveFrameGenerationEnabled(refreshGuarded, std::nullopt),
-        "Missing Gamescope refresh feedback must fail open");
-    expect(!effectiveFrameGenerationEnabled(refreshGuarded, 40) &&
-            !effectiveFrameGenerationEnabled(refreshGuarded, 60) &&
-            effectiveFrameGenerationEnabled(refreshGuarded, 61),
-        "The display guard must pause at or below its configured threshold");
-    refreshGuarded.frame_generation_refresh_threshold = 130;
-    expect(!effectiveFrameGenerationEnabled(refreshGuarded, 120) &&
-            !effectiveFrameGenerationEnabled(refreshGuarded, 130) &&
-            effectiveFrameGenerationEnabled(refreshGuarded, 165),
-        "A custom threshold must support high-refresh display transitions");
-    auto manuallyDisabledRefreshGuard = refreshGuarded;
-    manuallyDisabledRefreshGuard.frame_generation_enabled = false;
-    expect(!effectiveFrameGenerationEnabled(
-            manuallyDisabledRefreshGuard, std::nullopt),
-        "Missing refresh feedback must not override the live off switch");
-    auto decision = classifyProfileUpdate(current, refreshGuarded, 3, true);
-    expect(decision.action == ProfileUpdateAction::ApplyLive &&
-            decision.refreshRateThresholdChanged,
-        "Refresh threshold changes must apply live");
 
-    struct RefreshGuardCapMode {
-        bool adaptive;
-        bool steady;
-        ls::AdaptiveFractionalRealFramePriority priority;
-        std::optional<double> generatedCap;
-    };
-    using Priority = ls::AdaptiveFractionalRealFramePriority;
-    const RefreshGuardCapMode refreshGuardCapModes[]{
-        {false, false, Priority::Auto, std::nullopt},
-        {true, false, Priority::Auto, std::nullopt},
-        {true, true, Priority::Auto, 45.0},
-        {true, false, Priority::Low, 54.0},
-        {true, false, Priority::Medium, 60.0},
-        {true, false, Priority::High, 67.5},
-        {true, false, Priority::VeryHigh, 72.0},
-    };
-    const AdaptiveSchedulerSnapshot staleCapRelease{
-        .automaticBaseCapSuppressed = true,
-    };
-    const AdaptiveSchedulerSnapshot refreshGuardCadence{
-        .phase = AdaptiveSchedulerPhase::StableCadence,
-        .generationLimit = 1,
-        .validatedGenerationLimit = 1,
-        .stableCadenceLimit = 1,
-        .stableCadenceEvaluationActive = false,
-        .smoothedBaseFps = 30.0,
-    };
-    const GamescopePresentationFeedback refreshGuardVrr{
-        .vrrEnabled = true,
-        .vrrCapable = true,
-        .vrrActive = true,
-    };
-    for (const auto manualCap : {0U, 40U}) {
-        for (const auto& mode : refreshGuardCapModes) {
-            auto requested = savedTarget;
-            requested.adaptive = mode.adaptive;
-            requested.adaptive_auto_base_fps_cap = mode.steady;
-            requested.adaptive_fractional_real_frame_priority = mode.priority;
-            requested.adaptive_stable_cadence = true;
-            requested.adaptive_target_refresh_rate = true;
-            requested.frame_generation_refresh_threshold = 60;
-            requested.base_fps_cap = manualCap;
-            const auto paused = resolveDisplayTarget(requested, requested, 60)
-                .appliedProfile;
-            expect(!effectiveFrameGenerationEnabled(paused, 60) &&
-                    effectiveBaseFpsCap(paused, 40) == manualCap &&
-                    effectiveBaseFpsCap(paused, 60) == manualCap,
-                "The display guard must release Adaptive caps and retain only the manual cap");
-            expect(effectiveBaseFpsCap(paused, staleCapRelease, 60) == manualCap &&
-                    effectiveBaseFpsCap(paused, staleCapRelease, {}, 60) == manualCap &&
-                    effectiveBaseFpsCap(paused, staleCapRelease, refreshGuardVrr, 60)
-                        == manualCap,
-                "Stale scheduler or VRR state must not override the paused manual cap");
-            expect(!baseCapPacesOutputs(paused, manualCap, true, 60),
-                "Refresh-paused generation must not reserve Fractional output deadlines");
-            expect(!smoothCadenceBaseCapEligible(paused, true, false, 60) &&
-                    !smoothCadencePacerHandoffGenerationLimit(
-                        paused, true, false, 60, refreshGuardCadence, refreshGuardVrr),
-                "The display guard must also release cadence-derived pacing owners");
-
-            const auto resumed = resolveDisplayTarget(paused, requested, 90)
-                .appliedProfile;
-            const double resumedCap = mode.generatedCap.value_or(manualCap);
-            expect(effectiveFrameGenerationEnabled(resumed, 90) &&
-                    effectiveBaseFpsCap(resumed, 90) == resumedCap &&
-                    effectiveBaseFpsCap(resumed, {}, refreshGuardVrr, 90) == resumedCap,
-                "Generation and target-derived caps must resume with the applied display target");
-            const auto missing = resolveDisplayTarget(paused, requested, std::nullopt)
-                .appliedProfile;
-            expect(effectiveFrameGenerationEnabled(missing, std::nullopt) &&
-                    effectiveBaseFpsCap(missing, std::nullopt) == resumedCap &&
-                    missing.target_fps == requested.target_fps,
-                "Missing refresh feedback must restore normal caps and the fallback target");
-            auto explicitlyOff = paused;
-            explicitlyOff.frame_generation_enabled = false;
-            expect(effectiveBaseFpsCap(explicitlyOff, 60) == 0.0,
-                "Explicit Frame Generation Off must retain its existing all-caps-dormant policy");
-            explicitlyOff.frame_generation_enabled = true;
-            explicitlyOff.frame_generation_provisioned = false;
-            expect(effectiveBaseFpsCap(explicitlyOff, 60) == 0.0,
-                "An unprovisioned process must not acquire a manual cap through the display guard");
-            expect(requested.base_fps_cap == manualCap &&
-                    paused.base_fps_cap == manualCap &&
-                    paused.frame_generation_enabled &&
-                    paused.adaptive_auto_base_fps_cap == mode.steady &&
-                    paused.adaptive_fractional_real_frame_priority == mode.priority,
-                "Display pausing must preserve saved cap choices and live generation intent");
-        }
-    }
-
-    auto steadyRefreshGuard = savedTarget;
-    steadyRefreshGuard.adaptive_auto_base_fps_cap = true;
-    steadyRefreshGuard.adaptive_target_refresh_rate = true;
-    steadyRefreshGuard.frame_generation_refresh_threshold = 60;
-    const auto pausedSteady = resolveDisplayTarget(
-        steadyRefreshGuard, steadyRefreshGuard, 60).appliedProfile;
-    RealFramePacer refreshGuardPacer;
-    const auto capNow = RealFramePacer::TimePoint{} + std::chrono::seconds(1);
-    static_cast<void>(refreshGuardPacer.schedule(capNow, 30.0));
-    expect(refreshGuardPacer.schedule(capNow + std::chrono::milliseconds(1), 30.0)
-                > capNow + std::chrono::milliseconds(1),
-        "The regression fixture must begin with a pending half-target cap deadline");
-    const auto pauseNow = capNow + std::chrono::milliseconds(2);
-    expect(refreshGuardPacer.schedule(pauseNow,
-                effectiveBaseFpsCap(pausedSteady, {}, {}, 60)) == pauseNow,
-        "Refresh pausing must discard a previously scheduled automatic cap delay");
-    auto withoutRefreshGuard = steadyRefreshGuard;
-    withoutRefreshGuard.frame_generation_refresh_threshold = 0;
-    const auto guardDisabled = resolveDisplayTarget(
-        pausedSteady, withoutRefreshGuard, 60);
-    expect(guardDisabled.decision.action == ProfileUpdateAction::ApplyLive &&
-            guardDisabled.decision.baseFpsCapChanged &&
-            effectiveBaseFpsCap(guardDisabled.appliedProfile, 60) == 30.0,
-        "Disabling the refresh guard must restore the automatic cap and reset pacing live");
-    const auto guardEnabled = resolveDisplayTarget(
-        guardDisabled.appliedProfile, steadyRefreshGuard, 60);
-    expect(guardEnabled.decision.action == ProfileUpdateAction::ApplyLive &&
-            guardEnabled.decision.baseFpsCapChanged &&
-            effectiveBaseFpsCap(guardEnabled.appliedProfile, 60) == 0.0,
-        "Enabling the refresh guard must release the automatic cap and reset pacing live");
-    auto manualTargetGuard = steadyRefreshGuard;
-    manualTargetGuard.adaptive_target_refresh_rate = false;
-    const auto pausedManualTarget = resolveDisplayTarget(
-        manualTargetGuard, manualTargetGuard, 60).appliedProfile;
-    expect(pausedManualTarget.target_fps == 90 &&
-            effectiveBaseFpsCap(pausedManualTarget, 60) == 0.0 &&
-            effectiveBaseFpsCap(pausedManualTarget, 61) == 45.0,
-        "Refresh-cap release must also work with a manually selected Adaptive target");
-    auto editedManual = steadyRefreshGuard;
-    editedManual.base_fps_cap = 40;
-    const auto pausedManualEdit = resolveDisplayTarget(pausedSteady, editedManual, 60);
-    expect(pausedManualEdit.decision.action == ProfileUpdateAction::ApplyLive &&
-            pausedManualEdit.decision.baseFpsCapChanged &&
-            effectiveBaseFpsCap(pausedManualEdit.appliedProfile, 60) == 40.0,
-        "Manual cap edits must reset pacing while the refresh guard owns the pause");
-
-    const auto adaptiveSchedulerPolicy = generationSchedulerPolicy(current, 60);
+    const auto adaptiveSchedulerPolicy = generationSchedulerPolicy(current);
     expect(adaptiveSchedulerPolicy &&
             adaptiveSchedulerPolicy->targetFps == current.target_fps &&
             adaptiveSchedulerPolicy->maximumMultiplier ==
@@ -761,7 +576,7 @@ int main() {
     auto fractionalSmooth = current;
     fractionalSmooth.adaptive_auto_base_fps_cap = false;
     fractionalSmooth.adaptive_stable_cadence = true;
-    const auto fractionalSmoothPolicy = generationSchedulerPolicy(fractionalSmooth, 60);
+    const auto fractionalSmoothPolicy = generationSchedulerPolicy(fractionalSmooth);
     expect(fractionalSmoothPolicy && fractionalSmoothPolicy->stableCadence,
         "Fractional Adaptive must pass Smooth Cadence into its scheduler");
 
@@ -780,11 +595,6 @@ int main() {
     expect(smoothCadencePacerHandoffGenerationLimit(
             steadyPacing, true, false, 120, acceptedTwoX) == 1,
         "accepted target-matched Steady 2x did not hand pacing to ordered FIFO");
-    const GamescopePresentationFeedback activeVrr{
-        .vrrEnabled = true,
-        .vrrCapable = true,
-        .vrrActive = true,
-    };
     expect(!smoothCadencePacerHandoffGenerationLimit(
             steadyPacing, true, false, 90, acceptedTwoX),
         "target-mismatched refresh incorrectly bypassed the Steady base cap");
@@ -804,17 +614,7 @@ int main() {
             steadyPacing, true, false, 120, acceptedTwoX),
         "Steady pacing handoff remained active outside its target window");
     expect(smoothCadencePacerHandoffGenerationLimit(
-            steadyPacing, true, false, 120, acceptedTwoX,
-            activeVrr, 1) == 1,
-        "active VRR FIFO handoff restored its cap from short return jitter");
-    expect(!smoothCadencePacerHandoffGenerationLimit(
-            steadyPacing, true, false, 120, acceptedTwoX,
-            activeVrr, std::nullopt),
-        "VRR FIFO handoff entered outside its qualified cadence window");
-    const GamescopePresentationFeedback fixedRefresh{};
-    expect(smoothCadencePacerHandoffGenerationLimit(
-            steadyPacing, true, false, 120, acceptedTwoX,
-            fixedRefresh, 1) == 1,
+            steadyPacing, true, false, 120, acceptedTwoX, 1) == 1,
         "fixed-refresh handoff ignored its retained scheduler qualification");
     {
         using namespace std::chrono_literals;
@@ -828,7 +628,7 @@ int main() {
             snapshot.smoothedBaseFps = fps;
             const auto now = start + elapsed;
             return handoff.update(now, smoothCadencePacerHandoffGenerationLimit(
-                steadyPacing, true, pressure, 120, snapshot, fixedRefresh,
+                steadyPacing, true, pressure, 120, snapshot,
                 handoff.activeGenerationLimit()));
         };
         expect(!step(0ms, 68.5929).active,
@@ -857,61 +657,6 @@ int main() {
             "cadence retention bypassed an active scheduler probe");
     }
     acceptedTwoX.smoothedBaseFps = 60.0;
-    auto fractionalVrr = steadyPacing;
-    fractionalVrr.adaptive_auto_base_fps_cap = false;
-    expect(smoothCadencePacerHandoffGenerationLimit(
-            fractionalVrr, true, false, 120, acceptedTwoX,
-            activeVrr) == 1,
-        "accepted uncapped Fractional 2x did not hand pacing to VRR FIFO");
-    expect(!smoothCadencePacerHandoffGenerationLimit(
-            fractionalVrr, true, false, 120, acceptedTwoX,
-            fixedRefresh),
-        "Fractional integer FIFO handoff changed fixed-refresh pacing");
-    auto unacceptedFractional = acceptedTwoX;
-    unacceptedFractional.stableCadenceLimit.reset();
-    unacceptedFractional.phase = AdaptiveSchedulerPhase::Active;
-    expect(!smoothCadencePacerHandoffGenerationLimit(
-            fractionalVrr, true, false, 120, unacceptedFractional,
-            activeVrr),
-        "variable Fractional planning entered the integer FIFO handoff");
-    fractionalVrr.base_fps_cap = 60;
-    expect(!smoothCadencePacerHandoffGenerationLimit(
-            fractionalVrr, true, false, 120, acceptedTwoX,
-            activeVrr),
-        "manual Fractional cap was bypassed by FIFO");
-    fractionalVrr.base_fps_cap = 0;
-    fractionalVrr.adaptive_fractional_real_frame_priority =
-        ls::AdaptiveFractionalRealFramePriority::Low;
-    expect(!smoothCadencePacerHandoffGenerationLimit(
-            fractionalVrr, true, false, 120, acceptedTwoX,
-            activeVrr),
-        "Fractional Real Frame Priority was bypassed by FIFO");
-    fractionalVrr.adaptive_fractional_real_frame_priority =
-        ls::AdaptiveFractionalRealFramePriority::Auto;
-    fractionalVrr.dynamic_cadence_recovery = true;
-    expect(!smoothCadencePacerHandoffGenerationLimit(
-            fractionalVrr, true, false, 120, acceptedTwoX,
-            activeVrr),
-        "Dynamic Cadence Recovery entered the Fractional FIFO handoff");
-    fractionalVrr.dynamic_cadence_recovery = false;
-    acceptedTwoX.stableCadenceEvaluationActive = true;
-    expect(!smoothCadencePacerHandoffGenerationLimit(
-            fractionalVrr, true, false, 120, acceptedTwoX,
-            activeVrr),
-        "unaccepted Fractional cadence entered VRR FIFO");
-    acceptedTwoX.stableCadenceEvaluationActive = false;
-    acceptedTwoX.targetOutputClockActive = true;
-    expect(!smoothCadencePacerHandoffGenerationLimit(
-            fractionalVrr, true, false, 120, acceptedTwoX,
-            activeVrr),
-        "Fractional target clock was bypassed before constant-cadence planning");
-    acceptedTwoX.targetOutputClockActive = false;
-    acceptedTwoX.efficiencyProbeGenerationLimit = 0;
-    expect(!smoothCadencePacerHandoffGenerationLimit(
-            fractionalVrr, true, false, 120, acceptedTwoX,
-            activeVrr),
-        "Fractional efficiency probe entered VRR FIFO");
-    acceptedTwoX.efficiencyProbeGenerationLimit.reset();
     steadyPacing.adaptive_auto_base_fps_cap = false;
     expect(!smoothCadencePacerHandoffGenerationLimit(
             steadyPacing, true, false, 120, acceptedTwoX),
@@ -920,9 +665,6 @@ int main() {
     expect(smoothCadenceBaseCapEligible(
             steadyPacing, true, false, 120),
         "target-matched ordered Steady mode did not enable integer-cap qualification");
-    expect(!smoothCadenceBaseCapEligible(
-            steadyPacing, true, false, 120, activeVrr),
-        "Steady Adaptive enabled its fixed-refresh cap ladder under VRR");
     expect(!smoothCadenceBaseCapEligible(
             steadyPacing, false, false, 120),
         "non-ordered transport enabled the Steady integer-cap ladder");
@@ -938,271 +680,10 @@ int main() {
         "Fractional policy enabled the Steady integer-cap ladder");
     steadyPacing.adaptive_stable_cadence = true;
 
-    auto fixedPacing = current;
-    fixedPacing.adaptive = false;
-    fixedPacing.multiplier = 3;
-    fixedPacing.adaptive_stable_cadence = true;
-    fixedPacing.base_fps_cap = 0;
-    fixedPacing.dynamic_cadence_recovery = false;
-    expect(fixedSmoothCadenceFifoEligible(
-            fixedPacing, true, false, 120),
-        "ordered Fixed Smooth Cadence did not select FIFO pacing");
-    for (size_t multiplier = 2; multiplier <= 5; ++multiplier) {
-        fixedPacing.multiplier = multiplier;
-        expect(fixedSmoothCadenceFifoEligible(
-                fixedPacing, true, false, 120),
-            "ordered FIFO did not retain the full Fixed multiplier");
-    }
-    fixedPacing.multiplier = 3;
-    const GamescopePresentationFeedback vrrDisabled{
-        .vrrEnabled = false,
-        .vrrCapable = true,
-        .vrrActive = false,
-        .allowTearing = true,
-    };
-    expect(!gamescopePresentationPacingOwnerChanged(
-            fixedPacing, true, false, 120, acceptedTwoX, std::nullopt,
-            vrrDisabled, activeVrr),
-        "Fixed Smooth Cadence changed FIFO pacing owner under VRR");
-    auto ordinaryFixed = fixedPacing;
-    ordinaryFixed.adaptive_stable_cadence = false;
-    expect(!gamescopePresentationPacingOwnerChanged(
-            ordinaryFixed, true, false, 120, acceptedTwoX, std::nullopt,
-            vrrDisabled, activeVrr),
-        "ordinary Fixed treated VRR feedback as a pacing-owner reset");
-    auto fractionalAdaptive = steadyPacing;
-    fractionalAdaptive.adaptive_stable_cadence = false;
-    expect(!gamescopePresentationPacingOwnerChanged(
-            fractionalAdaptive, true, false, 120, acceptedTwoX, std::nullopt,
-            vrrDisabled, activeVrr),
-        "Fractional Adaptive treated VRR feedback as a pacing-owner reset");
-    expect(!gamescopePresentationPacingOwnerChanged(
-            steadyPacing, true, false, 120, acceptedTwoX, 1,
-            vrrDisabled, activeVrr),
-        "validated Steady 2x reset its FIFO pacing owner under VRR");
-    for (const bool smooth : {false, true}) {
-        auto retryProfile = steadyPacing;
-        retryProfile.adaptive_stable_cadence = smooth;
-        for (const bool enable : {false, true}) {
-            const auto& before = enable ? vrrDisabled : activeVrr;
-            const auto& after = enable ? activeVrr : vrrDisabled;
-            expect(gamescopeHigherLoadRetryChanged(
-                    retryProfile, true, false, 120, before, after),
-                "confirmed VRR preference change did not refresh Adaptive retries");
-            expect(!gamescopeHigherLoadRetryChanged(
-                    retryProfile, false, false, 120, before, after),
-                "non-ordered presentation refreshed Adaptive retries");
-            expect(!gamescopeHigherLoadRetryChanged(
-                    retryProfile, true, true, 120, before, after),
-                "transport recovery discarded rejected-workload history");
-            expect(!gamescopeHigherLoadRetryChanged(
-                    fixedPacing, true, false, 120, before, after),
-                "Fixed mode responded to Adaptive retry policy");
-        }
-        auto overlay = activeVrr;
-        overlay.vrrActive = false;
-        expect(!gamescopeHigherLoadRetryChanged(
-                retryProfile, true, false, 120, activeVrr, overlay),
-            "overlay activity discarded rejected-workload history");
-        overlay = activeVrr;
-        overlay.allowTearing = !overlay.allowTearing.value_or(false);
-        expect(!gamescopeHigherLoadRetryChanged(
-                retryProfile, true, false, 120, activeVrr, overlay),
-            "tearing feedback discarded rejected-workload history");
-        expect(!gamescopeHigherLoadRetryChanged(
-                retryProfile, true, false, 120, {}, activeVrr),
-            "initial feedback was mistaken for a policy change");
-        expect(!gamescopeHigherLoadRetryChanged(
-                retryProfile, true, false, 120, activeVrr, {}),
-            "missing feedback discarded rejected-workload history");
-        auto incapable = activeVrr;
-        incapable.vrrCapable = false;
-        expect(!gamescopeHigherLoadRetryChanged(
-                retryProfile, true, false, 120, vrrDisabled, incapable),
-            "incapable VRR request discarded rejected-workload history");
-    }
-
-    auto acceptedThreeX = acceptedTwoX;
-    acceptedThreeX.generationLimit = 2;
-    acceptedThreeX.validatedGenerationLimit = 2;
-    acceptedThreeX.stableCadenceLimit = 2;
-    acceptedThreeX.smoothedBaseFps = 40.0;
-    expect(smoothCadencePacerHandoffGenerationLimit(
-            steadyPacing, true, false, 120, acceptedThreeX,
-            activeVrr) == 2,
-        "validated Steady 3x did not hand pacing to ordered FIFO under VRR");
-    expect(smoothCadencePacerHandoffGenerationLimit(
-            fractionalVrr, true, false, 120, acceptedThreeX,
-            activeVrr) == 2,
-        "accepted uncapped Fractional 3x did not hand pacing to VRR FIFO");
-    expect(!smoothCadencePacerHandoffGenerationLimit(
-            steadyPacing, true, false, 120, acceptedThreeX,
-            fixedRefresh),
-        "Steady 3x FIFO handoff changed fixed-refresh pacing");
-    acceptedThreeX.stableCadenceLimit.reset();
-    acceptedThreeX.phase = AdaptiveSchedulerPhase::Active;
-    acceptedThreeX.smoothedBaseFps = 50.0;
-    expect(smoothCadencePacerHandoffGenerationLimit(
-            steadyPacing, true, false, 120, acceptedThreeX,
-            activeVrr) == 2,
-        "validated variable 3x did not qualify for the VRR FIFO test");
-    expect(!smoothCadencePacerHandoffGenerationLimit(
-            fractionalVrr, true, false, 120, acceptedThreeX,
-            activeVrr),
-        "variable Fractional 3x request was forced into a full FIFO batch");
-    acceptedThreeX.smoothedBaseFps = 55.0;
-    expect(!smoothCadencePacerHandoffGenerationLimit(
-            steadyPacing, true, false, 120, acceptedThreeX,
-            activeVrr),
-        "VRR full 3x exceeded the bounded real-FPS tradeoff");
-    acceptedThreeX.smoothedBaseFps = 50.0;
-    acceptedThreeX.rampEvaluationActive = true;
-    acceptedThreeX.phase = AdaptiveSchedulerPhase::RampEvaluation;
-    expect(!smoothCadencePacerHandoffGenerationLimit(
-            steadyPacing, true, false, 120, acceptedThreeX,
-            activeVrr),
-        "unvalidated ramp used VRR full-rung FIFO");
-    acceptedThreeX.rampEvaluationActive = false;
-    acceptedThreeX.phase = AdaptiveSchedulerPhase::Active;
-    acceptedThreeX.efficiencyProbeGenerationLimit = 1;
-    expect(!smoothCadencePacerHandoffGenerationLimit(
-            steadyPacing, true, false, 120, acceptedThreeX,
-            activeVrr),
-        "lower-load efficiency probe used VRR full-rung FIFO");
-    expect(smoothCadencePacerHandoffPlannedProbe(
-            steadyPacing, true, false, 120, acceptedThreeX,
-            activeVrr, 2),
-        "planned lower-load Steady VRR probe did not preserve 3x retry eligibility");
-    expect(!smoothCadencePacerHandoffPlannedProbe(
-            steadyPacing, true, false, 120, acceptedThreeX,
-            fixedRefresh, 2),
-        "fixed-refresh efficiency probe bypassed its existing retry behavior");
-    expect(!smoothCadencePacerHandoffPlannedProbe(
-            fractionalVrr, true, false, 120, acceptedThreeX,
-            activeVrr, 2),
-        "Fractional efficiency probe entered the Steady-only retry exception");
-    acceptedThreeX.pacedLoadValidationPending = true;
-    expect(smoothCadencePacerHandoffPlannedProbe(
-            fractionalVrr, true, false, 120, acceptedThreeX, activeVrr, 2),
-        "fresh Fractional pacing comparison armed an unrelated FIFO cooldown");
-    auto manuallyCappedFractional = fractionalVrr;
-    manuallyCappedFractional.base_fps_cap = 60;
-    expect(!smoothCadencePacerHandoffPlannedProbe(
-            manuallyCappedFractional, true, false, 120, acceptedThreeX, activeVrr, 2),
-        "manual Fractional cap entered the fresh pacing probe exception");
-    acceptedThreeX.pacedLoadValidationPending = false;
-    expect(!smoothCadencePacerHandoffPlannedProbe(
-            steadyPacing, false, false, 120, acceptedThreeX,
-            activeVrr, 2),
-        "lost ordered transport bypassed the handoff retry guard");
-    expect(!smoothCadencePacerHandoffPlannedProbe(
-            steadyPacing, true, true, 120, acceptedThreeX,
-            activeVrr, 2),
-        "ordered-acquire recovery bypassed the handoff retry guard");
-    expect(!smoothCadencePacerHandoffPlannedProbe(
-            steadyPacing, true, false, 120, acceptedThreeX,
-            activeVrr, 1),
-        "2x handoff entered the higher-rung probe exception");
-    acceptedThreeX.rampEvaluationActive = true;
-    expect(!smoothCadencePacerHandoffPlannedProbe(
-            steadyPacing, true, false, 120, acceptedThreeX,
-            activeVrr, 2),
-        "ramp evaluation bypassed the handoff retry guard");
-    acceptedThreeX.rampEvaluationActive = false;
-    acceptedThreeX.rearmRequired = true;
-    expect(!smoothCadencePacerHandoffPlannedProbe(
-            steadyPacing, true, false, 120, acceptedThreeX,
-            activeVrr, 2),
-        "scheduler rearm bypassed the handoff retry guard");
-    acceptedThreeX.rearmRequired = false;
-    acceptedThreeX.efficiencyProbeGenerationLimit.reset();
-    acceptedThreeX.generationLimit = 1;
-    acceptedThreeX.validatedGenerationLimit = 1;
-    acceptedThreeX.pacedLoadRollbackGenerationLimit = 2;
-    expect(smoothCadencePacerHandoffPlannedProbe(
-            steadyPacing, true, false, 120, acceptedThreeX, activeVrr, 2),
-        "measured pacing rollback armed a separate FIFO failure cooldown");
-    expect(smoothCadencePacerHandoffPlannedProbe(
-            fractionalVrr, true, false, 120, acceptedThreeX, activeVrr, 2),
-        "accepted Fractional pacing rollback armed a FIFO failure cooldown");
-    expect(!smoothCadencePacerHandoffPlannedProbe(
-            steadyPacing, true, true, 120, acceptedThreeX, activeVrr, 2),
-        "paced rollback bypassed actual acquire recovery");
-    expect(!smoothCadencePacerHandoffPlannedProbe(
-            steadyPacing, true, false, 120, acceptedThreeX, activeVrr, 3),
-        "paced rollback bypassed another rung's FIFO failure cooldown");
-    acceptedThreeX.pacedLoadRollbackGenerationLimit.reset();
-    expect(!smoothCadencePacerHandoffPlannedProbe(
-            steadyPacing, true, false, 120, acceptedThreeX, activeVrr, 2),
-        "ordinary qualification loss became a planned pacing rollback");
-    acceptedThreeX.generationLimit = 2;
-    acceptedThreeX.validatedGenerationLimit = 2;
-    acceptedThreeX.stableCadenceLimit = 2;
-    acceptedThreeX.stableCadenceEvaluationActive = true;
-    acceptedThreeX.phase = AdaptiveSchedulerPhase::StableCadence;
-    expect(!smoothCadencePacerHandoffGenerationLimit(
-            steadyPacing, true, false, 120, acceptedThreeX,
-            activeVrr),
-        "unproven 3x Smooth Cadence entered VRR FIFO");
-    expect(smoothCadencePacerHandoffGenerationLimit(
-            steadyPacing, true, false, 120, acceptedThreeX,
-            activeVrr, 2) == 2,
-        "active 3x FIFO handoff did not survive its same-rung evaluation");
-    acceptedThreeX.stableCadenceEvaluationActive = false;
-    steadyPacing.adaptive_max_multiplier = 5;
-    fractionalVrr.adaptive_max_multiplier = 5;
-    for (size_t generationLimit = 2; generationLimit <= 4;
-            ++generationLimit) {
-        acceptedThreeX.generationLimit = generationLimit;
-        acceptedThreeX.validatedGenerationLimit = generationLimit;
-        acceptedThreeX.stableCadenceLimit = generationLimit;
-        acceptedThreeX.smoothedBaseFps =
-            120.0 / static_cast<double>(generationLimit + 1);
-        expect(smoothCadencePacerHandoffGenerationLimit(
-                steadyPacing, true, false, 120, acceptedThreeX,
-                activeVrr) == generationLimit,
-            "validated higher Steady rung did not select VRR FIFO");
-        expect(smoothCadencePacerHandoffGenerationLimit(
-                fractionalVrr, true, false, 120, acceptedThreeX,
-                activeVrr) == generationLimit,
-            "accepted higher Fractional rung did not select VRR FIFO");
-    }
-    steadyPacing.adaptive_max_multiplier = 3;
-    acceptedThreeX.generationLimit = 2;
-    acceptedThreeX.validatedGenerationLimit = 2;
-    acceptedThreeX.stableCadenceLimit = 2;
-    acceptedThreeX.smoothedBaseFps = 40.0;
-    expect(!gamescopePresentationPacingOwnerChanged(
-            steadyPacing, true, false, 120, acceptedThreeX, std::nullopt,
-            vrrDisabled, activeVrr),
-        "validated Steady 3x scheduled an unnecessary reset before VRR FIFO");
-    fixedPacing.adaptive_stable_cadence = false;
-    expect(!fixedSmoothCadenceFifoEligible(
-            fixedPacing, true, false, 120),
-        "Fixed without Smooth Cadence selected FIFO full-cadence pacing");
-    fixedPacing.adaptive_stable_cadence = true;
-    expect(!fixedSmoothCadenceFifoEligible(
-            fixedPacing, true, false, std::nullopt),
-        "Fixed selected full-cadence pacing without refresh feedback");
-    expect(!fixedSmoothCadenceFifoEligible(
-            fixedPacing, false, false, 120),
-        "non-ordered transport enabled Fixed Smooth Cadence");
-    expect(!fixedSmoothCadenceFifoEligible(
-            fixedPacing, true, true, 120),
-        "ordered-acquire recovery did not suspend Fixed Smooth Cadence");
-    fixedPacing.base_fps_cap = 40;
-    expect(!fixedSmoothCadenceFifoEligible(
-            fixedPacing, true, false, 120),
-        "Fixed Smooth Cadence overrode an explicit real-frame cap");
-    fixedPacing.base_fps_cap = 0;
-    fixedPacing.dynamic_cadence_recovery = true;
-    expect(!fixedSmoothCadenceFifoEligible(
-            fixedPacing, true, false, 120),
-        "Fixed Smooth Cadence interfered with Dynamic Cadence Recovery");
 
     auto next = current;
     next.target_fps = 120;
-    decision = classifyProfileUpdate(current, next, 3, true);
+    auto decision = classifyProfileUpdate(current, next, 3, true);
     expect(decision.action == ProfileUpdateAction::ApplyLive,
         "Adaptive target changes must apply without rebuilding GPU resources");
     expect(decision.generationPolicyChanged &&
@@ -1236,32 +717,6 @@ int main() {
     next.adaptive = false;
     expect(dynamicCadenceRecoveryEnabled(next),
         "Fixed mode must allow global cadence recovery");
-    const auto fixedRecoveryPolicy = generationSchedulerPolicy(next, 60);
-    expect(fixedRecoveryPolicy &&
-            fixedRecoveryPolicy->targetFps == 60 &&
-            fixedRecoveryPolicy->maximumMultiplier == 2 &&
-            !fixedRecoveryPolicy->stableCadence &&
-            !fixedRecoveryPolicy->nearTargetNativePreference &&
-            fixedRecoveryPolicy->dynamicCadenceRecovery,
-        "Fixed recovery must follow refresh with its multiplier as a ceiling "
-        "without enabling Adaptive-only native preference");
-    expect(!generationSchedulerPolicy(next, std::nullopt),
-        "Fixed recovery must not borrow Adaptive's hidden target");
-    expect(generationSchedulerPolicy(next, 90)->targetFps == 90,
-        "Fixed recovery must recalibrate when confirmed refresh changes");
-    expect(generationSchedulerPolicy(next, 90)
-                ->dynamicCadenceProbeIntervalSeconds == 2.0F,
-        "Fixed recovery must retain its configured probe interval");
-    expect(!generationSchedulerPolicy(next, 0),
-        "Fixed recovery must reject an unsupported refresh target");
-    next.multiplier = 5;
-    const auto fixedFiveXRecoveryPolicy = generationSchedulerPolicy(next, 60);
-    expect(fixedFiveXRecoveryPolicy &&
-            fixedFiveXRecoveryPolicy->maximumMultiplier == 5,
-        "Fixed recovery must support the 5x generated-frame capacity");
-    next.multiplier = 6;
-    expect(!generationSchedulerPolicy(next, 60),
-        "Fixed recovery must fail closed beyond the supported 5x capacity");
 
     auto fixedWithoutRecovery = current;
     fixedWithoutRecovery.adaptive = false;
@@ -1362,13 +817,6 @@ int main() {
             }
             fractional.frame_generation_enabled = true;
             steady.frame_generation_enabled = true;
-            fractional.frame_generation_refresh_threshold = target;
-            steady.frame_generation_refresh_threshold = target;
-            expect(resolveDisplayTarget(fractional, steady, target)
-                    .decision.action == ProfileUpdateAction::NoRuntimeChange,
-                "Refresh-suspended generation must keep the cadence style dormant");
-            fractional.frame_generation_refresh_threshold = 0;
-            steady.frame_generation_refresh_threshold = 0;
             fractional.adaptive = false;
             steady.adaptive = false;
             expect(planProfileUpdate(fractional, steady, 3, true)
@@ -1392,9 +840,6 @@ int main() {
     };
     expect(effectiveBaseFpsCap(next, collapsedAutomaticCap) == 0.0,
         "A proven Ordered-SDR collapse did not release the automatic cap");
-    expect(effectiveBaseFpsCap(
-            next, collapsedAutomaticCap, activeVrr) == 45.0,
-        "VRR did not restore the target clock after an Ordered-SDR cap release");
 
     auto overlappingCaps = next;
     overlappingCaps.base_fps_cap = 30;
@@ -1657,16 +1102,14 @@ int main() {
     fixedCapacityOnlyRequest.multiplier = 3;
     const auto fixedCapacityOnlyPlan = planProfileUpdate(combinedFixedCurrent, fixedCapacityOnlyRequest, 1, true, true);
     expect(fixedCapacityOnlyPlan.decision.frameGenerationPrivateRebuild &&
-            !guardedLiveProfileResourceRecreationAvailable(fixedCapacityOnlyPlan.decision, true, true, true),
+            !guardedLiveProfileResourceRecreationAvailable(fixedCapacityOnlyPlan.decision, true, true),
         "A Fixed capacity-only change must remain private and never request game-owned recreation");
 
-    auto gamescopeFrameGenerationRequest = current;
-    gamescopeFrameGenerationRequest.flow_scale = 0.75F;
-    const auto gamescopeFrameGenerationDecision = planProfileUpdate(current, gamescopeFrameGenerationRequest, 2, true, false).decision;
-    expect(!guardedLiveProfileResourceRecreationAvailable(gamescopeFrameGenerationDecision, true, true, true),
-        "Gamescope frame-generation resources must not provoke an application-visible recreation");
-    expect(guardedLiveProfileResourceRecreationAvailable(gamescopeFrameGenerationDecision, true, true, false),
-        "A compatible non-Gamescope context must retain the guarded fallback recreation path");
+    auto flowScaleRequest = current;
+    flowScaleRequest.flow_scale = 0.75F;
+    const auto flowScaleDecision = planProfileUpdate(current, flowScaleRequest, 2, true, false).decision;
+    expect(guardedLiveProfileResourceRecreationAvailable(flowScaleDecision, true, true),
+        "The native context must retain the guarded fallback recreation path");
 
     auto frameGenerationBackendRequest = current;
     frameGenerationBackendRequest.flow_scale = 0.75F;
@@ -1881,7 +1324,7 @@ int main() {
     unprovisioned.frame_generation_provisioned = false;
     expect(generatedFrameCapacityForProfile(unprovisioned) == 0 &&
             generatedFrameCapacityForActivePolicy(unprovisioned) == 0 &&
-            !effectiveFrameGenerationEnabled(unprovisioned, std::nullopt),
+            !effectiveFrameGenerationEnabled(unprovisioned),
         "an unprovisioned profile must own no generated-frame work");
     auto fixedUltra = fixed;
     fixedUltra.ultra_performance = true;

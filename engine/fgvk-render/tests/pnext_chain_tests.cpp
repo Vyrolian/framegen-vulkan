@@ -272,7 +272,7 @@ int main() {
         .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
         .pNext = nullptr,
     };
-    // Model Gamescope's lower-facing maintenance1 node: its mode list can live
+    // Model a lower WSI layer's maintenance1 node: its mode list can live
     // in immutable storage and advertises MAILBOX only. Ordered SDR filters the
     // node; it must never const-cast and rewrite this array to FIFO.
     constexpr VkPresentModeKHR immutableModes[]{VK_PRESENT_MODE_MAILBOX_KHR};
@@ -289,7 +289,7 @@ int main() {
     expect(filteredHead.valid() && filteredHead.head() == &tail,
         "head present-mode node was not filtered");
     expect(immutableModes[0] == VK_PRESENT_MODE_MAILBOX_KHR,
-        "immutable Gamescope mode storage was modified");
+        "immutable lower-layer mode storage was modified");
 
     const FilteredSwapchainCreatePNextChain disabledCreateFilter(
         &createModes, VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_MODES_CREATE_INFO_EXT,

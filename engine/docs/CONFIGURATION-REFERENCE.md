@@ -68,14 +68,12 @@ Known launchers and helpers stay inactive while their child games can match. The
 | `multiplier` | `2` | Fixed total output multiplier, from 2–5. |
 | `adaptive` | `false` | Enables Adaptive instead of Fixed generation. |
 | `target_fps` | `120` | Adaptive generation target, or saved fallback when refresh matching is on. Fractional Automatic permits sustained native FPS above this target when the manual base cap is off or at least the target; the cap remains enforced. |
-| `adaptive_target_refresh_rate` | `false` | Matches Adaptive's output target to confirmed Gamescope display refresh, clamped to the Renderer’s 10–1000 FPS range. Applies live; unavailable or zero refresh uses the saved `target_fps`. Fixed ignores this choice. |
+| `adaptive_target_refresh_rate` | `false` | Matches Adaptive's output target to a confirmed display refresh, clamped to the Renderer’s 10–1000 FPS range. The native path has no confirmed refresh value yet, so the saved `target_fps` applies. Fixed ignores this choice. |
 | `adaptive_max_multiplier` | `3` | Adaptive multiplier ceiling, from 2–5. |
 | `adaptive_auto_base_fps_cap` | `false` | Enables Steady Base Cap behavior. |
 | `adaptive_fractional_real_frame_priority` | `auto` | Fractional real-frame preference: `auto`, `low`, `medium`, `high`, or `very-high`. |
 | `adaptive_stable_cadence` | `true` | Favours a stable validated cadence when available. |
-| `gamescope_vrr_mode` | `follow-steam` | Per-profile live Gamescope VRR choice: `follow-steam`, `on`, or `off`. On and Off take effect only when Gamescope reports that the active display supports VRR; otherwise they are saved but leave the live setting untouched. |
 | `base_fps_cap` | `0` | Real-frame cap; `0` disables it. |
-| `frame_generation_refresh_threshold` | `0` | Pauses generation at or below a confirmed Gamescope refresh; `0` disables it. |
 | `dynamic_cadence_recovery` | `false` | Rechecks native cadence for games that switch rates between gameplay and menus. Temporarily reduces generated work while sampling; checks can lower output FPS or cause hitches under sustained GPU load. |
 | `dynamic_cadence_probe_interval_seconds` | `2.0` | Recovery interval from 0.1–3 seconds. |
 
@@ -90,6 +88,8 @@ See [Adaptive validation](ADAPTIVE-VALIDATION.md) for scheduling details.
 ### Retired scaling keys
 
 The spatial scaler was removed. `scaling_enabled`, `scaling_method`, `scaling_factor`, `scaling_supersampling`, and `scaling_sharpness` (and their `FGVK_SCALING_*` environment variables) are retired. They are accepted and ignored, so old files still load, and framegen-vulkan does not write them.
+
+The `gamescope_vrr_mode` and `frame_generation_refresh_threshold` keys and the `FGVK_GAMESCOPE_VRR_MODE` and `FGVK_FRAME_GENERATION_REFRESH_THRESHOLD` overrides were removed with Gamescope support. Existing files still load; the keys and overrides are ignored, and the keys are omitted when the file is next written.
 
 ### Performance and device selection
 
@@ -148,9 +148,8 @@ With `FGVK_ENV=1`, `FGVK_GPU_HEADROOM_PERCENT=0|5|10|15|20` selects the same res
 Set `FGVK_ENV=1` to build one profile from environment variables instead of TOML:
 
 - global: `FGVK_DLL_PATH`, `FGVK_NO_FP16`;
-- Fixed and identity: `FGVK_GPU`, `FGVK_MULTIPLIER`, `FGVK_FRAME_GENERATION_PROVISIONED`, `FGVK_FRAME_GENERATION_ENABLED`, `FGVK_FRAME_GENERATION_REFRESH_THRESHOLD`, `FGVK_BASE_FPS_CAP`;
+- Fixed and identity: `FGVK_GPU`, `FGVK_MULTIPLIER`, `FGVK_FRAME_GENERATION_PROVISIONED`, `FGVK_FRAME_GENERATION_ENABLED`, `FGVK_BASE_FPS_CAP`;
 - Adaptive: `FGVK_ADAPTIVE`, `FGVK_ADAPTIVE_AUTO_BASE_FPS_CAP`, `FGVK_ADAPTIVE_FRACTIONAL_REAL_FRAME_PRIORITY`, `FGVK_TARGET_FPS`, `FGVK_ADAPTIVE_TARGET_REFRESH_RATE`, `FGVK_ADAPTIVE_MAX_MULTIPLIER`, `FGVK_ADAPTIVE_STABLE_CADENCE`, `FGVK_DYNAMIC_CADENCE_RECOVERY`, `FGVK_DYNAMIC_CADENCE_PROBE_INTERVAL_SECONDS`;
-- Gamescope VRR: `FGVK_GAMESCOPE_VRR_MODE` (`follow-steam`, `on`, or `off`);
 - Compatibility: `FGVK_SWAPCHAIN_IMAGE_COUNT_COMPATIBILITY`; and
 - resources: `FGVK_ULTRA_PERFORMANCE`, `FGVK_FLOW_SCALE`, `FGVK_PERFORMANCE_MODE`, `FGVK_PACING`.
 
@@ -171,4 +170,4 @@ Set `FGVK_ENV=1` to build one profile from environment variables instead of TOML
 
 ## Presentation acquisition timeout
 
-`FGVK_PRESENT_ACQUIRE_TIMEOUT_MS` limits how long framegen-vulkan waits for generated-image availability before native recovery. Adaptive VRR delivery and constrained Fixed image pools enforce a 50 ms limit when no explicit value is set. For a focused stall reproduction, try `25` and include the log. See [presentation recovery](LIFECYCLE.md) for deadline and fallback rules.
+`FGVK_PRESENT_ACQUIRE_TIMEOUT_MS` limits how long framegen-vulkan waits for generated-image availability before native recovery. Adaptive ordered delivery and constrained Fixed image pools enforce a 50 ms limit when no explicit value is set. For a focused stall reproduction, try `25` and include the log. See [presentation recovery](LIFECYCLE.md) for deadline and fallback rules.

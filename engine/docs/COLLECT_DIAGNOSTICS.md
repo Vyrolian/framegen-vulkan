@@ -52,9 +52,9 @@ The file appears on your Desktop; Konsole normally prints nothing. If no log is 
 
 For a slowdown after a long session, replace `--lines 5000` with `--lines 200000`. Collect before starting another game.
 
-Collect from the original session log, not an older filtered report, which may have omitted error details. The report does not include the separate Gamescope system journal; support may request it if the game log is insufficient.
+Collect from the original session log, not an older filtered report, which may have omitted error details. The report does not include the separate compositor system journal; support may request it if the game log is insufficient.
 
-For comparisons, collect a separate report after each run and note which settings changed. Use the same scene and game settings where possible. For HDR sharpening comparisons, also note the game resolution and display resolution. For VRR comparisons, record the VRR setting, display refresh rate, desktop or Gaming Mode session, and Gamescope version if used.
+For comparisons, collect a separate report after each run and note which settings changed. Use the same scene and game settings where possible. For HDR sharpening comparisons, also note the game resolution and display resolution. For VRR comparisons, record the VRR setting, display refresh rate, and session type.
 
 For timing-field meanings and the limits of log-based comparisons, see [Interpreting presentation records](WSI-ISOLATION.md#interpreting-presentation-records).
 

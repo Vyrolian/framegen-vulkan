@@ -51,23 +51,23 @@ namespace fgvk::layer {
 
     /// WSI family that created the application's surface. Diagnostics report it
     /// in the pacing profile.
-    enum class SpatialSurfaceOrigin {
+    enum class SurfaceOrigin {
         Unknown,
         Wayland,
         Xcb,
         Xlib,
     };
 
-    [[nodiscard]] constexpr const char* spatialSurfaceOriginName(
-            const SpatialSurfaceOrigin origin) noexcept {
+    [[nodiscard]] constexpr const char* surfaceOriginName(
+            const SurfaceOrigin origin) noexcept {
         switch (origin) {
-            case SpatialSurfaceOrigin::Unknown:
+            case SurfaceOrigin::Unknown:
                 return "unknown";
-            case SpatialSurfaceOrigin::Wayland:
+            case SurfaceOrigin::Wayland:
                 return "wayland";
-            case SpatialSurfaceOrigin::Xcb:
+            case SurfaceOrigin::Xcb:
                 return "xcb";
-            case SpatialSurfaceOrigin::Xlib:
+            case SurfaceOrigin::Xlib:
                 return "xlib";
         }
         return "unknown";
@@ -77,12 +77,9 @@ namespace fgvk::layer {
     struct SwapchainInfo {
         std::vector<VkImage> images;
         VkSurfaceKHR surface;
-        SpatialSurfaceOrigin surfaceOrigin{SpatialSurfaceOrigin::Unknown};
+        SurfaceOrigin surfaceOrigin{SurfaceOrigin::Unknown};
         std::shared_ptr<WaylandPresentationFeedback> waylandPresentation;
         std::shared_ptr<DeferredPresentQueue> deferredPresentQueue;
-        // Enabled only when the lower chain advertises display timing and the
-        // application has not selected its own timing-feedback namespace.
-        bool gamescopeDisplayTiming{false};
         bool ownedPresentTiming{false};
         bool presentMetering{false};
         // Observational device capability state, not a CPU-spacing exclusion.
@@ -134,7 +131,6 @@ namespace fgvk::layer {
     [[nodiscard]] bool context_ModifySwapchainCreateInfo(
         const ls::GameConf& profile, uint32_t maxImages,
         VkSwapchainCreateInfoKHR& createInfo,
-        bool gamescopeDetected,
         bool frameGenerationInteropEnabled,
         uint32_t surfaceMinImages = 0);
 
@@ -149,9 +145,6 @@ namespace fgvk::layer {
         Swapchain(const vk::Vulkan& vk, backend::Instance* backend,
             ls::GameConf profile, SwapchainInfo info,
             bool fp16Requested,
-            bool gamescopeDetected,
-            std::optional<uint32_t> gamescopeRefreshHz,
-            GamescopePresentationFeedback gamescopePresentationFeedback,
             uint64_t runtimeStateRevision,
             bool swapchainMaintenance1Enabled);
 
@@ -229,11 +222,6 @@ namespace fgvk::layer {
         [[nodiscard]] const ls::GameConf& appliedProfile() const {
             return this->profile;
         }
-        /// Gamescope detection captured when this context was created.
-        [[nodiscard]] bool gamescopeDetectedAtCreation() const {
-            return this->gamescopeDetected;
-        }
-
         /// Apply configuration that is safe for an already-created context.
         /// Flow Scale and model changes rebuild framegen-vulkan's private
         /// frame-generation context at the next presentation boundary.
@@ -267,29 +255,9 @@ namespace fgvk::layer {
         [[nodiscard]] bool presentRetirementEnabled() const {
             return !this->presentRetirementFences.empty();
         }
-        /// Update the compositor scanout budget without rebuilding resources.
-        void updateGamescopeRefreshRate(std::optional<uint32_t> refreshHz);
-        void updateGamescopePresentationFeedback(
-            const GamescopePresentationFeedback& feedback);
-        void updateGamescopeFocus(const GamescopeFocusFeedback& focus) {
-            if (!this->gamescopeFocusInitialized) {
-                this->lastFocusReturnSequence = focus.returnSequence;
-                this->gamescopeFocusInitialized = true;
-            }
-            this->gamescopeFocus = focus;
-        }
-
         /// Stop generation in place when the active profile disappears.
         void disableFrameGeneration();
     private:
-        void applyGamescopeFocus(std::chrono::steady_clock::time_point now);
-        GamescopeFocusFeedback gamescopeFocus;
-        GenerationPolicyResetGate generationPolicyResetGate;
-        bool steamMenuSuspended{false};
-        bool gamescopeFocusInitialized{false};
-        uint64_t lastFocusReturnSequence{0};
-        std::optional<bool> lastReportedGameFocus;
-        bool focusReported{false};
         struct PresentInvocation {
             const vk::Vulkan& vk;
             VkQueue queue;
@@ -335,12 +303,6 @@ namespace fgvk::layer {
             size_t admittedGeneratedFrameCount{0};
             bool historyWarmupActive{false};
             bool generatedImagesPreacquired{false};
-            // Fixed refresh retains zero-wait sequential acquire. Requested
-            // VRR uses a finite application-present ceiling, then zero-wait
-            // pressure preflight. One enum prevents contradictory modes.
-            AdaptiveOrderedDeliveryPolicy adaptiveOrderedDeliveryPolicy{
-                AdaptiveOrderedDeliveryPolicy::NotApplicable
-            };
             // Recovery probes are transport-owned synthetic delivery. Keep
             // them out of Adaptive ramp and Smooth Cadence qualification even
             // when an isolated guard clears before delivery is reported.
@@ -521,15 +483,12 @@ namespace fgvk::layer {
         // safety wait.
         bool generatedAcquireStalled{false};
 
-        bool gamescopeDetected{false};
         // Immutable for this context; copied from SwapchainInfo rather than
         // inferred again from the current colour pipeline.
         bool privateOrderedTransport{false};
         VkPresentModeKHR currentPresentMode{VK_PRESENT_MODE_FIFO_KHR};
         // Last per-present modes printed to stderr (-2 = nothing printed yet).
         int64_t loggedApplicationPresentMode{-2}, loggedRealPresentMode{-2};
-        std::optional<uint32_t> gamescopeRefreshHz;
-        GamescopePresentationFeedback gamescopePresentationFeedback;
         FixedRefreshBudget fixedRefreshBudget;
         RealFramePacer realFramePacer;
         // Source-cap deadline moved to the application's own release wait;

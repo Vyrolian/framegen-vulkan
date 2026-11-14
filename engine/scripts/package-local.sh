@@ -294,7 +294,6 @@ required_paths=(
     "bin/fgvk-diagnostics" \
     "bin/fgvk-installer" \
     "libexec/framegen-vulkan/fgvk-launch" \
-    "bin/fgvk-vrr-lease" \
     "lib/libfgvk-render.so" \
     "share/doc/framegen-vulkan/ASSET_PROVENANCE.md" \
     "share/doc/framegen-vulkan/LICENSE.md" \

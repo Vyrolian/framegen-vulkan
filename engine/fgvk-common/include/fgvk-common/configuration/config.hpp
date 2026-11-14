@@ -34,27 +34,6 @@ namespace ls {
         None
     };
 
-    /// Live Gamescope VRR preference for a matched framegen-vulkan launch.
-    enum class GamescopeVrrMode : uint8_t { FollowSteam, On, Off };
-
-    [[nodiscard]] constexpr const char* gamescopeVrrModeName(
-            GamescopeVrrMode mode) noexcept {
-        switch (mode) {
-            case GamescopeVrrMode::FollowSteam: return "follow-steam";
-            case GamescopeVrrMode::On: return "on";
-            case GamescopeVrrMode::Off: return "off";
-        }
-        return "follow-steam";
-    }
-
-    [[nodiscard]] constexpr std::optional<GamescopeVrrMode>
-    gamescopeVrrModeFromName(std::string_view value) noexcept {
-        if (value == "follow-steam") return GamescopeVrrMode::FollowSteam;
-        if (value == "on") return GamescopeVrrMode::On;
-        if (value == "off") return GamescopeVrrMode::Off;
-        return std::nullopt;
-    }
-
     /// Optional Fractional Adaptive source cap selected from cadence-friendly
     /// real/generated ratios. Auto preserves the ordinary Fractional policy.
     enum class AdaptiveFractionalRealFramePriority : uint8_t {
@@ -125,7 +104,6 @@ namespace ls {
         static constexpr bool frameGenerationProvisioned = true;
         static constexpr bool frameGenerationEnabled = true;
         static constexpr bool swapchainImageCountCompatibility = false;
-        static constexpr uint32_t frameGenerationRefreshThreshold = 0;
         static constexpr uint32_t baseFpsCap = 0;
         static constexpr uint32_t gpuHeadroomPercent = 0;
         static constexpr bool adaptive = false;
@@ -137,8 +115,6 @@ namespace ls {
         static constexpr bool adaptiveTargetRefreshRate = false;
         static constexpr size_t adaptiveMaxMultiplier = 3;
         static constexpr bool adaptiveStableCadence = true;
-        static constexpr GamescopeVrrMode gamescopeVrrMode =
-            GamescopeVrrMode::FollowSteam;
         static constexpr bool dynamicCadenceRecovery = false;
         static constexpr float dynamicCadenceProbeIntervalSeconds = 2.0F;
         static constexpr bool ultraPerformance = false;
@@ -155,8 +131,6 @@ namespace ls {
         static constexpr std::array<uint32_t, 5> gpuHeadroomPercentPresets{0, 5, 10, 15, 20};
         static constexpr uint32_t minimumBaseFpsCap = 0;
         static constexpr uint32_t maximumBaseFpsCap = 1000;
-        static constexpr uint32_t minimumFrameGenerationRefreshThreshold = 0;
-        static constexpr uint32_t maximumFrameGenerationRefreshThreshold = 1000;
         static constexpr uint32_t minimumTargetFps = 10;
         static constexpr uint32_t maximumTargetFps = 1000;
         static constexpr size_t minimumAdaptiveMaxMultiplier = 2;
@@ -198,11 +172,6 @@ namespace ls {
         bool swapchain_image_count_compatibility{
             GameConfDefaults::swapchainImageCountCompatibility
         };
-        /// Select full precision, compact buffers, or approximate HDR10 generation.
-        /// pause synthesis at or below a confirmed refresh rate; zero disables it
-        uint32_t frame_generation_refresh_threshold{
-            GameConfDefaults::frameGenerationRefreshThreshold
-        };
         /// maximum application-present rate before frame generation; zero disables it
         uint32_t base_fps_cap{GameConfDefaults::baseFpsCap};
         /// soft GPU utilization reserve: 0 (off), 5, 10, 15 or 20 percent
@@ -224,8 +193,6 @@ namespace ls {
         size_t adaptive_max_multiplier{GameConfDefaults::adaptiveMaxMultiplier};
         /// prefer a validated even display-divisor cadence when safe
         bool adaptive_stable_cadence{GameConfDefaults::adaptiveStableCadence};
-        /// opt-in physical VRR override while this profile's game runs
-        GamescopeVrrMode gamescope_vrr_mode{GameConfDefaults::gamescopeVrrMode};
         /// periodically expose native cadence to detect upward rate changes
         bool dynamic_cadence_recovery{GameConfDefaults::dynamicCadenceRecovery};
         /// seconds between optional native-cadence probes
