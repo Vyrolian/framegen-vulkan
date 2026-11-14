@@ -43,20 +43,12 @@ run_failure "$cli" --lang
     fail "missing language value was not rejected: $command_output"
 
 help_output="$("$cli" --help 2>&1)" || fail "--help failed: $help_output"
-[[ $help_output == *'quality-regression'* ]] ||
-    fail "framegen-vulkan quality-regression command disappeared from help"
 [[ $help_output == *'inspect-dll'* ]] ||
     fail "framegen-vulkan inspect-dll command disappeared from help"
-[[ $help_output == *'synchronization-validation-canary'* ]] ||
-    fail "framegen-vulkan synchronization-validation-canary command disappeared from help"
 [[ $help_output != *'spatial-quality-regression'* &&
         $help_output != *'spatial-profile'* &&
         $help_output != *'combined-quality-regression'* ]] ||
     fail "retired scaling commands are still listed in help"
-
-run_failure "$cli" quality-regression --scene unknown-scene
-[[ $command_output == 'error: unknown quality scene: unknown-scene' ]] ||
-    fail "unknown procedural scene did not fail closed: $command_output"
 
 run_failure "$cli" inspect-dll --dll /tmp/fgvk-cli-missing-lossless.dll
 [[ $command_output == *'framegen-vulkan model DLL inspection failed: failed to stat dll file'* ]] ||

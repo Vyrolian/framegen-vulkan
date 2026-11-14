@@ -123,13 +123,6 @@ if(BUILD_TESTING AND UNIX)
     set_tests_properties(steamos-build-tools PROPERTIES
         LABELS "portable-policy")
 
-    add_test(NAME fgvk-gym-bridge-contract
-        COMMAND bash
-            "${CMAKE_CURRENT_SOURCE_DIR}/scripts/test-run-fgvk-gym.sh"
-            "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run-fgvk-gym.sh")
-    set_tests_properties(fgvk-gym-bridge-contract PROPERTIES
-        LABELS "portable-policy")
-
     add_test(NAME standalone-installer
         COMMAND bash
             "${CMAKE_CURRENT_SOURCE_DIR}/scripts/test-fgvk-installer.sh"

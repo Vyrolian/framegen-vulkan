@@ -26,24 +26,6 @@ namespace fgvk::cli::i18n {
         std::string_view validation_success;
         std::string_view validation_missing_file;
         std::string_view validation_failed;
-        std::string_view benchmark_results;
-        std::string_view benchmark_iterations;
-        std::string_view benchmark_generated_frames;
-        std::string_view benchmark_total_frames;
-        std::string_view benchmark_generated_fps;
-        std::string_view benchmark_total_fps;
-        std::string_view benchmark_seconds;
-        std::string_view error;
-        std::string_view flow_scale_range;
-        std::string_view multiplier_minimum;
-        std::string_view dimensions_positive;
-        std::string_view duration_positive;
-        std::string_view gpu_not_found;
-        std::string_view debug_path_missing;
-        std::string_view debug_filename_invalid;
-        std::string_view frame_wait_failed;
-        std::string_view debug_image_open_failed;
-        std::string_view debug_image_read_failed;
     };
 
     [[nodiscard]] const Strings& strings(Language language) noexcept;

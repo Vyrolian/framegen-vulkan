@@ -5,12 +5,8 @@ target_include_directories(fgvk-cli-support
     PUBLIC "src")
 
 set(CLI_SOURCES
-    "src/tools/image_transfer.cpp"
-    "src/tools/benchmark.cpp"
-    "src/tools/debug.cpp"
     "src/tools/inspect_dll.cpp"
     "src/tools/mark.cpp"
-    "src/tools/quality.cpp"
     "src/tools/validate.cpp"
     "src/main.cpp")
 
@@ -26,14 +22,6 @@ target_compile_options(fgvk-cli PRIVATE
     -Wno-unsafe-buffer-usage) # CLI parsing
 
 if(BUILD_TESTING)
-    add_executable(fgvk-profile-statistics-tests "tests/profile_statistics_tests.cpp")
-    target_include_directories(fgvk-profile-statistics-tests PRIVATE src)
-    target_link_libraries(fgvk-profile-statistics-tests PRIVATE fgvk-common)
-    add_test(NAME cli-profile-timing-contract COMMAND fgvk-profile-statistics-tests)
-    add_executable(fgvk-temporal-sequence-tests "tests/temporal_sequence_tests.cpp")
-    target_include_directories(fgvk-temporal-sequence-tests PRIVATE src)
-    add_test(NAME temporal-sequence-contract COMMAND fgvk-temporal-sequence-tests)
-
     add_executable(fgvk-cli-dll-inspection-tests
         "src/tools/inspect_dll.cpp"
         "tests/inspect_dll_tests.cpp")

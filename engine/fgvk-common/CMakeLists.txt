@@ -4,7 +4,6 @@ set(COMMON_SOURCES
     "src/configuration/launch.cpp"
     "src/helpers/errors.cpp"
     "src/helpers/paths.cpp"
-    "src/quality/image_quality.cpp"
     "src/vulkan/buffer.cpp"
     "src/vulkan/command_buffer.cpp"
     "src/vulkan/descriptor_pool.cpp"
@@ -103,13 +102,6 @@ if(BUILD_TESTING)
     add_test(NAME command-buffer-submit-storage
         COMMAND fgvk-command-buffer-submit-storage-tests)
     set_tests_properties(command-buffer-submit-storage PROPERTIES LABELS "portable-policy")
-
-    add_executable(fgvk-image-quality-tests
-        "tests/image_quality_tests.cpp")
-    target_link_libraries(fgvk-image-quality-tests
-        PRIVATE fgvk-common)
-    add_test(NAME procedural-image-quality-scene
-        COMMAND fgvk-image-quality-tests)
 
     add_executable(fgvk-gpu-clock-tests
         "tests/gpu_clock_tests.cpp")

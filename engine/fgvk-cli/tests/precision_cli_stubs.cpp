@@ -2,10 +2,8 @@
 
 // Link the real CLI parser to tool-entry probes so defaults and explicit
 // precision choices can be checked without initializing Vulkan or a model.
-#include "tools/benchmark.hpp"
-#include "tools/debug.hpp"
+#include "i18n.hpp"
 #include "tools/inspect_dll.hpp"
-#include "tools/quality.hpp"
 #include "tools/validate.hpp"
 
 #include <iostream>
@@ -18,21 +16,6 @@ namespace {
 }
 
 namespace fgvk::cli {
-    int benchmark::run(const Options& opts, i18n::Language) {
-        if (opts.profile) {
-            std::cout << "profile samples=" << opts.profile_samples << " warmup=" << opts.profile_warmup
-                      << '\n';
-            return 0;
-        }
-        return reportPrecision(opts.allow_fp16);
-    }
-    int debug::run(const Options& opts, i18n::Language) {
-        return reportPrecision(opts.allow_fp16);
-    }
-    int quality::run(const Options& opts) {
-        return reportPrecision(opts.allow_fp16);
-    }
-    int quality::runSynchronizationCanary(const SynchronizationCanaryOptions&) { return 2; }
     int inspect_dll::run(const Options& opts) {
         return opts.lsfg ? reportPrecision(opts.allowFp16) : 2;
     }

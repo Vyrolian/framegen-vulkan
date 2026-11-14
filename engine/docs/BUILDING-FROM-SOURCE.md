@@ -98,7 +98,7 @@ For native Steam-game iteration, use the persistent incremental build instead of
 
 This native host build uses the shared Vulkan-Headers pin and package presentation check while retaining its incremental CMake tree. Its first run needs network access to cache the pinned headers; later runs reuse a pinned release tag offline. It still needs the host C++ toolchain and X11/XCB development headers. Use the portable package builder when the output itself must match the release toolchain and packaging checks.
 
-It builds both 64-bit Renderer roles and the CLI, retaining `build/steamos-dev` between runs. For real AMD validation with a sibling fgvk Gym checkout, run `./scripts/run-fgvk-gym.sh --suite quality --cli build/steamos-dev/fgvk-cli/fgvk-cli`. To retain a second tree for genuine 32-bit games, run:
+It builds both 64-bit Renderer roles and the CLI, retaining `build/steamos-dev` between runs. To retain a second tree for genuine 32-bit games, run:
 
 ```bash
 ./scripts/build-steamos-dev.sh --with-32-bit

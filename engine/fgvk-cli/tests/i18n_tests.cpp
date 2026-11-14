@@ -36,24 +36,6 @@ namespace {
         require(!strings.validation_success.empty(), "validation success is empty");
         require(!strings.validation_missing_file.empty(), "missing-file message is empty");
         require(!strings.validation_failed.empty(), "validation failure is empty");
-        require(!strings.benchmark_results.empty(), "benchmark heading is empty");
-        require(!strings.benchmark_iterations.empty(), "benchmark iterations is empty");
-        require(!strings.benchmark_generated_frames.empty(), "generated frames is empty");
-        require(!strings.benchmark_total_frames.empty(), "total frames is empty");
-        require(!strings.benchmark_generated_fps.empty(), "generated FPS is empty");
-        require(!strings.benchmark_total_fps.empty(), "total FPS is empty");
-        require(!strings.benchmark_seconds.empty(), "benchmark suffix is empty");
-        require(!strings.error.empty(), "error prefix is empty");
-        require(!strings.flow_scale_range.empty(), "flow-scale error is empty");
-        require(!strings.multiplier_minimum.empty(), "multiplier error is empty");
-        require(!strings.dimensions_positive.empty(), "dimension error is empty");
-        require(!strings.duration_positive.empty(), "duration error is empty");
-        require(!strings.gpu_not_found.empty(), "GPU error is empty");
-        require(!strings.debug_path_missing.empty(), "debug path error is empty");
-        require(!strings.debug_filename_invalid.empty(), "debug filename error is empty");
-        require(!strings.frame_wait_failed.empty(), "frame wait error is empty");
-        require(!strings.debug_image_open_failed.empty(), "image open error is empty");
-        require(!strings.debug_image_read_failed.empty(), "image read error is empty");
     }
 }
 
@@ -83,7 +65,7 @@ int main() {
         "separated language option selected the wrong command");
 
     const auto joined_result = parse(
-        std::array<std::string_view, 2>{"--lang=es", "benchmark"}
+        std::array<std::string_view, 2>{"--lang=es", "validate"}
     );
     const auto& joined_args = require_success(joined_result);
     require(joined_args.language == i18n::Language::Spanish,

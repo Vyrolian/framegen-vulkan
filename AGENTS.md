@@ -9,7 +9,7 @@ Personal fork of a Vulkan frame-generation layer (lsfg-vk v2 descendant), now na
 | `engine/fgvk-render/` | Vulkan layer: interception, Adaptive scheduling, swapchain/presentation (`src/swapchain/`, one `Swapchain` owner), recovery |
 | `engine/fgvk-backend/` | Lossless Scaling resource extraction and compute pipeline |
 | `engine/fgvk-common/` | Config, Vulkan wrappers, shared helpers |
-| `engine/fgvk-cli/` | Validation, benchmark and quality tools |
+| `engine/fgvk-cli/` | Validation and DLL inspection tools |
 | `engine/fgvk-ui/` | Settings window and `fgvk <command>` entry point (Rust, egui); one crate, one binary |
 | `engine/dist/`, `engine/scripts/` | Packaging, Flatpak, Arch, installer, launch wrapper, build scripts |
 | `scripts/` | Diagnostics helper, release and trace scripts (tests in `scripts/tests/`) |

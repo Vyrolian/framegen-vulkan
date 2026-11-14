@@ -212,12 +212,6 @@ if(BUILD_TESTING)
     add_test(NAME pacing-profile-report
         COMMAND "${FGVK_PYTHON3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_pacing_profile_report.py")
     fgvk_register_portable_policy_test(fgvk-pacing-profile-tests pacing-profile-report)
-    add_test(NAME framegen-comparison-profiler
-        COMMAND "${FGVK_PYTHON3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_framegen_profiler.py")
-    fgvk_register_portable_policy_test(fgvk-pacing-profile-tests framegen-comparison-profiler)
-    add_test(NAME latency-comparison
-        COMMAND "${FGVK_PYTHON3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_latency_compare.py")
-    fgvk_register_portable_policy_test(fgvk-pacing-profile-tests latency-comparison)
     # The pacing writer runs a thread, so every target that compiles it links the thread library.
     foreach(fgvk_recorder_test IN ITEMS fgvk-steam-overlay-diagnostics-tests fgvk-pacing-profile-tests
             fgvk-native-copy-profile-tests)
@@ -344,9 +338,6 @@ if(BUILD_TESTING)
     add_test(NAME analyze-hitches
         COMMAND "${FGVK_PYTHON3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_analyze_hitches.py")
     set_tests_properties(analyze-hitches PROPERTIES LABELS "portable-policy")
-    add_test(NAME analyze-latency
-        COMMAND "${FGVK_PYTHON3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_analyze_latency.py")
-    set_tests_properties(analyze-latency PROPERTIES LABELS "portable-policy")
 
     add_executable(fgvk-release-gate-tests "tests/release_gate_tests.cpp")
     target_include_directories(fgvk-release-gate-tests PRIVATE "src")

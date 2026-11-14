@@ -88,7 +88,7 @@ Synthetic DLL inspection shares the production C ABI, allowing sanitizer tests t
 
 Optional Lossless Scaling tests use `watched-configuration` to cover configured-path precedence, missing/replaced files, directories, stale replies, and unknown failures while retaining model-free controls. No licensed model is loaded. Qualify framegen-vulkan Scaler/shader rendering and native/Flatpak launches without Lossless Scaling on hardware.
 
-Frame Generation diagnostic profiling adds `cli-profile-timing-contract` coverage for queue timestamp rollover, unsupported timestamp properties, summary statistics, plus CLI parsing/default/range checks in `cli-precision-contract`. The shared query owner remains used by the Frame Generation profiler. fgvk Gym's opt-in `scripts/renderer_profile.py` validates effective model/precision and encoding, every raw sample, containment of CPU boundaries, GPU substage/parent span consistency and recomputed summaries. Run single/multiple-output and FP16/FP32 hardware profiles when changing stage queries; retain ordinary capacity evidence separately because query readback changes iteration spacing. These checks do not qualify generated-frame display pacing or game image quality.
+`cli-precision-contract` checks `inspect-dll` precision selection and option conflicts. The shared query owner remains used by the pacing GPU profile. Changes to stage queries need hardware evidence from `FGVK_PACING_PROFILE_GPU=1` runs for single/multiple-output and FP16/FP32 cases; retain ordinary capacity evidence separately because query readback changes iteration spacing. These checks do not qualify generated-frame display pacing or game image quality.
 
 `command-buffer-submit-storage` checks ordered multi-command submissions, binary/timeline semaphore composition, inline and overflow storage, queue selection, completion-fence placement and propagated driver failures without retries. It also runs in the portable sanitizer lane. Backend submission changes additionally need Gym synchronization validation, temporal sequences with history-only steps and changing output counts, independent output repeatability and paired throughput evidence. Portable marshalling tests alone do not establish GPU execution order or displayed pacing.
 
@@ -129,24 +129,15 @@ Full-trace Vulkan setup observation additionally needs the `pacing-profile` and 
 
 ## Selecting fgvk Gym coverage
 
-`framegen-comparison-profiler` exercises the optional Nsight-free source-checkout sampler with synthetic NVIDIA-SMI and MangoHud data. It checks mutually exclusive activation requests, preserved wrapper settings, disabled intrusive traces, sensor gaps, energy coverage, sampled/per-frame CSV interpretation, private outputs, no-overwrite behavior, child exit/signal forwarding, and continued game execution after the sampling window. Its manual-control fixture implements a synthetic same-user MangoHud abstract socket and opens the CSV in that exact peer process, proving no GPU sampling before a recording, fragmented completion handling, frozen stopped snapshots, reusable parent folders and report availability before game exit. Run it directly with `python3 -I engine/fgvk-render/tests/test_framegen_profiler.py`; the local-socket fixture needs a host that permits Unix sockets. Actual GPU sampling, real in-game hotkeys/control behavior, the optional tkinter window, layer activation, frame-counter position and logging overhead require separate hardware evidence; the tool does not measure physical input latency or FG-only GPU milliseconds. See the [capture workflow](engine/docs/COLLECT_DIAGNOSTICS.md#compare-fgvk-and-nvidia-smooth-motion-without-nsight).
-
 For diagnostic changes, `runtime-overhead --diagnostics-overhead` compares logging off/on while keeping Frame Generation active, rather than comparing FG off/on. It reuses the canonical cases and production workload, balanced pair order, portable health validator, exact allocation checks, and hardware identity guard. At least 60-second measured windows reduce short-window CPU drift and cover repeated health samples. Missing or expensive health evidence fails collection; noisy paired costs become INVALID. The paired gate covers CPU/frame, present/full-frame p95/p99, RSS, and cadence with distinct comparison metadata. Run FP32 and FP16 cases and report host-specific deltas; a short synthetic pass does not establish Deck/Flatpak overhead or hour-long game behavior. Phase-window portable coverage retains sub-threshold means/maxima, isolates contexts, and handles long gaps without growth.
 
-fgvk Gym is an optional sibling checkout for targeted hardware work. The bridge skips clearly when Gym is absent unless `--require` is used; required mode also rejects a missing runner or incompatible `GYM_CONTRACT_VERSION`.
+fgvk Gym is an optional sibling checkout for targeted hardware work. This repository does not wrap its runner; use the checkout's own runner and match its contract version.
 
 Gym contract version 19 adds the `pacing` suite for explicit Gamescope VRR feedback, pacing-owner transitions, and independent compositor-completion evidence while retaining defined-content benchmark inputs, performance baseline schema 4, and explicit CLI precision selection. Use a matching Gym checkout; older runners must not silently omit VRR pacing coverage or reinterpret an FP32 workload through the CLI default.
 
 Before any hardware run, validate Gym's portable contracts with `(cd ../MAKO-Gym && ./scripts/check.sh)` or `just check` from its checkout.
 
-The bridge exposes one selection pattern. `--list-suites` discovers suites, `--all-suites --validate` validates their inventories without hardware, `--suite NAME --list` discovers rows, and `--filter REGEX` runs a subset. Omitting `--filter` runs the complete selected suite:
-
-```bash
-./engine/scripts/run-fgvk-gym.sh --list-suites
-./engine/scripts/run-fgvk-gym.sh --require --all-suites --validate
-./engine/scripts/run-fgvk-gym.sh --suite recovery --list
-./engine/scripts/run-fgvk-gym.sh --suite recovery
-```
+Gym's manifests and runner define suite selection: suites and rows can be listed, inventories can be validated without hardware, and a filter runs a subset. Omitting a filter runs the complete selected suite.
 
 Run the smallest suite and filter that can observe a change. When claiming complete hardware qualification for a selected boundary, include Gym's bounded `constraints` suite with the relevant candidate CLI and launcher; Gym's compact hardware runner applies its own case mapping. A filtered pass is evidence only for its selected rows. Widen to the complete affected suite when a shared production owner changes. A release does not automatically select every suite; run all suites only for a genuinely cross-cutting change or an explicit maintainer request.
 
@@ -169,8 +160,6 @@ Retained evidence may be reused when the exact Renderer/package identity and sou
 | Repeated private-resource memory plateau or sustained thermal/performance health | `sustained-health` |
 | D3D11/DXVK or D3D12/VKD3D-Proton translation | `proton-e2e` |
 | Proton-family/version behavior | `proton-compatibility` |
-
-`just test-engine-gym-*` provides equivalent shortcuts. Set `FGVK_GYM_REPO` or pass `--gym-repo <path>` when the checkout is not a sibling.
 
 fgvk Gym's manifests and guides are authoritative for current rows, thresholds, prerequisites, artifacts, and claim limits. Portable validation proves inventory correctness only. A GPU suite does not prove subjective quality, input-to-photon latency, power, scanout timing, arbitrary games, other GPUs or drivers, 32-bit presentation, Flatpak behavior, or HDR unless a selected row covers that boundary. Record unselected and unavailable coverage as **not tested**.
 

@@ -66,50 +66,6 @@ Turn off the Logging switches you turned on in the settings window, then restore
 
 Review `framegen-vulkan-diagnostics.txt` and remove personal information. Upload it through the [diagnostic form](https://docs.google.com/forms/d/e/1FAIpQLScSd9qgkYCq3Kbbc3_52k4_82iTmEqt3_FxOqGuxQ6FsjutgA/viewform), choosing **framegen-vulkan (standalone/direct installation)**. Answer **Unknown** when unsure. Do not post the log publicly or attach `Lossless.dll`.
 
-## Compare framegen-vulkan and NVIDIA Smooth Motion without Nsight
-
-The source-checkout tool [`profile-framegen.py`](../scripts/profile-framegen.py) captures GPU board telemetry and configures MangoHud CSV logging around your existing launch command. It uses Python's standard library, your installed `nvidia-smi`, and your existing MangoHud wrapper. It does not inject another profiling layer, run Nsight, change saved profiles, select a cap, override Reflex or VSync, or rebuild/install the Renderer. CPU/GPU/protocol/content framegen-vulkan profiling flags are set to 0 in the child, so detailed tracing cannot force the overlap rings to drain.
-
-Use `--manual` for button-controlled recording: load the game and reach the scene, press **Left Shift + F2** to start, then press **Left Shift + F2** again to stop. GPU sampling starts only when the connected MangoHud process opens its recording CSV, and stops on that process's `LoggingFinished` control event. There is no startup countdown or seconds to track. `--buttons` optionally adds a small Start/Stop window using the host's optional Python tkinter module; closing that window leaves the in-game key available. The control connection uses a unique per-launch abstract Unix socket and verifies its same-user process and open CSV before starting GPU sampling. Control loss or game exit without a stop event leaves the recording explicitly incomplete. A recording is bounded to ten minutes; the tool requests a stop at that limit and marks a missing acknowledgement incomplete.
-
-Manual runs create a new private `session-*` beneath the requested folder, so `mako-profile` and `smooth-motion-profile` can be reused without overwriting earlier captures. On stop, the completed CSV is frozen separately under `recorded/` and the report is saved while the game stays open; later MangoHud recordings cannot change that report. Exit the game normally to finalize its exit-status metadata. The two named recording folders are ignored by Git when kept in the framegen-vulkan checkout. The comparison command accepts either session directories or the parent folders, selecting and printing the latest saved session report for each parent.
-
-For the framegen-vulkan run, prefix the existing game launch command, keeping MangoHud and your working launcher arguments. For example, with a standalone installation:
-
-```bash
-python3 /absolute/path/to/framegen-vulkan/engine/scripts/profile-framegen.py capture \
-  --mode fgvk --scenario cyberpunk-scene-A-60fps --reflex on \
-  --manual --output ./mako-profile \
-  -- mangohud ~/.local/bin/fgvk /path/to/game
-```
-
-For Steam, replace `/path/to/game` with `%command%` in Launch Options. If your command already includes `mangohud`, keep that single wrapper. Do not add a second one. Preserve required game/Proton environment and working launcher arguments; a downstream script that resets the environment can override these requested settings. A wrapper that detaches the game and exits immediately produces an incomplete run; use a command that stays alive with the game. Flatpak sandbox admission and output-directory access are not prepared by this tool.
-
-For baseline and Smooth Motion, run the game with MangoHud directly, outside `fgvk`. framegen-vulkan's launchers deliberately isolate implicit-layer discovery and can suppress MangoHud when framegen-vulkan is disabled, so wrapping those launchers would not provide a valid shared observer. The profiler refuses those known combinations and refuses an inherited `VK_IMPLICIT_LAYER_PATH` override for Smooth Motion. For example:
-
-```bash
-python3 /absolute/path/to/framegen-vulkan/engine/scripts/profile-framegen.py capture \
-  --mode smooth-motion --scenario cyberpunk-scene-A-60fps --reflex on \
-  --manual --output ./smooth-motion-profile \
-  -- mangohud /path/to/game
-```
-
-Use `--mode baseline --manual --output /path/to/baseline-profile` with that same direct game command for the control. In Steam, keep `%command%` and any required Proton environment, replacing only the framegen-vulkan activation wrapper. Resolve relative output folders against the launcher's working directory, or use absolute paths to keep recordings in the framegen-vulkan checkout. Do not change the working saved launch option until you have retained a copy. framegen-vulkan-only launcher compatibility settings are not reproduced in direct runs; record required equivalents explicitly rather than assuming those environments match.
-
-Capture three separate launches with `--mode baseline`, `--mode fgvk` and `--mode smooth-motion`. Baseline disables both framegen-vulkan layer roles and NVIDIA Smooth Motion. Smooth Motion enables `NVPRESENT_ENABLE_SMOOTH_MOTION=1` and disables both framegen-vulkan roles. framegen-vulkan enables its Renderer layer and disables Smooth Motion; configure Fixed 2x in the existing profile yourself. Non-framegen-vulkan modes remove explicit framegen-vulkan entries from inherited `VK_INSTANCE_LAYERS` without changing other layer order. These are requested activation settings, not proof that the intended game loaded a layer or actually generated frames. Verify activation separately. Existing shader settings can make the comparison unequal; hold those constant and record them in the scenario label.
-
-Keep the same game-side source cap, graphics settings, camera/scene, power mode, presentation mode and Reflex state. Start with 60 source FPS, then repeat under GPU saturation for throughput loss. Repeat each configuration at least three times and alternate order. `--reflex` records a label without changing the game. `--gpu` selects one NVIDIA index or UUID; default is index 0. `NVPRESENT_QUEUE_FAMILY` and MangoHud's existing limiter/settings are preserved. NVIDIA documents that selecting graphics queue family 1 for overlay compatibility can reduce performance; record that choice and do not silently compare different queue settings.
-
-The default sampler queries power, GPU utilization, board VRAM, graphics/memory clocks and temperature every 500 ms using one persistent `nvidia-smi` process. Missing sensors remain unavailable. Board telemetry includes the compositor and other processes; it does not isolate frame-generation execution time. Energy integrates only adjacent valid power samples with gaps of at most two seconds and reports its covered time separately. Without `--manual`, the original timed mode remains available: GPU sampling stops after the requested `--warmup` plus `--duration` without stopping the game, each bound at most 600 seconds, and the output directory must be new. Captures contain `metadata.json`, `telemetry.jsonl`, `report.json`, `report.txt` and MangoHud files. Launch metadata excludes the full command and environment; raw MangoHud logs still contain system/program information. Each new session directory is private (0700); tool-written files are 0600. Captures stay local and nothing is uploaded or archived automatically.
-
-In manual mode, boundary uncertainty includes control dispatch, CSV observation and polling (normally up to 100 ms plus scheduling/I/O delay); these are host observations rather than exact GPU boundaries. In timed mode, MangoHud logging starts after its own initialization plus `--warmup`, whereas telemetry warmup starts at launcher entry, so those windows are not exactly aligned. Default `--frame-log-interval 0` logs every frame observed by MangoHud, with CSV-write overhead. A positive interval in milliseconds reduces logging frequency but samples individual frame times; the report then withholds derived FPS and labels its quantiles as sampled observations. Logging controls are child-only overrides appended to the existing inline MangoHud settings; file-based configuration remains available through `read_cfg` when no inline configuration existed. Logging/upload settings are overridden, while your existing wrapper, config path, HUD and limiter options are retained. Logging overhead must be qualified with matched off/on runs before calling it negligible.
-
-```bash
-python3 engine/scripts/profile-framegen.py compare ./mako-profile ./smooth-motion-profile
-```
-
-The comparison reports power/load/memory and each MangoHud stream's frame-time distribution separately, warning about mismatched scenario, Reflex, GPU, window and sampling labels. It never merges launcher/game logs. MangoHud layer order can put its counter before or after generation, so frame domain defaults to `unknown`; use `--frame-domain source` or `output` only after independently verifying that boundary for that launch. Output FPS cannot establish real-source throughput loss, actual scanout cadence or generated-frame acceptance. Frame time is not input latency. These captures explicitly leave input-to-display latency and GPU execution milliseconds unavailable; they cannot establish either implementation's latency advantage. This shared sampler replaces neither framegen-vulkan's detailed attribution tools nor a physical input-latency measurement.
-
 ## Detailed game frame trace
 
 For a supporting local Renderer build, prepend `FGVK_PACING_PROFILE_TRACE=1` to the existing game launch command, preserving its arguments and graphics settings. After the process exits, retain the raw private capture path printed by framegen-vulkan; filtering or tailing a long capture can remove frame identities needed for exact joins.

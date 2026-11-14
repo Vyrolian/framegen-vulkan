@@ -199,14 +199,7 @@ Private Flow Scale, model, or generated-capacity changes retain the old policy w
 
 ## Runtime validation
 
-Use the sibling fgvk Gym checkout between portable policy tests and commercial-game testing. Its manifests own current rows, assertions, and thresholds:
-
-```bash
-scripts/run-fgvk-gym.sh --suite recovery --list
-scripts/run-fgvk-gym.sh --suite recovery --filter '(stall|cadence-drop|recreate)$'
-scripts/run-fgvk-gym.sh --suite pacing --list
-scripts/run-fgvk-gym.sh --suite pacing --filter '^vrr-(fixed-smooth|steady)-'
-```
+Use the sibling fgvk Gym checkout between portable policy tests and commercial-game testing. Its manifests own current rows, assertions, and thresholds.
 
 Select coverage according to [Testing framegen-vulkan](../../TESTING.md#selecting-fgvk-gym-coverage). Scheduler changes normally begin with `recovery`; pacing-owner changes use `pacing`; external overlay pause/throttle and workload-proven source-return changes use `external-recovery`; construction changes add `vulkan`; translation changes add `proton-e2e` or `proton-compatibility`. A filtered pass proves only its selected rows.
 
