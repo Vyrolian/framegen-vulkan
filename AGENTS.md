@@ -6,7 +6,7 @@ Personal fork of a Vulkan frame-generation layer (lsfg-vk v2 descendant), now na
 
 | Path | Owns |
 | --- | --- |
-| `engine/fgvk-render/` | Vulkan layer: interception, scaling, Adaptive scheduling, swapchain/presentation (`src/swapchain/`, one `Swapchain` owner), recovery |
+| `engine/fgvk-render/` | Vulkan layer: interception, Adaptive scheduling, swapchain/presentation (`src/swapchain/`, one `Swapchain` owner), recovery |
 | `engine/fgvk-backend/` | Lossless Scaling resource extraction and compute pipeline |
 | `engine/fgvk-common/` | Config, Vulkan wrappers, shared helpers |
 | `engine/fgvk-cli/` | Validation, benchmark and quality tools |
@@ -16,7 +16,7 @@ Personal fork of a Vulkan frame-generation layer (lsfg-vk v2 descendant), now na
 
 Placement rules for `engine/fgvk-ui/`: the crate owns only the settings window and the argument routing in `src/launch.rs`. It must not load the renderer or Vulkan, and launch behaviour stays in `engine/scripts/fgvk-launch` (installed privately under `libexec/framegen-vulkan/`, never on `PATH`). Keep it self-contained: `processes.rs` embeds `../fgvk-common/launcher_exclusions.json`, so the crate builds only inside this repository.
 
-Boundary docs (`engine/docs/`): `RENDERER-ARCHITECTURE`, `CONFIGURATION` / `CONFIGURATION-REFERENCE`, `RUNTIME-TRANSITIONS`, `MEMORY-MANAGEMENT`, `SCALING`, `ADAPTIVE-VALIDATION`, `WSI-ISOLATION`, `LAYER-CHAINING`, `BUILDING-FROM-SOURCE`. Root: `TESTING.md`, `MAINTENANCE.md` (dependencies and version owners), `CLEANUPS.md` (compatibility paths), `HOW_TO_RELEASE.md`, `INSTALLATION-TRANSACTIONS.md`.
+Boundary docs (`engine/docs/`): `RENDERER-ARCHITECTURE`, `CONFIGURATION` / `CONFIGURATION-REFERENCE`, `RUNTIME-TRANSITIONS`, `MEMORY-MANAGEMENT`, `ADAPTIVE-VALIDATION`, `WSI-ISOLATION`, `LAYER-CHAINING`, `BUILDING-FROM-SOURCE`. Root: `TESTING.md`, `MAINTENANCE.md` (dependencies and version owners), `CLEANUPS.md` (compatibility paths), `HOW_TO_RELEASE.md`, `INSTALLATION-TRANSACTIONS.md`.
 
 ## Build and test
 

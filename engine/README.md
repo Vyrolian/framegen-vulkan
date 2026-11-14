@@ -4,9 +4,9 @@
   <img src="assets/fgvk-render-logo.webp" width="256" alt="framegen-vulkan logo" />
 </p>
 
-framegen-vulkan is a Vulkan layer for Frame Generation and spatial scaling on SteamOS and Linux. It supports LSFG Fixed and Adaptive Frame Generation, LS1 scaling, and the open framegen-vulkan Scaler. **The framegen-vulkan Scaler works without Lossless Scaling.**
+framegen-vulkan is a Vulkan layer for Frame Generation on SteamOS and Linux. It supports LSFG Fixed and Adaptive Frame Generation.
 
-LSFG and LS1 require a lawful, user-supplied <a href="https://store.steampowered.com/app/993090/Lossless_Scaling/" target="_blank" rel="noopener noreferrer">Lossless Scaling</a> installation. framegen-vulkan does not distribute or modify `Lossless.dll`; the open framegen-vulkan Scaler does not require it. framegen-vulkan descends from the GPL-3.0-or-later lsfg-vk version 2 tree. See the <a href="../THIRD_PARTY_NOTICES.md" target="_blank" rel="noopener noreferrer">third-party notices</a> and <a href="../LICENSE.md" target="_blank" rel="noopener noreferrer">license</a> for lineage and redistribution terms.
+LSFG requires a lawful, user-supplied <a href="https://store.steampowered.com/app/993090/Lossless_Scaling/" target="_blank" rel="noopener noreferrer">Lossless Scaling</a> installation. framegen-vulkan does not distribute or modify `Lossless.dll`. framegen-vulkan descends from the GPL-3.0-or-later lsfg-vk version 2 tree. See the <a href="../THIRD_PARTY_NOTICES.md" target="_blank" rel="noopener noreferrer">third-party notices</a> and <a href="../LICENSE.md" target="_blank" rel="noopener noreferrer">license</a> for lineage and redistribution terms.
 
 ## Downloads
 
@@ -22,7 +22,7 @@ GitHub's automatic **Source code** archives are not installable Renderer package
 
 ## Installation
 
-For Frame Generation or LS1, install the default public version of Lossless Scaling through Steam first. For the framegen-vulkan Scaler without it, turn Frame Generation off and follow the same steps below.
+For Frame Generation, install the default public version of Lossless Scaling through Steam first.
 
 ### Arch Linux package
 
@@ -49,7 +49,7 @@ Close games using framegen-vulkan before installing or updating. Flatpak applica
 ### Native Steam or Proton game
 
 1. Create a profile in `~/.config/framegen-vulkan/conf.toml` and set `active_in` to the game's executable, such as `Game.exe`. Check the file with `~/.local/bin/fgvk-cli validate`. The [configuration guide](docs/CONFIGURATION.md) has a complete example. Or run `~/.local/bin/fgvk` with no arguments to edit the same file in the settings window.
-2. Enable Frame Generation and/or scaling in that profile. Settings marked as restart-only take effect the next time the game starts.
+2. Enable Frame Generation in that profile. Settings marked as restart-only take effect the next time the game starts.
 3. Add this under **Steam Properties > General > Launch Options**, then start the game with Steam's **Play** button:
 
     ```text
@@ -78,10 +78,9 @@ For every field and environment variable, see [Advanced configuration](docs/CONF
 ## In-game considerations
 
 - Try the game's V-Sync setting both on and off and keep the smoother option for that game.
-- For scaling, try different in-game resolutions and display modes. Check that the game presents a smaller input than the output; Fullscreen, Borderless Fullscreen, and Windowed can differ by game.
-- Change Frame Generation and scaling one at a time when checking image quality or performance.
+- Change Frame Generation settings one at a time when checking image quality or performance.
 
-See [Scaling](docs/SCALING.md) for resolution and presentation details, or [Troubleshooting](docs/TROUBLESHOOTING.md) when framegen-vulkan does not activate or present correctly.
+See [Troubleshooting](docs/TROUBLESHOOTING.md) when framegen-vulkan does not activate or present correctly.
 
 ## Frame Generation profiling
 
@@ -109,11 +108,10 @@ For host, Flatpak, Arch, or complete local packages, choose an entry point in [B
 - [Configuration](docs/CONFIGURATION.md): profiles, game launch setup, and runtime behaviour.
 - [Advanced configuration](docs/CONFIGURATION-REFERENCE.md): TOML fields, defaults, and environment variables.
 - [Runtime transitions](docs/RUNTIME-TRANSITIONS.md): live, deferred, and restart-required changes.
-- [Scaling](docs/SCALING.md): spatial scaling setup, behavior, and limitations.
 - [Adaptive validation](docs/ADAPTIVE-VALIDATION.md): Adaptive scheduling and validation.
 - [Optional graphics integrations](docs/LAYER-CHAINING.md): MangoHud and layer isolation.
 - [Flatpak guide](docs/FLATPAK-GUIDE.md): runtime extensions and application preparation.
-- [Videos with framegen-vulkan](docs/VIDEOS_WITH_FGVK.md): Frame Generation and scaling with mpv.
+- [Videos with framegen-vulkan](docs/VIDEOS_WITH_FGVK.md): Frame Generation with mpv.
 - [Troubleshooting](docs/TROUBLESHOOTING.md): activation, presentation, and diagnostics.
 - [Collect diagnostics](docs/COLLECT_DIAGNOSTICS.md): create a standalone support report.
 - [Building from source](docs/BUILDING-FROM-SOURCE.md): development and packaging requirements.

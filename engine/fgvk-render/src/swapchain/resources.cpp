@@ -53,26 +53,10 @@ namespace {
     }
 }
 
-bool Swapchain::directSpatialFrameGenerationOutputSupported(
-        const vk::Vulkan& vk,
-        const VkFormat format,
-        const SpatialFramePipelinePlacement placement,
-        const bool spatialScalingActive) {
-    if (!directSpatialFrameGenerationOutputEligible(
-            placement, spatialScalingActive, 2)) {
-        return false;
-    }
-    return vk.supportsExternalImageFormat(
-        format,
-        frameGenerationSourceImageUsage(placement, true),
-        VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT
-    );
-}
-
 void Swapchain::ensureFrameGenerationExecutionResources(
         const vk::Vulkan& vk) {
     if (this->pacingProfile && present_diagnostics::pacingCopyProfileEnabled() && !this->gamescopeDetected &&
-            !this->spatialScaler && !this->nativeCopyProfileInitialized) {
+            !this->nativeCopyProfileInitialized) {
         this->nativeCopyProfileInitialized = true;
         try {
             using Copy = present_diagnostics::NativeCopyProfile;
@@ -138,7 +122,7 @@ void Swapchain::ensureFrameGenerationExecutionResources(
 // The worker therefore copies only staging into each swapchain image.
 bool Swapchain::recordGeneratedCopies(const vk::Vulkan& vk, RenderSlot& slot) {
     if (slot.staging && slot.generatedCopies.size() == this->info.images.size()) return true;
-    if (this->destinationImages.empty() || this->spatialScaler ||
+    if (this->destinationImages.empty() ||
             this->info.images.size() > DeferredPresent::maxCopyImages)
         return false;
     // Diagnostic output split: two timestamps around each worker copy. Created once per slot.
@@ -268,10 +252,7 @@ Swapchain::buildFrameGenerationResources(const vk::Vulkan& vk,
         throw ls::error("the colour pipeline does not support frame generation");
 
     auto& backendInstance = *this->instance;
-    const VkExtent2D extent = frameGenerationExtent(
-        this->spatialFramePipelinePlacement,
-        this->info.applicationExtent, this->info.extent
-    );
+    const VkExtent2D extent = this->info.extent;
     std::vector<int> sourceFds(2, -1);
     ls::FileDescriptorScope sourceScope{sourceFds};
     std::vector<int> destinationFds(generatedFrameCapacityForProfile(resourceProfile), -1);
@@ -279,14 +260,8 @@ Swapchain::buildFrameGenerationResources(const vk::Vulkan& vk,
     FrameGenerationResources resources;
     resources.sourceImages.reserve(sourceFds.size());
     resources.destinationImages.reserve(destinationFds.size());
-    const auto sourceImageUsage = frameGenerationSourceImageUsage(
-        this->spatialFramePipelinePlacement,
-        directSpatialFrameGenerationOutputSupported(
-            vk, pipeline.exchangeFormat,
-            this->spatialFramePipelinePlacement,
-            this->spatialScaler.has_value()
-        )
-    );
+    const VkImageUsageFlags sourceImageUsage =
+        VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
     for (int& fd : sourceFds) {
         resources.sourceImages.emplace_back(vk,
             extent, pipeline.exchangeFormat,
@@ -466,8 +441,6 @@ bool Swapchain::applyPendingFrameGenerationResources(
             return false;
         if (!this->pollRenderSlotsIdle(vk))
             return false;
-        if (this->spatialScaler && !this->spatialScalingPassesReady(vk))
-            return false;
     } catch (const std::exception& error) {
         std::cerr << "framegen-vulkan: private frame-generation drain poll failed; "
                      "native presentation retained: "
@@ -479,23 +452,10 @@ bool Swapchain::applyPendingFrameGenerationResources(
         this->frameGenerationTransition.value().profile;
     auto replacement = std::move(*this->preparedFrameGenerationResources);
     this->preparedFrameGenerationResources.reset();
-    this->clearDirectSpatialFrameGenerationOutputs();
     this->commitFrameGenerationResources(
         std::move(replacement), committedProfile,
         "private-resource-transition"
     );
-    if (this->spatialScaler) {
-        this->configureDirectSpatialFrameGenerationOutputs(
-            vk, *this->spatialScaler, this->sourceImages,
-            "private-resource-transition"
-        );
-    }
-    if (this->preparedSpatialScaler) {
-        this->configureDirectSpatialFrameGenerationOutputs(
-            vk, *this->preparedSpatialScaler, this->sourceImages,
-            "private-resource-transition-prepared-scaler"
-        );
-    }
     const auto committedRevision =
         this->frameGenerationTransition.committed();
     logPrivateFrameGenerationMemory(
@@ -529,246 +489,4 @@ bool Swapchain::applyPendingFrameGenerationResources(
                   << '\n';
     }
     return true;
-}
-
-void Swapchain::applyPendingSpatialScaler(const vk::Vulkan& vk) {
-    if (!this->spatialTransition.pendingRequest() || !this->spatialScaler)
-        return;
-    // An internal application image is a private copy that the lower image is
-    // made from. A scaler would change that lower contract, so the request stays
-    // pending until the game recreates the swapchain.
-    if (this->internalPresent) {
-        if (!this->internalScalingWaitLogged) {
-            this->internalScalingWaitLogged = true;
-            std::cerr << "framegen-vulkan: internal swapchain images: scaling waits for swapchain recreation\n";
-        }
-        return;
-    }
-
-    const auto now = DiagnosticsClock::now();
-    if (this->spatialTransition.beginPreparation(now)) {
-        try {
-            const auto& requested = this->spatialTransition.value();
-            this->preparedSpatialScaler.emplace(
-                vk, this->info.applicationExtent, this->info.extent,
-                this->colorPipeline.exchangeFormat, requested.method,
-                requested.sharpness, this->scalingShaderDll, this->fp16Requested
-            );
-            this->configureDirectSpatialFrameGenerationOutputs(
-                vk, *this->preparedSpatialScaler, this->sourceImages,
-                "spatial-scaler-prepared"
-            );
-            this->spatialTransition.prepared();
-            this->publishRuntimeStatus("spatial-scaler");
-        } catch (const std::exception& error) {
-            std::cerr << "framegen-vulkan: spatial scaling model transition "
-                         "failed; the previous model remains active and retry "
-                         "is scheduled: "
-                      << error.what() << '\n';
-            this->preparedSpatialScaler.reset();
-            this->spatialTransition.failed(std::chrono::seconds(5), now);
-            this->runtimeStatusState.error = error.what();
-            this->publishRuntimeStatus("spatial-scaler");
-            if (present_diagnostics::enabled()) {
-                std::cerr << "framegen-vulkan: present diagnostics: "
-                             "operation=runtime-transition-failed"
-                          << " context=" << this->diagnosticsState.contextId
-                          << " state_revision="
-                          << this->spatialTransition.stateRevision()
-                          << " reason=spatial-scaler"
-                          << " retry_ms=5000"
-                          << " action=retain-active-resources\n";
-            }
-            return;
-        }
-    }
-    if (!this->spatialTransition.draining() ||
-            !this->preparedSpatialScaler) {
-        return;
-    }
-
-    try {
-        // In the post-FG placement, generated-image command buffers record
-        // reconstruction with the active scaler and are retired by the main
-        // render fence rather than a SpatialScalingPass fence. Do not replace
-        // their pipelines, descriptors, or private images while that work is
-        // still in flight. present() temporarily drains through the real-frame
-        // path, so this nonblocking poll cannot be starved by another generated
-        // batch using the old scaler.
-        const auto generatedRenderDrainRequired =
-            spatialScalerTransitionRequiresGeneratedRenderDrain(
-                this->spatialFramePipelinePlacement
-            );
-        const auto generatedRenderWorkInFlight =
-            generatedRenderDrainRequired && this->renderSlotsInFlight();
-        if (generatedRenderWorkInFlight) {
-            if (!this->pollRenderSlotsIdle(vk))
-                return;
-        }
-        if (!this->spatialScalingPassesReady(vk))
-            return;
-        if (generatedRenderDrainRequired && present_diagnostics::enabled()) {
-            std::cerr << "framegen-vulkan: present diagnostics: "
-                         "operation=runtime-transition-drain-ready"
-                      << " context=" << this->diagnosticsState.contextId
-                      << " reason=spatial-scaler"
-                      << " generated_render_work_in_flight="
-                      << generatedRenderWorkInFlight
-                      << " action=replace-private-scaler\n";
-        }
-    } catch (const std::exception& error) {
-        std::cerr << "framegen-vulkan: private spatial-scaler drain poll failed; "
-                     "the previous scaler remains active: "
-                  << error.what() << '\n';
-        return;
-    }
-
-    const auto requested = this->spatialTransition.value();
-    this->invalidateSpatialScalingRecordings();
-    *this->spatialScaler = std::move(*this->preparedSpatialScaler);
-    this->preparedSpatialScaler.reset();
-    this->profile.scaling_method = requested.method;
-    this->profile.scaling_sharpness = requested.sharpness;
-    const auto committedRevision = this->spatialTransition.committed();
-    this->runtimeStatusState.error.reset();
-    this->publishRuntimeStatus("spatial-scaler");
-    try {
-        this->ensureHistoryWarmup();
-        this->fixedRefreshBudget.reset();
-
-        const auto activeMethod = this->spatialScaler->activeMethod();
-        std::cerr << "framegen-vulkan: spatial scaling model changed live: "
-                  << "requested_method="
-                  << ls::scalingMethodName(requested.method)
-                  << "; active_method="
-                  << ls::scalingMethodName(activeMethod)
-                  << "; sharpness=" << requested.sharpness
-                  << "; transition=private-scaler\n";
-        if (!this->spatialScaler->fallbackReason().empty()) {
-            std::cerr << "framegen-vulkan: requested scaling model unavailable; using "
-                      << ls::scalingMethodName(activeMethod) << " fallback: "
-                      << this->spatialScaler->fallbackReason() << '\n';
-        }
-        if (present_diagnostics::enabled()) {
-            std::cerr << "framegen-vulkan: present diagnostics: "
-                         "operation=runtime-transition-applied"
-                      << " context=" << this->diagnosticsState.contextId
-                      << " state_revision="
-                      << committedRevision.value_or(0)
-                      << " reason=spatial-scaler"
-                      << " transition=private-context"
-                      << " requested_method="
-                      << ls::scalingMethodName(requested.method)
-                      << " active_method="
-                      << ls::scalingMethodName(activeMethod)
-                      << " sharpness=" << requested.sharpness << '\n';
-        }
-    } catch (const std::exception& error) {
-        // Resource construction and the atomic model swap have completed.
-        // Post-commit scheduler housekeeping must not roll the active model
-        // back or leave the transition permanently pending.
-        std::cerr << "framegen-vulkan: spatial scaling model changed live, but "
-                     "post-transition housekeeping reported: "
-                  << error.what() << '\n';
-    }
-}
-
-void Swapchain::recordSpatialScalingPass(const vk::Vulkan& vk,
-        SpatialScalingPass& pass, const VkImage applicationImage,
-        const VkImage frameGenerationSource) {
-    // prepareSpatialScalingPass established completion before this recording
-    // is reused or replaced. Do not retain a key if recording fails midway.
-    pass.recording.update(applicationImage, frameGenerationSource, [&] {
-        pass.commandBuffer.begin(vk, 0);
-        this->spatialScaler->record(
-            vk, pass.commandBuffer, applicationImage, frameGenerationSource);
-        pass.commandBuffer.end(vk);
-    });
-}
-
-void Swapchain::invalidateSpatialScalingRecordings() noexcept {
-    for (auto& pass : this->spatialScalingPasses)
-        pass.recording.invalidate();
-}
-
-void Swapchain::prepareSpatialScalingPass(const vk::Vulkan& vk,
-        SpatialScalingPass& pass) {
-    if (pass.completionInFlight) {
-        // Reacquiring the same WSI image means the lower present has already
-        // consumed the ready semaphore. Its private compute submission should
-        // therefore be complete; the fence makes that ownership explicit.
-        static_cast<void>(pass.completionFence.wait(vk));
-        pass.completionInFlight = false;
-    }
-    pass.completionFence.reset(vk);
-}
-
-bool Swapchain::spatialScalingPassesReady(const vk::Vulkan& vk) {
-    const auto deadline = DiagnosticsClock::now() +
-        privateResourceDrainBudget;
-    for (auto& pass : this->spatialScalingPasses) {
-        if (!pass.completionInFlight)
-            continue;
-        const auto now = DiagnosticsClock::now();
-        if (now >= deadline)
-            return false;
-        const auto remaining = std::chrono::duration_cast<
-            std::chrono::nanoseconds>(deadline - now);
-        if (!pass.completionFence.wait(
-                vk, static_cast<uint64_t>(remaining.count()))) {
-            return false;
-        }
-        pass.completionInFlight = false;
-    }
-    return true;
-}
-
-void Swapchain::configureDirectSpatialFrameGenerationOutputs(
-        const vk::Vulkan& vk, SpatialScaler& scaler,
-        const std::span<const vk::Image> outputs,
-        const std::string_view reason) noexcept {
-    this->invalidateSpatialScalingRecordings();
-    if (!directSpatialFrameGenerationOutputEligible(
-            this->spatialFramePipelinePlacement,
-            this->info.spatialScalingActive, outputs.size())) {
-        scaler.clearDirectFrameGenerationOutputs();
-        return;
-    }
-    if (!directSpatialFrameGenerationOutputSupported(
-            vk, this->colorPipeline.exchangeFormat,
-            this->spatialFramePipelinePlacement,
-            this->info.spatialScalingActive)) {
-        scaler.clearDirectFrameGenerationOutputs();
-        std::cerr << "framegen-vulkan: spatial scaling FG source transport: "
-                     "mode=copy-private-output; direct-output-unavailable="
-                     "external-storage-format-unsupported"
-                  << "; reason=" << reason << '\n';
-        return;
-    }
-
-    try {
-        std::vector<std::reference_wrapper<const vk::Image>> references;
-        references.reserve(outputs.size());
-        for (const auto& output : outputs)
-            references.push_back(std::cref(output));
-        scaler.configureDirectFrameGenerationOutputs(vk, references);
-        std::cerr << "framegen-vulkan: spatial scaling FG source transport: "
-                     "mode=direct-reconstruction; outputs="
-                  << scaler.directFrameGenerationOutputCount()
-                  << "; fallback=copy-private-output"
-                  << "; reason=" << reason << '\n';
-    } catch (const std::exception& error) {
-        scaler.clearDirectFrameGenerationOutputs();
-        std::cerr << "framegen-vulkan: spatial scaling FG source transport: "
-                     "mode=copy-private-output; direct-output-unavailable="
-                  << error.what() << "; reason=" << reason << '\n';
-    }
-}
-
-void Swapchain::clearDirectSpatialFrameGenerationOutputs() noexcept {
-    this->invalidateSpatialScalingRecordings();
-    if (this->spatialScaler)
-        this->spatialScaler->clearDirectFrameGenerationOutputs();
-    if (this->preparedSpatialScaler)
-        this->preparedSpatialScaler->clearDirectFrameGenerationOutputs();
 }

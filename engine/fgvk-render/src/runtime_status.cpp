@@ -71,8 +71,7 @@ namespace {
             return false;
 
         const auto stem = filename.substr(0, filename.size() - suffixSize);
-        return matchesManagedStatusStem(stem, "-frame-generation-") ||
-            matchesManagedStatusStem(stem, "-spatial-scaling-");
+        return matchesManagedStatusStem(stem, "-frame-generation-");
     }
 
     void removeManagedFile(const std::filesystem::path& path) noexcept {
@@ -260,13 +259,6 @@ namespace {
                << profile.frame_generation_provisioned
                << ",\"frame_generation_enabled\":"
                << profile.frame_generation_enabled
-               << ",\"scaling_enabled\":" << profile.scaling_enabled
-               << ",\"scaling_method\":"
-               << jsonString(ls::scalingMethodName(profile.scaling_method))
-               << ",\"scaling_factor\":" << profile.scaling_factor
-               << ",\"scaling_supersampling\":"
-               << profile.scaling_supersampling
-               << ",\"scaling_sharpness\":" << profile.scaling_sharpness
                << ",\"frame_generation_refresh_threshold\":"
                << profile.frame_generation_refresh_threshold
                << ",\"gpu_headroom_percent\":" << profile.gpu_headroom_percent
@@ -310,9 +302,6 @@ std::string fgvk::layer::runtimeStatusJson(
         const uint64_t processStartTicks, const uint64_t contextId,
         const std::string_view role,
         const int64_t updatedUnixMilliseconds) {
-    // A saved toggle waiting for restart cannot override the applied state.
-    const bool scalingActive = status.spatialScalingActive &&
-        status.appliedProfile.scaling_enabled;
     std::ostringstream stream;
     // Applications such as Dolphin install a process-wide locale with digit
     // grouping. JSON numbers never permit locale separators, so keep this
@@ -333,7 +322,6 @@ std::string fgvk::layer::runtimeStatusJson(
            << ",\"pending\":{"
            << "\"frame_generation_private\":"
            << status.frameGenerationPrivatePending
-           << ",\"spatial_private\":" << status.spatialPrivatePending
            << ",\"swapchain_recreation\":"
            << status.swapchainRecreationPending
            << ",\"process_restart\":" << status.processRestartPending
@@ -343,50 +331,6 @@ std::string fgvk::layer::runtimeStatusJson(
            << ",\"frame_generation_active\":"
            << status.frameGenerationActive
            << ",\"gpu_headroom_state\":" << jsonString(status.gpuHeadroomState)
-           << ",\"spatial_scaling\":{"
-           << "\"active\":" << scalingActive
-           << ",\"activation_supported\":"
-           << status.spatialScalingActivationSupported
-           << ",\"inactive_reason\":";
-    if (status.spatialScalingInactiveReason)
-        stream << jsonString(*status.spatialScalingInactiveReason);
-    else
-        stream << "null";
-    stream << ",\"constraint_reason\":";
-    if (status.spatialScalingConstraintReason)
-        stream << jsonString(*status.spatialScalingConstraintReason);
-    else
-        stream << "null";
-    stream << ",\"source_width\":" << status.spatialSourceWidth
-           << ",\"source_height\":" << status.spatialSourceHeight
-           << ",\"presentation_width\":"
-           << status.spatialPresentationWidth
-           << ",\"presentation_height\":"
-           << status.spatialPresentationHeight
-           << ",\"gamescope_target_width\":"
-           << status.gamescopeTargetWidth
-           << ",\"gamescope_target_height\":"
-           << status.gamescopeTargetHeight
-           << ",\"requested_method\":"
-           << jsonString(ls::scalingMethodName(status.spatialRequestedMethod))
-           << ",\"active_method\":"
-           << jsonString(ls::scalingMethodName(status.spatialActiveMethod))
-           << ",\"effective_factor\":"
-           << status.spatialEffectiveFactor
-           << ",\"pipeline\":" << jsonString(status.spatialPipeline)
-           << ",\"supersampling_active\":"
-           << status.spatialSupersamplingActive
-           << ",\"fallback_reason\":";
-    if (status.spatialFallbackReason)
-        stream << jsonString(*status.spatialFallbackReason);
-    else
-        stream << "null";
-    stream << ",\"non_supersampling_factor_ceiling\":";
-    if (status.nonSupersamplingFactorCeiling)
-        stream << *status.nonSupersamplingFactorCeiling;
-    else
-        stream << "null";
-    stream << '}'
            << ",\"requested\":" << profileJson(status.requestedProfile)
            << ",\"applied\":" << profileJson(status.appliedProfile)
            << ",\"error\":";

@@ -11,9 +11,9 @@ Use mpv's Vulkan renderer for video Frame Generation. framegen-vulkan changes di
     ```
 
 2. For Flatpak, follow [Flatpak preparation](FLATPAK-GUIDE.md) with `appid=io.mpv.Mpv` and its matching runtime extension. Native mpv skips this step.
-3. In the `fgvk` settings window (`~/.local/bin/fgvk`), create a `Video` profile, enable Frame Generation, and start with Fixed 2x. Leave scaling off initially.
+3. In the `fgvk` settings window (`~/.local/bin/fgvk`), create a `Video` profile, enable Frame Generation, and start with Fixed 2x.
 
-Frame Generation and LS1 need Lossless Scaling's default Steam version and a valid DLL path. framegen-vulkan Scaler works without it.
+Frame Generation needs Lossless Scaling's default Steam version and a valid DLL path.
 
 The Flatpak examples below select mpv’s `waylandvk` context and require a Wayland session, including Gamescope. On X11, omit `gpu-context=waylandvk` or `--gpu-context=waylandvk` and let mpv select its Vulkan context automatically. See [mpv’s context options](https://mpv.io/manual/stable/#options-gpu-context).
 
@@ -70,10 +70,8 @@ FGVK_PROFILE=Video ~/.local/bin/fgvk mpv \
 
 For native mpv in a Wayland session, add `--gpu-context=waylandvk` only if `mpv --gpu-context=help` lists it.
 
-## Scaling and limitations
+## Limitations
 
-- Leave scaling off for ordinary playback: mpv usually already scales video to the window or display.
-- For a scaling test, use a smaller window, start at 1.5x with Quality Supersampling off, restart mpv, and check diagnostics for `spatial scaling active`.
 - Higher output FPS depends on the video cadence, display refresh, and GPU capacity. Interpolation can make grain, compression artifacts, cuts, and subtitles more noticeable.
 - FFplay may use an unsupported colour format; use mpv with the SDR settings above.
 

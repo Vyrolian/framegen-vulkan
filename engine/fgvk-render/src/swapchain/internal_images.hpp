@@ -43,12 +43,7 @@ namespace fgvk::layer {
         // FGVK_PACING_PROFILE_COPY=1 or frame-content capture is configured:
         // both replace the copy path with diagnostic work that assumes lower images.
         bool diagnosticCopyPath{false};
-        // gamescopeScalingSurface != nullptr; the detection flag is separate.
-        bool gamescopeScalingSurface{false};
         bool gamescopeDetected{false};
-        bool spatialScalingActive{false};
-        // Surface without a fixed currentExtent. Logged only; not a refusal.
-        bool variableSurface{false};
         VkExtent2D applicationExtent{};
         VkExtent2D lowerExtent{};
         VkFormat applicationFormat{VK_FORMAT_UNDEFINED};
@@ -94,12 +89,10 @@ namespace fgvk::layer {
         if (input.adaptive) return "adaptive";
         if (!input.deferredPresentQueue) return "no-deferred-present-queue";
         if (input.diagnosticCopyPath) return "diagnostic-copy-path";
-        if (input.gamescopeScalingSurface || input.gamescopeDetected) return "gamescope";
-        if (input.spatialScalingActive) return "spatial-scaling";
+        if (input.gamescopeDetected) return "gamescope";
         // A variable surface (Wayland: no fixed currentExtent) is not refused.
-        // Its own paths are spatial scaling and Gamescope, refused
-        // above; with those off the lower swapchain has the application's
-        // extent, which the next check requires.
+        // Its own path is Gamescope, refused above; without it the lower
+        // swapchain has the application's extent, which the next check requires.
         if (input.applicationExtent.width != input.lowerExtent.width ||
                 input.applicationExtent.height != input.lowerExtent.height) {
             return "extent-mismatch";

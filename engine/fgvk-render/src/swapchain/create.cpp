@@ -68,7 +68,6 @@ bool layer::context_ModifySwapchainCreateInfo(const ls::GameConf& profile,
         VkSwapchainCreateInfoKHR& createInfo,
         const bool gamescopeDetected,
         const bool frameGenerationInteropEnabled,
-        const bool spatialScalingActive,
         const uint32_t surfaceMinImages) {
     const auto colorPipeline = classifySwapchainColor(
         createInfo.imageFormat, createInfo.imageColorSpace
@@ -87,7 +86,7 @@ bool layer::context_ModifySwapchainCreateInfo(const ls::GameConf& profile,
 
     return applySwapchainCreateProvisioning(
         profile, maxImages, createInfo,
-        frameGenerationProvisioned, spatialScalingActive,
+        frameGenerationProvisioned,
         orderedFrameGenerationTransport,
         profile.swapchain_image_count_compatibility,
         gamescopeDetected ? 0 : surfaceMinImages,
@@ -97,7 +96,6 @@ bool layer::context_ModifySwapchainCreateInfo(const ls::GameConf& profile,
 
 Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance* backend,
             ls::GameConf profile, SwapchainInfo info,
-            const std::optional<std::filesystem::path> scalingShaderDll,
             const bool fp16Requested,
             const bool gamescopeDetected,
             const std::optional<uint32_t> gamescopeRefreshHz,
@@ -112,7 +110,6 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance* backend,
         gamescopePresentationFeedback(
             std::move(gamescopePresentationFeedback)),
         colorPipeline(classifySwapchainColor(info.format, info.colorSpace)),
-        scalingShaderDll(scalingShaderDll),
         fp16Requested(fp16Requested),
         profile(std::move(profile)), info(std::move(info)) {
     this->presentFeedback.configure(this->info.applicationPresentFeedback);
@@ -124,7 +121,7 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance* backend,
     this->diagnosticsState.contextId = allocateDiagnosticsContextId();
     if (vk.frameGenerationInteropEnabled() &&
             !this->profile.adaptive && this->profile.multiplier == 2 &&
-            !this->profile.scaling_enabled && !this->colorPipeline.hdr)
+            !this->colorPipeline.hdr)
         this->frameContentCapture = FrameContentCapture::create(this->diagnosticsState.contextId);
     if (present_diagnostics::pacingProfileEnabled()) {
         present_diagnostics::initializePacingProfileLog();
@@ -144,16 +141,10 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance* backend,
     const DiagnosticsContextScope diagnosticsContext(
         this->diagnosticsState.contextId
     );
-    if (this->info.spatialScalingAdmissionRetryEligible) {
-        this->spatialScalingAdmissionRetryAfter =
-            DiagnosticsClock::now() + std::chrono::seconds{3};
-    }
     const VkExtent2D extent = this->info.extent;
 
     if (swapchainMaintenance1Enabled && presentationRetirementRequired(
-            vk.frameGenerationInteropEnabled(),
-            this->profile.scaling_enabled || this->info.spatialScalingActive,
-            this->info.gamescopeScalingSurface != nullptr)) {
+            vk.frameGenerationInteropEnabled())) {
         try {
             this->presentRetirementFences.reserve(this->info.images.size());
             for (size_t index = 0; index < this->info.images.size(); ++index) {
@@ -173,102 +164,6 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance* backend,
                       << error.what() << '\n';
         }
     }
-
-    if (this->info.spatialScalingActive) {
-        if (!spatialScalingColorSupported(this->colorPipeline))
-            throw ls::error(
-                "spatial scaling requires a supported colour pipeline"
-            );
-        if (sameExtent(this->info.applicationExtent, this->info.extent))
-            throw ls::error(
-                "spatial scaling source and presentation extents are identical"
-            );
-
-        this->spatialFramePipelinePlacement =
-            selectSpatialFramePipelinePlacement(
-                this->info.applicationExtent, this->info.extent
-            );
-
-        this->spatialScaler.emplace(
-            vk, this->info.applicationExtent, this->info.extent,
-            this->colorPipeline.exchangeFormat,
-            ls::effectiveScalingMethod(this->profile),
-            this->profile.scaling_sharpness,
-            scalingShaderDll, this->fp16Requested
-        );
-        this->spatialScalingPasses.reserve(this->info.images.size());
-        for (size_t i = 0; i < this->info.images.size(); ++i) {
-            static_cast<void>(i);
-            this->spatialScalingPasses.emplace_back(SpatialScalingPass{
-                .commandBuffer = vk::CommandBuffer(vk),
-                .readySemaphore = vk::Semaphore(vk),
-                .completionFence = vk::Fence(vk),
-            });
-        }
-        const auto activeScalingMethod = this->spatialScaler->activeMethod();
-        std::cerr << "framegen-vulkan: spatial arithmetic precision="
-                  << this->spatialScaler->precisionName() << " requested="
-                  << (this->fp16Requested ? "fp16" : "fp32") << '\n';
-        const double effectiveScalingFactor = std::min(
-            static_cast<double>(this->info.extent.width) /
-                static_cast<double>(this->info.applicationExtent.width),
-            static_cast<double>(this->info.extent.height) /
-                static_cast<double>(this->info.applicationExtent.height)
-        );
-        std::cerr << "framegen-vulkan: spatial scaling active: source="
-                  << this->info.applicationExtent.width << 'x'
-                  << this->info.applicationExtent.height
-                  << "; presentation=" << this->info.extent.width << 'x'
-                  << this->info.extent.height
-                  << "; factor=" << this->profile.scaling_factor
-                  << "; effective_factor=" << effectiveScalingFactor
-                  << "; requested_method="
-                  << ls::scalingMethodName(
-                      this->spatialScaler->requestedMethod()
-                  )
-                  << "; active_method="
-                  << ls::scalingMethodName(activeScalingMethod)
-                  << "; sharpness=" << this->profile.scaling_sharpness
-                  << "; ls1_model_variant=";
-        if (!ls::licensedScalingModelRequested(activeScalingMethod))
-            std::cerr << "none";
-        else
-            std::cerr << this->spatialScaler->ls1ModelVariant();
-        std::cerr << "; ls1_translator="
-                  << (this->spatialScaler->ls1Translator().empty()
-                      ? "none" : this->spatialScaler->ls1Translator())
-                  << "; ls1_dll_sha256="
-                  << (this->spatialScaler->ls1DllSha256().empty()
-                      ? "none" : this->spatialScaler->ls1DllSha256())
-                  << "; ls1_resource_layout_sha256="
-                  << (this->spatialScaler->ls1ResourceLayoutSha256().empty()
-                      ? "none"
-                      : this->spatialScaler->ls1ResourceLayoutSha256())
-                  << "; working_format="
-                  << static_cast<int>(this->colorPipeline.exchangeFormat)
-                  << "; role=" << layerRoleName
-                  << "; pipeline="
-                  << spatialFramePipelinePlacementName(
-                        this->spatialFramePipelinePlacement
-                     )
-                  << "; placement_reason="
-                  << spatialFramePipelinePlacementReason(
-                        this->spatialFramePipelinePlacement
-                     )
-                  << '\n';
-        if (!this->spatialScaler->fallbackReason().empty()) {
-            std::cerr << "framegen-vulkan: requested scaling model unavailable; using "
-                      << ls::scalingMethodName(activeScalingMethod) << " fallback: "
-                      << this->spatialScaler->fallbackReason() << '\n';
-        }
-    }
-
-    this->replacementWsiPrimePending =
-        nullOldReplacementRequiresDirectPresentPrime(
-            this->info.replacement,
-            this->info.applicationOldSwapchainProvided,
-            this->spatialScaler.has_value()
-        );
 
     const auto initialGenerationPolicy = generationSchedulerPolicy(
         this->profile, this->gamescopeRefreshHz
@@ -354,22 +249,13 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance* backend,
         return;
     }
     try {
-        const VkExtent2D generationExtent = frameGenerationExtent(
-            this->spatialFramePipelinePlacement,
-            this->info.applicationExtent, this->info.extent
-        );
+        const VkExtent2D generationExtent = this->info.extent;
         std::vector<int> sourceFds(2, -1);
         ls::FileDescriptorScope sourceScope{sourceFds};
         std::vector<int> destinationFds(generatedFrameCapacityForProfile(this->profile), -1);
         ls::FileDescriptorScope destinationScope{destinationFds};
-        const auto sourceImageUsage = frameGenerationSourceImageUsage(
-            this->spatialFramePipelinePlacement,
-            directSpatialFrameGenerationOutputSupported(
-                vk, this->colorPipeline.exchangeFormat,
-                this->spatialFramePipelinePlacement,
-                this->spatialScaler.has_value()
-            )
-        );
+        const VkImageUsageFlags sourceImageUsage =
+            VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
 
         this->sourceImages.reserve(sourceFds.size());
         for (int& fd : sourceFds)
@@ -417,12 +303,6 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance* backend,
         }
 
         this->ensureFrameGenerationExecutionResources(vk);
-        if (this->spatialScaler) {
-            this->configureDirectSpatialFrameGenerationOutputs(
-                vk, *this->spatialScaler, this->sourceImages,
-                "swapchain-create"
-            );
-        }
 
         this->configuredFixedGeneratedFrames = fixedGeneratedFrameCount(
             this->profile.multiplier, this->destinationImages.size()

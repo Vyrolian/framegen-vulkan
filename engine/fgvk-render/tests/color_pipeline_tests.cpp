@@ -23,16 +23,14 @@ int main() {
         const auto pipeline = classifySwapchainColor(format, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR);
         expect(pipeline.generationSupported && !pipeline.hdr &&
             pipeline.encoding == backend::FrameEncoding::Sdr8 &&
-            pipeline.exchangeFormat == VK_FORMAT_R8G8B8A8_UNORM &&
-            spatialScalingColorSupported(pipeline), "8-bit SDR must support generation and scaling");
+            pipeline.exchangeFormat == VK_FORMAT_R8G8B8A8_UNORM, "8-bit SDR must support generation");
     }
     for (const auto format : {VK_FORMAT_A2B10G10R10_UNORM_PACK32,
             VK_FORMAT_A2R10G10B10_UNORM_PACK32, VK_FORMAT_R16G16B16A16_SFLOAT}) {
         const auto pipeline = classifySwapchainColor(format, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR);
         expect(pipeline.generationSupported && !pipeline.hdr &&
             pipeline.encoding == backend::FrameEncoding::SdrHighPrecision &&
-            pipeline.exchangeFormat == VK_FORMAT_R16G16B16A16_SFLOAT &&
-            spatialScalingColorSupported(pipeline), "10/16-bit SDR must keep its precision");
+            pipeline.exchangeFormat == VK_FORMAT_R16G16B16A16_SFLOAT, "10/16-bit SDR must keep its precision");
     }
     const struct ColorCase { VkColorSpaceKHR space; bool hdr; } colors[]{
         {VK_COLOR_SPACE_HDR10_ST2084_EXT, true},
@@ -58,7 +56,7 @@ int main() {
                 VK_FORMAT_UNDEFINED}) {
             const auto pipeline = classifySwapchainColor(format, row.space);
             expect(!pipeline.generationSupported && pipeline.hdr == row.hdr &&
-                !spatialScalingColorSupported(pipeline) && pipeline.name == "hdr-passthrough" &&
+                pipeline.name == "hdr-passthrough" &&
                 pipeline.reason == "HDR is not supported; frame generation passes through",
                 "Every non-sRGB colour space must retain real-frame passthrough");
         }

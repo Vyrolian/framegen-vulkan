@@ -282,10 +282,7 @@ namespace {
             .adaptive = false,
             .deferredPresentQueue = true,
             .diagnosticCopyPath = false,
-            .gamescopeScalingSurface = false,
             .gamescopeDetected = false,
-            .spatialScalingActive = false,
-            .variableSurface = false,
             .applicationExtent = {.width = 1920, .height = 1080},
             .lowerExtent = {.width = 1920, .height = 1080},
             .applicationFormat = VK_FORMAT_B8G8R8A8_UNORM,
@@ -318,9 +315,7 @@ namespace {
             {"adaptive", [](auto& in) { in.adaptive = true; }},
             {"no-deferred-present-queue", [](auto& in) { in.deferredPresentQueue = false; }},
             {"diagnostic-copy-path", [](auto& in) { in.diagnosticCopyPath = true; }},
-            {"gamescope", [](auto& in) { in.gamescopeScalingSurface = true; }},
             {"gamescope", [](auto& in) { in.gamescopeDetected = true; }},
-            {"spatial-scaling", [](auto& in) { in.spatialScalingActive = true; }},
             {"extent-mismatch", [](auto& in) { in.applicationExtent.width = 1280; }},
             {"extent-mismatch", [](auto& in) { in.applicationExtent.height = 720; }},
             {"format-mismatch", [](auto& in) { in.applicationFormat = VK_FORMAT_R8G8B8A8_UNORM; }},
@@ -339,27 +334,6 @@ namespace {
             expect(!internalImagesEligible(input),
                 "a single failing condition still reported eligible");
         }
-    }
-
-    void testVariableSurfaceWithMatchingExtentIsEligible() {
-        auto input = eligibleInput();
-        input.variableSurface = true;
-        expect(internalImagesEligible(input),
-            "a variable surface with matching extents was refused");
-
-        auto mismatched = eligibleInput();
-        mismatched.variableSurface = true;
-        mismatched.lowerExtent.width = 2560;
-        const char* reason = internalImagesIneligibleReason(mismatched);
-        expect(reason != nullptr && std::string_view(reason) == "extent-mismatch",
-            "a variable surface with a different lower extent was not refused for extent");
-
-        auto scaled = eligibleInput();
-        scaled.variableSurface = true;
-        scaled.spatialScalingActive = true;
-        reason = internalImagesIneligibleReason(scaled);
-        expect(reason != nullptr && std::string_view(reason) == "spatial-scaling",
-            "a scaled variable surface was not refused for spatial scaling");
     }
 
     void testFirstFailingReasonWins() {
@@ -487,7 +461,6 @@ int main() {
     testCrossThreadExchange();
     testEligibleBaseline();
     testEachFailingConditionAlone();
-    testVariableSurfaceWithMatchingExtentIsEligible();
     testFirstFailingReasonWins();
     testAllowedCreateFlags();
     testEnvironmentSwitch();

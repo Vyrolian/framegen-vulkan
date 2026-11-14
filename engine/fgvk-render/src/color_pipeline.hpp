@@ -25,13 +25,6 @@ namespace fgvk::layer {
         std::string_view reason{};
     };
 
-    /// Scaling preserves the classified encoding in high-precision exchange
-    /// images. Unsupported format/colour-space pairs must fail closed.
-    [[nodiscard]] constexpr bool spatialScalingColorSupported(
-            const SwapchainColorPipeline& pipeline) noexcept {
-        return pipeline.generationSupported;
-    }
-
     /// Only nonlinear sRGB swapchains support generation.
     [[nodiscard]] SwapchainColorPipeline classifySwapchainColor(
         VkFormat format, VkColorSpaceKHR colorSpace);

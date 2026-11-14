@@ -31,7 +31,7 @@ def read_setup(path):
                 fields = dict(token.split("=", 1) for token in line[len(PREFIX):].split())
                 if fields["version"] != "1" or fields["kind"] not in ("instance", "device", "swapchain", "surface"):
                     raise ValueError("unsupported setup record")
-                if fields["boundary"] not in ("incoming", "forwarded") or fields["role"] not in ("frame-generation", "spatial-scaling", "combined"):
+                if fields["boundary"] not in ("incoming", "forwarded") or fields["role"] not in ("frame-generation", "combined"):
                     raise ValueError("unsupported boundary")
                 for key in ("pid", "call", "result"):
                     fields[key] = int(fields[key])

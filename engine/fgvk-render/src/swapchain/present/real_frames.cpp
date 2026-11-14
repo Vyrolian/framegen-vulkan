@@ -89,75 +89,7 @@ void Swapchain::recordPresentCadence(const DiagnosticsClock::time_point presentN
     }
 }
 
-VkResult Swapchain::presentSpatiallyScaledFrame(
-        const PresentInvocation& invocation) {
-    auto& pass = this->spatialScalingPasses.at(invocation.imageIndex);
-    this->prepareSpatialScalingPass(invocation.vk, pass);
-    const VkImage applicationImage = this->applicationImageFor(
-        invocation.imageIndex
-    );
-    const auto scalingStarted = startPresentDiagnostic();
-    this->recordSpatialScalingPass(invocation.vk, pass, applicationImage);
-    pass.commandBuffer.submit(
-        invocation.vk,
-        invocation.waitSemaphores, VK_NULL_HANDLE, 0,
-        std::array{pass.readySemaphore.handle()},
-        VK_NULL_HANDLE, 0, pass.completionFence.handle(), invocation.queue
-    );
-    pass.completionInFlight = true;
-    const auto scalingDuration = finishPresentDiagnostic(scalingStarted);
-    logSlowPresentOperation(
-        "submit-spatial-scaling", this->frameState.realFrameIndex,
-        this->frameState.sequenceIndex, scalingStarted,
-        std::nullopt, std::nullopt, invocation.imageIndex
-    );
-
-    const VkSemaphore ready = pass.readySemaphore.handle();
-    const VkPresentInfoKHR presentInfo{
-        .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
-        .pNext = invocation.nextChain,
-        .waitSemaphoreCount = 1,
-        .pWaitSemaphores = &ready,
-        .swapchainCount = 1,
-        .pSwapchains = &invocation.swapchain,
-        .pImageIndices = &invocation.imageIndex,
-    };
-    const auto originalPresentStarted = startPresentDiagnostic();
-    const auto result = this->queuePresentWithRetirementFence(
-        invocation.vk, invocation.queue, presentInfo, {
-            .scheduled = invocation.originalPresentDeadline.value_or(DiagnosticsClock::time_point{}),
-            .applicationImage = true,
-        }
-    );
-    const auto originalPresentDuration = finishPresentDiagnostic(
-        originalPresentStarted
-    );
-    if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR)
-        throw ls::vulkan_error(result, "vkQueuePresentKHR() failed");
-
-    const auto presentWorkDuration = finishPresentDiagnostic(
-        invocation.started
-    );
-    logSlowPresentOperation(
-        "present-total", this->frameState.realFrameIndex,
-        this->frameState.sequenceIndex, invocation.started, result
-    );
-    logSlowPresentBreakdown(
-        this->diagnosticsState.contextId, this->frameState.realFrameIndex,
-        this->frameState.sequenceIndex, presentWorkDuration,
-        {
-            .sourceCopy = scalingDuration,
-            .originalPresent = originalPresentDuration,
-        }
-    );
-    this->frameState.realFrameIndex++;
-    return result;
-}
-
 VkResult Swapchain::presentNativeFrame(const PresentInvocation& invocation) {
-    if (this->spatialScaler)
-        return this->presentSpatiallyScaledFrame(invocation);
-
     return this->presentDirectApplicationFrame(invocation);
 }
 
@@ -211,31 +143,6 @@ VkResult Swapchain::presentOriginalImage(
         const VkSemaphore waitSemaphore, const void* nextChain,
         DiagnosticsClock::duration* const duration) {
     VkSemaphore presentWaitSemaphore = waitSemaphore;
-    if (this->spatialScaler &&
-            this->spatialFramePipelinePlacement ==
-                SpatialFramePipelinePlacement::PostFrameGeneration) {
-        auto& pass = this->spatialScalingPasses.at(invocation.imageIndex);
-        this->prepareSpatialScalingPass(invocation.vk, pass);
-        const VkImage applicationImage = this->applicationImageFor(
-            invocation.imageIndex
-        );
-        const auto scalingStarted = startPresentDiagnostic();
-        this->recordSpatialScalingPass(invocation.vk, pass, applicationImage);
-        pass.commandBuffer.submit(
-            invocation.vk,
-            std::array{waitSemaphore}, VK_NULL_HANDLE, 0,
-            std::array{pass.readySemaphore.handle()},
-            VK_NULL_HANDLE, 0, pass.completionFence.handle(), invocation.queue
-        );
-        pass.completionInFlight = true;
-        presentWaitSemaphore = pass.readySemaphore.handle();
-        logSlowPresentOperation(
-            "submit-post-frame-spatial-original",
-            this->frameState.realFrameIndex,
-            this->frameState.sequenceIndex, scalingStarted,
-            std::nullopt, std::nullopt, invocation.imageIndex
-        );
-    }
     const VkPresentInfoKHR presentInfo{
         .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
         .pNext = nextChain,
@@ -289,45 +196,6 @@ VkResult Swapchain::presentOriginalImage(
 
 void Swapchain::submitSourceCopy(const PresentInvocation& invocation,
         const VkImage swapchainImage, const vk::Image& sourceImage) {
-    if (this->spatialScaler &&
-            this->spatialFramePipelinePlacement ==
-                SpatialFramePipelinePlacement::PreFrameGeneration) {
-        auto& pass = this->spatialScalingPasses.at(invocation.imageIndex);
-        this->prepareSpatialScalingPass(invocation.vk, pass);
-        this->recordSpatialScalingPass(
-            invocation.vk, pass, swapchainImage, sourceImage.handle());
-
-        const auto sourceSubmitStarted = startPresentDiagnostic();
-        const auto sourceTimelineValue =
-            this->frameState.backendTimelineIndex++;
-        this->frameState.sequenceIndex++;
-        pass.commandBuffer.submit(
-            invocation.vk,
-            invocation.waitSemaphores, VK_NULL_HANDLE, 0,
-            {}, this->syncSemaphore->handle(),
-            sourceTimelineValue,
-            pass.completionFence.handle(), invocation.queue
-        );
-        if (present_diagnostics::pacingProfileEnabled()) {
-            // D7c: the stall probe reads this copy's signal value on the FG timeline.
-            present_diagnostics::noteFgSourceCopy(this->diagnosticsState.contextId,
-                invocation.vk.dev(), this->syncSemaphore->handle(),
-                invocation.vk.df().GetSemaphoreCounterValueKHR,
-                this->pacingProfile ? this->pacingProfile->sourceOrdinal() : 0, sourceTimelineValue);
-            this->fgTimelineLease.hold(this->diagnosticsState.contextId);
-        }
-        pass.completionInFlight = true;
-        this->frameState.sourceReleaseTimelineValue =
-            this->frameState.nextSourceReleaseTimelineValue;
-        this->frameState.nextSourceReleaseTimelineValue = 0;
-        logSlowPresentOperation(
-            "submit-spatial-source", this->frameState.realFrameIndex,
-            this->frameState.sequenceIndex, sourceSubmitStarted,
-            std::nullopt, std::nullopt, invocation.imageIndex
-        );
-        return;
-    }
-
     const auto& commandBuffer = this->currentRenderSlot().sourceCopy;
     const std::array preBarriers{
         barrierHelper(swapchainImage,

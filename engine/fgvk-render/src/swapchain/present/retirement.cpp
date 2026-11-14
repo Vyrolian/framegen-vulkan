@@ -5,7 +5,6 @@
 #include "swapchain/retirement.hpp"
 #include "swapchain/create_policy.hpp"
 #include "adaptive_scheduler.hpp"
-#include "gamescope_scaling_surface.hpp"
 #include "fgvk-common/helpers/errors.hpp"
 #include "fgvk-common/vulkan/command_buffer.hpp"
 #include "fgvk-common/vulkan/image.hpp"
@@ -278,7 +277,7 @@ VkResult Swapchain::queuePresentWithRetirementFence(
         .numFramesPerBatch = static_cast<uint32_t>(this->bridgeOutputBatchSize),
     };
     if (this->info.presentMetering && observation.generated &&
-            !this->gamescopeDetected && !this->spatialScaler && !this->profile.adaptive &&
+            !this->gamescopeDetected && !this->profile.adaptive &&
             this->configuredFixedGeneratedFrames == 1 && this->bridgeOutputBatchSize == 2)
         presentInfo.pNext = &metering;
 #endif
@@ -317,7 +316,6 @@ VkResult Swapchain::queuePresentWithRetirementFence(
         .pTimingInfos = &timing,
     };
     if (this->presentTiming.controlsOutput(this->gamescopeRefreshHz.value_or(0)) &&
-            !this->info.gamescopeScalingSurface &&
             this->info.presentMode == VK_PRESENT_MODE_FIFO_KHR &&
             presentInfo.swapchainCount == 1 && !hasPresentTiming(presentInfo.pNext)) {
         const double refresh = this->presentTiming.refreshRate(this->gamescopeRefreshHz.value_or(0));
@@ -346,7 +344,6 @@ VkResult Swapchain::queuePresentWithRetirementFence(
 #endif
     if (displayTimingControlsOutput(this->wsiPresentTimingQuery != nullptr,
             this->privateOrderedTransport, this->gamescopeRefreshHz.value_or(0)) &&
-            !this->info.gamescopeScalingSurface &&
             presentInfo.swapchainCount == 1 &&
             !hasPresentTiming(presentInfo.pNext)) {
         const auto slot = this->wsiPresentTimeline.schedule(
@@ -383,25 +380,6 @@ VkResult Swapchain::queuePresentWithRetirementFence(
         }
     }
     this->lastLowerPresentRetirementProtected = false;
-    // The protocol mode applies to one surface commit. Preparing only the
-    // application's outer present would leave the remaining generated/real
-    // outputs unannotated and allow the compositor to replace them.
-    if (this->info.gamescopeScalingSurface) {
-        for (uint32_t i = 0; i < presentInfo.swapchainCount; ++i) {
-            const auto prepared = this->info.gamescopeScalingSurface->preparePresent(
-                    this->info.surface, presentInfo.pSwapchains[i],
-                    outputPolicy.outputFps,
-                    this->gamescopeRefreshHz.value_or(0),
-                    this->bridgeOutputBatchSize, outputPolicy.generatedTimeline,
-                    this->frameState.realFrameIndex,
-                    &this->orderedPresentationDeadline, this->outputSourceDeadline);
-            if (prepared != VK_SUCCESS)
-                return completeRejectedPresent(vk.df().QueueSubmit,
-                    queue, presentInfo, prepared);
-        }
-        timingOwner = PacingProfile::BridgeTiming;
-        timingTarget.reset();
-    }
     const auto lowerPresent = [&](VkPresentInfoKHR info) {
         if (this->pacingProfile)
             this->pacingProfile->outputTiming(timingOwner, timingTarget);
@@ -468,7 +446,6 @@ VkResult Swapchain::queuePresentWithRetirementFence(
                 return vk.df().QueuePresentKHR(selectedQueue, &selectedInfo);
             };
             if (nativePrivatePresentQueueEligible(this->gamescopeDetected,
-                    this->info.gamescopeScalingSurface != nullptr,
                     static_cast<bool>(this->info.deferredPresentQueue))) {
                 // Pin every native output from the first managed present,
                 // including synchronous first/generated/native/fallback and
@@ -493,7 +470,7 @@ VkResult Swapchain::queuePresentWithRetirementFence(
         if (!this->pacingProfile) return submit();
         auto observed = observation;
         observed.queue = nativePrivatePresentQueueEligible(this->gamescopeDetected,
-            this->info.gamescopeScalingSurface != nullptr, static_cast<bool>(this->info.deferredPresentQueue))
+            static_cast<bool>(this->info.deferredPresentQueue))
             ? this->info.deferredPresentQueue->queue : queue;
         if (info.waitSemaphoreCount == 1 && info.pWaitSemaphores)
             observed.presentWait = info.pWaitSemaphores[0];
@@ -626,11 +603,6 @@ bool Swapchain::waitForPresentRetirement(
                 return false;
             if (!this->pollRenderSlotsIdle(vk))
                 return false;
-            for (const auto& pass : this->spatialScalingPasses) {
-                if (pass.completionInFlight &&
-                        !pass.completionFence.wait(vk, 0))
-                    return false;
-            }
         } catch (const std::exception& error) {
             std::cerr << "framegen-vulkan: private work retirement poll failed: "
                       << error.what() << '\n';
@@ -648,22 +620,6 @@ VkResult Swapchain::retireAcquiredImagesAndPresent(const vk::Vulkan& vk,
         const VkImage originalImage) {
     if (acquiredImageIndices.empty())
         throw ls::error("attempted to retire an empty acquired-image batch");
-
-    VkSemaphore spatialScalingReady = VK_NULL_HANDLE;
-    if (this->spatialScaler) {
-        auto& scalingPass = this->spatialScalingPasses.at(
-            originalImageIndex
-        );
-        this->prepareSpatialScalingPass(vk, scalingPass);
-        this->recordSpatialScalingPass(vk, scalingPass, originalImage);
-        scalingPass.commandBuffer.submit(
-            vk, applicationWaitSemaphores, VK_NULL_HANDLE, 0,
-            std::array{scalingPass.readySemaphore.handle()},
-            VK_NULL_HANDLE, 0, scalingPass.completionFence.handle(), queue
-        );
-        scalingPass.completionInFlight = true;
-        spatialScalingReady = scalingPass.readySemaphore.handle();
-    }
 
     // With an internal descriptor the application image is the private image, and
     // its real output uses the realSlot wait and fence.
@@ -737,14 +693,10 @@ VkResult Swapchain::retireAcquiredImagesAndPresent(const vk::Vulkan& vk,
             pass.acquireSemaphore.handle()
         };
         if (first) {
-            if (spatialScalingReady != VK_NULL_HANDLE) {
-                waits.push_back(spatialScalingReady);
-            } else {
-                waits.insert(
-                    waits.end(), applicationWaitSemaphores.begin(),
-                    applicationWaitSemaphores.end()
-                );
-            }
+            waits.insert(
+                waits.end(), applicationWaitSemaphores.begin(),
+                applicationWaitSemaphores.end()
+            );
         } else {
             const size_t previousSemaphoreIndex =
                 (semaphoreBase + i - 1) % this->postCopySemaphores.size();

@@ -1,7 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 
 #include "instance.hpp"
-#include "gamescope_scaling_surface.hpp"
 #include "color_pipeline.hpp"
 #include "layer_role.hpp"
 #include "fgvk-common/helpers/errors.hpp"
@@ -66,7 +65,6 @@ namespace {
         std::vector<VkInstance> handles; // there may be several instances
         vk::VulkanInstanceFuncs funcs;
         std::string engineName;
-        std::unique_ptr<GamescopeScalingSurface> scalingSurfaces;
         SurfaceMaintenance1Support surfaceMaintenance1;
         bool surfaceCapabilities2{false};
 
@@ -85,32 +83,9 @@ namespace {
             uint32_t familyIndex{UINT32_MAX};
         };
         std::unordered_map<VkQueue, QueueIdentity> queueIdentities;
-        struct SurfaceScalingEligibility {
-            bool supported{false};
-            bool queueSupported{false};
-            uint32_t advertisedFormatCount{0};
-            uint32_t compatibleFormatCount{0};
-        };
-        std::mutex surfaceScalingMutex;
-        std::unordered_map<
-            VkPhysicalDevice,
-            std::unordered_map<VkSurfaceKHR, SurfaceScalingEligibility>
-        > surfaceScalingEligibility;
-        uint64_t nextSurfaceScalingQueryGeneration{1};
-        std::unordered_map<
-            VkPhysicalDevice,
-            std::unordered_map<VkSurfaceKHR, FixedSurfaceScalingContract>
-        > fixedSurfaceScalingContracts;
-        std::unordered_map<VkSurfaceKHR, SpatialScalingExtents>
-            variableSurfaceScalingExtents;
-        std::unordered_map<VkSurfaceKHR, SpatialScalingExtents>
-            variableSurfaceRollbackExtents;
+        std::mutex surfaceStateMutex; // guards surfaceOrigins and waylandPresentation
         std::unordered_map<VkSurfaceKHR, SpatialSurfaceOrigin> surfaceOrigins;
         std::unordered_map<VkSurfaceKHR, std::shared_ptr<WaylandPresentationFeedback>> waylandPresentation;
-        std::unordered_set<VkSurfaceKHR> unprovenSplitSurfacesLogged;
-        std::unordered_map<
-            VkSurfaceKHR, ScalingAdmissionRetrySurfaceBudget
-        > scalingAdmissionRetryStates;
         std::unordered_map<VkSwapchainKHR, ls::R<vk::Vulkan>> swapchains;
         std::unordered_map<VkSwapchainKHR, SwapchainInfo> swapchainInfos;
         std::unordered_set<VkSwapchainKHR> nativeSwapchains;
@@ -351,8 +326,7 @@ namespace {
 
     std::optional<uint32_t> selectLayerQueueFamily(
             const VkPhysicalDevice physicalDevice,
-            const VkDeviceCreateInfo& createInfo,
-            const bool spatialScalingConfigured) {
+            const VkDeviceCreateInfo& createInfo) {
         uint32_t familyCount{};
         instance_info->funcs.GetPhysicalDeviceQueueFamilyProperties(
             physicalDevice, &familyCount, nullptr
@@ -361,8 +335,7 @@ namespace {
         instance_info->funcs.GetPhysicalDeviceQueueFamilyProperties(
             physicalDevice, &familyCount, families.data()
         );
-        const VkQueueFlags required = VK_QUEUE_GRAPHICS_BIT |
-            (spatialScalingConfigured ? VK_QUEUE_COMPUTE_BIT : 0);
+        const VkQueueFlags required = VK_QUEUE_GRAPHICS_BIT;
         for (uint32_t i = 0; i < createInfo.queueCreateInfoCount; ++i) {
             const auto& requested = createInfo.pQueueCreateInfos[i];
             if (requested.queueCount == 0 || requested.flags != 0 ||
@@ -520,16 +493,8 @@ namespace {
         };
 
         try {
-            std::unique_ptr<GamescopeScalingSurface> scalingSurfaces;
-            const auto environment = [](const char* name) -> std::string_view {
-                const char* value = std::getenv(name);
-                return value ? value : "";
-            };
-            const bool needsX11Adapter = requestsGamescopeScalingSurface(*info);
             const bool retirementRequested = presentationRetirementRequired(
-                layer_info->root.frameGenerationInteropProvisioned(),
-                layer_info->root.scalingEngineProvisioned(),
-                layer_info->root.scalingSurfaceConnectionProvisioned());
+                layer_info->root.frameGenerationInteropProvisioned());
             InstanceExtensionQuery extensionQuery;
             if (retirementRequested) {
                 const auto enumerate = reinterpret_cast<PFN_vkEnumerateInstanceExtensionProperties>(
@@ -539,28 +504,6 @@ namespace {
                     enumerate, vk::enumerateLoaderInstanceExtensionProperties);
             }
             const auto& available = extensionQuery.properties;
-            if (needsX11Adapter && !(instance_info && instance_info->scalingSurfaces) &&
-                    needsGamescopeScalingSurface(
-                    layer_info->root.scalingSurfaceConnectionProvisioned(),
-                    true, false, false,
-                    environment("GAMESCOPE_WAYLAND_DISPLAY"),
-                    environment("WAYLAND_DISPLAY"), environment("XDG_RUNTIME_DIR"),
-                    std::getenv("WAYLAND_SOCKET") != nullptr)) {
-                const bool waylandSupported = std::ranges::any_of(available,
-                    [](const VkExtensionProperties& extension) {
-                        return std::strcmp(extension.extensionName,
-                            "VK_KHR_wayland_surface") == 0;
-                    });
-                if (canAttemptGamescopeScalingSurface(
-                        extensionQuery.result, waylandSupported)) {
-                    auto candidate = std::make_unique<GamescopeScalingSurface>();
-                    if (candidate->connect())
-                        scalingSurfaces = std::move(candidate);
-                }
-                if (!scalingSurfaces)
-                    std::cerr << "framegen-vulkan: spatial scaling surface bridge unavailable; "
-                                 "retaining application surface extent checks\n";
-            }
             VkInstanceCreateInfo newInfo = *info;
             std::vector<const char*> extensions;
             if (info->enabledExtensionCount)
@@ -591,12 +534,6 @@ namespace {
                         appendExtension(extSurfaceMaintenance1ExtensionName);
                 }
             }
-            // Wine may keep several Vulkan instances alive. Every instance
-            // using the shared surface connection needs the driver extension.
-            if (needsX11Adapter && (scalingSurfaces ||
-                    (instance_info && instance_info->scalingSurfaces))) {
-                appendExtension("VK_KHR_wayland_surface");
-            }
             newInfo.ppEnabledExtensionNames = extensions.data();
             newInfo.enabledExtensionCount = static_cast<uint32_t>(extensions.size());
             layer_info->root.modifyInstanceCreateInfo(newInfo,
@@ -617,7 +554,6 @@ namespace {
                     .engineName = info->pApplicationInfo &&
                             info->pApplicationInfo->pEngineName
                         ? info->pApplicationInfo->pEngineName : "",
-                    .scalingSurfaces = std::move(scalingSurfaces),
                     .surfaceMaintenance1 = maintenance1,
                     .surfaceCapabilities2 = timingCapabilities,
                 };
@@ -633,8 +569,6 @@ namespace {
                     instance_info->engineName =
                         info->pApplicationInfo->pEngineName;
                 }
-                if (scalingSurfaces)
-                    instance_info->scalingSurfaces = std::move(scalingSurfaces);
             }
 
             instance_info->handles.push_back(*instance);
@@ -745,18 +679,13 @@ namespace {
             swapchainPresentationEnabled(*info);
         const bool frameGenerationInteropEnabled = presentationDevice &&
             layer_info->root.frameGenerationInteropProvisioned();
-        const bool scalingEngineProvisioned = presentationDevice &&
-            layer_info->root.scalingEngineProvisioned();
         const auto swapchainMaintenance1Extension =
             supportedSwapchainMaintenance1Extension(
                 physdev, presentationDevice && presentationRetirementRequired(
-                    frameGenerationInteropEnabled, scalingEngineProvisioned,
-                    layer_info->root.scalingSurfaceConnectionProvisioned())
+                    frameGenerationInteropEnabled)
             );
         const auto layerQueueFamily = presentationDevice
-            ? selectLayerQueueFamily(
-                physdev, *info, scalingEngineProvisioned
-            )
+            ? selectLayerQueueFamily(physdev, *info)
             : std::nullopt;
         uint32_t privateFamilyCount{};
         instance_info->funcs.GetPhysicalDeviceQueueFamilyProperties(physdev, &privateFamilyCount, nullptr);
@@ -840,46 +769,6 @@ namespace {
         try {
             VkDeviceCreateInfo newInfo = *info;
             privatePresentQueue.apply(newInfo);
-            std::vector<const char*> precisionExtensions;
-            bool enableScalingFp16 = false;
-            if (scalingEngineProvisioned && layer_info->root.fp16RequestedAtStartup() &&
-                    instance_info->funcs.GetPhysicalDeviceFeatures2) {
-                uint32_t count{};
-                auto result = instance_info->funcs.EnumerateDeviceExtensionProperties(
-                    physdev, nullptr, &count, nullptr);
-                std::vector<VkExtensionProperties> supported(count);
-                if (result == VK_SUCCESS)
-                    result = instance_info->funcs.EnumerateDeviceExtensionProperties(
-                        physdev, nullptr, &count, supported.data());
-                const bool extensionSupported = result == VK_SUCCESS &&
-                    std::ranges::any_of(supported, [](const auto& extension) {
-                        return std::strcmp(extension.extensionName,
-                            VK_KHR_SHADER_FLOAT16_INT8_EXTENSION_NAME) == 0;
-                    });
-                if (extensionSupported) {
-                    VkPhysicalDeviceShaderFloat16Int8Features half{
-                        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES,
-                    };
-                    VkPhysicalDeviceFeatures2 features{
-                        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
-                        .pNext = &half,
-                    };
-                    instance_info->funcs.GetPhysicalDeviceFeatures2(physdev, &features);
-                    enableScalingFp16 = half.shaderFloat16 == VK_TRUE;
-                    if (enableScalingFp16) {
-                        if (info->enabledExtensionCount)
-                            precisionExtensions.assign(info->ppEnabledExtensionNames,
-                                info->ppEnabledExtensionNames + info->enabledExtensionCount);
-                        if (!std::ranges::any_of(precisionExtensions, [](const char* name) {
-                                return std::strcmp(name, VK_KHR_SHADER_FLOAT16_INT8_EXTENSION_NAME) == 0;
-                            }))
-                            precisionExtensions.push_back(VK_KHR_SHADER_FLOAT16_INT8_EXTENSION_NAME);
-                        newInfo.ppEnabledExtensionNames = precisionExtensions.data();
-                        newInfo.enabledExtensionCount = static_cast<uint32_t>(precisionExtensions.size());
-                    }
-                }
-            }
-            const vk::ShaderFloat16FeatureRequest precisionFeatures(newInfo, enableScalingFp16);
 #if defined(VK_EXT_present_timing) && defined(VK_KHR_present_id2)
             std::vector<const char*> timingExtensions;
             VkPhysicalDevicePresentId2FeaturesKHR timingIds{
@@ -1035,10 +924,7 @@ namespace {
         };
         try {
             if (!layerQueueFamily) {
-                throw ls::error(scalingEngineProvisioned
-                    ? "the application did not create an ordinary queue family "
-                      "with graphics and compute support"
-                    : "the application did not create an ordinary graphics queue family");
+                throw ls::error("the application did not create an ordinary graphics queue family");
             }
             auto [wrapper, inserted] = instance_info->devices.emplace(
                 *device,
@@ -1148,15 +1034,6 @@ namespace {
             // VkDevice still exists; only then may rollback destroy the device
             // or native fallback expose it without a stale wrapper.
             discardLayerDevice();
-            if (scalingEngineProvisioned) {
-                rollbackCreatedDevice();
-                std::cerr << "framegen-vulkan: device initialization failed for "
-                             "a provisioned Scaling Engine profile; refusing "
-                             "native fallback after fixed-surface capability "
-                             "virtualization:\n"
-                          << "- " << e.what() << '\n';
-                return VK_ERROR_FEATURE_NOT_PRESENT;
-            }
             // The lower layer already returned a valid VkDevice. Do not leave
             // it exposed to framegen-vulkan's swapchain hooks without a matching Vulkan
             // wrapper: retain the device as a completely native pass-through.
@@ -1561,11 +1438,7 @@ namespace {
         // possible dlclose; recreate that process state on the next GPA query.
         if (!layer_info && !initializeLayerInfo()) return nullptr;
 
-        if (std::string_view(name) ==
-                "vkGetPhysicalDeviceSurfaceCapabilities2KHR" ||
-                std::string_view(name) ==
-                "vkGetPhysicalDeviceSurfaceFormats2KHR" ||
-                std::string_view(name) == "vkGetPhysicalDeviceFeatures2" ||
+        if (std::string_view(name) == "vkGetPhysicalDeviceFeatures2" ||
                 std::string_view(name) == "vkGetPhysicalDeviceFeatures2KHR" ||
                 isOptionalPresentationCommand(name) || isOptionalReleaseCommand(name) ||
                 isOptionalSwapchainReleaseCommand(name)) {
@@ -1665,214 +1538,6 @@ namespace {
 }
 
 namespace {
-    struct SurfaceScalingEligibilityResult {
-        bool supported{false};
-        bool firstObservation{false};
-        bool queueSupported{false};
-        uint32_t advertisedFormatCount{0};
-        uint32_t compatibleFormatCount{0};
-    };
-
-    SurfaceScalingEligibilityResult supportsSpatialScalingSurface(
-            const VkPhysicalDevice physicalDevice,
-            const VkSurfaceKHR surface,
-            const VkSurfaceCapabilitiesKHR& capabilities) {
-        if (!spatialScalingSurfaceCapabilitiesSupported(capabilities)) {
-            return {};
-        }
-        {
-            const std::lock_guard lock(
-                instance_info->surfaceScalingMutex
-            );
-            const auto physical =
-                instance_info->surfaceScalingEligibility.find(physicalDevice);
-            if (physical !=
-                    instance_info->surfaceScalingEligibility.end()) {
-                const auto cached = physical->second.find(surface);
-                if (cached != physical->second.end()) {
-                    return {
-                        .supported = cached->second.supported,
-                        .firstObservation = false,
-                        .queueSupported = cached->second.queueSupported,
-                        .advertisedFormatCount =
-                            cached->second.advertisedFormatCount,
-                        .compatibleFormatCount =
-                            cached->second.compatibleFormatCount,
-                    };
-                }
-            }
-        }
-
-        bool supported = true;
-
-        bool queueSupported = false;
-        if (supported &&
-                instance_info->funcs.GetPhysicalDeviceSurfaceSupportKHR) {
-            uint32_t familyCount{};
-            instance_info->funcs.GetPhysicalDeviceQueueFamilyProperties(
-                physicalDevice, &familyCount, nullptr
-            );
-            std::vector<VkQueueFamilyProperties> families(familyCount);
-            instance_info->funcs.GetPhysicalDeviceQueueFamilyProperties(
-                physicalDevice, &familyCount, families.data()
-            );
-            constexpr VkQueueFlags required =
-                VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT;
-            for (uint32_t family = 0; family < familyCount; ++family) {
-                if ((families.at(family).queueFlags & required) != required)
-                    continue;
-                VkBool32 presentationSupported = VK_FALSE;
-                const auto result =
-                    instance_info->funcs.GetPhysicalDeviceSurfaceSupportKHR(
-                        physicalDevice, family, surface,
-                        &presentationSupported
-                    );
-                if (result == VK_SUCCESS &&
-                        presentationSupported == VK_TRUE) {
-                    queueSupported = true;
-                    break;
-                }
-            }
-        }
-        supported = supported && queueSupported;
-
-        constexpr VkFormatFeatureFlags scalerFeatures =
-            VK_FORMAT_FEATURE_BLIT_SRC_BIT |
-            VK_FORMAT_FEATURE_BLIT_DST_BIT |
-            VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
-            VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT |
-            VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT;
-        uint32_t formatCount{};
-        std::vector<VkSurfaceFormatKHR> formats;
-        if (supported) {
-            bool complete = false;
-            constexpr uint32_t maximumEnumerationAttempts = 3;
-            for (uint32_t attempt = 0;
-                    attempt < maximumEnumerationAttempts && !complete;
-                    ++attempt) {
-                auto result =
-                    instance_info->funcs.GetPhysicalDeviceSurfaceFormatsKHR(
-                        physicalDevice, surface, &formatCount, nullptr
-                    );
-                if (result != VK_SUCCESS || formatCount == 0)
-                    return {};
-                formats.resize(formatCount);
-                uint32_t writtenCount = formatCount;
-                result =
-                    instance_info->funcs.GetPhysicalDeviceSurfaceFormatsKHR(
-                        physicalDevice, surface, &writtenCount,
-                        formats.data()
-                    );
-                if (result == VK_SUCCESS) {
-                    if (writtenCount == 0)
-                        return {};
-                    formats.resize(writtenCount);
-                    formatCount = writtenCount;
-                    complete = true;
-                } else if (result != VK_INCOMPLETE) {
-                    return {};
-                }
-            }
-            // A partial prefix cannot prove that every advertised format is
-            // safe. Leave transient INCOMPLETE results uncached so a later
-            // stable query can retry the eligibility decision.
-            if (!complete)
-                return {};
-        }
-
-        constexpr VkFormatFeatureFlags swapchainFeatures =
-            VK_FORMAT_FEATURE_BLIT_SRC_BIT |
-            VK_FORMAT_FEATURE_BLIT_DST_BIT;
-        uint32_t compatibleFormatCount = 0;
-        if (supported) {
-            compatibleFormatCount = static_cast<uint32_t>(
-                std::ranges::count_if(
-                    formats.begin(), formats.begin() + formatCount,
-                    [&](const VkSurfaceFormatKHR& format) {
-                    if (format.format == VK_FORMAT_UNDEFINED)
-                        return false;
-                    const auto pipeline = classifySwapchainColor(
-                        format.format, format.colorSpace
-                    );
-                    if (!spatialScalingColorSupported(pipeline)) {
-                        return false;
-                    }
-
-                    VkFormatProperties surfaceProperties{};
-                    instance_info->funcs.GetPhysicalDeviceFormatProperties(
-                        physicalDevice, format.format, &surfaceProperties
-                    );
-                    if ((surfaceProperties.optimalTilingFeatures &
-                            swapchainFeatures) != swapchainFeatures) {
-                        return false;
-                    }
-
-                    VkFormatProperties workingProperties{};
-                    instance_info->funcs.GetPhysicalDeviceFormatProperties(
-                        physicalDevice, pipeline.exchangeFormat,
-                        &workingProperties
-                    );
-                    return (workingProperties.optimalTilingFeatures &
-                        scalerFeatures) == scalerFeatures;
-                    }
-                )
-            );
-        }
-        supported = spatialScalingFixedSurfacePreflightSupported(
-            queueSupported, formatCount, compatibleFormatCount
-        );
-
-        bool firstObservation = false;
-        {
-            const std::lock_guard lock(
-                instance_info->surfaceScalingMutex
-            );
-            auto& surfaces =
-                instance_info->surfaceScalingEligibility[physicalDevice];
-            const auto [cached, inserted] = surfaces.emplace(
-                surface,
-                InstanceInfo::SurfaceScalingEligibility{
-                    .supported = supported,
-                    .queueSupported = queueSupported,
-                    .advertisedFormatCount = formatCount,
-                    .compatibleFormatCount = compatibleFormatCount,
-                }
-            );
-            supported = cached->second.supported;
-            queueSupported = cached->second.queueSupported;
-            formatCount = cached->second.advertisedFormatCount;
-            compatibleFormatCount = cached->second.compatibleFormatCount;
-            firstObservation = inserted;
-        }
-        return {
-            .supported = supported,
-            .firstObservation = firstObservation,
-            .queueSupported = queueSupported,
-            .advertisedFormatCount = formatCount,
-            .compatibleFormatCount = compatibleFormatCount,
-        };
-    }
-
-    void clearFixedSurfaceScalingContract(
-            const VkPhysicalDevice physicalDevice,
-            const VkSurfaceKHR surface) {
-        if (!instance_info)
-            return;
-
-        const std::lock_guard lock(instance_info->surfaceScalingMutex);
-        const auto physicalContracts =
-            instance_info->fixedSurfaceScalingContracts.find(physicalDevice);
-        if (physicalContracts !=
-                instance_info->fixedSurfaceScalingContracts.end()) {
-            physicalContracts->second.erase(surface);
-            if (physicalContracts->second.empty()) {
-                instance_info->fixedSurfaceScalingContracts.erase(
-                    physicalContracts
-                );
-            }
-        }
-    }
-
     void recordSurfaceOrigin(
             const VkSurfaceKHR surface,
             const SpatialSurfaceOrigin origin) {
@@ -1880,7 +1545,7 @@ namespace {
             return;
         bool inserted{};
         {
-            const std::lock_guard lock(instance_info->surfaceScalingMutex);
+            const std::lock_guard lock(instance_info->surfaceStateMutex);
             inserted = instance_info->surfaceOrigins.emplace(
                 surface, origin
             ).second;
@@ -1901,253 +1566,10 @@ namespace {
             const VkSurfaceKHR surface) {
         if (!instance_info)
             return SpatialSurfaceOrigin::Unknown;
-        const std::lock_guard lock(instance_info->surfaceScalingMutex);
+        const std::lock_guard lock(instance_info->surfaceStateMutex);
         const auto origin = instance_info->surfaceOrigins.find(surface);
         return origin == instance_info->surfaceOrigins.end()
             ? SpatialSurfaceOrigin::Unknown : origin->second;
-    }
-
-    [[nodiscard]] bool spatialSurfaceScalingSupported(
-            const VkSurfaceKHR surface) {
-        return spatialSplitSurfaceScalingSupported(
-            false, surfaceOrigin(surface)
-        );
-    }
-
-    VkResult maybeVirtualizeSurfaceCapabilities(
-            const VkPhysicalDevice physicalDevice,
-            const VkSurfaceKHR surface,
-            VkSurfaceCapabilitiesKHR& capabilities) {
-        if (!layer_info || !instance_info) {
-            return VK_SUCCESS;
-        }
-        if (instance_info->scalingSurfaces) {
-            const auto result = instance_info->scalingSurfaces->applicationCapabilities(
-                surface, capabilities
-            );
-            if (result) {
-                // The application sees its X11 window size, while create-time
-                // policy queries the driver's real variable Wayland extent.
-                // This is not a fixed-surface source/presentation contract.
-                clearFixedSurfaceScalingContract(physicalDevice, surface);
-                return *result;
-            }
-        }
-        if (!spatialSurfaceScalingSupported(surface)) {
-            clearFixedSurfaceScalingContract(physicalDevice, surface);
-            return VK_SUCCESS;
-        }
-        try {
-            auto candidate = capabilities;
-            const auto selection =
-                layer_info->root.modifySurfaceCapabilities(candidate);
-            if (!selection) {
-                clearFixedSurfaceScalingContract(physicalDevice, surface);
-                return VK_SUCCESS;
-            }
-            const auto eligibility = supportsSpatialScalingSurface(
-                physicalDevice, surface, capabilities
-            );
-            if (!eligibility.supported) {
-                clearFixedSurfaceScalingContract(physicalDevice, surface);
-                if (eligibility.firstObservation) {
-                    std::cerr << "framegen-vulkan: spatial scaling capability "
-                             "virtualization unavailable: reason="
-                          << (eligibility.queueSupported
-                                ? "no-compatible-sdr-format"
-                                : "no-presentation-capable-graphics-compute-queue")
-                          << "; queue_supported="
-                          << eligibility.queueSupported
-                          << "; advertised_formats="
-                          << eligibility.advertisedFormatCount
-                          << "; compatible_formats="
-                          << eligibility.compatibleFormatCount
-                          << '\n';
-                }
-                return VK_SUCCESS;
-            }
-            uint64_t queryGeneration{};
-            FixedSurfaceScalingContract publishedContract;
-            {
-                const std::lock_guard lock(
-                    instance_info->surfaceScalingMutex
-                );
-                queryGeneration =
-                    instance_info->nextSurfaceScalingQueryGeneration++;
-                publishedContract = FixedSurfaceScalingContract{
-                    .extents = selection->extents,
-                    .factor = selection->factor,
-                    .policyRevision = selection->policyRevision,
-                    .queryGeneration = queryGeneration,
-                };
-                instance_info->fixedSurfaceScalingContracts[physicalDevice]
-                    .insert_or_assign(surface, publishedContract);
-            }
-            if (eligibility.firstObservation) {
-                std::cerr << "framegen-vulkan: spatial scaling surface virtualized: "
-                          << "role=" << layerRoleName
-                          << "; source=" << candidate.currentExtent.width << 'x'
-                          << candidate.currentExtent.height
-                          << "; presentation="
-                          << selection->extents.presentation.width << 'x'
-                          << selection->extents.presentation.height
-                          << "; policy_revision="
-                          << selection->policyRevision
-                          << "; query_generation=" << queryGeneration
-                          << "; queue_supported="
-                          << eligibility.queueSupported
-                          << "; advertised_formats="
-                          << eligibility.advertisedFormatCount
-                          << "; compatible_formats="
-                          << eligibility.compatibleFormatCount;
-                std::cerr << '\n';
-            }
-            capabilities = candidate;
-        } catch (const std::exception& error) {
-            clearFixedSurfaceScalingContract(physicalDevice, surface);
-            std::cerr << "framegen-vulkan: spatial scaling capability policy "
-                         "failed closed: " << error.what() << '\n';
-        }
-        return VK_SUCCESS;
-    }
-
-    VkResult myvkGetPhysicalDeviceSurfaceCapabilitiesKHR(
-            const VkPhysicalDevice physicalDevice,
-            const VkSurfaceKHR surface,
-            VkSurfaceCapabilitiesKHR* capabilities) {
-        if (!instance_info ||
-                !instance_info->funcs.GetPhysicalDeviceSurfaceCapabilitiesKHR)
-            return VK_ERROR_INITIALIZATION_FAILED;
-        const auto result =
-            instance_info->funcs.GetPhysicalDeviceSurfaceCapabilitiesKHR(
-                physicalDevice, surface, capabilities
-            );
-        if (result == VK_SUCCESS && capabilities) {
-            return maybeVirtualizeSurfaceCapabilities(
-                physicalDevice, surface, *capabilities
-            );
-        } else {
-            clearFixedSurfaceScalingContract(physicalDevice, surface);
-        }
-        return result;
-    }
-
-    template <typename Format>
-    VkResult copyApplicationSurfaceFormats(
-            const std::vector<VkSurfaceFormatKHR>& formats,
-            uint32_t* count, Format* output) {
-        if (!count)
-            return VK_ERROR_INITIALIZATION_FAILED;
-        if (!output) {
-            *count = static_cast<uint32_t>(formats.size());
-            return VK_SUCCESS;
-        }
-        const uint32_t written = std::min(*count,
-            static_cast<uint32_t>(formats.size()));
-        for (uint32_t i = 0; i < written; ++i) {
-            if constexpr (std::is_same_v<Format, VkSurfaceFormatKHR>)
-                output[i] = formats[i];
-            else
-                output[i].surfaceFormat = formats[i];
-        }
-        *count = written;
-        return written < formats.size() ? VK_INCOMPLETE : VK_SUCCESS;
-    }
-
-    VkResult myvkGetPhysicalDeviceSurfaceFormatsKHR(
-            const VkPhysicalDevice physicalDevice, const VkSurfaceKHR surface,
-            uint32_t* count, VkSurfaceFormatKHR* formats) {
-        if (!instance_info ||
-                !instance_info->funcs.GetPhysicalDeviceSurfaceFormatsKHR)
-            return VK_ERROR_INITIALIZATION_FAILED;
-        try {
-            if (instance_info->scalingSurfaces) {
-                const auto applicationFormats =
-                    instance_info->scalingSurfaces->applicationFormats(
-                        physicalDevice, surface,
-                        instance_info->funcs.GetPhysicalDeviceSurfaceFormatsKHR);
-                if (applicationFormats)
-                    return copyApplicationSurfaceFormats(*applicationFormats,
-                        count, formats);
-            }
-        } catch (const std::bad_alloc&) {
-            return VK_ERROR_OUT_OF_HOST_MEMORY;
-        }
-        return instance_info->funcs.GetPhysicalDeviceSurfaceFormatsKHR(
-            physicalDevice, surface, count, formats);
-    }
-
-    VkResult myvkGetPhysicalDeviceSurfaceFormats2KHR(
-            const VkPhysicalDevice physicalDevice,
-            const VkPhysicalDeviceSurfaceInfo2KHR* surfaceInfo,
-            uint32_t* count, VkSurfaceFormat2KHR* formats) {
-        if (!layer_info || !instance_info || !surfaceInfo || !count)
-            return VK_ERROR_INITIALIZATION_FAILED;
-        const auto lower = reinterpret_cast<PFN_vkGetPhysicalDeviceSurfaceFormats2KHR>(
-            layer_info->GetInstanceProcAddr(instance_info->handles.front(),
-                "vkGetPhysicalDeviceSurfaceFormats2KHR"));
-        if (!lower)
-            return VK_ERROR_EXTENSION_NOT_PRESENT;
-        bool plainFormats = !surfaceInfo->pNext;
-        if (formats) {
-            for (uint32_t i = 0; i < *count; ++i)
-                plainFormats = plainFormats && !formats[i].pNext;
-        }
-        try {
-            if (instance_info->scalingSurfaces) {
-                // Keep ordinary queries on their existing allocation/query
-                // path. Extended queries need their own lower constraints.
-                if (plainFormats) {
-                    const auto applicationFormats =
-                        instance_info->scalingSurfaces->applicationFormats(
-                            physicalDevice, surfaceInfo->surface,
-                            instance_info->funcs.GetPhysicalDeviceSurfaceFormatsKHR);
-                    if (applicationFormats)
-                        return copyApplicationSurfaceFormats(*applicationFormats, count, formats);
-                } else {
-                    const auto result = instance_info->scalingSurfaces->applicationFormats2(
-                        physicalDevice, *surfaceInfo, count, formats, lower);
-                    if (result)
-                        return *result;
-                }
-            }
-        } catch (const std::bad_alloc&) {
-            return VK_ERROR_OUT_OF_HOST_MEMORY;
-        }
-        return lower(physicalDevice, surfaceInfo, count, formats);
-    }
-
-    VkResult myvkGetPhysicalDeviceSurfaceCapabilities2KHR(
-            const VkPhysicalDevice physicalDevice,
-            const VkPhysicalDeviceSurfaceInfo2KHR* surfaceInfo,
-            VkSurfaceCapabilities2KHR* capabilities) {
-        if (!layer_info || !instance_info || !surfaceInfo || !capabilities)
-            return VK_ERROR_INITIALIZATION_FAILED;
-        const auto lower = reinterpret_cast<
-            PFN_vkGetPhysicalDeviceSurfaceCapabilities2KHR>(
-                layer_info->GetInstanceProcAddr(
-                    instance_info->handles.front(),
-                    "vkGetPhysicalDeviceSurfaceCapabilities2KHR"
-                )
-            );
-        if (!lower) {
-            clearFixedSurfaceScalingContract(
-                physicalDevice, surfaceInfo->surface
-            );
-            return VK_ERROR_EXTENSION_NOT_PRESENT;
-        }
-        const auto result = lower(physicalDevice, surfaceInfo, capabilities);
-        if (result == VK_SUCCESS) {
-            return maybeVirtualizeSurfaceCapabilities(
-                physicalDevice, surfaceInfo->surface,
-                capabilities->surfaceCapabilities
-            );
-        } else {
-            clearFixedSurfaceScalingContract(
-                physicalDevice, surfaceInfo->surface
-            );
-        }
-        return result;
     }
 
     void myvkDestroySurfaceKHR(
@@ -2160,29 +1582,13 @@ namespace {
             // lower swapchain before forwarding the surface destruction.
             collectRetiredSwapchainsForSurface(surface);
             {
-                const std::lock_guard lock(
-                    instance_info->surfaceScalingMutex
-                );
-                for (auto& [physicalDevice, surfaces] :
-                        instance_info->surfaceScalingEligibility) {
-                    static_cast<void>(physicalDevice);
-                    surfaces.erase(surface);
-                }
-                for (auto& [physicalDevice, contracts] :
-                        instance_info->fixedSurfaceScalingContracts) {
-                    static_cast<void>(physicalDevice);
-                    contracts.erase(surface);
-                }
-                instance_info->variableSurfaceScalingExtents.erase(surface);
-                instance_info->variableSurfaceRollbackExtents.erase(surface);
+                const std::lock_guard lock(instance_info->surfaceStateMutex);
                 instance_info->surfaceOrigins.erase(surface);
                 if (const auto feedback = instance_info->waylandPresentation.find(surface);
                         feedback != instance_info->waylandPresentation.end()) {
                     feedback->second->stop();
                     instance_info->waylandPresentation.erase(feedback);
                 }
-                instance_info->unprovenSplitSurfacesLogged.erase(surface);
-                instance_info->scalingAdmissionRetryStates.erase(surface);
             }
         }
         const auto lower = reinterpret_cast<PFN_vkDestroySurfaceKHR>(
@@ -2190,8 +1596,6 @@ namespace {
         );
         if (lower)
             lower(instance, surface, alloc);
-        if (instance_info && instance_info->scalingSurfaces)
-            instance_info->scalingSurfaces->destroy(surface);
     }
 
     using CreateWaylandSurface = VkResult (VKAPI_PTR *)(
@@ -2245,7 +1649,7 @@ namespace {
             try {
                 auto observer = WaylandPresentationFeedback::create(createInfo->display, createInfo->surface, diagnostics);
                 if (observer) {
-                    const std::lock_guard lock(instance_info->surfaceScalingMutex);
+                    const std::lock_guard lock(instance_info->surfaceStateMutex);
                     instance_info->waylandPresentation.insert_or_assign(*surface, std::move(observer));
                 }
             } catch (...) {} // Diagnostics cannot change surface creation.
@@ -2258,19 +1662,6 @@ namespace {
             const VkXcbSurfaceCreateInfoKHR* createInfo,
             const VkAllocationCallbacks* alloc,
             VkSurfaceKHR* surface) {
-        if (instance_info && instance_info->scalingSurfaces && createInfo) {
-            try {
-                const auto result = instance_info->scalingSurfaces->create(
-                    instance, layer_info->GetInstanceProcAddr, *createInfo, alloc, surface);
-                if (result) {
-                    if (*result == VK_SUCCESS)
-                        recordSurfaceOrigin(*surface, SpatialSurfaceOrigin::Wayland);
-                    return *result;
-                }
-            } catch (const std::bad_alloc&) {
-                return VK_ERROR_OUT_OF_HOST_MEMORY;
-            }
-        }
         return createSurfaceAndRecord<
             CreateXcbSurface
         >(instance, createInfo, alloc, surface, "vkCreateXcbSurfaceKHR",
@@ -2282,19 +1673,6 @@ namespace {
             const VkXlibSurfaceCreateInfoKHR* createInfo,
             const VkAllocationCallbacks* alloc,
             VkSurfaceKHR* surface) {
-        if (instance_info && instance_info->scalingSurfaces && createInfo) {
-            try {
-                const auto result = instance_info->scalingSurfaces->create(
-                    instance, layer_info->GetInstanceProcAddr, *createInfo, alloc, surface);
-                if (result) {
-                    if (*result == VK_SUCCESS)
-                        recordSurfaceOrigin(*surface, SpatialSurfaceOrigin::Wayland);
-                    return *result;
-                }
-            } catch (const std::bad_alloc&) {
-                return VK_ERROR_OUT_OF_HOST_MEMORY;
-            }
-        }
         return createSurfaceAndRecord<
             CreateXlibSurface
         >(instance, createInfo, alloc, surface, "vkCreateXlibSurfaceKHR",
@@ -2339,10 +1717,7 @@ namespace {
                 .adaptive = profile.adaptive,
                 .deferredPresentQueue = static_cast<bool>(swapchainInfo.deferredPresentQueue),
                 .diagnosticCopyPath = internalDiagnosticCopyPathConfigured(),
-                .gamescopeScalingSurface = swapchainInfo.gamescopeScalingSurface != nullptr,
                 .gamescopeDetected = context.gamescopeDetectedAtCreation(),
-                .spatialScalingActive = swapchainInfo.spatialScalingActive,
-                .variableSurface = swapchainInfo.variableSurface,
                 .applicationExtent = swapchainInfo.applicationExtent,
                 .lowerExtent = swapchainInfo.extent,
                 .applicationFormat = application.imageFormat,
@@ -2375,7 +1750,6 @@ namespace {
                   << " reason=" << (reason ? reason : "eligible")
                   << " images=" << (images ? imageCount : 0)
                   << " lower_images=" << swapchainInfo.images.size()
-                  << " surface=" << (swapchainInfo.variableSurface ? "variable" : "fixed")
                   << '\n';
     }
 
@@ -2398,11 +1772,6 @@ namespace {
             instance_info->swapchainInfos.erase(createdSwapchain);
             instance_info->nativeSwapchains.erase(createdSwapchain);
             instance_info->internalSwapchains.erase(createdSwapchain);
-            if (instance_info->scalingSurfaces) {
-                instance_info->scalingSurfaces->destroySwapchain(
-                    info->surface, createdSwapchain
-                );
-            }
             try {
                 layer_info->root.removeSwapchainContext(createdSwapchain);
             } catch (const std::exception& e) {
@@ -2419,7 +1788,7 @@ namespace {
         try {
             // `oldSwapchain` is retired for new acquisition by the lower WSI,
             // but images acquired before retirement may still be presented.
-            // Keep framegen-vulkan's old context and scaler resources alive until the
+            // Keep framegen-vulkan's old context resources alive until the
             // application explicitly destroys that handle.
 
             // A live factor change can make the upper role request recreation
@@ -2447,93 +1816,10 @@ namespace {
             VkSwapchainCreateInfoKHR newInfo = *info;
             bool ownedPresentTiming = false;
             uint32_t ownedPresentTimingTargetStage{};
-            std::optional<SpatialScalingExtents> previousVariableExtents;
-            std::optional<SpatialScalingExtents>
-                variableSurfaceRollbackExtents;
-            std::optional<FixedSurfaceScalingContract> fixedSurfaceContract;
-            {
-                const std::lock_guard lock(
-                    instance_info->surfaceScalingMutex
-                );
-                const auto previous =
-                    instance_info->variableSurfaceScalingExtents.find(
-                        info->surface
-                    );
-                if (previous !=
-                        instance_info->variableSurfaceScalingExtents.end()) {
-                    previousVariableExtents = previous->second;
-                }
-                const auto rollback =
-                    instance_info->variableSurfaceRollbackExtents.find(
-                        info->surface
-                    );
-                if (rollback !=
-                        instance_info->variableSurfaceRollbackExtents.end()) {
-                    variableSurfaceRollbackExtents = rollback->second;
-                }
-                const auto physicalContracts =
-                    instance_info->fixedSurfaceScalingContracts.find(
-                        it->second.physdev()
-                    );
-                if (physicalContracts !=
-                        instance_info->fixedSurfaceScalingContracts.end()) {
-                    const auto contract = physicalContracts->second.find(
-                        info->surface
-                    );
-                    if (contract != physicalContracts->second.end())
-                        fixedSurfaceContract = contract->second;
-                }
-            }
-            // Fixed Gamescope surfaces do not participate in the variable-
-            // surface cache, but live factor changes can still recreate a
-            // swapchain before WSI changes the application's virtual window.
-            // Supply the exact previous split from the replaced swapchain so
-            // policy can retain it safely. For the null-old WSI spelling,
-            // accept a unique live context on this surface only.
-            const auto previousSwapchainExtents = [&]()
-                    -> std::optional<SpatialScalingExtents> {
-                const auto extentsFor = [&](const auto& swapchainInfo)
-                        -> std::optional<SpatialScalingExtents> {
-                    if (swapchainInfo.surface != info->surface || sameExtent(
-                            swapchainInfo.applicationExtent,
-                            swapchainInfo.extent
-                        )) {
-                        return std::nullopt;
-                    }
-                    return SpatialScalingExtents{
-                        .source = swapchainInfo.applicationExtent,
-                        .presentation = swapchainInfo.extent,
-                    };
-                };
-                if (info->oldSwapchain != VK_NULL_HANDLE) {
-                    const auto previous =
-                        instance_info->swapchainInfos.find(info->oldSwapchain);
-                    return previous != instance_info->swapchainInfos.end()
-                        ? extentsFor(previous->second) : std::nullopt;
-                }
-
-                std::optional<SpatialScalingExtents> unique;
-                for (const auto& [handle, swapchainInfo] :
-                        instance_info->swapchainInfos) {
-                    static_cast<void>(handle);
-                    const auto candidate = extentsFor(swapchainInfo);
-                    if (!candidate)
-                        continue;
-                    if (unique)
-                        return std::nullopt;
-                    unique = candidate;
-                }
-                return unique;
-            }();
-            if (previousSwapchainExtents)
-                previousVariableExtents = previousSwapchainExtents;
             // The application already destroyed this null-old predecessor.
             // Complete its existing fence/grace-protected retirement before
-            // querying live memory for the replacement. Otherwise admission
-            // charges the old WSI/private buffers against their replacement
-            // and can permanently discard a valid scaling envelope.
-            // Keep the copied surface proof above; non-null oldSwapchain
-            // contexts remain application-owned and are not retired here.
+            // the replacement is created. A non-null oldSwapchain context
+            // remains application-owned and is not retired here.
             bool retiredNullOldReplacement{false};
             const auto retainedOldSwapchain =
                 retainedSwapchainBeforeNullOldReplacement(
@@ -2566,31 +1852,15 @@ namespace {
                               << '\n';
                 }
             }
-            bool spatialScalingActivationSupported =
-                spatialSurfaceScalingSupported(info->surface);
             auto modification =
                 layer_info->root.modifySwapchainCreateInfo(
-                    it->second, newInfo, previousVariableExtents,
-                    variableSurfaceRollbackExtents,
-                    fixedSurfaceContract,
-                    spatialScalingActivationSupported,
-                    instance_info->scalingSurfaces &&
-                        instance_info->scalingSurfaces->owns(info->surface),
+                    it->second, newInfo,
                     [&, newInfo = &newInfo]() {
                         auto driverInfo = *newInfo;
-                        if (instance_info->scalingSurfaces) {
-                            const auto prepared = instance_info->scalingSurfaces->prepareSwapchain(
-                                driverInfo);
-                            if (prepared != VK_SUCCESS)
-                                throw ls::vulkan_error(prepared, "bridge surface format is unavailable");
-                        }
 #if defined(VK_EXT_present_timing) && defined(VK_KHR_present_id2)
-                        // The bridge already owns protocol timing. Native and
-                        // full-WSI surfaces negotiate their own Vulkan contract.
+                        // Native surfaces negotiate their own Vulkan timing contract.
                         if (instance_info->presentTimingDevices.contains(device) &&
-                                driverInfo.presentMode == VK_PRESENT_MODE_FIFO_KHR &&
-                                !(instance_info->scalingSurfaces &&
-                                  instance_info->scalingSurfaces->owns(info->surface))) {
+                                driverInfo.presentMode == VK_PRESENT_MODE_FIFO_KHR) {
                             const auto query = reinterpret_cast<PFN_vkGetPhysicalDeviceSurfaceCapabilities2KHR>(
                                 layer_info->GetInstanceProcAddr(it->second.inst(),
                                     "vkGetPhysicalDeviceSurfaceCapabilities2KHR"));
@@ -2670,68 +1940,6 @@ namespace {
                         lowerSwapchainCreated = true;
                     }
                 );
-            const auto commitVariableSurfaceScaling = [&]() {
-                const std::lock_guard lock(
-                    instance_info->surfaceScalingMutex
-                );
-                // The current lower split role owns extent selection but not
-                // reconstruction resources. Retain its successful variable
-                // source/presentation pair even though spatialScalingActive
-                // is intentionally false for that allocation-free context;
-                // later lower creates need this proven presentation envelope
-                // before the upper resource owner can consume the relay.
-                const bool spatialScalingExtentSelected =
-                    modification.spatialScalingActive ||
-                    !sameExtent(
-                        modification.applicationExtent,
-                        modification.presentationExtent
-                    );
-                const auto committedRollback =
-                    committedVariableSurfaceRollbackExtents(
-                        previousVariableExtents,
-                        variableSurfaceRollbackExtents,
-                        layer_info->root.active(),
-                        modification.variableSurface,
-                        spatialScalingExtentSelected,
-                        modification.variableFeedbackSuppressed,
-                        modification.retainVariableSurfaceProof,
-                        modification.spatialScalingMemoryConstrained,
-                        modification.applicationExtent,
-                        modification.presentationExtent
-                    );
-                const auto committed =
-                    modification.spatialScalingAdmissionRetryEligible &&
-                        previousVariableExtents
-                    ? previousVariableExtents
-                    : committedVariableSurfaceScalingExtents(
-                        previousVariableExtents,
-                        layer_info->root.active(),
-                        modification.variableSurface,
-                        spatialScalingExtentSelected,
-                        modification.variableFeedbackSuppressed,
-                        modification.retainVariableSurfaceProof,
-                        modification.applicationExtent,
-                        modification.presentationExtent,
-                        modification.retainVariableSurfacePresentationProof
-                    );
-                if (committed) {
-                    instance_info->variableSurfaceScalingExtents.insert_or_assign(
-                        info->surface, *committed
-                    );
-                } else {
-                    instance_info->variableSurfaceScalingExtents.erase(
-                        info->surface
-                    );
-                }
-                if (committedRollback) {
-                    instance_info->variableSurfaceRollbackExtents
-                        .insert_or_assign(info->surface, *committedRollback);
-                } else {
-                    instance_info->variableSurfaceRollbackExtents.erase(
-                        info->surface
-                    );
-                }
-            };
 
             // get all swapchain images
             uint32_t imageCount{};
@@ -2751,45 +1959,9 @@ namespace {
             if (res != VK_SUCCESS)
                 throw ls::vulkan_error(res, "vkGetSwapchainImagesKHR() failed");
 
-            if (instance_info->scalingSurfaces &&
-                    !instance_info->scalingSurfaces->createSwapchain(
-                        info->surface, *swapchain, newInfo, info->imageExtent, imageCount,
-                        instance_info->engineName,
-                        modification.gamescopeProtocolPresentMode,
-                        modification.gamescopePresentRefreshHz)) {
-                throw ls::vulkan_error(
-                    VK_ERROR_SURFACE_LOST_KHR,
-                    "Gamescope scaling surface swapchain feedback failed"
-                );
-            }
-            if (present_diagnostics::enabled() &&
-                    instance_info->scalingSurfaces &&
-                    instance_info->scalingSurfaces->owns(info->surface)) {
-                std::cerr << "framegen-vulkan: present diagnostics: "
-                             "operation=gamescope-scaling-swapchain-feedback"
-                          << " surface=" << info->surface
-                          << " swapchain=" << *swapchain
-                          << " image_count=" << imageCount
-                          << " format=" << static_cast<uint32_t>(
-                                newInfo.imageFormat)
-                          << " color_space=" << static_cast<uint32_t>(
-                                newInfo.imageColorSpace)
-                          << " requested_old_swapchain="
-                          << info->oldSwapchain
-                          << " lower_present_mode="
-                          << static_cast<uint32_t>(newInfo.presentMode)
-                          << " compositor_present_mode="
-                          << (modification.gamescopeProtocolPresentMode
-                                ? static_cast<int64_t>(
-                                    *modification.gamescopeProtocolPresentMode)
-                                : -1)
-                          << " action=fresh-protocol-lifetime"
-                          << '\n';
-            }
-
             std::shared_ptr<WaylandPresentationFeedback> waylandPresentation;
             {
-                const std::lock_guard lock(instance_info->surfaceScalingMutex);
+                const std::lock_guard lock(instance_info->surfaceStateMutex);
                 const auto observer = instance_info->waylandPresentation.find(info->surface);
                 if (observer != instance_info->waylandPresentation.end()) waylandPresentation = observer->second;
             }
@@ -2800,9 +1972,6 @@ namespace {
                 .waylandPresentation = std::move(waylandPresentation),
                 .deferredPresentQueue = instance_info->deferredPresentQueues.contains(device)
                     ? instance_info->deferredPresentQueues.at(device) : nullptr,
-                .gamescopeScalingSurface = instance_info->scalingSurfaces &&
-                        instance_info->scalingSurfaces->owns(info->surface)
-                    ? instance_info->scalingSurfaces.get() : nullptr,
                 .gamescopeDisplayTiming =
                     instance_info->gamescopeTimingDevices.contains(device),
                 .ownedPresentTiming = ownedPresentTiming,
@@ -2832,29 +2001,11 @@ namespace {
                     info->oldSwapchain != VK_NULL_HANDLE,
                 .applicationExtent = modification.applicationExtent,
                 .extent = newInfo.imageExtent,
-                .gamescopePresentationTarget =
-                    modification.gamescopePresentationTarget,
                 .incomingPresentMode = info->presentMode,
                 .presentMode = modification.gamescopeProtocolPresentMode
                     .value_or(newInfo.presentMode),
                 .privateOrderedTransport =
                     modification.privateOrderedTransport,
-                .spatialScalingActive =
-                    modification.spatialScalingActive,
-                .variableSurface = modification.variableSurface,
-                .spatialScalingMemoryConstrained =
-                    modification.spatialScalingMemoryConstrained,
-                .spatialScalingAdmissionRetryEligible =
-                    modification.spatialScalingAdmissionRetryEligible &&
-                    swapchainCreateIsReplacement(
-                        newInfo.oldSwapchain, retiredNullOldReplacement
-                    ),
-                .spatialScalingPolicyRevision =
-                    modification.spatialScalingPolicyRevision,
-                .spatialScalingInactiveReason =
-                    modification.spatialScalingInactiveReason,
-                .spatialScalingActivationSupported =
-                    spatialScalingActivationSupported,
                 .replacement = swapchainCreateIsReplacement(
                     newInfo.oldSwapchain, retiredNullOldReplacement
                 ),
@@ -2870,7 +2021,6 @@ namespace {
                     *swapchain, ls::R<vk::Vulkan>(it->second)
                 );
                 instance_info->nativeSwapchains.insert(*swapchain);
-                commitVariableSurfaceScaling();
                 lowerSwapchainCreated = false;
                 return res;
             }
@@ -2886,21 +2036,10 @@ namespace {
                     instance_info->presentRetirementDevices.contains(device)
                 );
             } catch (const std::exception& e) {
-                // The lower image is native-sized when scaling is active,
-                // while the application intentionally renders only the
-                // virtual source rectangle. Falling back to direct native
-                // presentation would expose an incomplete top-left frame, so
-                // fail creation and let the normal rollback destroy the lower
-                // swapchain instead.
-                if (swapchainInfo.spatialScalingActive)
-                    throw ls::error(
-                        "spatial scaling context initialization failed", e
-                    );
                 instance_info->swapchains.emplace(
                     *swapchain, ls::R<vk::Vulkan>(it->second)
                 );
                 instance_info->nativeSwapchains.insert(*swapchain);
-                commitVariableSurfaceScaling();
                 lowerSwapchainCreated = false;
                 std::cerr << "framegen-vulkan: frame-generation context initialization "
                              "failed; native presentation retained:\n"
@@ -2914,7 +2053,6 @@ namespace {
             instance_info->swapchains.emplace(*swapchain,
                 ls::R<vk::Vulkan>(it->second));
 
-            commitVariableSurfaceScaling();
             lowerSwapchainCreated = false;
             return res;
         } catch (const ls::vulkan_error& e) {
@@ -2996,24 +2134,6 @@ namespace {
             }
         }
 
-        if (instance_info->scalingSurfaces) {
-            for (uint32_t i = 0; i < info->swapchainCount; ++i) {
-                const auto metadata = instance_info->swapchainInfos.find(info->pSwapchains[i]);
-                if (instance_info->nativeSwapchains.contains(info->pSwapchains[i]) &&
-                        metadata != instance_info->swapchainInfos.end()) {
-                    const auto prepared = instance_info->scalingSurfaces->preparePresent(
-                        metadata->second.surface, info->pSwapchains[i]);
-                    if (prepared != VK_SUCCESS) {
-                        const auto mapping = instance_info->swapchains.find(info->pSwapchains[i]);
-                        if (mapping == instance_info->swapchains.end())
-                            return VK_ERROR_INITIALIZATION_FAILED;
-                        return completeRejectedPresent(mapping->second.get().df().QueueSubmit,
-                            queue, *info, prepared);
-                    }
-                }
-            }
-        }
-
         // A context that failed after the lower swapchain was created remains
         // a normal application swapchain. Bypass framegen-vulkan for the whole batch so
         // the driver's wait-semaphore and per-swapchain result semantics stay
@@ -3086,22 +2206,6 @@ namespace {
             try {
                 const auto metadata =
                     instance_info->swapchainInfos.find(swapchain);
-                if (metadata != instance_info->swapchainInfos.end() &&
-                        metadata->second.spatialScalingActive) {
-                    const auto identity =
-                        instance_info->queueIdentities.find(queue);
-                    if (identity == instance_info->queueIdentities.end() ||
-                            identity->second.familyIndex !=
-                                it->second.get().queueFamilyIndex() ||
-                            queue != it->second.get().queue()) {
-                        throw ls::vulkan_error(
-                            VK_ERROR_UNKNOWN,
-                            "spatial scaling requires the application's "
-                            "ordinary queue 0 from framegen-vulkan's graphics/compute "
-                            "presentation family"
-                        );
-                    }
-                }
                 const auto waitSemaphores = info->waitSemaphoreCount > 0
                     ? std::span<const VkSemaphore>(
                         info->pWaitSemaphores, info->waitSemaphoreCount
@@ -3132,65 +2236,12 @@ namespace {
                         instance_info->swapchainInfos.end()
                     ? VK_NULL_HANDLE
                     : metadata->second.surface;
-                std::optional<ScalingAdmissionRetryKey>
-                    scalingAdmissionRetryKey;
-                if (metadata != instance_info->swapchainInfos.end() &&
-                        metadata->second.
-                            spatialScalingAdmissionRetryEligible) {
-                    scalingAdmissionRetryKey = ScalingAdmissionRetryKey{
-                        .sourceWidth =
-                            metadata->second.applicationExtent.width,
-                        .sourceHeight =
-                            metadata->second.applicationExtent.height,
-                        .policyRevision = metadata->second.
-                            spatialScalingPolicyRevision,
-                    };
-                } else if (presentingSurface != VK_NULL_HANDLE &&
-                        metadata != instance_info->swapchainInfos.end() &&
-                        metadata->second.spatialScalingActive) {
-                    instance_info->scalingAdmissionRetryStates.erase(
-                        presentingSurface
-                    );
-                }
-                bool scalingAdmissionRetrySurfaceAvailable = false;
-                if (presentingSurface != VK_NULL_HANDLE &&
-                        scalingAdmissionRetryKey) {
-                    scalingAdmissionRetrySurfaceAvailable = instance_info
-                        ->scalingAdmissionRetryStates[presentingSurface]
-                        .available(*scalingAdmissionRetryKey);
-                }
-                const bool scalingAdmissionRetryRequested =
-                    context.requestSpatialScalingAdmissionRetryAfterPresent(
-                        result,
-                        !liveProfileRecreationRequested &&
-                            scalingAdmissionRetrySurfaceAvailable
-                    );
-                if (scalingAdmissionRetryRequested &&
-                        scalingAdmissionRetryKey) {
-                    instance_info->scalingAdmissionRetryStates[
-                        presentingSurface
-                    ].record(*scalingAdmissionRetryKey);
-                    if (present_diagnostics::enabled()) {
-                        std::cerr << "framegen-vulkan: present diagnostics: "
-                                     "operation=spatial-scaling-admission-retry-budget"
-                                  << " surface=" << presentingSurface
-                                  << " source="
-                                  << scalingAdmissionRetryKey->sourceWidth
-                                  << 'x'
-                                  << scalingAdmissionRetryKey->sourceHeight
-                                  << " policy_revision="
-                                  << scalingAdmissionRetryKey->policyRevision
-                                  << " action=episode-consumed\n";
-                    }
-                }
                 const bool orderedAcquireRecoveryRecreationRequested =
                     context.requestOrderedAcquireRecreationAfterPresent(
                         result,
-                        !liveProfileRecreationRequested &&
-                            !scalingAdmissionRetryRequested
+                        !liveProfileRecreationRequested
                     );
                 if (liveProfileRecreationRequested ||
-                        scalingAdmissionRetryRequested ||
                         orderedAcquireRecoveryRecreationRequested) {
                     // This role owns the guarded request only after
                     // Swapchain::present() returned from a successful lower
@@ -3217,8 +2268,6 @@ namespace {
                               << " source="
                               << (liveProfileRecreationRequested
                                     ? "guarded-live-profile-request"
-                                    : scalingAdmissionRetryRequested
-                                        ? "spatial-scaling-admission-retry"
                                     : orderedAcquireRecoveryRecreationRequested
                                         ? "transition-scoped-acquire-timeout"
                                     : "upstream-or-driver")
@@ -3264,15 +2313,6 @@ namespace {
         };
         return timingScope.returned(present());
 #pragma clang diagnostic pop
-    }
-
-    VkResult bridgeAcquisitionResult(const VkSwapchainKHR swapchain) {
-        if (!instance_info->scalingSurfaces)
-            return VK_SUCCESS;
-        const auto info = instance_info->swapchainInfos.find(swapchain);
-        return info == instance_info->swapchainInfos.end() ? VK_SUCCESS
-            : instance_info->scalingSurfaces->acquisitionResult(
-                info->second.surface, swapchain);
     }
 
     // observeApplication is false when the layer itself performs the lower
@@ -3416,8 +2456,6 @@ namespace {
         const auto mapping = instance_info->swapchains.find(swapchain);
         if (mapping == instance_info->swapchains.end())
             return VK_ERROR_INITIALIZATION_FAILED;
-        const auto extentResult = bridgeAcquisitionResult(swapchain);
-        if (extentResult != VK_SUCCESS) return extentResult;
         return present_diagnostics::observeApplicationAcquire(
             device, swapchain, present_diagnostics::ApplicationFrameApi::AcquireKhr,
             timeout, [&] {
@@ -3448,8 +2486,6 @@ namespace {
         if (mapping == instance_info->swapchains.end()) return VK_ERROR_INITIALIZATION_FAILED;
         const auto lower = mapping->second.get().df().AcquireNextImage2KHR;
         if (!lower) return VK_ERROR_EXTENSION_NOT_PRESENT;
-        const auto extentResult = bridgeAcquisitionResult(info->swapchain);
-        if (extentResult != VK_SUCCESS) return extentResult;
         return present_diagnostics::observeApplicationAcquire(
             device, info->swapchain, present_diagnostics::ApplicationFrameApi::AcquireKhr2,
             info->timeout, [&] {
@@ -3569,11 +2605,6 @@ namespace {
             : swapchainMetadata->second.surface;
         const bool native =
             instance_info->nativeSwapchains.contains(swapchain);
-        if (instance_info->scalingSurfaces) {
-            instance_info->scalingSurfaces->destroySwapchain(
-                surface, swapchain
-            );
-        }
         if (present_diagnostics::enabled()) {
             std::cerr << "framegen-vulkan: present diagnostics: "
                          "operation=swapchain-destroy-observed"
@@ -3687,14 +2718,6 @@ namespace {
                     { "vkCreateXlibSurfaceKHR",
                         VKPTR(myvkCreateXlibSurfaceKHR) },
                     { "vkDestroySurfaceKHR", VKPTR(myvkDestroySurfaceKHR) },
-                    { "vkGetPhysicalDeviceSurfaceCapabilitiesKHR",
-                        VKPTR(myvkGetPhysicalDeviceSurfaceCapabilitiesKHR) },
-                    { "vkGetPhysicalDeviceSurfaceCapabilities2KHR",
-                        VKPTR(myvkGetPhysicalDeviceSurfaceCapabilities2KHR) },
-                    { "vkGetPhysicalDeviceSurfaceFormatsKHR",
-                        VKPTR(myvkGetPhysicalDeviceSurfaceFormatsKHR) },
-                    { "vkGetPhysicalDeviceSurfaceFormats2KHR",
-                        VKPTR(myvkGetPhysicalDeviceSurfaceFormats2KHR) },
                     { "vkCreateSwapchainKHR", VKPTR(myvkCreateSwapchainKHR) },
                     { "vkAcquireNextImageKHR", VKPTR(myvkAcquireNextImageKHR) },
                     { "vkAcquireNextImage2KHR", VKPTR(myvkAcquireNextImage2KHR) },

@@ -63,9 +63,6 @@ int main() {
     base.adaptive_max_multiplier = 3;
     base.adaptive_auto_base_fps_cap = false;
     base.target_fps = 90;
-    base.scaling_enabled = true;
-    base.scaling_method = ls::ScalingMethod::Fgvk;
-    base.scaling_factor = 1.25F;
 
     auto handheld = base;
     handheld.target_fps = 60;
@@ -106,7 +103,7 @@ int main() {
     auto applied = selected(config);
     config.power_source = ls::PowerSource::Docked;
     auto requested = selected(config);
-    auto plan = planProfileUpdate(applied, requested, 3, true, true, true);
+    auto plan = planProfileUpdate(applied, requested, 3, true, true);
     expect(plan.decision.action == ProfileUpdateAction::ApplyLive &&
             plan.appliedProfile.target_fps == 144 &&
             effectiveBaseFpsCap(plan.appliedProfile) == 90 &&
@@ -116,7 +113,7 @@ int main() {
             !plan.decision.swapchainRecreationDeferred,
         "An AC switch with the same profile name must use the normal live-policy planner");
     applied = plan.appliedProfile;
-    expect(planProfileUpdate(applied, requested, 3, true, true, true)
+    expect(planProfileUpdate(applied, requested, 3, true, true)
             .decision.action == ProfileUpdateAction::NoRuntimeChange,
         "Unchanged power settings must not repeatedly reset live policy");
 
@@ -125,11 +122,11 @@ int main() {
     config.write(path);
     config = ls::ConfigFile(path);
     config.power_source = ls::PowerSource::Docked;
-    expect(planProfileUpdate(applied, selected(config), 3, true, true, true)
+    expect(planProfileUpdate(applied, selected(config), 3, true, true)
             .decision.action == ProfileUpdateAction::NoRuntimeChange,
         "Editing inactive Battery settings must not reset the active AC policy");
     config.power_source = ls::PowerSource::Handheld;
-    plan = planProfileUpdate(applied, selected(config), 3, true, true, true);
+    plan = planProfileUpdate(applied, selected(config), 3, true, true);
     expect(plan.appliedProfile.target_fps == 72 &&
             plan.appliedProfile.base_fps_cap == 30 &&
             plan.decision.action == ProfileUpdateAction::ApplyLive,
@@ -141,38 +138,24 @@ int main() {
     auto& ac = config.profiles().front().power_profiles[1];
     ac.gpu = "Other GPU";
     ac.frame_generation_provisioned = false;
-    ac.scaling_enabled = false;
     ac.swapchain_image_count_compatibility = true;
     ac.flow_scale = 0.8F;
     ac.performance_mode = true;
-    ac.scaling_method = ls::ScalingMethod::Ls1;
-    ac.scaling_sharpness = 0.7F;
     config.power_source = ls::PowerSource::Docked;
     requested = selected(config);
     const auto projection = projectProcessStaticProfileForLiveUpdate(
-        applied, requested, true, true, false);
-    plan = planProfileUpdate(applied, projection.runtimeProfile, 3, true, true, true);
+        applied, requested, true, false);
+    plan = planProfileUpdate(applied, projection.runtimeProfile, 3, true, true);
     expect(projection.restartRequired() && plan.decision.frameGenerationPrivateRebuild &&
-            plan.decision.spatialScalingLiveRebuild &&
             plan.decision.action == ProfileUpdateAction::ApplyLive &&
             plan.appliedProfile.target_fps == 144 &&
             plan.appliedProfile.gpu == applied.gpu &&
-            plan.appliedProfile.scaling_enabled &&
             plan.appliedProfile.frame_generation_provisioned &&
-            plan.appliedProfile.flow_scale == applied.flow_scale &&
-            plan.appliedProfile.scaling_method == applied.scaling_method,
+            plan.appliedProfile.flow_scale == applied.flow_scale,
         "Pending startup changes must retain live policy and normal private-resource handoffs");
 
-    ac.scaling_factor = 1.75F;
-    const auto extentProjection = projectProcessStaticProfileForLiveUpdate(
-        applied, selected(config), true, true, false);
-    plan = planProfileUpdate(applied, extentProjection.runtimeProfile, 3, true, true, true);
-    expect(plan.decision.swapchainRecreationDeferred &&
-            plan.appliedProfile.scaling_factor == applied.scaling_factor &&
-            plan.appliedProfile.target_fps == 144,
-        "Extent changes must remain pending while independent policy applies live");
     config.power_source = ls::PowerSource::Handheld;
-    const auto reverted = planProfileUpdate(applied, selected(config), 3, true, true, true);
+    const auto reverted = planProfileUpdate(applied, selected(config), 3, true, true);
     expect(reverted.decision.action == ProfileUpdateAction::NoRuntimeChange &&
             !reverted.decision.processRestartDeferred &&
             !reverted.decision.swapchainRecreationDeferred,
@@ -183,7 +166,7 @@ int main() {
     requested = handheld;
     requested.target_fps = 100;
     const auto unprovisioned = projectProcessStaticProfileForLiveUpdate(
-        applied, requested, false, true, false);
+        applied, requested, false, false);
     plan = planProfileUpdate(applied, unprovisioned.runtimeProfile, 0, false);
     expect(unprovisioned.restartRequired() && plan.decision.processRestartDeferred &&
             !plan.appliedProfile.frame_generation_enabled &&
@@ -205,7 +188,7 @@ int main() {
     cloneIdentity.override = "Future streams";
     auto cloneProfile = ls::findProfile(config, cloneIdentity, false)->second;
     applied = ls::profileForPowerSource(base, ls::PowerSource::Docked);
-    plan = planProfileUpdate(applied, cloneProfile, 3, true, true, true);
+    plan = planProfileUpdate(applied, cloneProfile, 3, true, true);
     expect(plan.appliedProfile.name == "Future streams" &&
             plan.decision.action == ProfileUpdateAction::NoRuntimeChange,
         "Saving identical settings under a new name must update identity without resetting policy");
@@ -218,8 +201,8 @@ int main() {
     config.power_source = ls::PowerSource::Docked;
     cloneProfile = ls::findProfile(config, cloneIdentity, false)->second;
     const auto cloneProjection = projectProcessStaticProfileForLiveUpdate(
-        applied, cloneProfile, true, true, false);
-    plan = planProfileUpdate(applied, cloneProjection.runtimeProfile, 3, true, true, true);
+        applied, cloneProfile, true, false);
+    plan = planProfileUpdate(applied, cloneProjection.runtimeProfile, 3, true, true);
     expect(cloneProjection.restartRequired() &&
             plan.appliedProfile.target_fps == 120 && plan.appliedProfile.gpu == applied.gpu &&
             plan.decision.action == ProfileUpdateAction::ApplyLive,

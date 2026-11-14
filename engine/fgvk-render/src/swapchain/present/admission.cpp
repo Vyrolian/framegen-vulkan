@@ -306,7 +306,7 @@ void Swapchain::collectRenderSplitTimestamps(const vk::Vulkan& vk) {
 
 bool Swapchain::prepareRenderFence(const vk::Vulkan& vk) {
     const size_t next = nextRenderSlot(this->renderSlotIndex, renderSlotDepth);
-    if (!this->spatialScaler && !this->frameContentCapture &&
+    if (!this->frameContentCapture &&
             !this->nativeCopyProfile &&
             this->frameState.sourceReleaseTimelineValue != 0) {
         // Source-image reuse is ordered on the GPU by the timeline, so only the

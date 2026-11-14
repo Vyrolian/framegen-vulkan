@@ -64,37 +64,12 @@ namespace fgvk::layer {
     }
 
     /// One native presentation queue for the complete context lifetime.
-    /// Clock changes, incomplete batches and live FG/scaling changes must not
+    /// Clock changes, incomplete batches and live FG changes must not
     /// split successive present requests between application/private queues.
     [[nodiscard]] constexpr bool nativePrivatePresentQueueEligible(
-            const bool gamescopeDetected, const bool gamescopeBridge,
+            const bool gamescopeDetected,
             const bool privateQueueAvailable) noexcept {
-        return !gamescopeDetected && !gamescopeBridge && privateQueueAvailable;
-    }
-
-    struct GamescopeScalingPresentContract {
-        VkPresentModeKHR lowerPresentMode{VK_PRESENT_MODE_FIFO_KHR};
-        std::optional<VkPresentModeKHR> compositorPresentMode;
-    };
-
-    /// Every private bridge output needs FIFO plus a distinct bounded future
-    /// deadline: FIFO alone can still lose outputs that become ready together.
-    /// MAILBOX avoids the second Wayland FIFO callback on the game's thread;
-    /// retain lower FIFO unless both that mode and a timing clock are proven.
-    [[nodiscard]] constexpr GamescopeScalingPresentContract
-    gamescopeScalingPresentContract(const VkPresentModeKHR intendedPresentMode,
-            const bool gamescopeScalingSurface,
-            const bool privateOrderedTransport,
-            const bool lowerMailboxSupported,
-            const bool refreshKnown) noexcept {
-        if (gamescopeScalingSurface && privateOrderedTransport &&
-                lowerMailboxSupported && refreshKnown) {
-            return {
-                .lowerPresentMode = VK_PRESENT_MODE_MAILBOX_KHR,
-                .compositorPresentMode = VK_PRESENT_MODE_FIFO_KHR,
-            };
-        }
-        return {.lowerPresentMode = intendedPresentMode};
+        return !gamescopeDetected && privateQueueAvailable;
     }
 
     [[nodiscard]] inline bool shouldRetrySwapchainWithApplicationMinimum(
@@ -145,49 +120,35 @@ namespace fgvk::layer {
     }
 
     /// Apply only the WSI mutations justified by resources provisioned on the
-    /// application device. Standalone scaling needs transfer usage, but must
-    /// not reserve FG images or change the application's present mode.
-    /// surfaceMinImages (0 = unknown) adds the layer-needs floor for Fixed FG
-    /// without combined scaling.
+    /// application device. Frame generation needs transfer usage.
+    /// surfaceMinImages (0 = unknown) adds the layer-needs floor for Fixed FG.
     [[nodiscard]] inline bool applySwapchainCreateProvisioning(
             const ls::GameConf& profile, const uint32_t maxImages,
             VkSwapchainCreateInfoKHR& createInfo,
             const bool frameGenerationProvisioned,
-            const bool spatialScalingActive,
             const bool orderedFrameGenerationTransport,
             const bool swapchainImageCountCompatibility = false,
             const uint32_t surfaceMinImages = 0,
             const bool fifoGroupRelief = false) {
-        if (!frameGenerationProvisioned && !spatialScalingActive)
+        if (!frameGenerationProvisioned)
             return false;
 
         createInfo.imageUsage |=
             VK_IMAGE_USAGE_TRANSFER_DST_BIT |
             VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
-        if (!frameGenerationProvisioned)
-            return false;
 
         switch (profile.pacing) {
             case ls::Pacing::None:
                 // Preserve the application's requested WSI ownership and add
                 // one image per generated output. Ordered FG-only restores
                 // the release-3.0 relief image which keeps multi-output FIFO
-                // batches off the headroom-tight admission path. Potentially
-                // active combined scaling deliberately omits that sixth image:
-                // some engines reject or churn the enlarged lower replacement
-                // pool, while the replacement-prime and native-first paths
-                // protect its real frame without double-counting it. An enabled
-                // 1.0 scaler remains inactive and must preserve FG-only relief.
+                // batches off the headroom-tight admission path.
                 // fifoGroupRelief: a direct-transport swapchain whose present-mode
                 // group includes FIFO (in-game VSync can switch to it per present)
                 // keeps the same relief image.
                 if (!swapchainImageCountCompatibility) {
-                    const bool combinedScalingTopology =
-                        spatialScalingActive ||
-                        ls::spatialScalingMayActivate(profile);
                     const uint64_t orderedFrameGenerationReliefImages =
-                        (orderedFrameGenerationTransport || fifoGroupRelief) &&
-                            !combinedScalingTopology
+                        orderedFrameGenerationTransport || fifoGroupRelief
                         ? 1 : 0;
                     createInfo.minImageCount = static_cast<uint32_t>(std::min(
                         static_cast<uint64_t>(
@@ -199,7 +160,7 @@ namespace fgvk::layer {
                     ));
                     if (maxImages && createInfo.minImageCount > maxImages)
                         createInfo.minImageCount = maxImages;
-                    if (!combinedScalingTopology && !profile.adaptive)
+                    if (!profile.adaptive)
                         createInfo.minImageCount = lowerImageCountWithLayerFloor(
                             createInfo.minImageCount, surfaceMinImages, maxImages);
                 }

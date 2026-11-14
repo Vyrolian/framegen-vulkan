@@ -230,13 +230,9 @@ int main() {
         support = surfaceMaintenance1Support({});
         expect(!support.khr && !support.ext, "Failed enumeration keeps natural retirement");
     }
-    expect(presentationRetirementRequired(true, false, false),
-        "FG-only contexts need presentation retirement independently of Scaling");
-    expect(presentationRetirementRequired(false, true, false),
-        "Scaling-only contexts need presentation retirement independently of FG");
-    expect(presentationRetirementRequired(false, false, true),
-        "Shader-only HDR bridge contexts need protocol lifetime protection");
-    expect(!presentationRetirementRequired(false, false, false),
+    expect(presentationRetirementRequired(true),
+        "FG-only contexts need presentation retirement");
+    expect(!presentationRetirementRequired(false),
         "An inactive Renderer must not provision presentation fences");
     rejectedPresentTests();
     expect(std::string_view(
@@ -493,13 +489,6 @@ int main() {
             swapchainCreateIsReplacement(VK_NULL_HANDLE, true) &&
             !swapchainCreateIsReplacement(VK_NULL_HANDLE, false),
         "replacement classification depended on forwarding a retained old handle");
-
-    expect(nullOldReplacementRequiresDirectPresentPrime(true, false, true),
-        "a scaled null-old replacement did not require a direct WSI prime");
-    expect(!nullOldReplacementRequiresDirectPresentPrime(false, false, true) &&
-            !nullOldReplacementRequiresDirectPresentPrime(true, true, true) &&
-            !nullOldReplacementRequiresDirectPresentPrime(true, false, false),
-        "direct WSI priming escaped the scaled null-old replacement boundary");
 
     expect(presentFenceWillSignal(VK_SUCCESS) &&
             presentFenceWillSignal(VK_SUBOPTIMAL_KHR) &&

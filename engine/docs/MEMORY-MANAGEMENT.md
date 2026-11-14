@@ -2,14 +2,14 @@
 
 framegen-vulkan allocates private Vulkan resources when a swapchain or processing context is constructed, reuses them during presentation, and releases them after the owning GPU work completes. Live resource changes can temporarily keep both the active and replacement contexts allocated. Frame Generation `0x` retains startup-provisioned resources for live reactivation, while disabling Frame Generation provisioning before launch omits LSFG interop and backend ownership. Once created, the layer deliberately retains its private backend Vulkan device until process exit.
 
-This guide owns the allocation, ownership, and accounting overview. [Spatial scaling](SCALING.md#extent-policy) owns memory-admission policy, [runtime transitions](RUNTIME-TRANSITIONS.md) owns replacement decisions, [lifecycle](LIFECYCLE.md#destruction-and-retirement) owns swapchain retirement. Those policies remain authoritative for their thresholds and compatibility rules.
+This guide owns the allocation, ownership, and accounting overview. [Runtime transitions](RUNTIME-TRANSITIONS.md) owns replacement decisions, [lifecycle](LIFECYCLE.md#destruction-and-retirement) owns swapchain retirement. Those policies remain authoritative for their thresholds and compatibility rules.
 
 ## Resource owners
 
 | Resource | Owner and lifetime |
 | --- | --- |
 | Application device and lower WSI swapchain images | The application and Vulkan WSI own their creation/destruction contract. framegen-vulkan may defer lower-swapchain destruction under the retirement policy; these image allocations are outside its private memory counters. |
-| Exported real-frame and generated-output images, shared synchronization, private scaler, and presentation resources | One `Swapchain` in `fgvk-render/src/swapchain/`; a private replacement may retire a subset before the game recreates its swapchain. |
+| Exported real-frame and generated-output images, shared synchronization, and presentation resources | One `Swapchain` in `fgvk-render/src/swapchain/`; a private replacement may retire a subset before the game recreates its swapchain. |
 | Internal application images (F5): private application-rendered images, dedicated device-local allocations, and copy/synchronization objects | One `InternalSwapchainImages` per eligible swapchain, owned by the instance registry and released with its swapchain (see [Internal application images](RENDERER-ARCHITECTURE.md#internal-application-images-f5)); the private count is `min(8, max(minImageCount, 3) + 2)` (see [Internal application images](RENDERER-ARCHITECTURE.md#internal-application-images-f5)), and each image adds one device-local allocation. |
 | Imported exchange images, model intermediates, constant buffers, and backend command resources | A backend `ContextImpl` in `fgvk-backend/src/fgvk.cpp`; closed through `backend::Instance` after its work completes, or retained for later retirement. |
 | Internal model-image blocks | One `vk::ImageMemoryPool` per backend context, shared by the LSFG shader chains that explicitly request pooled images. Bound images also retain their block owner. |
@@ -27,7 +27,7 @@ DLL inspection in `fgvk-backend/src/extraction/dll_reader.cpp` validates the com
 | Path | Allocation behavior |
 | --- | --- |
 | Internal image with an explicit pool | Bind a unique aligned range from a context-local block. The image retains shared ownership of that block. |
-| Internal image without a pool | Allocate a separate `VkDeviceMemory` handle using the image's reported requirements and bind at offset zero. Spatial-scaler images use this path. |
+| Internal image without a pool | Allocate a separate `VkDeviceMemory` handle using the image's reported requirements and bind at offset zero. |
 | Exported or imported image | Use a separate allocation with the external-memory and dedicated-image allocation structures. External images cannot use the internal pool. |
 | Buffer | Allocate a separate host-visible, host-coherent memory handle, then map/copy/unmap for upload or readback. Buffers do not use the image pool. |
 
@@ -43,7 +43,7 @@ The default minimum block size is 4 MiB. With that default, a request up to 8 Mi
 
 There is no free-list, compaction, or individual range reuse. Destroying an image does not rewind the cursor. A failed Vulkan bind after range reservation also leaves that range consumed until the block is released. The pool retains its blocks, and each successfully bound image retains its block independently; a block is freed only when the pool and all image references to it are gone. This favors context-wide construction and retirement rather than repeated individual image allocation/deallocation.
 
-Pooling is opt-in, not a global allocator for all Renderer images. The LSFG shader chains use the context pool, while exchange images, host-visible buffers, spatial-scaler images, and other images constructed without a pool keep their separate allocations. Pooling reduces allocation count; it does not reduce image dimensions or alias model intermediates. Unused block capacity and alignment padding remain allocated and appear in memory accounting.
+Pooling is opt-in, not a global allocator for all Renderer images. The LSFG shader chains use the context pool, while exchange images, host-visible buffers, and other images constructed without a pool keep their separate allocations. Pooling reduces allocation count; it does not reduce image dimensions or alias model intermediates. Unused block capacity and alignment padding remain allocated and appear in memory accounting.
 
 ### Model scratch lifetimes
 
@@ -71,8 +71,6 @@ When exactly one output is requested, preprocessing, a cached dependency command
 
 CLI frame profiling enables a query pool only on a fresh unscheduled backend context. Its queries are recorded into the same cached preprocessing, output and source-release commands; the existing timeline values, submissions, image ownership and completion fence remain intact. The query owner outlives those command recordings. The CLI establishes GPU completion through its normal output wait before retrieving results; profile reads add no fence wait or blocking query-result flag and reject unavailable results. Ordinary contexts allocate no pool and perform no profiling clock reads. [Frame Generation profiling](FRAME-PROFILING.md) defines the diagnostic measurement boundary.
 
-Each application-image spatial pass reuses its recorded commands when both the application image and optional Frame Generation source are unchanged. Its existing completion fence still guards every reuse, and recordings use sequential-resubmission flags. A changed image pair, scaler replacement, or direct-output descriptor reconfiguration invalidates the recording. Failed recording leaves no valid cache key. This applies to scaling-only real frames, post-Frame Generation real frames, pre-Frame Generation source preparation, and acquired-image retirement; generated-output presentation keeps its existing recording path. The cache retains one command buffer per existing pass and does not change pixels, image allocations, shaders, or GPU synchronization.
-
 ## Ownership and cleanup
 
 The wrappers use C++ ownership to release Vulkan handles. `vk::Image` declares memory before image and image-view members so normal destruction releases the view, then the image, then its allocation or pooled-block reference. `vk::Buffer` similarly releases the buffer before its memory. `ls::owned_ptr` supplies the move-only handle owner and custom deleter; it is not a GPU-completion mechanism. The owning Vulkan device must outlive every wrapper that calls its destruction functions.
@@ -97,13 +95,11 @@ Shared image contents also cross Vulkan instance ownership. `fgvk-common/vulkan/
 
 ## Admission and peak memory
 
-Scaling admission samples the selected application's device-local heap and, when available, live budget/usage before accepting a resource envelope. It reserves non-framegen-vulkan headroom and can reduce the effective scale or leave scaling inactive. [Extent policy](SCALING.md#extent-policy) defines the static fallback, graph estimates, pre/post-Frame Generation placement, generated-output allowance, and conditions for reusing a proven envelope.
+Admission is an estimate, not an allocation reservation, performance guarantee, or continuously enforced memory cap. Driver requirements, pool padding, other processes, and the separate backend device can affect allocation success. Budget queries occur at admission boundaries. Gameplay FPS alone cannot authorize recreation.
 
-Admission is an estimate, not an allocation reservation, performance guarantee, or continuously enforced memory cap. Driver requirements, pool padding, other processes, and the separate backend device can affect allocation success. Budget queries occur at admission boundaries. [Extent policy](SCALING.md#variable-extent-surfaces) owns the one delayed, retirement-protected retry for a transient budget rejection within a previously proven envelope; it cannot bypass admission, grow the output, or loop. Gameplay FPS alone cannot authorize recreation.
+Steady-state usage and replacement peaks answer different questions. A live Flow Scale, model, or capacity change constructs a complete candidate while the current resources remain usable. Until drain and handoff finish, both sets contribute to the live counters. Deferred backend contexts and lower WSI swapchains can extend that overlap. Do not interpret the cold graph estimate as an exact prediction of this transient peak.
 
-Steady-state usage and replacement peaks answer different questions. A live Flow Scale, model, capacity, or scaler change constructs a complete candidate while the current resources remain usable. Until drain and handoff finish, both sets contribute to the live counters. Deferred backend contexts and lower WSI swapchains can extend that overlap. Do not interpret the cold graph estimate as an exact prediction of this transient peak.
-
-Frame Generation `0x` stops generation work while retaining resources when provisioning succeeded, so selecting it is not a request to reclaim memory. A Scaling-only process that never created a Frame Generation backend does not have that retained FG allocation. FP16 arithmetic also does not imply that SDR image allocation sizes are halved; image formats, geometry, graph selection, and output capacity determine the allocation demand.
+Frame Generation `0x` stops generation work while retaining resources when provisioning succeeded, so selecting it is not a request to reclaim memory. FP16 arithmetic also does not imply that SDR image allocation sizes are halved; image formats, geometry, graph selection, and output capacity determine the allocation demand.
 
 ## Replacement, retirement, and process exit
 
@@ -114,8 +110,6 @@ Backend context close waits up to 250 ms for that context's work. If completion 
 The application-device render fence is resolved before any generated-image preacquisition or acquire-semaphore reuse. If its bounded wait expires, the current plan holds no generated images and can present the real frame natively. Recovery polls the outstanding work without blocking before warming history and resuming generation; it never recycles an unresolved fence or command buffer.
 
 Lower WSI swapchain retirement is separate. Maintenance fences, same-surface replacement progress, compositor grace, custom allocator callbacks, and terminal surface/device destruction determine when those handles can be released. The [lifecycle destruction policy](LIFECYCLE.md#destruction-and-retirement) owns those conditions; backend completion alone does not prove presentation retirement.
-
-Renderer instance state owns the optional `GamescopeScalingSurface` connection when Scaling needs an isolated Gamescope X11-to-Wayland association. Each Vulkan surface owns one Wayland surface, while each Vulkan swapchain owns a separate protocol association object. Application swapchain destruction releases its association; lower Vulkan resources retain their independent deferred-retirement proof. Lower destruction and same-surface retirement complete before the Wayland surface itself is released. An association is bound on first present so preparing a replacement cannot retire the current window image early. The connection and client libraries outlive all of these objects and are released after the final Vulkan instance. This CPU-side bookkeeping is outside the private GPU allocation counters. One event-driven feedback reader belongs to the connection and is joined before callback state, queues, the display, or client libraries are released; associations add only an optional fixed-capacity diagnostic timing accumulator, not a per-swapchain worker. [WSI isolation](WSI-ISOLATION.md#guarded-gamescope-wsi-paths) owns the reader and shutdown contract. Retirement requests application-owned recreation; failed presents enqueue their wait/fence obligations without submitting an image to the retired association.
 
 The layer calls `backend::makeLeaking()` after provisioning Frame Generation to preserve the private backend Vulkan owner during teardown and avoid loader-destruction hazards in mixed layer stacks. The backend instance destructor moves that Vulkan owner into deliberately retained storage. The operating system reclaims it when the process exits. This exception is distinct from ordinary context retirement and does not make all per-context images permanent. Standalone backend consumers do not enable it merely by constructing an instance.
 
@@ -155,7 +149,7 @@ Use [diagnostics](COLLECT_DIAGNOSTICS.md) to retain these records with transitio
 | `image-memory-pool` | Linear-cursor alignment, capacity rejection, and invalid-alignment behavior; it does not exercise real Vulkan block allocation/binding. |
 | `device-memory-accounting` | Separate ownership categories, balanced allocation/free totals, and retained high-water marks. |
 | `external-fd-ownership` | Partial export/import failures, descriptor-number reuse, and recorded external-image upload/readback handoffs with internal-image isolation. |
-| `profile-update`, `runtime-transition`, `spatial-scaling-policy`, `swapchain-retirement` | Deterministic policy and lifetime decisions, including admission and replacement boundaries. |
+| `profile-update`, `runtime-transition`, `swapchain-retirement` | Deterministic policy and lifetime decisions, including admission and replacement boundaries. |
 | `backend-hot-path`, `command-buffer-submit-storage`, `generated-frame-plan` | Bounded storage and reuse contracts for frame scheduling/submission. These do not prove that every driver or present path is allocation-free. |
 
 For allocator or resource-lifetime code changes, run the full Renderer tests and appropriate sanitizer coverage, then select fgvk Gym evidence in proportion to the boundary: `runtime-overhead` for private allocation and CPU/RSS observations, `sustained-health` for repeated-resource plateaus, `sync-validation` for completion/ownership changes, and the applicable feature, recovery, or compositor suites. Hardware qualification also includes the selected `constraints` cases under [Testing framegen-vulkan](../../TESTING.md). Exercise both FP32 and FP16 for affected AMD Frame Generation paths, and record untested architectures, drivers, runtimes, and rows explicitly. Documentation-only changes do not establish new hardware evidence.
@@ -167,8 +161,6 @@ For allocator or resource-lifetime code changes, run the full Renderer tests and
 | Allocation counters | [`device_memory_accounting.hpp`](../fgvk-common/include/fgvk-common/vulkan/device_memory_accounting.hpp), [`device_memory_accounting.cpp`](../fgvk-common/src/vulkan/device_memory_accounting.cpp) |
 | Swapchain resource groups and replacement | [`swapchain.hpp`](../fgvk-render/src/swapchain/swapchain.hpp), [`resources.cpp`](../fgvk-render/src/swapchain/resources.cpp), [`create.cpp`](../fgvk-render/src/swapchain/create.cpp) |
 | Backend construction, pools, and deferred context close | [`fgvk.cpp`](../fgvk-backend/src/fgvk.cpp), [`utils.hpp`](../fgvk-backend/src/helpers/utils.hpp), [`shaderchains/`](../fgvk-backend/src/shaderchains/) |
-| Scaling admission and resource formats | [`spatial_scaling_policy.hpp`](../fgvk-render/src/spatial_scaling_policy.hpp), [`spatial_scaler.cpp`](../fgvk-render/src/spatial_scaler.cpp) |
-
 Extend these owners when changing memory behavior. Keep the allocator, accounting, failure cleanup, focused tests, and owning boundary guide aligned; do not add a second allocator or treat a policy estimate as completion or allocation proof.
 
 Native copy timing under `FGVK_PACING_PROFILE_COPY=1` owns one query pool per eligible unscaled native FG swapchain, bounded to two timestamps for the source plus each generated output (ten queries at the current four-output capacity). It records in existing commands, consumes results without a blocking query read only after the existing render-fence proof, and keeps the pool through private-resource replacement while tagging samples with their original generation. It adds no image, staging allocation, submission or host wait. Driver-internal query-pool storage is not a Renderer `VkDeviceMemory` allocation and has no invented byte total in memory accounting. Default/lightweight profiling creates no native copy query pool.

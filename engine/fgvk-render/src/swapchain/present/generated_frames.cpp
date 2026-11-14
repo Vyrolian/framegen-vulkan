@@ -175,7 +175,7 @@ VkResult Swapchain::presentGeneratedFrames(
         // copy and present it at its deadline. Any refusal keeps the path below.
         if (deferredTail && invocation.releasedOverlap && i == 0 &&
                 plan.scheduledGeneratedFrames.size() == 1 &&
-                !plan.generatedImagesPreacquired && !this->spatialScaler &&
+                !plan.generatedImagesPreacquired &&
                 !this->frameContentCapture && !this->nativeCopyProfile &&
                 !this->gamescopeDetected && this->deferredPresent &&
                 this->recordGeneratedCopies(invocation.vk, this->currentRenderSlot())) {
@@ -523,43 +523,34 @@ VkResult Swapchain::presentGeneratedFrames(
             this->nativeCopyProfile->beginCopy(commandBuffer.handle(), invocation.vk.queue(), acquiredImageIndex, true, static_cast<uint32_t>(i));
         vk::acquireExternalImage(invocation.vk, commandBuffer.handle(), destinationImage.handle(),
             VK_ACCESS_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
-        if (this->spatialScaler &&
-                this->spatialFramePipelinePlacement ==
-                    SpatialFramePipelinePlacement::PostFrameGeneration) {
-            this->spatialScaler->recordSourceToPresentation(
-                invocation.vk, commandBuffer,
-                destinationImage.handle(), acquiredSwapchainImage
-            );
-        } else {
-            const std::array preBarriers{
-                barrierHelper(destinationImage.handle(),
-                    VK_ACCESS_NONE,
-                    VK_ACCESS_TRANSFER_READ_BIT,
-                    VK_IMAGE_LAYOUT_GENERAL,
-                    VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL
-                ),
-                barrierHelper(acquiredSwapchainImage,
-                    VK_ACCESS_NONE,
-                    VK_ACCESS_TRANSFER_WRITE_BIT,
-                    VK_IMAGE_LAYOUT_UNDEFINED,
-                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL
-                ),
-            };
-            const std::array postBarriers{
-                barrierHelper(acquiredSwapchainImage,
-                    VK_ACCESS_TRANSFER_WRITE_BIT,
-                    VK_ACCESS_MEMORY_READ_BIT,
-                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                    VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
-                ),
-            };
-            commandBuffer.blitImage(invocation.vk,
-                preBarriers,
-                {destinationImage.handle(), acquiredSwapchainImage},
-                destinationImage.getExtent(),
-                postBarriers
-            );
-        }
+        const std::array preBarriers{
+            barrierHelper(destinationImage.handle(),
+                VK_ACCESS_NONE,
+                VK_ACCESS_TRANSFER_READ_BIT,
+                VK_IMAGE_LAYOUT_GENERAL,
+                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL
+            ),
+            barrierHelper(acquiredSwapchainImage,
+                VK_ACCESS_NONE,
+                VK_ACCESS_TRANSFER_WRITE_BIT,
+                VK_IMAGE_LAYOUT_UNDEFINED,
+                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL
+            ),
+        };
+        const std::array postBarriers{
+            barrierHelper(acquiredSwapchainImage,
+                VK_ACCESS_TRANSFER_WRITE_BIT,
+                VK_ACCESS_MEMORY_READ_BIT,
+                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
+            ),
+        };
+        commandBuffer.blitImage(invocation.vk,
+            preBarriers,
+            {destinationImage.handle(), acquiredSwapchainImage},
+            destinationImage.getExtent(),
+            postBarriers
+        );
 
         std::array<VkSemaphore, 2> waitSemaphores{
             pass.acquireSemaphore.handle(), VK_NULL_HANDLE

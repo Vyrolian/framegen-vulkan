@@ -71,8 +71,7 @@ int main() {
 
     const auto resolveDisplayTarget = [](const ls::GameConf& applied,
             const ls::GameConf& requested, std::optional<uint32_t> refresh) {
-        return planProfileUpdate(applied, requested, 3, true, false,
-            false, true, false, false, refresh);
+        return planProfileUpdate(applied, requested, 3, true, false, refresh);
     };
     auto savedTarget = adaptiveProfile();
     expect(resolveDisplayTarget(savedTarget, savedTarget, 60)
@@ -135,10 +134,7 @@ int main() {
     auto adaptiveAfterGrowth = fixedBeforeGrowth;
     adaptiveAfterGrowth.adaptive = true;
     adaptiveAfterGrowth.adaptive_max_multiplier = 5;
-    const auto pendingGrowth = planProfileUpdate(
-        fixedBeforeGrowth, adaptiveAfterGrowth, 2, true, false,
-        true, true, false, false, 60
-    );
+    const auto pendingGrowth = planProfileUpdate(fixedBeforeGrowth, adaptiveAfterGrowth, 2, true, true, 60);
     expect(pendingGrowth.decision.frameGenerationPrivateRebuild &&
             !pendingGrowth.appliedProfile.adaptive &&
             pendingGrowth.appliedProfile.target_fps == 120,
@@ -537,11 +533,7 @@ int main() {
     staticRequest.target_fps = 120;
     staticRequest.frame_generation_provisioned = false;
     staticRequest.swapchain_image_count_compatibility = true;
-    const auto staticProjection = projectProcessStaticProfileForLiveUpdate(
-        current, staticRequest, current.frame_generation_provisioned,
-        current.scaling_enabled,
-        current.swapchain_image_count_compatibility
-    );
+    const auto staticProjection = projectProcessStaticProfileForLiveUpdate(current, staticRequest, current.frame_generation_provisioned, current.swapchain_image_count_compatibility);
     expect(staticProjection.restartRequired() &&
             staticProjection.gpuSelectionPending &&
             staticProjection.frameGenerationProvisioningPending &&
@@ -560,30 +552,9 @@ int main() {
                     current.swapchain_image_count_compatibility &&
             staticProjection.runtimeProfile.target_fps == 120,
         "Process-static projection must retain construction fields and apply live policy");
-    auto scalingEngineRequest = current;
-    scalingEngineRequest.scaling_enabled = !current.scaling_enabled;
-    scalingEngineRequest.scaling_method = ls::ScalingMethod::Native;
-    const auto scalingEngineProjection =
-        projectProcessStaticProfileForLiveUpdate(
-            current, scalingEngineRequest,
-            current.frame_generation_provisioned, current.scaling_enabled,
-            current.swapchain_image_count_compatibility
-        );
-    expect(scalingEngineProjection.restartRequired() &&
-            scalingEngineProjection.scalingEnginePending &&
-            scalingEngineProjection.runtimeProfile.scaling_enabled ==
-                current.scaling_enabled &&
-            scalingEngineProjection.runtimeProfile.scaling_method ==
-                ls::ScalingMethod::Native,
-        "Scaling Engine provisioning must wait for restart while method selection remains live");
     auto scalingOnlyCurrent = current;
     scalingOnlyCurrent.frame_generation_enabled = false;
-    const auto liveEnableProjection = projectProcessStaticProfileForLiveUpdate(
-        scalingOnlyCurrent, current,
-        scalingOnlyCurrent.frame_generation_provisioned,
-        scalingOnlyCurrent.scaling_enabled,
-        scalingOnlyCurrent.swapchain_image_count_compatibility
-    );
+    const auto liveEnableProjection = projectProcessStaticProfileForLiveUpdate(scalingOnlyCurrent, current, scalingOnlyCurrent.frame_generation_provisioned, scalingOnlyCurrent.swapchain_image_count_compatibility);
     expect(!liveEnableProjection.restartRequired() &&
             liveEnableProjection.runtimeProfile.frame_generation_enabled,
         "A matched process must preserve live Frame Generation enablement");
@@ -1654,35 +1625,11 @@ int main() {
             !decision.swapchainRecreationDeferred &&
             !liveProfileResourceRecreationAvailable(decision, true),
         "Ultra Performance changes must never apply to a live context");
-    next.scaling_enabled = true;
-    decision = classifyProfileUpdate(current, next, 3, true);
-    expect(decision.spatialScalingChanged &&
-            decision.processRestartDeferred &&
-            !liveProfileResourceRecreationAvailable(decision, true),
-        "A process-static edit must suppress combined forced recreation");
-    expect(ls::effectiveScalingMethod(next) ==
-            ls::ScalingMethod::Ls1Performance,
-        "Ultra Performance must select LS1 Performance when scaling starts");
 
     auto runningUltra = current;
     runningUltra.ultra_performance = true;
     runningUltra.flow_scale = ls::GameConfDefaults::ultraPerformanceFlowScale;
     runningUltra.performance_mode = true;
-    runningUltra.scaling_enabled = true;
-    runningUltra.scaling_method = ls::ScalingMethod::Fgvk;
-    expect(ls::effectiveScalingMethod(runningUltra) ==
-            ls::ScalingMethod::Ls1Performance,
-        "A running Ultra Performance profile must use the performance scaler");
-    auto savedUltraScalerChoice = runningUltra;
-    savedUltraScalerChoice.scaling_method = ls::ScalingMethod::Ls1;
-    const auto savedUltraScalerPlan = planProfileUpdate(
-        runningUltra, savedUltraScalerChoice, 2, true, true
-    );
-    expect(savedUltraScalerPlan.decision.action ==
-            ProfileUpdateAction::NoRuntimeChange &&
-            savedUltraScalerPlan.appliedProfile.scaling_method ==
-                ls::ScalingMethod::Ls1,
-        "Ultra Performance must preserve dormant model choices without rebuilding");
     auto updatedRunningUltra = runningUltra;
     updatedRunningUltra.target_fps = 120;
     decision = classifyProfileUpdate(runningUltra, updatedRunningUltra, 2, true);
@@ -1698,191 +1645,27 @@ int main() {
             liveProfileResourceRecreationAvailable(decision, true),
         "Ultra Performance capacity growth must preserve live policy while requesting recreation");
 
-    next = current;
-    next.scaling_enabled = true;
-    decision = classifyProfileUpdate(current, next, 3, true);
-    expect(decision.action ==
-            ProfileUpdateAction::DeferUntilProcessRestart &&
-            decision.spatialScalingChanged &&
-            decision.processRestartDeferred &&
-            !decision.swapchainRecreationDeferred,
-        "Scaling Engine enablement must require a process restart");
-    expect(!liveProfileResourceRecreationAvailable(decision, false),
-        "A swapchain recreation must not satisfy Scaling Engine provisioning");
-
-    auto nativeScalingEngine = current;
-    nativeScalingEngine.scaling_enabled = true;
-    nativeScalingEngine.scaling_method = ls::ScalingMethod::Native;
-    nativeScalingEngine.scaling_factor = 1.5F;
-    decision = classifyProfileUpdate(current, nativeScalingEngine, 3, true);
-    expect(decision.action ==
-            ProfileUpdateAction::DeferUntilProcessRestart &&
-            decision.processRestartDeferred &&
-            !decision.swapchainRecreationDeferred &&
-            nativeScalingEngine.frame_generation_enabled,
-        "Native Scaling Engine activation must retain FG without a redundant live recreation");
-    auto dormantScalingChoice = current;
-    dormantScalingChoice.scaling_method = ls::ScalingMethod::Ls1;
-    dormantScalingChoice.scaling_factor = 2.0F;
-    dormantScalingChoice.scaling_sharpness = 0.75F;
-    decision = classifyProfileUpdate(current, dormantScalingChoice, 3, true);
-    expect(decision.action == ProfileUpdateAction::NoRuntimeChange &&
-            !decision.spatialScalingChanged &&
-            !decision.swapchainRecreationDeferred,
-        "Dormant scaler choices must save without disrupting an engine-off process");
-    auto fgvkScalingEngine = nativeScalingEngine;
-    fgvkScalingEngine.scaling_method = ls::ScalingMethod::Fgvk;
-    const auto dormantModelPlan = planProfileUpdate(
-        nativeScalingEngine, fgvkScalingEngine, 3, true
-    );
-    decision = dormantModelPlan.decision;
-    expect(decision.action == ProfileUpdateAction::NoRuntimeChange &&
-            !decision.spatialScalingChanged &&
-            decision.spatialScalingDormantUpdate &&
-            !decision.swapchainRecreationDeferred &&
-            dormantModelPlan.appliedProfile.scaling_method ==
-                ls::ScalingMethod::Fgvk &&
-            fgvkScalingEngine.frame_generation_enabled,
-        "An inactive scaler model change must save without recreating WSI or FG");
-    decision = planProfileUpdate(
-        nativeScalingEngine, fgvkScalingEngine, 3, true, true
-    ).decision;
-    expect(decision.action == ProfileUpdateAction::ApplyLive &&
-            decision.spatialScalingChanged &&
-            !decision.spatialScalingDormantUpdate &&
-            decision.spatialScalingLiveRebuild &&
-            !decision.swapchainRecreationDeferred &&
-            !liveProfileResourceRecreationAvailable(decision, true),
-        "A provisioned scaler must switch Native-to-framegen-vulkan inside its private context without WSI recreation");
-
     LiveProfileResourceRecreation resourceRecreation;
     const auto resourceChangeStarted =
         LiveProfileResourceRecreation::Clock::time_point{};
-    resourceRecreation.update(
-        nativeScalingEngine, fgvkScalingEngine, 7, resourceChangeStarted
-    );
-    expect(resourceRecreation.pending() && resourceRecreation.armed(),
-        "A changed resource profile must arm one live recreation signal");
-    expect(resourceRecreation.signalAfterSuccessfulPresent(
-            resourceChangeStarted) == 7,
-        "A discrete scaler topology change must use the next successful present");
-    expect(resourceRecreation.pending() && !resourceRecreation.armed() &&
-            !resourceRecreation.signalAfterSuccessfulPresent(
-                resourceChangeStarted),
-        "A resource request must emit only one out-of-date signal");
-    resourceRecreation.update(nativeScalingEngine, fgvkScalingEngine, 8,
-        resourceChangeStarted + std::chrono::seconds(1));
-    expect(!resourceRecreation.armed(),
-        "Polling the same pending resource profile must not rearm its signal");
-    auto differentScalingRequest = fgvkScalingEngine;
-    differentScalingRequest.scaling_method = ls::ScalingMethod::Ls1;
-    resourceRecreation.update(nativeScalingEngine, differentScalingRequest, 9,
-        resourceChangeStarted + std::chrono::seconds(1));
-    expect(resourceRecreation.armed() &&
-            resourceRecreation.signalAfterSuccessfulPresent(
-                resourceChangeStarted + std::chrono::seconds(1)) == 9,
-        "A different scaler method must receive one immediate fresh signal");
-    resourceRecreation.update(nativeScalingEngine, nativeScalingEngine, 10,
-        resourceChangeStarted + std::chrono::seconds(2));
-    expect(!resourceRecreation.pending() && !resourceRecreation.armed(),
-        "Returning to the active resource profile must cancel recreation");
-
-    auto gamescopeFactorRequest = nativeScalingEngine;
-    gamescopeFactorRequest.scaling_factor = 2.0F;
-    const auto gamescopeFactorDecision = planProfileUpdate(
-        nativeScalingEngine, gamescopeFactorRequest, 3, true, true
-    ).decision;
-    expect(guardedLiveProfileResourceRecreationAvailable(
-            gamescopeFactorDecision, true, true, true, true
-        ),
-        "A maintenance1-fenced Gamescope resource owner must request recreation for an extent change");
-    expect(!guardedLiveProfileResourceRecreationAvailable(
-            gamescopeFactorDecision, true, true, true, false
-        ),
-        "A capability-only Gamescope role must not request recreation for an extent change");
-    expect(!guardedLiveProfileResourceRecreationAvailable(
-            gamescopeFactorDecision, true, false, true, true
-        ),
-        "A Gamescope extent change must remain deferred without retirement proof");
-
-    auto combinedFixedCurrent = nativeScalingEngine;
-    combinedFixedCurrent.scaling_method = ls::ScalingMethod::Fgvk;
+    auto combinedFixedCurrent = current;
     combinedFixedCurrent.adaptive = false;
     combinedFixedCurrent.multiplier = 2;
     combinedFixedCurrent.adaptive_max_multiplier = 2;
-    auto combinedFixedRequest = combinedFixedCurrent;
-    combinedFixedRequest.scaling_factor = 2.0F;
-    combinedFixedRequest.multiplier = 3;
-    const auto combinedFixedPlan = planProfileUpdate(
-        combinedFixedCurrent, combinedFixedRequest, 1, true, true, true
-    );
-    expect(combinedFixedPlan.decision.action ==
-                ProfileUpdateAction::ApplyLive &&
-            combinedFixedPlan.decision.spatialScalingChanged &&
-            combinedFixedPlan.decision.generatedFrameCapacityExceeded &&
-            combinedFixedPlan.decision.frameGenerationPrivateRebuild &&
-            combinedFixedPlan.decision.swapchainRecreationDeferred &&
-            combinedFixedPlan.appliedProfile.scaling_factor ==
-                combinedFixedCurrent.scaling_factor &&
-            combinedFixedPlan.appliedProfile.multiplier ==
-                combinedFixedCurrent.multiplier &&
-            generatedFrameCapacityForProfile(combinedFixedRequest) == 2,
-        "A combined factor and Fixed 3x update must retain both old active shapes until their safe transitions");
-    expect(guardedLiveProfileResourceRecreationAvailable(
-            combinedFixedPlan.decision, true, true, true, true
-        ) && !guardedLiveProfileResourceRecreationAvailable(
-            combinedFixedPlan.decision, true, true, true, false
-        ),
-        "Only the Gamescope spatial resource owner may request recreation for a combined factor and Fixed update");
-
-    auto combinedAdaptiveRequest = combinedFixedRequest;
-    combinedAdaptiveRequest.scaling_factor = 1.5F;
-    combinedAdaptiveRequest.adaptive = true;
-    combinedAdaptiveRequest.adaptive_max_multiplier = 4;
-    const auto combinedAdaptivePlan = planProfileUpdate(
-        combinedFixedRequest, combinedAdaptiveRequest, 2, true, true, true
-    );
-    expect(combinedAdaptivePlan.decision.action ==
-                ProfileUpdateAction::ApplyLive &&
-            combinedAdaptivePlan.decision.spatialScalingChanged &&
-            combinedAdaptivePlan.decision.generatedFrameCapacityExceeded &&
-            combinedAdaptivePlan.decision.frameGenerationPrivateRebuild &&
-            combinedAdaptivePlan.decision.swapchainRecreationDeferred &&
-            !combinedAdaptivePlan.appliedProfile.adaptive &&
-            combinedAdaptivePlan.appliedProfile.scaling_factor == 2.0F &&
-            generatedFrameCapacityForProfile(combinedAdaptiveRequest) == 3,
-        "A combined factor and Fixed-to-Adaptive 4x update must wait atomically for the required resource shapes");
-    expect(guardedLiveProfileResourceRecreationAvailable(
-            combinedAdaptivePlan.decision, true, true, true, true
-        ) && !guardedLiveProfileResourceRecreationAvailable(
-            combinedAdaptivePlan.decision, true, true, true, false
-        ),
-        "A combined Adaptive capacity change must emit only the spatial owner's recreation request");
 
     auto fixedCapacityOnlyRequest = combinedFixedCurrent;
     fixedCapacityOnlyRequest.multiplier = 3;
-    const auto fixedCapacityOnlyPlan = planProfileUpdate(
-        combinedFixedCurrent, fixedCapacityOnlyRequest, 1, true, true, true
-    );
+    const auto fixedCapacityOnlyPlan = planProfileUpdate(combinedFixedCurrent, fixedCapacityOnlyRequest, 1, true, true);
     expect(fixedCapacityOnlyPlan.decision.frameGenerationPrivateRebuild &&
-            !fixedCapacityOnlyPlan.decision.spatialScalingChanged &&
-            !guardedLiveProfileResourceRecreationAvailable(
-                fixedCapacityOnlyPlan.decision, true, true, true, true
-            ),
+            !guardedLiveProfileResourceRecreationAvailable(fixedCapacityOnlyPlan.decision, true, true, true),
         "A Fixed capacity-only change must remain private and never request game-owned recreation");
 
     auto gamescopeFrameGenerationRequest = current;
     gamescopeFrameGenerationRequest.flow_scale = 0.75F;
-    const auto gamescopeFrameGenerationDecision = planProfileUpdate(
-        current, gamescopeFrameGenerationRequest, 2, true, false, false
-    ).decision;
-    expect(!guardedLiveProfileResourceRecreationAvailable(
-            gamescopeFrameGenerationDecision, true, true, true, true
-        ),
+    const auto gamescopeFrameGenerationDecision = planProfileUpdate(current, gamescopeFrameGenerationRequest, 2, true, false).decision;
+    expect(!guardedLiveProfileResourceRecreationAvailable(gamescopeFrameGenerationDecision, true, true, true),
         "Gamescope frame-generation resources must not provoke an application-visible recreation");
-    expect(guardedLiveProfileResourceRecreationAvailable(
-            gamescopeFrameGenerationDecision, true, true, false, false
-        ),
+    expect(guardedLiveProfileResourceRecreationAvailable(gamescopeFrameGenerationDecision, true, true, false),
         "A compatible non-Gamescope context must retain the guarded fallback recreation path");
 
     auto frameGenerationBackendRequest = current;
@@ -1896,9 +1679,7 @@ int main() {
                     LiveProfileResourceRecreation::quietPeriod) == 11,
         "Flow-scale and model changes must share the live recreation boundary");
 
-    const auto privateBackendPlan = planProfileUpdate(
-        current, frameGenerationBackendRequest, 2, true, false, true
-    );
+    const auto privateBackendPlan = planProfileUpdate(current, frameGenerationBackendRequest, 2, true, true);
     expect(privateBackendPlan.decision.action ==
                 ProfileUpdateAction::ApplyLive &&
             privateBackendPlan.decision.frameGenerationPrivateRebuild &&
@@ -1908,25 +1689,6 @@ int main() {
             privateBackendPlan.appliedProfile.performance_mode ==
                 current.performance_mode,
         "Flow Scale and model changes must prepare private resources without marking them active early");
-
-    auto scalingParameterCurrent = current;
-    scalingParameterCurrent.scaling_enabled = true;
-    scalingParameterCurrent.scaling_method = ls::ScalingMethod::Fgvk;
-    scalingParameterCurrent.scaling_factor = 1.5F;
-    auto scalingParameterRequest = scalingParameterCurrent;
-    scalingParameterRequest.scaling_factor = 2.0F;
-    resourceRecreation.update(
-        scalingParameterCurrent, scalingParameterRequest, 13,
-        resourceChangeStarted + std::chrono::seconds(5)
-    );
-    expect(!resourceRecreation.signalAfterSuccessfulPresent(
-            resourceChangeStarted + std::chrono::seconds(5) +
-                LiveProfileResourceRecreation::quietPeriod -
-                std::chrono::milliseconds(1)) &&
-            resourceRecreation.signalAfterSuccessfulPresent(
-                resourceChangeStarted + std::chrono::seconds(5) +
-                    LiveProfileResourceRecreation::quietPeriod) == 13,
-        "Numeric scaling controls must retain recreation debouncing");
 
     auto capacityRequest = current;
     capacityRequest.adaptive_max_multiplier = 4;
@@ -1938,133 +1700,13 @@ int main() {
                     LiveProfileResourceRecreation::quietPeriod) == 12,
         "Generated-capacity growth must share the live recreation boundary");
 
-    auto scalingCurrent = current;
-    scalingCurrent.scaling_enabled = true;
-    scalingCurrent.scaling_method = ls::ScalingMethod::Fgvk;
-    scalingCurrent.scaling_factor = 1.5F;
-    next = scalingCurrent;
-    next.scaling_factor = 2.0F;
-    decision = classifyProfileUpdate(scalingCurrent, next, 3, true);
-    expect(decision.action ==
-            ProfileUpdateAction::DeferUntilSwapchainRecreation &&
-            decision.spatialScalingChanged,
-        "Scaling extent changes must not mutate a live swapchain");
-
-    next = scalingCurrent;
-    next.scaling_sharpness = 0.75F;
-    const auto dormantSharpnessPlan = planProfileUpdate(
-        scalingCurrent, next, 3, true
-    );
-    decision = dormantSharpnessPlan.decision;
-    expect(decision.action == ProfileUpdateAction::NoRuntimeChange &&
-            !decision.spatialScalingChanged &&
-            decision.spatialScalingDormantUpdate &&
-            !decision.swapchainRecreationDeferred &&
-            dormantSharpnessPlan.appliedProfile.scaling_sharpness == 0.75F,
-        "Inactive scaler sharpness must save without a WSI recreation");
-    decision = planProfileUpdate(
-        scalingCurrent, next, 3, true, true
-    ).decision;
-    expect(decision.action == ProfileUpdateAction::ApplyLive &&
-            decision.spatialScalingLiveRebuild &&
-            !decision.swapchainRecreationDeferred &&
-            !liveProfileResourceRecreationAvailable(decision, true),
-        "A provisioned scaler must apply sharpness through a private rebuild without WSI recreation");
-
-    next = scalingCurrent;
-    next.scaling_factor = 2.0F;
-    decision = planProfileUpdate(
-        scalingCurrent, next, 3, true, true
-    ).decision;
-    expect(decision.action ==
-            ProfileUpdateAction::DeferUntilSwapchainRecreation &&
-            !decision.spatialScalingLiveRebuild &&
-            decision.swapchainRecreationDeferred,
-        "A factor change must remain extent-bound even when private model rebuilding is available");
-
-    next = scalingCurrent;
-    next.scaling_supersampling = true;
-    const auto supersamplingPlan = planProfileUpdate(
-        scalingCurrent, next, 3, true, true
-    );
-    expect(supersamplingPlan.decision.action ==
-                ProfileUpdateAction::DeferUntilSwapchainRecreation &&
-            supersamplingPlan.decision.swapchainRecreationDeferred &&
-            !supersamplingPlan.appliedProfile.scaling_supersampling,
-        "An effective supersampling toggle must remain extent-bound until guarded recreation");
-    const auto nativeVariableSupersamplingPlan = planProfileUpdate(
-        scalingCurrent, next, 3, true, false, false, true, false, false
-    );
-    expect(nativeVariableSupersamplingPlan.decision.action ==
-                ProfileUpdateAction::DeferUntilSwapchainRecreation &&
-            nativeVariableSupersamplingPlan.decision.
-                swapchainRecreationDeferred &&
-            !nativeVariableSupersamplingPlan.decision.
-                spatialScalingDormantUpdate &&
-            !nativeVariableSupersamplingPlan.appliedProfile.
-                scaling_supersampling,
-        "A supported native variable surface must recreate when supersampling can activate scaling");
-    const auto fixedSupersamplingNoOp = planProfileUpdate(
-        scalingCurrent, next, 3, true, true, false, true, false, true
-    );
-    expect(fixedSupersamplingNoOp.decision.action ==
-                ProfileUpdateAction::NoRuntimeChange &&
-            fixedSupersamplingNoOp.decision.
-                spatialScalingEffectiveExtentUnchanged &&
-            fixedSupersamplingNoOp.appliedProfile.scaling_supersampling,
-        "A fixed-surface supersampling toggle must save live without replacing WSI");
-
-    next = scalingCurrent;
-    next.scaling_factor = 2.0F;
-    const auto effectiveExtentNoOpPlan = planProfileUpdate(
-        scalingCurrent, next, 3, true, true, false, true, true
-    );
-    expect(effectiveExtentNoOpPlan.decision.action ==
-                ProfileUpdateAction::NoRuntimeChange &&
-            effectiveExtentNoOpPlan.decision.
-                spatialScalingEffectiveExtentUnchanged &&
-            !effectiveExtentNoOpPlan.decision.spatialScalingChanged &&
-            !effectiveExtentNoOpPlan.decision.swapchainRecreationDeferred &&
-            effectiveExtentNoOpPlan.appliedProfile.scaling_factor == 2.0F,
-        "A factor edit with identical effective extents must retain the live swapchain and scaler");
-    auto lowerExtentOwnerCurrent = scalingCurrent;
-    lowerExtentOwnerCurrent.frame_generation_enabled = false;
-    auto lowerExtentOwnerNext = next;
-    lowerExtentOwnerNext.frame_generation_enabled = false;
-    const auto lowerExtentOwnerNoOpPlan = planProfileUpdate(
-        lowerExtentOwnerCurrent, lowerExtentOwnerNext,
-        0, false, false, false, true, true
-    );
-    expect(lowerExtentOwnerNoOpPlan.decision.action ==
-                ProfileUpdateAction::NoRuntimeChange &&
-            lowerExtentOwnerNoOpPlan.decision.
-                spatialScalingEffectiveExtentUnchanged &&
-            !lowerExtentOwnerNoOpPlan.decision.spatialScalingDormantUpdate &&
-            !lowerExtentOwnerNoOpPlan.decision.swapchainRecreationDeferred &&
-            lowerExtentOwnerNoOpPlan.appliedProfile.scaling_factor == 2.0F,
-        "The allocation-free lower extent owner must commit the same factor no-op without recreation");
-
-    const auto permanentlyDormantFactorPlan = planProfileUpdate(
-        scalingCurrent, next, 3, true, false, false, false
-    );
-    expect(permanentlyDormantFactorPlan.decision.action ==
-            ProfileUpdateAction::NoRuntimeChange &&
-            permanentlyDormantFactorPlan.decision.spatialScalingDormantUpdate &&
-            !permanentlyDormantFactorPlan.decision.spatialScalingChanged &&
-            !permanentlyDormantFactorPlan.decision.swapchainRecreationDeferred &&
-            permanentlyDormantFactorPlan.appliedProfile.scaling_factor == 2.0F,
-        "A factor edit on an unproven split surface must remain dormant without recreating WSI");
-
     next = current;
-    next.scaling_enabled = true;
     next.frame_generation_enabled = false;
     next.flow_scale = 0.75F;
     next.performance_mode = true;
     decision = classifyProfileUpdate(current, next, 3, true);
     expect(decision.action == ProfileUpdateAction::ApplyLive &&
             decision.swapchainRecreationDeferred &&
-            decision.processRestartDeferred &&
-            decision.spatialScalingChanged &&
             decision.frameGenerationBackendChanged &&
             decision.frameGenerationChanged,
         "A combined resource and frame-generation update must apply the safe subset and retain every deferral");
@@ -2112,9 +1754,7 @@ int main() {
             fixedWithDormantFourX, adaptiveFourX, 3, true).action ==
             ProfileUpdateAction::ApplyLive,
         "Fixed-to-Adaptive 4x must apply when active capacity is available");
-    const auto privateCapacityPlan = planProfileUpdate(
-        fixedWithDormantFourX, adaptiveFourX, 2, true, false, true
-    );
+    const auto privateCapacityPlan = planProfileUpdate(fixedWithDormantFourX, adaptiveFourX, 2, true, true);
     expect(privateCapacityPlan.decision.action ==
                 ProfileUpdateAction::ApplyLive &&
             privateCapacityPlan.decision.frameGenerationPrivateRebuild &&
@@ -2127,10 +1767,7 @@ int main() {
     const bool privateCapacityFitsThreeImageSwapchain =
         generatedFrameCapacityForActivePolicy(adaptiveFourX) <=
             generatedFrameCapacitySupportedByExistingSwapchain(3, 3);
-    const auto wsiConstrainedCapacityPlan = planProfileUpdate(
-        fixedWithDormantFourX, adaptiveFourX, 2, true, false,
-        privateCapacityFitsThreeImageSwapchain
-    );
+    const auto wsiConstrainedCapacityPlan = planProfileUpdate(fixedWithDormantFourX, adaptiveFourX, 2, true, privateCapacityFitsThreeImageSwapchain);
     expect(wsiConstrainedCapacityPlan.decision.action ==
                 ProfileUpdateAction::DeferUntilSwapchainRecreation &&
             !wsiConstrainedCapacityPlan.decision.frameGenerationPrivateRebuild &&
@@ -2145,10 +1782,7 @@ int main() {
     const bool threeXCapacityFitsFiveImageSwapchain =
         generatedFrameCapacityForActivePolicy(adaptiveThreeX) <=
             generatedFrameCapacitySupportedByExistingSwapchain(3, 5);
-    const auto exactLiveGrowthRegressionPlan = planProfileUpdate(
-        adaptiveTwoX, adaptiveThreeX, 1, true, false,
-        threeXCapacityFitsFiveImageSwapchain
-    );
+    const auto exactLiveGrowthRegressionPlan = planProfileUpdate(adaptiveTwoX, adaptiveThreeX, 1, true, threeXCapacityFitsFiveImageSwapchain);
     expect(exactLiveGrowthRegressionPlan.decision.action ==
                 ProfileUpdateAction::ApplyLive &&
             exactLiveGrowthRegressionPlan.decision.generatedFrameCapacityExceeded &&
@@ -2162,10 +1796,7 @@ int main() {
     const bool fiveXCapacityFitsFiveImageSwapchain =
         generatedFrameCapacityForActivePolicy(adaptiveFiveX) <=
             generatedFrameCapacitySupportedByExistingSwapchain(3, 5);
-    const auto trueWsiGrowthBoundaryPlan = planProfileUpdate(
-        adaptiveThreeX, adaptiveFiveX, 2, true, false,
-        fiveXCapacityFitsFiveImageSwapchain
-    );
+    const auto trueWsiGrowthBoundaryPlan = planProfileUpdate(adaptiveThreeX, adaptiveFiveX, 2, true, fiveXCapacityFitsFiveImageSwapchain);
     expect(trueWsiGrowthBoundaryPlan.decision.action ==
                 ProfileUpdateAction::DeferUntilSwapchainRecreation &&
             trueWsiGrowthBoundaryPlan.decision.generatedFrameCapacityExceeded &&

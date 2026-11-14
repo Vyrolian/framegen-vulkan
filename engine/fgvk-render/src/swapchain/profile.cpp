@@ -162,39 +162,10 @@ ProfileUpdateDecision Swapchain::updateProfile(
         this->instance && resourcesAvailable &&
         this->colorPipeline.generationSupported &&
         generatedFrameCapacityGrowthFitsExistingSwapchain;
-    const bool spatialScalingEffectiveExtentUnchanged =
-        variableSurfaceFactorChangePreservesEffectiveExtents(
-            this->info.variableSurface,
-            !sameExtent(
-                this->info.applicationExtent,
-                this->info.extent
-            ),
-            this->info.applicationExtent,
-            this->info.extent,
-            this->profile.scaling_factor,
-            nextProfile.scaling_factor
-        );
-    const bool spatialSupersamplingEffectiveExtentUnchanged =
-        variableSurfaceSupersamplingChangePreservesEffectiveExtents(
-            this->info.variableSurface,
-            !sameExtent(
-                this->info.applicationExtent,
-                this->info.extent
-            ),
-            this->info.applicationExtent,
-            this->info.extent,
-            nextProfile.scaling_factor,
-            this->profile.scaling_supersampling,
-            nextProfile.scaling_supersampling,
-            this->info.gamescopePresentationTarget
-        );
     auto plan = planProfileUpdate(
         this->profile, nextProfile, this->destinationImages.size(),
-        resourcesAvailable, this->spatialScaler.has_value(),
+        resourcesAvailable,
         privateFrameGenerationRebuildAvailable,
-        this->info.spatialScalingActivationSupported,
-        spatialScalingEffectiveExtentUnchanged,
-        spatialSupersamplingEffectiveExtentUnchanged,
         this->gamescopeRefreshHz
     );
     auto decision = plan.decision;
@@ -244,45 +215,12 @@ ProfileUpdateDecision Swapchain::updateProfile(
         this->frameGenerationTransition.cancel();
         this->preparedFrameGenerationResources.reset();
     }
-    if (decision.spatialScalingLiveRebuild) {
-        const SpatialResourceRequest request{
-            .method = ls::effectiveScalingMethod(nextProfile),
-            .sharpness = nextProfile.scaling_sharpness,
-        };
-        if (this->spatialTransition.pendingRequest() &&
-                !(this->spatialTransition.value() == request)) {
-            this->preparedSpatialScaler.reset();
-        }
-        this->spatialTransition.request(
-            request, runtimeStateRevision,
-            spatialScalerRebuildQuietPeriod(this->profile, nextProfile)
-        );
-        if (present_diagnostics::enabled()) {
-            std::cerr << "framegen-vulkan: present diagnostics: "
-                         "operation=runtime-transition-pending"
-                      << " context=" << this->diagnosticsState.contextId
-                      << " state_revision=" << runtimeStateRevision
-                      << " reason=spatial-scaler"
-                      << " requested_method="
-                      << ls::scalingMethodName(
-                          request.method)
-                      << " requested_sharpness="
-                      << request.sharpness
-                      << " action=rebuild-private-scaler\n";
-        }
-    } else if (ls::effectiveScalingMethod(nextProfile) ==
-                ls::effectiveScalingMethod(this->profile) &&
-            nextProfile.scaling_sharpness == this->profile.scaling_sharpness) {
-        this->spatialTransition.cancel();
-        this->preparedSpatialScaler.reset();
-    }
     const bool liveRecreationAvailable =
         guardedLiveProfileResourceRecreationAvailable(
             decision,
             this->instance && resourcesAvailable &&
                 this->colorPipeline.generationSupported,
-            this->presentRetirementEnabled(), this->gamescopeDetected,
-            true
+            this->presentRetirementEnabled(), this->gamescopeDetected
         );
     this->liveProfileResourceRecreation.update(
         this->profile,
@@ -309,8 +247,6 @@ ProfileUpdateDecision Swapchain::updateProfile(
                   << " role=" << layerRoleName
                   << " state_revision=" << runtimeStateRevision
                   << " reason=profile-resources"
-                  << " spatial_scaling_pending="
-                  << decision.spatialScalingChanged
                   << " frame_generation_backend_pending="
                   << decision.frameGenerationBackendChanged
                   << " flow_scale_pending="
@@ -338,39 +274,6 @@ ProfileUpdateDecision Swapchain::updateProfile(
                   << '\n';
     };
     logPendingRecreation();
-    if (decision.spatialScalingDormantUpdate &&
-            present_diagnostics::enabled()) {
-        std::cerr << "framegen-vulkan: present diagnostics: "
-                     "operation=runtime-transition-applied"
-                  << " context=" << this->diagnosticsState.contextId
-                  << " role=" << layerRoleName
-                  << " state_revision=" << runtimeStateRevision
-                  << " reason=spatial-scaler"
-                  << " transition=dormant-profile"
-                  << " requested_method="
-                  << ls::scalingMethodName(
-                      ls::effectiveScalingMethod(nextProfile))
-                  << " requested_sharpness="
-                  << nextProfile.scaling_sharpness
-                  << " scaler_active=0"
-                  << " action=save-without-wsi-recreation\n";
-    }
-    if (decision.spatialScalingEffectiveExtentUnchanged &&
-            present_diagnostics::enabled()) {
-        std::cerr << "framegen-vulkan: present diagnostics: "
-                     "operation=runtime-transition-applied"
-                  << " context=" << this->diagnosticsState.contextId
-                  << " role=" << layerRoleName
-                  << " state_revision=" << runtimeStateRevision
-                  << " reason=spatial-factor"
-                  << " transition=effective-extent-no-op"
-                  << " requested_factor=" << nextProfile.scaling_factor
-                  << " source=" << this->info.applicationExtent.width
-                  << 'x' << this->info.applicationExtent.height
-                  << " presentation=" << this->info.extent.width
-                  << 'x' << this->info.extent.height
-                  << " action=retain-swapchain-and-private-resources\n";
-    }
     this->runtimeStatusState.swapchainRecreationPending =
         decision.swapchainRecreationDeferred;
 
@@ -625,45 +528,6 @@ bool Swapchain::requestLiveProfileResourceRecreationAfterPresent(
     return true;
 }
 
-bool Swapchain::requestSpatialScalingAdmissionRetryAfterPresent(
-        const VkResult lowerPresentResult,
-        const bool surfaceRequestAvailable) {
-    const auto now = DiagnosticsClock::now();
-    if (!surfaceRequestAvailable ||
-            !this->info.spatialScalingAdmissionRetryEligible ||
-            this->spatialScalingAdmissionRetrySignaled ||
-            !this->spatialScalingAdmissionRetryAfter ||
-            now < *this->spatialScalingAdmissionRetryAfter ||
-            this->spatialScaler ||
-            !ls::spatialScalingRequested(this->profile) ||
-            this->info.spatialScalingInactiveReason !=
-                SpatialScalingInactiveReason::VariableSurfaceMemoryBudget ||
-            (lowerPresentResult != VK_SUCCESS &&
-             lowerPresentResult != VK_SUBOPTIMAL_KHR) ||
-            !this->lastLowerPresentRetirementProtected) {
-        return false;
-    }
-
-    this->spatialScalingAdmissionRetrySignaled = true;
-    std::cerr << "framegen-vulkan: transient scaling memory admission "
-                 "requested one game-owned swapchain recreation after the "
-                 "retired context's budget estimate settled\n";
-    if (present_diagnostics::enabled()) {
-        std::cerr << "framegen-vulkan: present diagnostics: "
-                     "operation=spatial-scaling-admission-retry-requested"
-                  << " context=" << this->diagnosticsState.contextId
-                  << " source=" << this->info.applicationExtent.width
-                  << 'x' << this->info.applicationExtent.height
-                  << " policy_revision="
-                  << this->info.spatialScalingPolicyRevision
-                  << " reason=transient-replacement-memory-budget"
-                  << " lower_present_result=" << lowerPresentResult
-                  << " signal=VK_ERROR_OUT_OF_DATE_KHR"
-                  << " delivery=one-shot-per-source-policy-episode-after-retirement-fence-attachment\n";
-    }
-    return true;
-}
-
 bool Swapchain::requestOrderedAcquireRecreationAfterPresent(
         const VkResult lowerPresentResult,
         const bool surfaceRequestAvailable) {
@@ -671,10 +535,6 @@ bool Swapchain::requestOrderedAcquireRecreationAfterPresent(
             !this->privateOrderedTransport ||
             !effectiveFrameGenerationEnabled(
                 this->profile, this->gamescopeRefreshHz
-            ) ||
-            !automaticRecoveryRecreationAllowed(
-                this->spatialScaler.has_value(), true,
-                this->info.spatialScalingMemoryConstrained
             ) ||
             (lowerPresentResult != VK_SUCCESS &&
              lowerPresentResult != VK_SUBOPTIMAL_KHR) ||

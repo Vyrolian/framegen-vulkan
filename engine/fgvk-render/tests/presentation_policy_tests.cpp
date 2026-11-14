@@ -2363,21 +2363,6 @@ int main() {
             preacquiredImagesRequireRetirement(true, 1),
         "pre-acquired image retirement lost its ownership contract");
 
-    ScalingAdmissionRetrySurfaceBudget scalingRetryBudget;
-    const ScalingAdmissionRetryKey firstScalingEpisode{1920, 1080, 7};
-    const ScalingAdmissionRetryKey changedSourceEpisode{2560, 1440, 7};
-    const ScalingAdmissionRetryKey changedPolicyEpisode{2560, 1440, 8};
-    expect(scalingRetryBudget.available(firstScalingEpisode),
-        "fresh scaling admission episode did not allow one retry");
-    scalingRetryBudget.record(firstScalingEpisode);
-    expect(!scalingRetryBudget.available(firstScalingEpisode) &&
-            scalingRetryBudget.available(changedSourceEpisode),
-        "scaling admission retry looped or failed to reset for a new source");
-    scalingRetryBudget.record(changedSourceEpisode);
-    expect(!scalingRetryBudget.available(changedSourceEpisode) &&
-            scalingRetryBudget.available(changedPolicyEpisode),
-        "scaling admission retry did not distinguish a new policy revision");
-
     RealFramePacer framePacer;
     const auto pacingStart = RealFramePacer::TimePoint{};
     expect(framePacer.schedule(pacingStart, 60) == pacingStart,
@@ -2723,12 +2708,6 @@ int main() {
             warmupFrameStarted, warmupRecoveryCompleted, true) ==
             warmupFrameStarted,
         "event recovery included private work in resumed gameplay cadence");
-
-    expect(automaticRecoveryRecreationAllowed(false) &&
-            !automaticRecoveryRecreationAllowed(true) &&
-            automaticRecoveryRecreationAllowed(true, true) &&
-            !automaticRecoveryRecreationAllowed(true, true, true),
-        "staged recovery recreation crossed the combined spatial-scaling safety boundary");
 
     FixedRefreshBudget budget;
     const auto start = FixedRefreshBudget::TimePoint{};

@@ -1,3 +1,8 @@
+## Unreleased: spatial scaling removed
+
+- The renderer no longer contains spatial scaling, the LS1 and framegen-vulkan Scaler paths, or the Gamescope scaling bridge.
+- `scaling_enabled` is ignored. When the active profile sets it, the renderer prints `framegen-vulkan: spatial scaling was removed; scaling_enabled is ignored` once per process.
+
 ## What's new in MAKO Renderer v4.6.0
 
 <img src="https://raw.githubusercontent.com/eugeniosegala/MAKO/refs/heads/main/assets/tempest.png" alt="Tempest release artwork: the blue-and-white MAKO shark circles a ruined temple where a sea god raises his trident, surrounded by battling ships and a vast whirlpool beneath golden storm light, in a Renaissance painting with pixel-art textures" width="100%">

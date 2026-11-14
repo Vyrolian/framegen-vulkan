@@ -10,7 +10,6 @@
 #include "gamescope_feedback.hpp"
 #include "runtime_transition.hpp"
 #include "runtime_health.hpp"
-#include "spatial_scaling_policy.hpp"
 #include "swapchain/swapchain.hpp"
 
 #include <atomic>
@@ -43,20 +42,8 @@ namespace fgvk::layer {
         std::optional<VkPresentModeKHR> gamescopeProtocolPresentMode;
         uint32_t gamescopePresentRefreshHz{0};
         bool swapchainImageCountCompatibility{false};
-        bool spatialScalingActive{false};
-        bool variableSurface{false};
-        bool variableFeedbackSuppressed{false};
-        bool retainVariableSurfaceProof{false};
-        bool retainVariableSurfacePresentationProof{false};
-        bool spatialScalingMemoryConstrained{false};
-        bool spatialScalingAdmissionRetryEligible{false};
-        uint64_t spatialScalingPolicyRevision{0};
-        SpatialScalingInactiveReason spatialScalingInactiveReason{
-            SpatialScalingInactiveReason::None
-        };
         VkExtent2D applicationExtent{};
         VkExtent2D presentationExtent{};
-        std::optional<VkExtent2D> gamescopePresentationTarget;
     };
 
     /// Root context of the framegen-vulkan layer.
@@ -76,20 +63,6 @@ namespace fgvk::layer {
         [[nodiscard]] bool frameGenerationInteropProvisioned() const {
             return this->frameGenerationInteropProvisionedAtStartup;
         }
-        /// Whether this process started with the Scaling Engine lane. Native
-        /// Resolution is still provisioned: a later live scaler selection
-        /// needs the same compute-capable application queue as an initially
-        /// active scaler.
-        [[nodiscard]] bool scalingEngineProvisioned() const {
-            return this->active_profile && this->active_profile->scaling_enabled;
-        }
-
-        [[nodiscard]] bool scalingSurfaceConnectionProvisioned() const {
-            return this->active_profile && this->scalingEngineConfiguredAtStartup &&
-                this->scalingEngineProvisioned() &&
-                this->presentationEnvironment.gamescopeWsiDisabled;
-        }
-
         [[nodiscard]] bool gamescopeWsiTimingProvisioned() const {
             return this->frameGenerationInteropProvisioned() &&
                 this->gamescopeDetected &&
@@ -127,20 +100,7 @@ namespace fgvk::layer {
         /// @param finish function to call after modification
         [[nodiscard]] SwapchainCreateModification modifySwapchainCreateInfo(
             const vk::Vulkan& vk, VkSwapchainCreateInfoKHR& createInfo,
-            const std::optional<SpatialScalingExtents>&
-                previousVariableExtents,
-            const std::optional<SpatialScalingExtents>&
-                variableSurfaceRollbackExtents,
-            const std::optional<FixedSurfaceScalingContract>&
-                fixedSurfaceContract,
-            bool spatialSurfaceScalingSupported,
-            bool gamescopeScalingSurface,
             const std::function<void(void)>& finish) const;
-        /// Replace a fixed native surface extent with the configured source
-        /// extent after the lower driver has populated the capabilities.
-        [[nodiscard]] std::optional<SpatialScalingCapabilitySelection>
-        modifySurfaceCapabilities(
-            VkSurfaceCapabilitiesKHR& capabilities) const;
         /// create swapchain context
         /// @param vk vulkan instance
         /// @param swapchain swapchain handle
@@ -176,15 +136,11 @@ namespace fgvk::layer {
     private:
         void startRuntimeHealth(const vk::Vulkan& vk) noexcept;
         std::shared_ptr<present_diagnostics::GpuLoadMonitor> gpuLoadForDevice(const vk::Vulkan& vk) noexcept;
-        void publishSurfaceScalingPolicy() noexcept;
-        [[nodiscard]] SpatialScalingPolicySnapshot
-        surfaceScalingPolicySnapshot() const noexcept;
 
         ls::WatchedConfig config;
         std::optional<ls::GameConf> active_profile;
         bool frameGenerationInteropProvisionedAtStartup{false};
         bool fp16AtStartup{true};
-        bool scalingEngineConfiguredAtStartup{false};
         bool swapchainImageCountCompatibilityConfiguredAtStartup{false};
 
         ls::lazy<backend::Instance> backend;
@@ -196,7 +152,6 @@ namespace fgvk::layer {
         GamescopeFeedbackReader gamescopeFeedbackReader;
         GamescopeFocusFeedback gamescopeFocus;
         bool gamescopeDetected{false};
-        std::optional<VkExtent2D> gamescopePresentationTarget;
         std::optional<uint32_t> gamescopeRefreshHz;
         GamescopePresentationFeedback gamescopePresentationFeedback;
         std::optional<uint32_t> lastGamescopeRefreshHz;
@@ -204,12 +159,6 @@ namespace fgvk::layer {
         std::optional<std::chrono::steady_clock::time_point> lastGamescopeFeedbackPoll;
         std::optional<std::chrono::steady_clock::time_point> lastConfigurationPoll;
         uint64_t runtimeStateRevision{1};
-        // A seqlock publishes packed flags + IEEE-754 factor as one coherent
-        // policy snapshot. The even sequence divided by two is the revision
-        // consumed by fixed-surface capability/create contracts.
-        std::mutex surfaceScalingPolicyPublishMutex;
-        std::atomic<uint64_t> surfaceScalingPolicySequence{0};
-        std::atomic<uint64_t> surfaceScalingPolicy{0};
         struct GpuLoadDevice {
             std::shared_ptr<const vk::DeviceMemoryAccounting> accounting;
             std::shared_ptr<present_diagnostics::GpuLoadMonitor> monitor;

@@ -23,9 +23,6 @@
 #include "runtime_status.hpp"
 #include "runtime_health.hpp"
 #include "runtime_transition.hpp"
-#include "spatial_scaler.hpp"
-#include "spatial_scaling_policy.hpp"
-#include "spatial_command_recording.hpp"
 #include "present_timing.hpp"
 #include "swapchain/deferred_present.hpp"
 #include "swapchain/internal_images.hpp"
@@ -48,10 +45,33 @@
 
 namespace fgvk::layer {
 
-    class GamescopeScalingSurface;
     class WaylandPresentationFeedback;
     class FrameContentCapture;
     struct InternalPresentImage;
+
+    /// WSI family that created the application's surface. Diagnostics report it
+    /// in the pacing profile.
+    enum class SpatialSurfaceOrigin {
+        Unknown,
+        Wayland,
+        Xcb,
+        Xlib,
+    };
+
+    [[nodiscard]] constexpr const char* spatialSurfaceOriginName(
+            const SpatialSurfaceOrigin origin) noexcept {
+        switch (origin) {
+            case SpatialSurfaceOrigin::Unknown:
+                return "unknown";
+            case SpatialSurfaceOrigin::Wayland:
+                return "wayland";
+            case SpatialSurfaceOrigin::Xcb:
+                return "xcb";
+            case SpatialSurfaceOrigin::Xlib:
+                return "xlib";
+        }
+        return "unknown";
+    }
 
     /// swapchain info struct
     struct SwapchainInfo {
@@ -60,9 +80,6 @@ namespace fgvk::layer {
         SpatialSurfaceOrigin surfaceOrigin{SpatialSurfaceOrigin::Unknown};
         std::shared_ptr<WaylandPresentationFeedback> waylandPresentation;
         std::shared_ptr<DeferredPresentQueue> deferredPresentQueue;
-        // Borrowed from the instance owner, whose surface and connection
-        // outlive Vulkan swapchain retirement. Null for ordinary/WSI surfaces.
-        GamescopeScalingSurface* gamescopeScalingSurface{nullptr};
         // Enabled only when the lower chain advertises display timing and the
         // application has not selected its own timing-feedback namespace.
         bool gamescopeDisplayTiming{false};
@@ -91,13 +108,9 @@ namespace fgvk::layer {
         // lineage explicitly so retirement and replacement stabilization keep
         // the game's ownership boundary.
         bool applicationOldSwapchainProvided{false};
-        // Extent the application requested after framegen-vulkan virtualized fixed WSI
-        // capabilities. The actual swapchain images retain `extent`.
+        // Extent the application requested. The actual swapchain images retain `extent`.
         VkExtent2D applicationExtent;
         VkExtent2D extent;
-        // Proven Gamescope output geometry used to cap ordinary scaling and
-        // to expose the live non-supersampling slider ceiling.
-        std::optional<VkExtent2D> gamescopePresentationTarget;
         // Preserve the incoming application's or upper layer's request before
         // framegen-vulkan selects its immutable lower/compositor transport contract.
         VkPresentModeKHR incomingPresentMode{VK_PRESENT_MODE_FIFO_KHR};
@@ -105,31 +118,6 @@ namespace fgvk::layer {
         // Persist the create-time transport decision; present-mode compatibility
         // cannot change without replacing the game-owned swapchain.
         bool privateOrderedTransport{false};
-        bool spatialScalingActive{false};
-        // Variable WSI surfaces retain the source extent and select a larger
-        // lower presentation envelope. Factor edits which remain above an
-        // already active ceiling can therefore be applied without replacing
-        // the game-owned swapchain.
-        bool variableSurface{false};
-        // True when scaling remains active at a lower effective factor because
-        // the requested presentation extent exceeded the create-time memory
-        // admission envelope.
-        bool spatialScalingMemoryConstrained{false};
-        // A replacement resolution change was rejected only by live memory
-        // admission while remaining inside the previous scaled envelope.
-        // One delayed, surface-budgeted retry may re-sample the driver.
-        bool spatialScalingAdmissionRetryEligible{false};
-        uint64_t spatialScalingPolicyRevision{0};
-        // Exact create-time reason for retaining native geometry. Keep this
-        // independent from activation support: memory and output-headroom
-        // guards are actionable on an otherwise supported surface.
-        SpatialScalingInactiveReason spatialScalingInactiveReason{
-            SpatialScalingInactiveReason::None
-        };
-        // False only when the lower split role proved that Gamescope WSI did
-        // not own this surface. No live factor can make that surface safe, so
-        // scaler choices remain dormant until a natural surface boundary.
-        bool spatialScalingActivationSupported{true};
         // The upper WSI either supplied a live oldSwapchain handle or framegen-vulkan
         // completed retirement of the exact retained lower handle before a
         // null-old destroy-before-create replacement. This is a known
@@ -148,7 +136,6 @@ namespace fgvk::layer {
         VkSwapchainCreateInfoKHR& createInfo,
         bool gamescopeDetected,
         bool frameGenerationInteropEnabled,
-        bool spatialScalingActive,
         uint32_t surfaceMinImages = 0);
 
     /// swapchain context for a layer instance
@@ -156,13 +143,11 @@ namespace fgvk::layer {
     public:
         /// create a new swapchain context
         /// @param vk vulkan instance
-        /// @param backend optional framegen-vulkan frame-generation backend; scaling is
-        /// independent and remains available when this is null
+        /// @param backend optional framegen-vulkan frame-generation backend
         /// @param profile active game profile
         /// @param info swapchain info
         Swapchain(const vk::Vulkan& vk, backend::Instance* backend,
             ls::GameConf profile, SwapchainInfo info,
-            std::optional<std::filesystem::path> scalingShaderDll,
             bool fp16Requested,
             bool gamescopeDetected,
             std::optional<uint32_t> gamescopeRefreshHz,
@@ -237,18 +222,8 @@ namespace fgvk::layer {
         [[nodiscard]] uint64_t diagnosticsId() const {
             return this->diagnosticsState.contextId;
         }
-        [[nodiscard]] bool spatialScalingActive() const {
-            return this->spatialScaler.has_value();
-        }
         [[nodiscard]] VkExtent2D frameGenerationResourceExtent() const {
-            return frameGenerationExtent(
-                this->spatialFramePipelinePlacement,
-                this->info.applicationExtent, this->info.extent
-            );
-        }
-        [[nodiscard]] SpatialFramePipelinePlacement
-        framePipelinePlacement() const {
-            return this->spatialFramePipelinePlacement;
+            return this->info.extent;
         }
         /// Profile currently applied to this context, read by the F5 internal-image gate.
         [[nodiscard]] const ls::GameConf& appliedProfile() const {
@@ -260,12 +235,11 @@ namespace fgvk::layer {
         }
 
         /// Apply configuration that is safe for an already-created context.
-        /// Spatial model and sharpness changes rebuild framegen-vulkan's private scaler
-        /// at the next presentation boundary. The lower managed spatial role
-        /// may request one game-owned recreation for an extent change after a
-        /// retirement-fenced present; unsupported resource-shape changes wait
-        /// for a natural recreation. Process-wide backend changes wait for
-        /// restart. The decision reports every applied and pending boundary.
+        /// Flow Scale and model changes rebuild framegen-vulkan's private
+        /// frame-generation context at the next presentation boundary.
+        /// Unsupported resource-shape changes wait for a natural recreation.
+        /// Process-wide backend changes wait for restart. The decision reports
+        /// every applied and pending boundary.
         [[nodiscard]] ProfileUpdateDecision updateProfile(
             const ls::GameConf& profile, uint64_t runtimeStateRevision,
             const ls::GameConf* requestedProfile = nullptr,
@@ -277,11 +251,6 @@ namespace fgvk::layer {
         /// owner of destruction and recreation.
         [[nodiscard]] bool requestLiveProfileResourceRecreationAfterPresent(
             VkResult lowerPresentResult);
-
-        /// Re-sample a transient live-memory rejection once after a bounded
-        /// settling period. The entrypoint owns the per-surface episode budget.
-        [[nodiscard]] bool requestSpatialScalingAdmissionRetryAfterPresent(
-            VkResult lowerPresentResult, bool surfaceRequestAvailable);
 
         /// Escalate persistent generated-image starvation after a confirmed
         /// menu return. This is shared by Fixed and Adaptive policies.
@@ -321,10 +290,6 @@ namespace fgvk::layer {
         uint64_t lastFocusReturnSequence{0};
         std::optional<bool> lastReportedGameFocus;
         bool focusReported{false};
-        // Shared construction/replacement support; no independent resource owner.
-        [[nodiscard]] static bool directSpatialFrameGenerationOutputSupported(
-            const vk::Vulkan& vk, VkFormat format,
-            SpatialFramePipelinePlacement placement, bool spatialScalingActive);
         struct PresentInvocation {
             const vk::Vulkan& vk;
             VkQueue queue;
@@ -430,18 +395,6 @@ namespace fgvk::layer {
                 applicationPresentMode;
         };
 
-        struct SpatialResourceRequest {
-            ls::ScalingMethod method{ls::ScalingMethod::Native};
-            float sharpness{0.5F};
-
-            friend bool operator==(
-                    const SpatialResourceRequest& left,
-                    const SpatialResourceRequest& right) {
-                return left.method == right.method &&
-                    left.sharpness == right.sharpness;
-            }
-        };
-
         struct FrameGenerationResourceRequest {
             ls::GameConf profile;
 
@@ -524,19 +477,6 @@ namespace fgvk::layer {
         // inter-copy dependency indexed by sequence ring, never presented.
         std::vector<std::pair<vk::Semaphore, vk::Semaphore>> postCopySemaphores;
 
-        struct SpatialScalingPass {
-            vk::CommandBuffer commandBuffer;
-            vk::Semaphore readySemaphore;
-            vk::Fence completionFence;
-            bool completionInFlight{false};
-            SpatialCommandRecording recording;
-        };
-        std::optional<SpatialScaler> spatialScaler;
-        std::vector<SpatialScalingPass> spatialScalingPasses;
-        SpatialFramePipelinePlacement spatialFramePipelinePlacement{
-            SpatialFramePipelinePlacement::PreFrameGeneration
-        };
-
         struct PresentRetirementFence {
             vk::Fence fence;
             bool associated{false};
@@ -563,8 +503,6 @@ namespace fgvk::layer {
         bool splitRenderUnavailable{};
         std::array<present_diagnostics::SplitRenderHalf, 8> splitRenderHalves{};
         size_t splitRenderHalfNext{};
-        PrivateResourceTransition<SpatialResourceRequest> spatialTransition;
-        std::optional<SpatialScaler> preparedSpatialScaler;
         PrivateResourceTransition<FrameGenerationResourceRequest>
             frameGenerationTransition;
         std::optional<FrameGenerationResources>
@@ -572,9 +510,6 @@ namespace fgvk::layer {
         RuntimeStatusPublisher runtimeStatusPublisher;
         RuntimeStatusState runtimeStatusState;
         LiveProfileResourceRecreation liveProfileResourceRecreation;
-        std::optional<std::chrono::steady_clock::time_point>
-            spatialScalingAdmissionRetryAfter;
-        bool spatialScalingAdmissionRetrySignaled{false};
         std::optional<AdaptiveScheduler> adaptiveScheduler;
         // A partial native-first acquisition proves that this exact ordered
         // WSI context cannot reliably deliver its larger automatic batch.
@@ -645,35 +580,16 @@ namespace fgvk::layer {
         std::optional<std::chrono::steady_clock::time_point> deferredPresentDeadline;
         // Set only for the duration of a present() that was given an internal image.
         InternalPresentImage* internalPresent{nullptr};
-        bool internalScalingWaitLogged{false};
         SmoothCadenceBaseCap smoothCadenceBaseCap;
         SmoothCadencePacerHandoff smoothCadencePacerHandoff;
-        // A null-old replacement loses the driver's explicit WSI lineage.
-        // Consume this exactly once before any private spatial submission.
-        bool replacementWsiPrimePending{false};
 
         SwapchainColorPipeline colorPipeline;
-        std::optional<std::filesystem::path> scalingShaderDll;
         bool fp16Requested{true};
         ls::GameConf profile;
         SwapchainInfo info;
 
         [[nodiscard]] bool applyPendingFrameGenerationResources(
             const vk::Vulkan& vk);
-        void applyPendingSpatialScaler(const vk::Vulkan& vk);
-        void prepareSpatialScalingPass(const vk::Vulkan& vk,
-            SpatialScalingPass& pass);
-        void recordSpatialScalingPass(const vk::Vulkan& vk,
-            SpatialScalingPass& pass, VkImage applicationImage,
-            VkImage frameGenerationSource = VK_NULL_HANDLE);
-        void invalidateSpatialScalingRecordings() noexcept;
-        [[nodiscard]] bool spatialScalingPassesReady(
-            const vk::Vulkan& vk);
-        void configureDirectSpatialFrameGenerationOutputs(
-            const vk::Vulkan& vk, SpatialScaler& scaler,
-            std::span<const vk::Image> outputs,
-            std::string_view reason) noexcept;
-        void clearDirectSpatialFrameGenerationOutputs() noexcept;
         void publishRuntimeStatus(std::string_view reason) noexcept;
         [[nodiscard]] static std::optional<uint64_t>
             generatedImageAcquireTimeoutNs();
@@ -698,8 +614,6 @@ namespace fgvk::layer {
         [[nodiscard]] VkResult presentDirectApplicationFrame(
             const PresentInvocation& invocation,
             std::string_view healthSource = "native");
-        [[nodiscard]] VkResult presentSpatiallyScaledFrame(
-            const PresentInvocation& invocation);
         [[nodiscard]] VkResult presentOriginalImage(
             const PresentInvocation& invocation, VkSemaphore waitSemaphore,
             const void* nextChain,

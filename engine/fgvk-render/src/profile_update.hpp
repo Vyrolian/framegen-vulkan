@@ -35,10 +35,6 @@ namespace fgvk::layer {
         bool baseFpsCapChanged{false};
         bool gpuHeadroomChanged{false};
         bool dynamicCadenceProbeIntervalChanged{false};
-        bool spatialScalingChanged{false};
-        bool spatialScalingDormantUpdate{false};
-        bool spatialScalingEffectiveExtentUnchanged{false};
-        bool spatialScalingLiveRebuild{false};
         bool frameGenerationBackendChanged{false};
         bool generatedFrameCapacityExceeded{false};
         bool frameGenerationPrivateRebuild{false};
@@ -95,29 +91,17 @@ namespace fgvk::layer {
             decision.baseFpsCapChanged || decision.gpuHeadroomChanged;
     }
 
-    [[nodiscard]] inline std::chrono::milliseconds
-    spatialScalerRebuildQuietPeriod(
-            const ls::GameConf& current,
-            const ls::GameConf& requested) noexcept {
-        if (ls::effectiveScalingMethod(current) !=
-                ls::effectiveScalingMethod(requested))
-            return std::chrono::milliseconds::zero();
-        return std::chrono::milliseconds(500);
-    }
-
     struct ProcessStaticProfileProjection {
         ls::GameConf runtimeProfile;
         bool gpuSelectionPending{false};
         bool frameGenerationProvisioningPending{false};
         bool ultraPerformancePending{false};
-        bool scalingEnginePending{false};
         bool swapchainImageCountCompatibilityPending{false};
 
         [[nodiscard]] bool restartRequired() const {
             return this->gpuSelectionPending ||
                 this->frameGenerationProvisioningPending ||
                 this->ultraPerformancePending ||
-                this->scalingEnginePending ||
                 this->swapchainImageCountCompatibilityPending;
         }
     };
@@ -130,7 +114,6 @@ namespace fgvk::layer {
             const ls::GameConf& current,
             const ls::GameConf& requested,
             const bool frameGenerationProvisionedAtStartup,
-            const bool scalingEngineConfiguredAtStartup,
             const bool swapchainImageCountCompatibilityConfiguredAtStartup) {
         ProcessStaticProfileProjection projection{
             .runtimeProfile = requested,
@@ -140,8 +123,6 @@ namespace fgvk::layer {
                     frameGenerationProvisionedAtStartup,
             .ultraPerformancePending = requested.ultra_performance !=
                 current.ultra_performance,
-            .scalingEnginePending = requested.scaling_enabled !=
-                scalingEngineConfiguredAtStartup,
             .swapchainImageCountCompatibilityPending =
                 requested.swapchain_image_count_compatibility !=
                     swapchainImageCountCompatibilityConfiguredAtStartup,
@@ -159,10 +140,6 @@ namespace fgvk::layer {
             projection.runtimeProfile.performance_mode =
                 current.performance_mode;
         }
-        if (projection.scalingEnginePending) {
-            projection.runtimeProfile.scaling_enabled =
-                scalingEngineConfiguredAtStartup;
-        }
         if (projection.swapchainImageCountCompatibilityPending) {
             projection.runtimeProfile.swapchain_image_count_compatibility =
                 swapchainImageCountCompatibilityConfiguredAtStartup;
@@ -174,9 +151,7 @@ namespace fgvk::layer {
     /// policy. Initial construction may reserve more for the inactive policy,
     /// but the active requirement is the boundary used for live updates. A
     /// context with Frame Generation Off has no active generated-output
-    /// requirement. This is important for the isolated spatial role: it
-    /// deliberately receives a Frame-Generation-Off profile and must never
-    /// report an impossible generated-image-capacity transition of its own.
+    /// requirement.
     [[nodiscard]] inline size_t generatedFrameCapacityForActivePolicy(
             const ls::GameConf& profile) {
         if (!profile.frame_generation_provisioned ||
@@ -189,11 +164,6 @@ namespace fgvk::layer {
     }
 
     struct RecreatedProfileResourceKey {
-        bool scalingEnabled{false};
-        ls::ScalingMethod scalingMethod{ls::ScalingMethod::Native};
-        float scalingFactor{1.0F};
-        bool scalingSupersampling{false};
-        float scalingSharpness{0.5F};
         float effectiveFlowScale{ls::GameConfDefaults::flowScale};
         bool effectivePerformanceMode{false};
         size_t requiredGeneratedFrameCapacity{0};
@@ -205,17 +175,7 @@ namespace fgvk::layer {
 
     [[nodiscard]] inline RecreatedProfileResourceKey recreatedProfileResourceKey(
             const ls::GameConf& profile) {
-        const bool scalingActive = ls::spatialScalingRequested(profile);
         return {
-            .scalingEnabled = scalingActive,
-            .scalingMethod = scalingActive
-                ? ls::effectiveScalingMethod(profile)
-                : ls::ScalingMethod::Native,
-            .scalingFactor = scalingActive ? profile.scaling_factor : 1.0F,
-            .scalingSupersampling = scalingActive
-                ? profile.scaling_supersampling : false,
-            .scalingSharpness = scalingActive
-                ? profile.scaling_sharpness : 0.5F,
             .effectiveFlowScale = ls::effectiveFlowScale(profile),
             .effectivePerformanceMode = ls::effectivePerformanceMode(profile),
             .requiredGeneratedFrameCapacity =
@@ -223,25 +183,15 @@ namespace fgvk::layer {
         };
     }
 
-    /// Discrete scaler topology selections are complete user actions rather
-    /// than continuous controls. Let the next successful present apply them
-    /// immediately so a short return to gameplay cannot be overtaken by the
-    /// next profile edit. Numeric resource controls retain a quiet period
-    /// to coalesce slider movement and avoid recreation storms.
+    /// Numeric resource controls retain a quiet period to coalesce slider
+    /// movement and avoid recreation storms.
     [[nodiscard]] inline std::chrono::milliseconds
-    recreatedProfileResourceQuietPeriod(
-            const RecreatedProfileResourceKey& current,
-            const RecreatedProfileResourceKey& requested) noexcept {
-        if (current.scalingEnabled != requested.scalingEnabled ||
-                current.scalingMethod != requested.scalingMethod ||
-                current.scalingSupersampling !=
-                    requested.scalingSupersampling)
-            return std::chrono::milliseconds::zero();
+    recreatedProfileResourceQuietPeriod() noexcept {
         return std::chrono::milliseconds(500);
     }
 
-    /// Scaling dimensions and frame-generation context construction cannot be
-    /// mutated while a swapchain is active. Arm one spec-defined OUT_OF_DATE
+    /// Frame-generation context construction cannot be mutated while a
+    /// swapchain is active. Arm one spec-defined OUT_OF_DATE
     /// signal after the final lower present has accepted framegen-vulkan's maintenance1
     /// retirement fence. Repeated polls of the same requested resources do not
     /// signal again, while a distinct request receives one fresh signal.
@@ -265,9 +215,7 @@ namespace fgvk::layer {
             this->request = Request{
                 .profile = requestedKey,
                 .runtimeStateRevision = runtimeStateRevision,
-                .signalAfter = now + recreatedProfileResourceQuietPeriod(
-                    currentKey, requestedKey
-                ),
+                .signalAfter = now + recreatedProfileResourceQuietPeriod(),
             };
         }
 
@@ -298,41 +246,34 @@ namespace fgvk::layer {
         std::optional<Request> request;
     };
 
-    /// Spatial resources can always be retried during application swapchain
-    /// creation. Flow Scale and Lighter FG Model require the process to have
+    /// Flow Scale and Lighter FG Model require the process to have
     /// retained its frame-generation device interop and private context.
     [[nodiscard]] inline bool liveProfileResourceRecreationAvailable(
             const ProfileUpdateDecision& decision,
             const bool frameGenerationResourcesAvailable) {
         if (decision.processRestartDeferred)
             return false;
-        return (decision.spatialScalingChanged &&
-                !decision.spatialScalingLiveRebuild) ||
-            ((decision.frameGenerationBackendChanged ||
+        return (decision.frameGenerationBackendChanged ||
               decision.generatedFrameCapacityExceeded) &&
              !decision.frameGenerationPrivateRebuild &&
-             frameGenerationResourcesAvailable);
+             frameGenerationResourcesAvailable;
     }
 
     /// A recreation request is safe only when the resource owner's final
     /// present is protected by swapchain-maintenance1 retirement proof.
-    /// Managed Gamescope may use that path only for the role that owns the
-    /// active scaler's extent change; frame-generation-only resource changes
-    /// remain private-context transitions.
+    /// Gamescope-detected contexts never use that path.
     [[nodiscard]] inline bool guardedLiveProfileResourceRecreationAvailable(
             const ProfileUpdateDecision& decision,
             const bool frameGenerationResourcesAvailable,
             const bool presentRetirementEnabled,
-            const bool gamescopeDetected,
-            const bool spatialResourceOwner) {
+            const bool gamescopeDetected) {
         if (!presentRetirementEnabled ||
                 !liveProfileResourceRecreationAvailable(
                     decision, frameGenerationResourcesAvailable
                 )) {
             return false;
         }
-        return !gamescopeDetected ||
-            (spatialResourceOwner && decision.spatialScalingChanged);
+        return !gamescopeDetected;
     }
 
     /// A natural swapchain recreation reuses Root's process-wide backend. Keep
@@ -870,19 +811,14 @@ namespace fgvk::layer {
             const ls::GameConf& current, const ls::GameConf& next,
             const size_t generatedFrameCapacity,
             const bool frameGenerationResourcesAvailable,
-            const bool spatialScalerActive = false,
             const bool frameGenerationPrivateRebuildAvailable = false,
-            const bool spatialScalingActivationSupported = true,
-            const bool spatialScalingEffectiveExtentUnchanged = false,
-            const bool spatialSupersamplingEffectiveExtentUnchanged = false,
             const std::optional<uint32_t> displayRefreshHz = std::nullopt) {
         ls::GameConf applied = next;
         bool swapchainRecreationDeferred = false;
         bool processRestartDeferred = false;
 
-        // GPU, Frame Generation provisioning, Ultra Performance, and Scaling
-        // Engine participate in
-        // process-wide backend or Vulkan-layer construction. A natural
+        // GPU, Frame Generation provisioning, and Ultra Performance participate
+        // in process-wide backend or Vulkan-layer construction. A natural
         // application swapchain recreation reuses those process owners and
         // therefore cannot satisfy any of these changes.
         if (current.gpu != next.gpu) {
@@ -901,10 +837,6 @@ namespace fgvk::layer {
             applied.performance_mode = current.performance_mode;
             processRestartDeferred = true;
         }
-        if (current.scaling_enabled != next.scaling_enabled) {
-            applied.scaling_enabled = current.scaling_enabled;
-            processRestartDeferred = true;
-        }
 
         const bool frameGenerationBackendChanged =
             (current.ultra_performance == next.ultra_performance && (
@@ -920,60 +852,10 @@ namespace fgvk::layer {
             !processRestartDeferred &&
             (frameGenerationBackendChanged || generatedCapacityExceeded);
 
-        // Scaler selection/tuning, Flow Scale, and model selection shape
-        // private resources, while pacing shapes the game-owned swapchain.
-        // They remain at their actually applied values until recreation
-        // completes inside an already compatible process.
-        const bool scalingMethodChanged =
-            ls::effectiveScalingMethod(current) !=
-                ls::effectiveScalingMethod(applied);
-        const bool scalingFactorChanged =
-            current.scaling_factor != next.scaling_factor;
-        const bool scalingSupersamplingChanged =
-            current.scaling_supersampling != next.scaling_supersampling;
-        const bool scalingSharpnessChanged =
-            current.scaling_sharpness != next.scaling_sharpness;
-        const bool scalerSettingsChanged = scalingMethodChanged ||
-            scalingFactorChanged || scalingSupersamplingChanged ||
-            scalingSharpnessChanged;
-        const bool spatialScalingResourcesChanged =
-            current.scaling_enabled == next.scaling_enabled &&
-            (ls::spatialScalingRequested(current) ||
-             ls::spatialScalingRequested(next)) &&
-            scalerSettingsChanged;
-        // Method and sharpness are dormant profile choices when this
-        // swapchain has no scaler (for example an extent that cannot upscale
-        // inside the allocation envelope). Save them immediately so the next
-        // eligible natural recreation uses the latest choice, but do not
-        // disturb the WSI or frame-generation contexts merely to rebuild a
-        // resource that does not exist. Factor remains extent-bound because
-        // changing it can make the current source eligible.
-        const bool spatialScalingDormantUpdate =
-            spatialScalingResourcesChanged && !spatialScalerActive &&
-            (!(scalingFactorChanged || scalingSupersamplingChanged) ||
-             !spatialScalingActivationSupported);
-        const bool spatialScalingExtentNoOp =
-            spatialScalingResourcesChanged &&
-            (scalingFactorChanged || scalingSupersamplingChanged) &&
-            (!scalingFactorChanged ||
-             spatialScalingEffectiveExtentUnchanged) &&
-            (!scalingSupersamplingChanged ||
-             spatialSupersamplingEffectiveExtentUnchanged);
-        const bool spatialScalingLiveRebuild =
-            spatialScalingResourcesChanged &&
-            spatialScalerActive &&
-            !scalingFactorChanged && !scalingSupersamplingChanged;
-        if (spatialScalingResourcesChanged &&
-                !spatialScalingDormantUpdate &&
-                !spatialScalingExtentNoOp) {
-            applied.scaling_method = current.scaling_method;
-            if (!spatialScalingLiveRebuild) {
-                applied.scaling_factor = current.scaling_factor;
-                applied.scaling_supersampling = current.scaling_supersampling;
-            }
-            applied.scaling_sharpness = current.scaling_sharpness;
-            swapchainRecreationDeferred = !spatialScalingLiveRebuild;
-        }
+        // Flow Scale and model selection shape private resources, while
+        // pacing shapes the game-owned swapchain. They remain at their
+        // actually applied values until recreation completes inside an
+        // already compatible process.
         if (ls::effectiveFlowScale(current) !=
                 ls::effectiveFlowScale(applied)) {
             applied.flow_scale = current.flow_scale;
@@ -1051,17 +933,12 @@ namespace fgvk::layer {
                 current.adaptive_max_multiplier !=
                     applied.adaptive_max_multiplier
             ));
-        const bool spatialScalingChanged =
-            current.scaling_enabled != next.scaling_enabled ||
-            (spatialScalingResourcesChanged &&
-             !spatialScalingDormantUpdate &&
-             !spatialScalingExtentNoOp);
         const bool liveChange = frameGenerationChanged ||
             refreshRateThresholdChanged ||
                 generationPolicyChanged ||
                 generationModeChanged || fixedMultiplierChanged ||
                 baseFpsCapChanged || gpuHeadroomChanged || dynamicCadenceProbeIntervalChanged ||
-                spatialScalingLiveRebuild || frameGenerationPrivateRebuild;
+                frameGenerationPrivateRebuild;
 
         ProfileUpdateAction action = ProfileUpdateAction::NoRuntimeChange;
         if (liveChange)
@@ -1084,13 +961,6 @@ namespace fgvk::layer {
                 .gpuHeadroomChanged = gpuHeadroomChanged,
                 .dynamicCadenceProbeIntervalChanged =
                     dynamicCadenceProbeIntervalChanged,
-                .spatialScalingChanged = spatialScalingChanged,
-                .spatialScalingDormantUpdate =
-                    spatialScalingDormantUpdate,
-                .spatialScalingEffectiveExtentUnchanged =
-                    spatialScalingExtentNoOp,
-                .spatialScalingLiveRebuild =
-                    spatialScalingLiveRebuild,
                 .frameGenerationBackendChanged =
                     frameGenerationBackendChanged,
                 .generatedFrameCapacityExceeded =

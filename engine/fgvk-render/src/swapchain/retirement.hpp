@@ -21,10 +21,8 @@ namespace fgvk::layer {
     /// Lifetime protection follows the resources/transport provisioned by
     /// framegen-vulkan, independently of which user-facing feature enabled them.
     [[nodiscard]] constexpr bool presentationRetirementRequired(
-            const bool frameGenerationProvisioned,
-            const bool scalingProvisioned,
-            const bool bridgeProvisioned) noexcept {
-        return frameGenerationProvisioned || scalingProvisioned || bridgeProvisioned;
+            const bool frameGenerationProvisioned) noexcept {
+        return frameGenerationProvisioned;
     }
 
     /// Capability alone is not a pacing owner: legacy targets need the known
@@ -209,21 +207,6 @@ namespace fgvk::layer {
             retiredNullOldReplacement;
     }
 
-    /// A destroy-before-create replacement intentionally cannot forward its
-    /// retired lower handle through Gamescope WSI. When the replacement also
-    /// owns spatial reconstruction, establish the new lower WSI with one
-    /// direct application-image present before submitting private scaler
-    /// work. Explicit oldSwapchain lineage and cold creates already give the
-    /// driver an unambiguous replacement boundary and need no such prime.
-    [[nodiscard]] constexpr bool
-    nullOldReplacementRequiresDirectPresentPrime(
-            const bool replacement,
-            const bool applicationOldSwapchainProvided,
-            const bool spatialScalingActive) noexcept {
-        return replacement && !applicationOldSwapchainProvided &&
-            spatialScalingActive;
-    }
-
     /// Prefer the promoted extension name when the driver advertises it, then
     /// fall back to the EXT predecessor used by current Gamescope/RADV stacks.
     /// The feature bit is mandatory for either spelling.
@@ -281,8 +264,8 @@ namespace fgvk::layer {
     /// framegen-vulkan owns presentation only on application devices that enabled the
     /// swapchain extension. Frame generation creates a private compute-only
     /// device in the same process; in a split chain that device still passes
-    /// through the lower WSI and spatial roles, but neither role may attach
-    /// swapchain hooks or spatial resources to it.
+    /// through the lower WSI, but the layer may not attach swapchain hooks or
+    /// frame-generation resources to it.
     [[nodiscard]] inline bool swapchainPresentationEnabled(
             const VkDeviceCreateInfo& createInfo) noexcept {
         if (createInfo.enabledExtensionCount > 0 &&

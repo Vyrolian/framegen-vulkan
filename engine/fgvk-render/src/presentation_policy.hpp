@@ -62,56 +62,6 @@ namespace fgvk::layer {
         return current;
     }
 
-    /// A combined spatial-scaling WSI replacement is a last-stage recovery.
-    /// It requires a failed in-place attempt and is still forbidden when the
-    /// create-time scaling admission was memory constrained. Natural and
-    /// profile-required recreations retain their existing ownership rules.
-    [[nodiscard]] constexpr bool automaticRecoveryRecreationAllowed(
-            const bool spatialScalingActive,
-            const bool failedInPlaceRecovery = false,
-            const bool spatialScalingMemoryConstrained = false) noexcept {
-        return !spatialScalingActive ||
-            (failedInPlaceRecovery && !spatialScalingMemoryConstrained);
-    }
-
-    struct ScalingAdmissionRetryKey {
-        uint32_t sourceWidth{0};
-        uint32_t sourceHeight{0};
-        uint64_t policyRevision{0};
-
-        friend bool operator==(
-            const ScalingAdmissionRetryKey&,
-            const ScalingAdmissionRetryKey&) = default;
-    };
-
-    /// A live resolution change may sample VK_EXT_memory_budget before the
-    /// driver's usage estimate has caught up with the retired scaled context.
-    /// Permit one later recreation for that exact source/policy episode. A
-    /// replacement which is still constrained consumes the attempt instead of
-    /// creating a recreation loop; changing source or scaling policy starts a
-    /// distinct episode.
-    class ScalingAdmissionRetrySurfaceBudget {
-    public:
-        [[nodiscard]] bool available(
-                const ScalingAdmissionRetryKey& key) {
-            if (!this->key || *this->key != key) {
-                this->key = key;
-                this->attempted = false;
-            }
-            return !this->attempted;
-        }
-
-        void record(const ScalingAdmissionRetryKey& key) {
-            if (!this->key || *this->key != key)
-                this->key = key;
-            this->attempted = true;
-        }
-
-    private:
-        std::optional<ScalingAdmissionRetryKey> key;
-        bool attempted{false};
-    };
-
     /// Ordinary readiness checks preserve progress. A new interruption must
     /// discard partial pre-interruption history and start a complete warm-up.
     [[nodiscard]] constexpr size_t historyWarmupFramesAfterRequest(

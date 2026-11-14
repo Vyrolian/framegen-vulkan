@@ -71,25 +71,6 @@ int main() {
         .appliedGeneratedCapacity = 1,
         .frameGenerationActive = true,
         .frameGenerationPrivatePending = true,
-        .spatialScalingActive = false,
-        .spatialScalingActivationSupported = false,
-        .spatialScalingInactiveReason =
-            "gamescope-wsi-surface-unproven",
-        .spatialScalingConstraintReason =
-            "variable-surface-memory-budget",
-        .spatialSourceWidth = 960,
-        .spatialSourceHeight = 540,
-        .spatialPresentationWidth = 1280,
-        .spatialPresentationHeight = 720,
-        .gamescopeTargetWidth = 1280,
-        .gamescopeTargetHeight = 800,
-        .spatialRequestedMethod = ls::ScalingMethod::Ls1,
-        .spatialActiveMethod = ls::ScalingMethod::Fgvk,
-        .spatialEffectiveFactor = 4.0 / 3.0,
-        .spatialPipeline = "pre-frame-generation",
-        .spatialSupersamplingActive = false,
-        .spatialFallbackReason = "translator unavailable",
-        .nonSupersamplingFactorCeiling = 4.0 / 3.0,
     };
     const auto json = fgvk::layer::runtimeStatusJson(
         record, 123, 321, 456, "frame-generation", 789
@@ -129,55 +110,6 @@ int main() {
     expect(json.find("frame_generation_menu_suspended") ==
             std::string::npos,
         "runtime status retained the retired menu-suspension field");
-    expect(json.find("\"presentation_width\":1280") !=
-            std::string::npos,
-        "spatial presentation width missing");
-    expect(json.find("\"requested_method\":\"ls1\"") !=
-            std::string::npos,
-        "requested spatial method missing");
-    expect(json.find("\"active_method\":\"fgvk\"") !=
-            std::string::npos,
-        "active spatial method missing");
-    expect(json.find("\"pipeline\":\"pre-frame-generation\"") !=
-            std::string::npos,
-        "spatial pipeline placement missing");
-    expect(json.find("\"fallback_reason\":\"translator unavailable\"") !=
-            std::string::npos,
-        "spatial fallback reason missing");
-    expect(json.find(
-            "\"constraint_reason\":\"variable-surface-memory-budget\""
-        ) != std::string::npos,
-        "spatial constraint reason missing");
-    expect(json.find("\"non_supersampling_factor_ceiling\":1.33333") !=
-            std::string::npos,
-        "spatial scaling display ceiling missing");
-
-    // A pending toggle cannot activate user-facing Scaling before it applies.
-    // Follow the applied setting across window replacements and restart-pending
-    // toggle edits, while retaining the actual transport dimensions.
-    for (const bool scalingApplied : {false, true}) {
-        for (const bool scalingRequested : {false, true}) {
-            for (const uint32_t sourceWidth : {2560U, 3840U, 2560U}) {
-                auto windowRecord = record;
-                windowRecord.appliedProfile.scaling_enabled = scalingApplied;
-                windowRecord.requestedProfile.scaling_enabled = scalingRequested;
-                windowRecord.spatialScalingActive = sourceWidth != 3840;
-                windowRecord.spatialSourceWidth = sourceWidth;
-                windowRecord.spatialPresentationWidth = 3840;
-                const auto windowJson = fgvk::layer::runtimeStatusJson(
-                    windowRecord, 123, 321, 456, "frame-generation", 789
-                );
-                const bool featureActive = scalingApplied && sourceWidth != 3840;
-                expect(windowJson.find(featureActive
-                        ? "\"spatial_scaling\":{\"active\":true"
-                        : "\"spatial_scaling\":{\"active\":false") != std::string::npos,
-                    "a pending toggle changed Scaling status");
-                expect(windowJson.find("\"presentation_width\":3840") != std::string::npos &&
-                        windowJson.find("\"frame_generation_active\":true") != std::string::npos,
-                    "Scaling status filtering hid transport dimensions or Frame Generation");
-            }
-        }
-    }
 
     const auto previousLocale = std::locale();
     std::locale::global(std::locale(
@@ -193,12 +125,6 @@ int main() {
     expect(localeIndependentJson.find("\"context\":3456789") !=
             std::string::npos,
         "application locale changed the runtime context ID");
-    expect(localeIndependentJson.find("\"presentation_width\":1280") !=
-            std::string::npos,
-        "application locale changed a runtime extent");
-    expect(localeIndependentJson.find("\"effective_factor\":1.33333") !=
-            std::string::npos,
-        "application locale changed a runtime floating-point value");
 
     const auto temporaryRoot = std::filesystem::temp_directory_path() /
         ("fgvk-runtime-status-test-" +
@@ -214,12 +140,8 @@ int main() {
         "101-202-frame-generation-303.json";
     const auto staleLivenessPath = runtimeRoot /
         "101-202-frame-generation-303.json.lock";
-    const auto orphanStatusPath = runtimeRoot /
-        "102-spatial-scaling-304.json";
     const auto orphanTemporaryPath = runtimeRoot /
         "103-204-frame-generation-305.json.tmp";
-    const auto orphanLivenessPath = runtimeRoot /
-        "104-205-spatial-scaling-306.json.lock";
     const auto heldStatusPath = runtimeRoot /
         "105-206-frame-generation-307.json";
     const auto heldLivenessPath = runtimeRoot /
@@ -234,9 +156,7 @@ int main() {
     const auto unrelatedJsonPath = runtimeRoot / "user-notes.json";
     std::ofstream(staleStatusPath) << "stale";
     std::ofstream(staleLivenessPath) << "stale";
-    std::ofstream(orphanStatusPath) << "orphan";
     std::ofstream(orphanTemporaryPath) << "temporary";
-    std::ofstream(orphanLivenessPath) << "orphan";
     std::ofstream(heldStatusPath) << "held";
     std::ofstream(linkedStatusTarget) << "target";
     std::ofstream(protectedStatusPath) << "protected";
@@ -260,12 +180,8 @@ int main() {
         expect(!std::filesystem::exists(staleStatusPath) &&
                 !std::filesystem::exists(staleLivenessPath),
             "unlocked stale status pair was not pruned at startup");
-        expect(!std::filesystem::exists(orphanStatusPath),
-            "orphan status was not pruned at startup");
         expect(!std::filesystem::exists(orphanTemporaryPath),
             "orphan temporary status was not pruned at startup");
-        expect(!std::filesystem::exists(orphanLivenessPath),
-            "orphan liveness lock was not pruned at startup");
         expect(std::filesystem::exists(heldStatusPath) &&
                 std::filesystem::exists(heldLivenessPath),
             "held status pair was pruned while its publisher was active");

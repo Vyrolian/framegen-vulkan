@@ -46,14 +46,6 @@ def check(engine: Path, upstream_protocol: Path | None) -> None:
             "source review needs its files, scope, and result")
     require(isinstance(record["hardware_validations"], list), "hardware_validations must be a list")
 
-    source = (engine / "fgvk-render/src/gamescope_scaling_surface.cpp").read_text()
-    for key in ("factory_interface", "swapchain_interface"):
-        interface = re.escape(protocol[key])
-        require(re.search(r'"' + interface + r'",\s*' + str(maximum) + r'\s*,', source) is not None,
-                f"{key} declaration differs from the recorded maximum version")
-    require(re.search(r'factoryVersion\s*=\s*std::min\(version,\s*uint32_t\{' +
-                      str(maximum) + r'\}\)', source) is not None,
-            "bridge negotiation cap differs from the compatibility record")
     notices = (engine.parent / "THIRD_PARTY_NOTICES.md").read_text()
     provenance = f'https://github.com/{record["repository"]}/blob/{protocol["source_commit"]}/{protocol["path"]}'
     require(provenance in notices, "third-party protocol provenance differs from the compatibility record")
@@ -63,28 +55,10 @@ def check(engine: Path, upstream_protocol: Path | None) -> None:
         require(hashlib.sha256(payload).hexdigest() == protocol["sha256"],
                 "upstream XML differs from the recorded protocol SHA-256")
         root = ET.fromstring(payload)
-        for key, arrays in (
-            ("factory_interface", (("request", "factoryRequests"),)),
-            ("swapchain_interface", (("request", "contentRequests"), ("event", "contentEvents"))),
-        ):
+        for key in ("factory_interface", "swapchain_interface"):
             interface = root.find(f'interface[@name="{protocol[key]}"]')
             require(interface is not None and int(interface.attrib["version"]) == maximum,
                     f"upstream {key} version differs from the record")
-            for kind, array in arrays:
-                block = re.search(r'\b' + array + r'\{\{(.*?)\}\};', source, re.DOTALL)
-                require(block is not None, f"missing bridge wire array: {array}")
-                actual = re.findall(r'\{"([^"]+)",\s*"([^"]*)"', block.group(1))
-                expected = []
-                types = {"uint": "u", "int": "i", "string": "s", "object": "o",
-                         "new_id": "n", "array": "a", "fixed": "f", "fd": "h"}
-                for message in interface.findall(kind):
-                    since = int(message.attrib.get("since", "1"))
-                    signature = str(since) if since > 1 else ""
-                    for argument in message.findall("arg"):
-                        signature += "?" if argument.attrib.get("allow-null") == "true" else ""
-                        signature += types[argument.attrib["type"]]
-                    expected.append((message.attrib["name"], signature))
-                require(actual == expected, f"{array} names, opcodes, or wire signatures differ from upstream")
 
 
 def main() -> int:
@@ -97,7 +71,7 @@ def main() -> int:
     except (OSError, ValueError, KeyError, TypeError, ET.ParseError) as error:
         print(f"Gamescope compatibility check failed: {error}", file=sys.stderr)
         return 1
-    print("Gamescope compatibility record matches local declarations" +
+    print("Gamescope compatibility record is consistent" +
           (" and the supplied upstream protocol." if args.upstream_protocol else "."))
     return 0
 

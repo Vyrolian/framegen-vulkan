@@ -213,7 +213,6 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         std::clog << "framegen-vulkan: presentation timing fallback; owner=renderer; "
                      "transport=VK_EXT_present_timing; reason=feedback-or-clock-unavailable\n";
 #endif
-    this->applyPendingSpatialScaler(vk);
     if (presentDiagnosticsEnabled()) {
         const auto requested = present_diagnostics::applicationPresentMode(
             this->info.incomingPresentMode, nextChain);
@@ -230,7 +229,6 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
                       << " dynamic_override=" << requested.dynamic
                       << " effective_present_mode=" << static_cast<int64_t>(this->info.presentMode)
                       << " ordered_transport=" << this->privateOrderedTransport
-                      << " bridge=" << static_cast<bool>(this->info.gamescopeScalingSurface)
                       << " action=diagnostic-only\n";
                 std::cerr << line.str();
             } catch (...) {}
@@ -239,14 +237,10 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
     // Match the immutable create-time choice. Ordered SDR filters Gamescope's
     // dynamic MAILBOX override so the private transport stays ordered.
     // Feedback cannot change the game-owned swapchain's creation contract.
-    // Application damage rectangles are expressed in the virtual source
-    // coordinate space. The scaler rewrites the whole native WSI image, so a
-    // lower incremental-present region would incorrectly leave most of that
-    // image stale. Build a filtered copy of the present-chain prefix: Vulkan
-    // input chains are const and may be shared or stored in read-only memory.
+    // Build a filtered copy of the present-chain prefix: Vulkan input chains
+    // are const and may be shared or stored in read-only memory.
     const FilteredPresentPNextChain filteredPresentChain(
-        nextChain, this->privateOrderedTransport,
-        this->spatialScaler.has_value()
+        nextChain, this->privateOrderedTransport, false
     );
     if (!filteredPresentChain.valid()) {
         throw ls::vulkan_error(
@@ -542,7 +536,7 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
     const bool detachedOutputTransport =
         !(this->deferredPresent && this->deferredPresent->serialWaitObserved()) &&
         detachedOutputModeAdmits(directUnthrottled, this->currentPresentMode) &&
-        !this->spatialScaler && !this->gamescopeDetected &&
+        !this->gamescopeDetected &&
         DeferredPresent::supportsChain(lowerNextChain) &&
         this->info.deferredPresentQueue && queue == vk.queue();
     double baseFpsCap = this->steamMenuSuspended || handoff.active
@@ -693,7 +687,7 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
 #endif
     // These transports already own an output clock. Preparing inside a
     // target-matched automatic cap must not add another CPU output clock.
-    const bool compositorOutputTiming = this->info.gamescopeScalingSurface ||
+    const bool compositorOutputTiming =
         displayTimingControlsOutput(this->wsiPresentTimingQuery != nullptr,
             this->privateOrderedTransport, this->gamescopeRefreshHz.value_or(0)) ||
         ownedTimingControlsOutput;
@@ -876,48 +870,8 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         this->deferredOutputQueuedThisFrame};
     this->recordPresentCadence(cadenceNow);
 
-    if (std::exchange(this->replacementWsiPrimePending, false)) {
-        if (presentDiagnosticsEnabled()) {
-            std::cerr << "framegen-vulkan: present diagnostics: "
-                         "operation=replacement-wsi-prime"
-                      << " context=" << this->diagnosticsState.contextId
-                      << " reason=null-old-swapchain"
-                      << " spatial_scaling_active=1"
-                      << " wait_semaphores=" << waitSemaphores.size()
-                      << " frame=" << this->frameState.realFrameIndex
-                      << " sequence=" << this->frameState.sequenceIndex
-                      << " action=direct-application-present-before-spatial-work\n";
-        }
-        return this->presentDirectApplicationFrame(
-            invocation, "replacement-wsi-prime"
-        );
-    }
-
     if (!this->applyPendingFrameGenerationResources(vk))
         return this->presentNativeFrame(invocation);
-
-    // A post-FG scaler is referenced by generated-image command buffers.
-    // Once its replacement reaches the drain phase, stop scheduling new
-    // generated work until the previous render fence and the real-image
-    // spatial passes have retired. The old scaler continues presenting the
-    // current real frame, preserving image continuity without a device-wide
-    // idle or a game-owned swapchain recreation.
-    if (this->spatialTransition.draining() &&
-            spatialScalerTransitionRequiresGeneratedRenderDrain(
-                this->spatialFramePipelinePlacement)) {
-        if (presentDiagnosticsEnabled()) {
-            std::cerr << "framegen-vulkan: present diagnostics: "
-                         "operation=runtime-transition-draining"
-                      << " context=" << this->diagnosticsState.contextId
-                      << " reason=spatial-scaler"
-                      << " generated_render_work_in_flight="
-                      << this->renderSlotsInFlight()
-                      << " frame=" << this->frameState.realFrameIndex
-                      << " sequence=" << this->frameState.sequenceIndex
-                      << " action=real-frame-only\n";
-        }
-        return this->presentNativeFrame(invocation);
-    }
 
     // Frame generation is live-disabled; hand the game's own image directly
     // to the driver without copies, model scheduling or generated images. A
@@ -929,8 +883,8 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         return this->presentNativeFrame(invocation);
     }
     // No scheduler observations, multiplier probes, generated acquisitions or
-    // interpolation while Gamescope confirms Steam owns input. Keep spatial
-    // reconstruction and the real frame, and retain all GPU ownership guards.
+    // interpolation while Gamescope confirms Steam owns input. Keep the real
+    // frame, and retain all GPU ownership guards.
     if (this->steamMenuSuspended)
         return this->presentNativeFrame(invocation);
     const auto replacementStabilization =
@@ -947,8 +901,6 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
                       << std::chrono::duration<double, std::milli>(
                              ReplacementBackendStabilization::duration
                          ).count()
-                      << " spatial_scaling_active="
-                      << this->spatialScaler.has_value()
                       << " action=scaled-real-frame-only\n";
         }
         return this->presentNativeFrame(invocation);
@@ -1050,7 +1002,7 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
     if (this->nativeCopyProfile)
         this->nativeCopyProfile->beginSource(this->pacingProfile->sourceOrdinal(),
             this->pacingProfile->backendGeneration(), invocation.swapchain);
-    if (this->frameContentCapture && !this->spatialScaler &&
+    if (this->frameContentCapture &&
             !this->profile.adaptive && this->profile.multiplier == 2)
         this->frameContentCapture->beginSource(vk, this->info.format,
             this->pacingProfile ? this->pacingProfile->sourceOrdinal() : this->frameState.realFrameIndex,

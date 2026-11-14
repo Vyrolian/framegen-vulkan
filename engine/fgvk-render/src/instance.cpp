@@ -6,7 +6,6 @@
 #include "layer_role.hpp"
 #include "pnext_chain.hpp"
 #include "present_diagnostics.hpp"
-#include "spatial_scaling_policy.hpp"
 #include "swapchain/create_policy.hpp"
 #include "swapchain/output_margin.hpp"
 #include "swapchain/swapchain.hpp"
@@ -49,10 +48,6 @@ using namespace fgvk::layer;
 #endif
 
 namespace {
-    constexpr uint64_t spatialScalingEnabledBit = uint64_t{1};
-    constexpr uint64_t spatialScalingProcessSupportedBit = uint64_t{2};
-    constexpr uint64_t spatialScalingSupersamplingBit = uint64_t{4};
-
     vk::DeviceMemoryTotals memoryDelta(
             const vk::DeviceMemoryTotals& after,
             const vk::DeviceMemoryTotals& before) {
@@ -309,75 +304,6 @@ namespace {
     }
 }
 
-void Root::publishSurfaceScalingPolicy() noexcept {
-    const bool enabled = this->active_profile &&
-        ls::spatialScalingRequested(*this->active_profile);
-    const float factor = this->active_profile
-        ? this->active_profile->scaling_factor : 1.0F;
-    const bool supersampling = this->active_profile &&
-        this->active_profile->scaling_supersampling;
-    const uint64_t packedFactor = static_cast<uint64_t>(
-        std::bit_cast<uint32_t>(factor)
-    ) << 32U;
-    const uint64_t packed = packedFactor |
-        (enabled ? spatialScalingEnabledBit : uint64_t{0}) |
-        (supersampling
-            ? spatialScalingSupersamplingBit : uint64_t{0}) |
-        spatialScalingProcessSupportedBit;
-    const uint64_t observedSequence =
-        this->surfaceScalingPolicySequence.load(std::memory_order_acquire);
-    if ((observedSequence & uint64_t{1}) == 0 &&
-            this->surfaceScalingPolicy.load(std::memory_order_acquire) ==
-                packed &&
-            this->surfaceScalingPolicySequence.load(
-                std::memory_order_acquire
-            ) == observedSequence) {
-        return;
-    }
-
-    const std::lock_guard lock(this->surfaceScalingPolicyPublishMutex);
-    if (this->surfaceScalingPolicy.load(std::memory_order_relaxed) == packed)
-        return;
-
-    this->surfaceScalingPolicySequence.fetch_add(
-        1, std::memory_order_acq_rel
-    );
-    this->surfaceScalingPolicy.store(packed, std::memory_order_release);
-    this->surfaceScalingPolicySequence.fetch_add(
-        1, std::memory_order_release
-    );
-}
-
-SpatialScalingPolicySnapshot Root::surfaceScalingPolicySnapshot()
-        const noexcept {
-    while (true) {
-        const uint64_t sequenceBefore =
-            this->surfaceScalingPolicySequence.load(std::memory_order_acquire);
-        if ((sequenceBefore & uint64_t{1}) != 0)
-            continue;
-        const uint64_t packed = this->surfaceScalingPolicy.load(
-            std::memory_order_acquire
-        );
-        const uint64_t sequenceAfter =
-            this->surfaceScalingPolicySequence.load(std::memory_order_acquire);
-        if (sequenceBefore != sequenceAfter)
-            continue;
-
-        return SpatialScalingPolicySnapshot{
-            .policy = {
-                .enabled = (packed & spatialScalingEnabledBit) != 0,
-                .factor = std::bit_cast<float>(
-                    static_cast<uint32_t>(packed >> 32U)
-                ),
-                .supersampling =
-                    (packed & spatialScalingSupersamplingBit) != 0,
-            },
-            .processSupported =
-                (packed & spatialScalingProcessSupportedBit) != 0,
-            .revision = sequenceAfter / 2,
-        };
-    }
-}
 
 Root::Root() :
     presentationEnvironment(resolvePresentationEnvironmentPolicy(
@@ -400,13 +326,6 @@ Root::Root() :
     const auto initialGamescopeFeedback =
         this->gamescopeFeedbackReader.diagnosticSample();
     this->gamescopeDetected = initialGamescopeFeedback.gamescopeDetected;
-    if (const auto target = confirmedGamescopePresentationTarget(
-            initialGamescopeFeedback)) {
-        this->gamescopePresentationTarget = VkExtent2D{
-            .width = target->width,
-            .height = target->height,
-        };
-    }
     this->lastGamescopeRefreshHz = initialGamescopeFeedback.refreshHz;
     this->gamescopeRefreshHz = initialGamescopeFeedback.refreshHz;
     this->gamescopePresentationFeedback = initialGamescopeFeedback.presentation;
@@ -452,19 +371,16 @@ Root::Root() :
         present_diagnostics::writePacingProfileRecords(identity.str());
     }
     if (!profile.has_value()) {
-        this->publishSurfaceScalingPolicy();
         return;
     }
 
-    this->active_profile = profileForLayer(profile->second);
+    this->active_profile = profile->second;
     // Frame Generation provisioning is a process-start choice because LSFG
     // needs application-device interop. The separate execution switch remains
     // live: 0x performs no generation work while 2x-5x or Adaptive can reuse
     // already provisioned backend and private resources in place.
     this->frameGenerationInteropProvisionedAtStartup =
         this->active_profile->frame_generation_provisioned;
-    this->scalingEngineConfiguredAtStartup =
-        this->active_profile->scaling_enabled;
     this->swapchainImageCountCompatibilityConfiguredAtStartup =
         this->active_profile->swapchain_image_count_compatibility;
 
@@ -499,7 +415,9 @@ Root::Root() :
                      "active: policy=application-minimum; lifetime=process; "
                      "generated-headroom=disabled\n";
     }
-    this->publishSurfaceScalingPolicy();
+    if (this->active_profile->scaling_enabled) {
+        std::cerr << "framegen-vulkan: spatial scaling was removed; scaling_enabled is ignored\n";
+    }
 }
 
 ConfigurationUpdateResult Root::update(const bool forceConfigurationPoll) {
@@ -530,14 +448,6 @@ ConfigurationUpdateResult Root::update(const bool forceConfigurationPoll) {
                 );
             }
         }
-        this->gamescopePresentationTarget.reset();
-        if (const auto target = confirmedGamescopePresentationTarget(
-                gamescopeFeedbackSample)) {
-            this->gamescopePresentationTarget = VkExtent2D{
-                .width = target->width,
-                .height = target->height,
-            };
-        }
         if (gamescopeFeedbackSample.refreshHz != this->lastGamescopeRefreshHz) {
             this->lastGamescopeRefreshHz = gamescopeFeedbackSample.refreshHz;
             this->gamescopeRefreshHz = gamescopeFeedbackSample.refreshHz;
@@ -557,8 +467,6 @@ ConfigurationUpdateResult Root::update(const bool forceConfigurationPoll) {
         }
         this->lastGamescopeFeedbackPoll = now;
     }
-
-    this->publishSurfaceScalingPolicy();
 
     // Configuration hot reload does not need a filesystem metadata query for
     // every presented frame. Keep the UI responsive while bounding the check
@@ -583,7 +491,7 @@ ConfigurationUpdateResult Root::update(const bool forceConfigurationPoll) {
         : std::nullopt;
     const auto& profile = findProfile(this->config.get(), ls::identify());
     auto requestedProfile = profile
-        ? std::optional<ls::GameConf>{profileForLayer(profile->second)}
+        ? std::optional<ls::GameConf>{profile->second}
         : std::nullopt;
     const bool activeUltraPerformance = this->active_profile &&
         this->active_profile->ultra_performance;
@@ -596,13 +504,11 @@ ConfigurationUpdateResult Root::update(const bool forceConfigurationPoll) {
     bool frameGenerationProvisioningPending = false;
     bool ultraPerformancePending =
         activeUltraPerformance != requestedUltraPerformance;
-    bool scalingEnginePending = false;
     bool swapchainImageCountCompatibilityPending = false;
     if (runtimeProfile && this->active_profile) {
         auto projection = projectProcessStaticProfileForLiveUpdate(
             *this->active_profile, *runtimeProfile,
             this->frameGenerationInteropProvisionedAtStartup,
-            this->scalingEngineConfiguredAtStartup,
             this->swapchainImageCountCompatibilityConfiguredAtStartup
         );
         *runtimeProfile = std::move(projection.runtimeProfile);
@@ -610,7 +516,6 @@ ConfigurationUpdateResult Root::update(const bool forceConfigurationPoll) {
         frameGenerationProvisioningPending =
             projection.frameGenerationProvisioningPending;
         ultraPerformancePending = projection.ultraPerformancePending;
-        scalingEnginePending = projection.scalingEnginePending;
         swapchainImageCountCompatibilityPending =
             projection.swapchainImageCountCompatibilityPending;
         profileProcessRestartRequired = projection.restartRequired() ||
@@ -621,13 +526,6 @@ ConfigurationUpdateResult Root::update(const bool forceConfigurationPoll) {
             runtimeProfile->frame_generation_provisioned =
                 this->frameGenerationInteropProvisionedAtStartup;
             frameGenerationProvisioningPending = true;
-            profileProcessRestartRequired = true;
-        }
-        if (runtimeProfile->scaling_enabled !=
-                this->scalingEngineConfiguredAtStartup) {
-            runtimeProfile->scaling_enabled =
-                this->scalingEngineConfiguredAtStartup;
-            scalingEnginePending = true;
             profileProcessRestartRequired = true;
         }
         if (runtimeProfile->swapchain_image_count_compatibility !=
@@ -649,11 +547,6 @@ ConfigurationUpdateResult Root::update(const bool forceConfigurationPoll) {
         std::cerr << "framegen-vulkan: Ultra Performance toggle deferred; "
                      "restart the game to apply its model and "
                      "resource policy; compatible profile changes remain live\n";
-    }
-    if (scalingEnginePending) {
-        std::cerr << "framegen-vulkan: Scaling Engine toggle deferred; restart "
-                     "the game to rebuild the process Vulkan layer chain; "
-                     "method and tuning changes remain live\n";
     }
     if (swapchainImageCountCompatibilityPending) {
         std::cerr << "framegen-vulkan: Game Swapchain Images compatibility "
@@ -679,8 +572,6 @@ ConfigurationUpdateResult Root::update(const bool forceConfigurationPoll) {
                       << frameGenerationProvisioningPending
                       << " ultra_performance_pending="
                       << ultraPerformancePending
-                      << " scaling_engine_pending="
-                      << scalingEnginePending
                       << " swapchain_image_count_compatibility_pending="
                       << swapchainImageCountCompatibilityPending
                       << " action=wait-for-process-restart\n";
@@ -697,7 +588,6 @@ ConfigurationUpdateResult Root::update(const bool forceConfigurationPoll) {
                 this->active_profile->gpu_headroom_percent > 0);
         } catch (...) { device.monitor->setEnabled(false); }
     }
-    this->publishSurfaceScalingPolicy();
 
     const auto currentProfileName = this->active_profile
         ? std::optional<std::string>{this->active_profile->name}
@@ -730,8 +620,7 @@ ConfigurationUpdateResult Root::update(const bool forceConfigurationPoll) {
     }
 
     if (this->active_profile) {
-        const auto contextProfile =
-            profileForLayerContext(*this->active_profile);
+        const auto contextProfile = *this->active_profile;
         for (auto& [swapchain, context] : this->swapchains) {
             static_cast<void>(swapchain);
             const auto update = context.updateProfile(
@@ -774,8 +663,7 @@ ConfigurationUpdateResult Root::update(const bool forceConfigurationPoll) {
 
 void Root::modifyInstanceCreateInfo(VkInstanceCreateInfo& createInfo,
         const std::function<void(void)>& finish) const {
-    if (!this->frameGenerationInteropProvisioned() && !this->scalingEngineProvisioned() &&
-            !this->scalingSurfaceConnectionProvisioned()) {
+    if (!this->frameGenerationInteropProvisioned()) {
         finish();
         return;
     }
@@ -884,17 +772,10 @@ void Root::modifyDeviceCreateInfo(VkDeviceCreateInfo& createInfo,
 
 SwapchainCreateModification Root::modifySwapchainCreateInfo(const vk::Vulkan& vk,
         VkSwapchainCreateInfoKHR& createInfo,
-        const std::optional<SpatialScalingExtents>& previousVariableExtents,
-        const std::optional<SpatialScalingExtents>&
-            variableSurfaceRollbackExtents,
-        const std::optional<FixedSurfaceScalingContract>& fixedSurfaceContract,
-        const bool spatialSurfaceScalingSupported,
-        const bool gamescopeScalingSurface,
         const std::function<void(void)>& finish) const {
     SwapchainCreateModification modification{
         .applicationExtent = createInfo.imageExtent,
         .presentationExtent = createInfo.imageExtent,
-        .gamescopePresentationTarget = this->gamescopePresentationTarget,
     };
     if (!this->active_profile.has_value()) {
         finish();
@@ -907,50 +788,7 @@ SwapchainCreateModification Root::modifySwapchainCreateInfo(const vk::Vulkan& vk
     if (res != VK_SUCCESS)
         throw ls::vulkan_error(res, "vkGetPhysicalDeviceSurfaceCapabilitiesKHR() failed");
 
-    modification.variableSurface = !fixedSurfaceExtent(caps.currentExtent);
-
-    VkPhysicalDeviceMemoryBudgetPropertiesEXT liveMemoryBudget{
-        .sType =
-            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT,
-    };
-    VkPhysicalDeviceMemoryProperties2 memoryProperties2{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2,
-    };
-    const bool liveMemoryBudgetAvailable =
-        vk.fi().GetPhysicalDeviceMemoryProperties2 &&
-        physicalDeviceSupportsExtension(
-            vk.fi(), vk.physdev(), VK_EXT_MEMORY_BUDGET_EXTENSION_NAME
-        );
-    if (liveMemoryBudgetAvailable) {
-        memoryProperties2.pNext = &liveMemoryBudget;
-        vk.fi().GetPhysicalDeviceMemoryProperties2(
-            vk.physdev(), &memoryProperties2
-        );
-    } else {
-        vk.fi().GetPhysicalDeviceMemoryProperties(
-            vk.physdev(), &memoryProperties2.memoryProperties
-        );
-    }
-    const auto memoryAdmission = variablePresentationMemoryAdmission(
-        memoryProperties2.memoryProperties,
-        liveMemoryBudgetAvailable ? &liveMemoryBudget : nullptr
-    );
-    const auto colorPipeline = classifySwapchainColor(
-        createInfo.imageFormat, createInfo.imageColorSpace
-    );
-    const auto contextProfile = profileForLayerContext(*this->active_profile);
-    // Window-mode changes can briefly request the display's native extent.
-    // Keep the smaller, already allocated split across that exact-output
-    // hop so returning to it is not priced as a cold allocation. Never invent
-    // proof from a native-only launch or retain it across a display change.
-    modification.retainVariableSurfacePresentationProof =
-        spatialSurfaceScalingSupported && modification.variableSurface &&
-        previousVariableExtents && this->gamescopePresentationTarget &&
-        ls::spatialScalingRequested(contextProfile) &&
-        !contextProfile.scaling_supersampling &&
-        sameExtent(previousVariableExtents->presentation,
-            *this->gamescopePresentationTarget) &&
-        sameExtent(createInfo.imageExtent, *this->gamescopePresentationTarget);
+    const auto contextProfile = *this->active_profile;
     modification.swapchainImageCountCompatibility =
         contextProfile.swapchain_image_count_compatibility;
     auto prospectiveCreateInfo = createInfo;
@@ -960,330 +798,8 @@ SwapchainCreateModification Root::modifySwapchainCreateInfo(const vk::Vulkan& vk
         prospectiveCreateInfo,
         this->gamescopeDetected,
         vk.frameGenerationInteropEnabled(),
-        false,
         caps.minImageCount
     ));
-    auto policySnapshot = this->surfaceScalingPolicySnapshot();
-    const auto postFrameGenerationAdmission =
-        variablePresentationResourceAdmission(
-            memoryAdmission,
-            createInfo.imageExtent,
-            createInfo.imageFormat,
-            prospectiveCreateInfo.minImageCount,
-            generatedFrameCapacityForProfile(*this->active_profile)
-        );
-    const auto preFrameGenerationAdmission =
-        variablePresentationResourceAdmission(
-            memoryAdmission,
-            createInfo.imageExtent,
-            createInfo.imageFormat,
-            prospectiveCreateInfo.minImageCount,
-            generatedFrameCapacityForProfile(*this->active_profile),
-            SpatialFramePipelinePlacement::PreFrameGeneration
-        );
-    const VariablePresentationPixelBudgets presentationPixelBudgets{
-        .preFrameGeneration = preFrameGenerationAdmission.effectivePixelBudget,
-        .postFrameGeneration = postFrameGenerationAdmission.effectivePixelBudget,
-        // Source growth is charged at the conservative combined-resource
-        // rate, never at the cheaper output-only WSI bytes-per-pixel rate.
-        .sourceGrowth = memoryAdmission.effectivePixelBudget,
-    };
-    const bool gamescopePresentationTargetRequired =
-        gamescopeScalingSurface &&
-        (this->gamescopeEnvironmentDetected || this->gamescopeDetected);
-    auto scalingDecision = spatialSurfaceScalingSupported
-        ? scalingDecisionForCreate(
-            policySnapshot.policy,
-            policySnapshot.processSupported,
-            policySnapshot.revision,
-            caps,
-            createInfo.imageExtent,
-            previousVariableExtents,
-            fixedSurfaceContract,
-            presentationPixelBudgets,
-            this->gamescopePresentationTarget,
-            gamescopePresentationTargetRequired,
-            memoryAdmission.staticPixelBudget,
-            variableSurfaceRollbackExtents
-        )
-        : SpatialScalingCreateDecision{
-            .inactiveReason = SpatialScalingInactiveReason::
-                GamescopeWsiSurfaceUnproven,
-        };
-    const auto& scalingExtents = scalingDecision.extents;
-    modification.variableFeedbackSuppressed =
-        scalingDecision.inactiveReason ==
-            SpatialScalingInactiveReason::VariableSurfaceFeedback;
-    modification.spatialScalingMemoryConstrained =
-        scalingDecision.memoryBudgetConstrained;
-    const bool fixedVirtualSourceRequest =
-        fixedSurfaceExtent(caps.currentExtent) &&
-        !sameExtent(createInfo.imageExtent, caps.currentExtent);
-    const bool supportedScalingEncoding =
-        spatialScalingColorSupported(colorPipeline);
-    VkBool32 queueFamilySupportsPresentation = VK_FALSE;
-    const bool queueSurfaceSupportChecked =
-        scalingExtents && vk.fi().GetPhysicalDeviceSurfaceSupportKHR;
-    if (scalingExtents && vk.fi().GetPhysicalDeviceSurfaceSupportKHR) {
-        const auto surfaceSupportResult =
-            vk.fi().GetPhysicalDeviceSurfaceSupportKHR(
-                vk.physdev(), vk.queueFamilyIndex(), createInfo.surface,
-                &queueFamilySupportsPresentation
-            );
-        if (surfaceSupportResult != VK_SUCCESS) {
-            throw ls::vulkan_error(
-                surfaceSupportResult,
-                "vkGetPhysicalDeviceSurfaceSupportKHR() failed"
-            );
-        }
-    }
-    const bool spatialShapeSupported =
-        spatialScalingSwapchainShapeSupported(createInfo);
-    const bool spatialQueueCommandsSupported = vk.queueFamilySupports(
-        VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT
-    );
-    const bool spatialFormatSupported =
-        supportedScalingEncoding &&
-        (caps.supportedUsageFlags & (
-            VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
-            VK_IMAGE_USAGE_TRANSFER_DST_BIT
-        )) == (
-            VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
-            VK_IMAGE_USAGE_TRANSFER_DST_BIT
-        ) &&
-        vk.supportsOptimalTilingFormatFeatures(
-            createInfo.imageFormat,
-            VK_FORMAT_FEATURE_BLIT_SRC_BIT |
-                VK_FORMAT_FEATURE_BLIT_DST_BIT
-        ) &&
-        vk.supportsOptimalTilingFormatFeatures(
-            colorPipeline.exchangeFormat,
-            VK_FORMAT_FEATURE_BLIT_SRC_BIT |
-                VK_FORMAT_FEATURE_BLIT_DST_BIT |
-                VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
-                VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT |
-                VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT
-        );
-    const bool spatialScalingSupported = spatialShapeSupported &&
-        spatialFormatSupported && spatialQueueCommandsSupported &&
-        queueFamilySupportsPresentation == VK_TRUE;
-    const char* const queuePresentationSupport =
-        !queueSurfaceSupportChecked ? "not-checked" :
-        queueFamilySupportsPresentation == VK_TRUE
-            ? "supported" : "unsupported";
-    auto inactiveReason = scalingDecision.inactiveReason;
-    if (scalingExtents && spatialScalingSupported) {
-        modification.applicationExtent = scalingExtents->source;
-        modification.presentationExtent = scalingExtents->presentation;
-        modification.spatialScalingActive = true;
-        createInfo.imageExtent = scalingExtents->presentation;
-        inactiveReason = SpatialScalingInactiveReason::None;
-    } else if (scalingExtents) {
-        inactiveReason = !spatialShapeSupported
-            ? SpatialScalingInactiveReason::SwapchainShapeUnsupported
-            : (queueFamilySupportsPresentation != VK_TRUE
-                ? SpatialScalingInactiveReason::QueuePresentationUnsupported
-                : (!spatialQueueCommandsSupported
-                    ? SpatialScalingInactiveReason::QueueCommandsUnsupported
-                    : SpatialScalingInactiveReason::SwapchainFormatUnsupported));
-    }
-    modification.spatialScalingInactiveReason = inactiveReason;
-    modification.spatialScalingAdmissionRetryEligible =
-        spatialScalingAdmissionRetryEligible(
-            inactiveReason,
-            previousVariableExtents,
-            createInfo.imageExtent,
-            policySnapshot.policy.factor,
-            policySnapshot.policy.supersampling ? std::nullopt
-                : this->gamescopePresentationTarget,
-            policySnapshot.policy.preserveFrameGenerationSource
-        );
-    modification.spatialScalingPolicyRevision = policySnapshot.revision;
-    modification.retainVariableSurfaceProof =
-        policySnapshot.policy.enabled &&
-        policySnapshot.policy.factor <= 1.0F &&
-        inactiveReason == SpatialScalingInactiveReason::FactorNotUpscaling;
-    if (this->active_profile->scaling_enabled) {
-        const auto advertised = scalingDecision.fixedContract;
-        const auto admissionPlacement = scalingDecision.memoryAdmissionPlacement.
-            value_or(selectSpatialFramePipelinePlacement(
-                modification.applicationExtent, modification.presentationExtent,
-                policySnapshot.policy.preserveFrameGenerationSource
-            ));
-        const auto& resourceAdmission = admissionPlacement ==
-                SpatialFramePipelinePlacement::PreFrameGeneration
-            ? preFrameGenerationAdmission : postFrameGenerationAdmission;
-        std::ostringstream policyLog;
-        policyLog << "framegen-vulkan: spatial scaling swapchain policy: "
-                  << "role=" << layerRoleName
-                  << "; requested=" << modification.applicationExtent.width
-                  << 'x' << modification.applicationExtent.height
-                  << "; surface_current=" << caps.currentExtent.width
-                  << 'x' << caps.currentExtent.height
-                  << "; surface_extent_mode="
-                  << (modification.variableSurface ? "variable" : "fixed")
-                  << "; device_local_heap_mib="
-                  << (memoryAdmission.heapBytes / (1024 * 1024))
-                  << "; live_memory_budget_available="
-                  << liveMemoryBudgetAvailable
-                  << "; device_local_heap_budget_mib="
-                  << (memoryAdmission.heapBudgetBytes / (1024 * 1024))
-                  << "; device_local_heap_usage_mib="
-                  << (memoryAdmission.heapUsageBytes / (1024 * 1024))
-                  << "; memory_reserved_headroom_mib="
-                  << (memoryAdmission.reservedHeadroomBytes / (1024 * 1024))
-                  << "; variable_presentation_static_pixel_budget="
-                  << memoryAdmission.staticPixelBudget
-                  << "; variable_presentation_live_pixel_budget="
-                  << resourceAdmission.livePixelBudget.value_or(0)
-                  << "; variable_presentation_pixel_budget="
-                  << resourceAdmission.effectivePixelBudget
-                  << "; variable_presentation_fixed_source_mib="
-                  << (resourceAdmission.fixedSourceBytes / (1024 * 1024))
-                  << "; variable_presentation_bytes_per_pixel="
-                  << resourceAdmission.presentationBytesPerPixel
-                  << "; gamescope_presentation_target="
-                  << (this->gamescopePresentationTarget
-                        ? this->gamescopePresentationTarget->width : 0)
-                  << 'x'
-                  << (this->gamescopePresentationTarget
-                        ? this->gamescopePresentationTarget->height : 0)
-                  << "; gamescope_presentation_target_required="
-                  << gamescopePresentationTargetRequired
-                  << "; gamescope_presentation_target_constrained="
-                  << scalingDecision.gamescopePresentationTargetConstrained
-                  << "; supersampling="
-                  << policySnapshot.policy.supersampling
-                  << "; gamescope_presentation_target_bypassed="
-                  << scalingDecision.gamescopePresentationTargetBypassed
-                  << "; advertised_source="
-                  << (advertised ? advertised->extents.source.width : 0)
-                  << 'x'
-                  << (advertised ? advertised->extents.source.height : 0)
-                  << "; advertised_presentation="
-                  << (advertised ? advertised->extents.presentation.width : 0)
-                  << 'x'
-                  << (advertised ? advertised->extents.presentation.height : 0)
-                  << "; actual_source="
-                  << (fixedVirtualSourceRequest && !scalingExtents
-                        ? 0 : modification.applicationExtent.width)
-                  << 'x'
-                  << (fixedVirtualSourceRequest && !scalingExtents
-                        ? 0 : modification.applicationExtent.height)
-                  << "; actual_presentation="
-                  << (fixedVirtualSourceRequest && !scalingExtents
-                        ? 0 : modification.presentationExtent.width)
-                  << 'x'
-                  << (fixedVirtualSourceRequest && !scalingExtents
-                        ? 0 : modification.presentationExtent.height)
-                  << "; policy_revision=" << policySnapshot.revision
-                  << "; contract_policy_revision="
-                  << (advertised ? advertised->policyRevision : 0)
-                  << "; query_generation="
-                  << (advertised ? advertised->queryGeneration : 0)
-                  << "; selected_source="
-                  << (scalingExtents ? scalingExtents->source.width : 0)
-                  << 'x'
-                  << (scalingExtents ? scalingExtents->source.height : 0)
-                  << "; selected_presentation="
-                  << (scalingExtents ? scalingExtents->presentation.width : 0)
-                  << 'x'
-                  << (scalingExtents ? scalingExtents->presentation.height : 0)
-                  << "; format=" << static_cast<int>(createInfo.imageFormat)
-                  << "; format_supported=" << spatialFormatSupported
-                  << "; shape_supported=" << spatialShapeSupported
-                  << "; queue_presentation_support="
-                  << queuePresentationSupport
-                  << "; queue_commands_supported="
-                  << spatialQueueCommandsSupported
-                  << "; variable_feedback_suppressed="
-                  << modification.variableFeedbackSuppressed
-                  << "; previous_presentation_budget_reused="
-                  << scalingDecision.reusedPreviousPresentationBudget
-                  << "; rollback_presentation_budget_reused="
-                  << scalingDecision.reusedRollbackPresentationBudget
-                  << "; previous_downshift_envelope_reused="
-                  << scalingDecision.reusedPreviousDownshiftEnvelope
-                  << "; previous_source_growth_headroom_reused="
-                  << scalingDecision.reusedPreviousSourceGrowthHeadroom
-                  << "; baseline_presentation_budget_used="
-                  << scalingDecision.usedBaselinePresentationBudget
-                  << "; extent_selected="
-                  << (scalingExtents.has_value() ? 1 : 0)
-                  << "; previous_fixed_source_retained="
-                  << scalingDecision.retainedPreviousFixedSource
-                  << "; inactive_reason="
-                  << spatialScalingInactiveReasonName(inactiveReason)
-                  << "; admission_retry_eligible="
-                  << modification.spatialScalingAdmissionRetryEligible
-                  << "; source_presentation_split="
-                  << (scalingExtents && !sameExtent(
-                        scalingExtents->source,
-                        scalingExtents->presentation
-                      ) ? 1 : 0)
-                  << "; active=" << modification.spatialScalingActive;
-        std::cerr << policyLog.str() << '\n';
-        if (scalingDecision.retainedPreviousFixedSource && scalingExtents) {
-            std::cerr << "framegen-vulkan: fixed-surface scaling factor "
-                         "constrained: requested_factor="
-                      << policySnapshot.policy.factor
-                      << "; retained_source="
-                      << scalingExtents->source.width << 'x'
-                      << scalingExtents->source.height
-                      << "; presentation="
-                      << scalingExtents->presentation.width << 'x'
-                      << scalingExtents->presentation.height
-                      << "; reason=wsi-source-unchanged"
-                      << "; action=retain-proven-split\n";
-        }
-        if (modification.variableFeedbackSuppressed &&
-                previousVariableExtents) {
-            std::cerr << "framegen-vulkan: spatial scaling variable-surface "
-                         "feedback guard: surface=" << createInfo.surface
-                      << "; previous_source="
-                      << previousVariableExtents->source.width << 'x'
-                      << previousVariableExtents->source.height
-                      << "; previous_presentation="
-                      << previousVariableExtents->presentation.width << 'x'
-                      << previousVariableExtents->presentation.height
-                      << "; requested="
-                      << modification.applicationExtent.width << 'x'
-                      << modification.applicationExtent.height
-                      << "; action=native-feedback-guard\n";
-        }
-    }
-
-    if (shouldRejectUnmatchedFixedSpatialCreate(
-            fixedVirtualSourceRequest, scalingExtents.has_value())) {
-        throw ls::vulkan_error(
-            VK_ERROR_INITIALIZATION_FAILED,
-            "fixed-surface spatial scaling create request does not match the "
-            "latest capability contract; inactive_reason=" +
-                std::string(spatialScalingInactiveReasonName(inactiveReason))
-        );
-    }
-    if (scalingExtents && !spatialScalingSupported &&
-            fixedSurfaceExtent(caps.currentExtent)) {
-        // A fixed surface was previously advertised at the virtual source
-        // extent. Passing that low extent to the real WSI surface without a
-        // scaler would either fail lower creation or expose an incomplete
-        // top-left frame. Reject an unexpected format-capability mismatch
-        // explicitly instead of silently violating the advertised contract.
-        throw ls::vulkan_error(
-            VK_ERROR_INITIALIZATION_FAILED,
-            !spatialShapeSupported
-                ? "fixed-surface spatial scaling requires an opaque, "
-                  "single-layer, unprotected, non-shared-present swapchain"
-                : (queueFamilySupportsPresentation != VK_TRUE
-                    ? "framegen-vulkan's graphics/compute queue family cannot present to "
-                      "the fixed surface"
-                    : (!spatialQueueCommandsSupported
-                        ? "framegen-vulkan's presentation queue family lacks graphics and "
-                          "compute support"
-                    : "the selected fixed-surface format cannot be spatially scaled")
-                    )
-        );
-    }
 
     const uint32_t applicationMinImages = createInfo.minImageCount;
     const VkPresentModeKHR applicationPresentMode = createInfo.presentMode;
@@ -1293,7 +809,6 @@ SwapchainCreateModification Root::modifySwapchainCreateInfo(const vk::Vulkan& vk
         createInfo,
         this->gamescopeDetected,
         vk.frameGenerationInteropEnabled(),
-        modification.spatialScalingActive,
         caps.minImageCount
     );
 
@@ -1317,35 +832,6 @@ SwapchainCreateModification Root::modifySwapchainCreateInfo(const vk::Vulkan& vk
         );
     }
     createInfo.pNext = presentModes.head();
-
-    bool lowerMailboxSupported = false;
-    if (gamescopeScalingSurface && modification.privateOrderedTransport &&
-            vk.fi().GetPhysicalDeviceSurfacePresentModesKHR) {
-        // This bounded create-time query leaves FIFO intact if the driver
-        // cannot prove support. No capability query belongs in presentation.
-        std::array<VkPresentModeKHR, 16> modes{};
-        uint32_t count = static_cast<uint32_t>(modes.size());
-        const auto result = vk.fi().GetPhysicalDeviceSurfacePresentModesKHR(
-            vk.physdev(), createInfo.surface, &count, modes.data()
-        );
-        lowerMailboxSupported = result == VK_SUCCESS && count <= modes.size() &&
-            std::ranges::find(std::span{modes}.first(count),
-                VK_PRESENT_MODE_MAILBOX_KHR) != std::span{modes}.first(count).end();
-    }
-    const auto gamescopePresentContract =
-        gamescopeScalingPresentContract(
-            createInfo.presentMode,
-            gamescopeScalingSurface,
-            modification.privateOrderedTransport,
-            lowerMailboxSupported,
-            this->gamescopeRefreshHz &&
-                OrderedPresentTimeline::validRate(*this->gamescopeRefreshHz)
-        );
-    createInfo.presentMode = gamescopePresentContract.lowerPresentMode;
-    modification.gamescopeProtocolPresentMode =
-        gamescopePresentContract.compositorPresentMode;
-    if (modification.gamescopeProtocolPresentMode)
-        modification.gamescopePresentRefreshHz = *this->gamescopeRefreshHz;
 
     // Once per swapchain creation: what the layer asks the lower driver for.
     // present_mode_group lists the modes each present may switch between
@@ -1376,24 +862,6 @@ SwapchainCreateModification Root::modifySwapchainCreateInfo(const vk::Vulkan& vk
     finish();
     modification.presentationExtent = createInfo.imageExtent;
     return modification;
-}
-
-std::optional<SpatialScalingCapabilitySelection>
-Root::modifySurfaceCapabilities(
-        VkSurfaceCapabilitiesKHR& capabilities) const {
-    const auto snapshot = this->surfaceScalingPolicySnapshot();
-    if (!snapshot.policy.enabled || !snapshot.processSupported)
-        return std::nullopt;
-    const auto extents = virtualizeSurfaceCapabilities(
-        snapshot.policy, capabilities
-    );
-    if (!extents)
-        return std::nullopt;
-    return SpatialScalingCapabilitySelection{
-        .extents = *extents,
-        .factor = snapshot.policy.factor,
-        .policyRevision = snapshot.revision,
-    };
 }
 
 namespace {
@@ -1479,31 +947,11 @@ void Root::createSwapchainContext(const vk::Vulkan& vk,
         const bool swapchainMaintenance1Enabled) {
     if (!this->active_profile.has_value())
         throw ls::error("attempted to create swapchain context while layer is inactive");
-    auto profile = profileForLayerContext(*this->active_profile);
+    auto profile = *this->active_profile;
     profile.frame_generation_provisioned =
         this->frameGenerationInteropProvisionedAtStartup;
     const auto& global = this->config.get().global();
 
-    std::optional<std::filesystem::path> scalingShaderDll;
-    if (info.spatialScalingActive) {
-        try {
-            scalingShaderDll = global.dll.has_value()
-                ? std::filesystem::path(*global.dll)
-                : std::filesystem::path(ls::findShaderDll());
-        } catch (const std::exception& error) {
-            // Native Resolution and framegen-vulkan do not require the licensed shader,
-            // but retaining its path while the Scaling Engine is provisioned
-            // is what makes a later private LS1 selection genuinely live.
-            if (ls::licensedScalingModelRequested(
-                    ls::effectiveScalingMethod(profile))) {
-                std::cerr << "framegen-vulkan: unable to locate Lossless.dll for LS1; "
-                             "the framegen-vulkan fallback will be used: "
-                          << error.what() << '\n';
-            }
-        }
-    }
-
-    std::optional<std::string> backendInitializationError;
     const bool frameGenerationRequested =
         profile.frame_generation_provisioned &&
         profile.frame_generation_enabled;
@@ -1568,8 +1016,7 @@ void Root::createSwapchainContext(const vk::Vulkan& vk,
             this->backendGlobal->allow_fp16 = this->fp16AtStartup;
             this->backendProfile = profile;
         } catch (const std::exception& e) {
-            backendInitializationError = e.what();
-            if (frameGenerationRequested && !info.spatialScalingActive)
+            if (frameGenerationRequested)
                 throw ls::error("failed to create backend instance", e);
         }
     }
@@ -1580,20 +1027,7 @@ void Root::createSwapchainContext(const vk::Vulkan& vk,
     if (frameGenerationRequested && !vk.frameGenerationInteropEnabled()) {
         std::cerr << "framegen-vulkan: frame generation was enabled after the "
                      "application device was created without external interop; "
-                     "a game restart is required; independent spatial scaling "
-                     "remains available\n";
-    } else if (frameGenerationRequested && !frameGenerationBackend &&
-            info.spatialScalingActive) {
-        std::cerr << "framegen-vulkan: frame-generation backend initialization "
-                     "failed; independent spatial scaling retained:\n"
-                  << "- "
-                  << backendInitializationError.value_or("unknown failure")
-                  << '\n';
-    } else if (!frameGenerationAvailableOnDevice &&
-            !frameGenerationRequested && info.spatialScalingActive) {
-        std::cerr << "framegen-vulkan: standalone spatial scaling: "
-                     "frame-generation backend and interop resources were not "
-                     "created\n";
+                     "a game restart is required\n";
     }
 
     auto contextProfile = this->backendProfile
@@ -1604,7 +1038,7 @@ void Root::createSwapchainContext(const vk::Vulkan& vk,
     const auto memoryBefore = vk.deviceMemorySnapshot();
     const bool inserted = this->swapchains.emplace(swapchain,
         Swapchain(vk, frameGenerationBackend, std::move(contextProfile), info,
-            std::move(scalingShaderDll), this->fp16AtStartup,
+            this->fp16AtStartup,
             this->gamescopeDetected,
             this->gamescopeRefreshHz,
             this->gamescopePresentationFeedback,
@@ -1629,10 +1063,6 @@ void Root::createSwapchainContext(const vk::Vulkan& vk,
         insertedContext != this->swapchains.end()
         ? insertedContext->second.frameGenerationResourceExtent()
         : info.extent;
-    const auto framePipelinePlacement =
-        insertedContext != this->swapchains.end()
-        ? insertedContext->second.framePipelinePlacement()
-        : SpatialFramePipelinePlacement::PreFrameGeneration;
 
     std::clog << "framegen-vulkan: renderer-memory operation=swapchain-context-create"
         << " context=" << diagnosticsContextId
@@ -1675,10 +1105,6 @@ void Root::createSwapchainContext(const vk::Vulkan& vk,
                   << frameGenerationResourceExtent.width
                   << " frame_generation_height="
                   << frameGenerationResourceExtent.height
-                  << " spatial_pipeline="
-                  << spatialFramePipelinePlacementName(
-                        framePipelinePlacement
-                     )
                   << " requested_min_images="
                   << info.requestedMinImageCount
                   << " provisioned_min_images="
@@ -1693,10 +1119,6 @@ void Root::createSwapchainContext(const vk::Vulkan& vk,
                   << " present_mode=" << static_cast<int>(info.presentMode)
                   << " ordered_transport="
                   << (info.privateOrderedTransport ? 1 : 0)
-                  << " spatial_scaling_activation_supported="
-                  << (info.spatialScalingActivationSupported ? 1 : 0)
-                  << " spatial_scaling_admission_retry_eligible="
-                  << (info.spatialScalingAdmissionRetryEligible ? 1 : 0)
                   << " replacement=" << (info.replacement ? 1 : 0)
                   << " active_contexts=" << this->swapchains.size()
                   << " inserted=" << inserted

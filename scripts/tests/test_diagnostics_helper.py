@@ -31,9 +31,9 @@ framegen-vulkan: HDR shader source footprint: source=2560x1440; output=3840x2160
 framegen-vulkan: HDR10 transport: mode=packed-10-bit; nominal_bytes=16384000; nominal_bytes_saved=16384000; application_device_supported=1; backend_device_supported=1
 framegen-vulkan: Gamescope application HDR feedback stabilized: active=1; contexts_pending_recreation=1
 framegen-vulkan: Gamescope presentation feedback initialized: vrr_enabled=1; vrr_capable=1; vrr_active=1; allow_tearing=0
-framegen-vulkan: present diagnostics: operation=swapchain-context-create context=1 pid=4242 swapchain=1234 width=1280 height=800 application_width=854 application_height=532 frame_generation_width=1280 frame_generation_height=800 spatial_pipeline=pre-frame-generation images=3 format=64 color_space=1000104008 present_mode=2 ordered_transport=1 active_contexts=1 inserted=1 live_profile_recreation=guarded-maintenance1-one-shot
+framegen-vulkan: present diagnostics: operation=swapchain-context-create context=1 pid=4242 swapchain=1234 width=1280 height=800 application_width=854 application_height=532 frame_generation_width=1280 frame_generation_height=800 images=3 format=64 color_space=1000104008 present_mode=2 ordered_transport=1 active_contexts=1 inserted=1 live_profile_recreation=guarded-maintenance1-one-shot
 framegen-vulkan: present diagnostics: operation=gamescope-presentation-feedback context=1 vrr_enabled=1 vrr_capable=1 vrr_active=1 allow_tearing=0 pacing_owner=fgvk-target-clock action=reset-pacer-only scheduler_reset=0 recreation=0
-framegen-vulkan: present diagnostics: operation=runtime-transition-pending context=1 state_revision=2 reason=profile-resources spatial_scaling_pending=1 frame_generation_backend_pending=1 flow_scale_pending=1 lighter_model_pending=1 generated_capacity_pending=1 available_generated_capacity=1 requested_generated_capacity=3 process_restart_required=0 action=signal-out-of-date-after-successful-present
+framegen-vulkan: present diagnostics: operation=runtime-transition-pending context=1 state_revision=2 reason=profile-resources frame_generation_backend_pending=1 flow_scale_pending=1 lighter_model_pending=1 generated_capacity_pending=1 available_generated_capacity=1 requested_generated_capacity=3 process_restart_required=0 action=signal-out-of-date-after-successful-present
 framegen-vulkan: present diagnostics: operation=runtime-transition-pending context=2 state_revision=4 reason=frame-generation-resources flow_scale_pending=1 lighter_model_pending=1 generated_capacity_pending=1 active_generated_capacity=1 requested_generated_capacity=4 action=prepare-private-context
 framegen-vulkan: present diagnostics: operation=runtime-transition-prepared context=2 state_revision=4 reason=frame-generation-resources requested_generated_capacity=4 requested_flow_scale=0.75 requested_lighter_model=1 action=drain-private-work
 framegen-vulkan: renderer-memory operation=private-context-prepared context=2 state_revision=4 live_internal_bytes=41951424 live_internal_allocations=16 live_exported_bytes=41287680 live_exported_allocations=9 peak_internal_bytes=41951424 peak_internal_allocations=16 peak_exported_bytes=41287680 peak_exported_allocations=9
@@ -46,7 +46,6 @@ framegen-vulkan: live profile resource change requested a game-owned swapchain r
 framegen-vulkan: present diagnostics: operation=runtime-transition-recreation-requested context=1 state_revision=2 reason=profile-resources lower_present_result=0 signal=VK_ERROR_OUT_OF_DATE_KHR delivery=one-shot-after-semaphore-consumption
 framegen-vulkan: present diagnostics: operation=original-present-recreation-propagate context=2 frame=10 sequence=20 result=-1000001004 action=application-image-submitted-before-recreation
 framegen-vulkan: present diagnostics: operation=swapchain-recreation-observed context=2 role=frame-generation swapchain=1234 source=upstream-or-driver
-framegen-vulkan: present diagnostics: operation=replacement-wsi-prime context=2 reason=null-old-swapchain spatial_scaling_active=1 wait_semaphores=1 frame=0 sequence=1 action=direct-application-present-before-spatial-work
 framegen-vulkan: present diagnostics: operation=replacement-backend-stabilization context=2 phase=started duration_ms=250 action=scaled-real-frame-only
 framegen-vulkan: present diagnostics: operation=runtime-state-applied context=2 state_revision=2 adaptive=1 target_fps=110 effective_flow_scale=0.75 lighter_model=1 generated_frame_capacity=3 hdr=1
 framegen-vulkan: presentation timing initialized; owner=renderer; transport=VK_EXT_present_timing; active=1
@@ -62,20 +61,6 @@ framegen-vulkan: present diagnostics: operation=gpu-headroom context=1 state=lim
 framegen-vulkan: present diagnostics: operation=adaptive-efficiency-probe-cancelled context=1 generated_limit=1 baseline_base_fps=40 current_base_fps=40 projected_output_fps=80 reason=gpu-headroom-source-cap
 framegen-vulkan: present diagnostics: operation=runtime-health-unavailable reason=device-monitor-limit
 framegen-vulkan: present diagnostics: operation=present-phase-summary context=1 pid=4242 tid=4243 sample_end_monotonic_ms=3600000 calls=45 total_mean_ms=2 total_max_ms=4 render_fence_mean_ms=0.2 render_fence_max_ms=1
-framegen-vulkan: spatial scaling surface virtualized: source=854x532; presentation=1280x800; policy_revision=4; query_generation=9
-framegen-vulkan: spatial scaling surface bridge: operation=bridge-failure; pid=4242; bridge=12; surface=1234; swapchain=5678; xwayland_server=0; window=5678; boundary=acquire; reason=association-retired; result=-1000001004; errno=0; display_error=0
-framegen-vulkan: spatial scaling surface bridge: surface=1234; xwayland_server=0; window=5678; transport=wayland; gamescope_wsi=isolated; application_surface=x11; extent_contract=window
-framegen-vulkan: spatial scaling window extent: operation=capability-query; surface=1234; window=5678; previous=1152x720; current=2560x1440; query_generation=3
-framegen-vulkan: spatial scaling window extent: operation=swapchain-create; surface=1234; swapchain=9999; window=5678; queried=1152x720; query_generation=2; application=1152x720; current=2560x1440; presentation=2304x1440; exact_window_extent=1; extent_contract=window
-framegen-vulkan: spatial scaling window extent: operation=swapchain-create; surface=1234; swapchain=10000; window=5678; queried=1920x1080; query_generation=4; application=2560x1440; current=1920x1080; presentation=3840x2160; exact_window_extent=0; extent_contract=application-override
-framegen-vulkan: spatial scaling window extent: operation=swapchain-out-of-date; surface=1234; swapchain=9999; window=5678; application=1152x720; current=2560x1440; boundary=swapchain-create; action=requery-before-application-acquire
-framegen-vulkan: spatial scaling swapchain policy: requested=854x532; surface_current=1280x800; surface_extent_mode=fixed; advertised_source=854x532; advertised_presentation=1280x800; actual_source=854x532; actual_presentation=1280x800; policy_revision=4; contract_policy_revision=4; query_generation=9; selected_source=854x532; selected_presentation=1280x800; format=44; format_supported=1; shape_supported=1; queue_presentation_support=supported; queue_commands_supported=1; variable_feedback_suppressed=0; inactive_reason=none; source_presentation_split=1; active=1
-framegen-vulkan: spatial scaling swapchain policy: requested=1280x800; surface_current=1280x800; surface_extent_mode=fixed; advertised_source=854x532; advertised_presentation=1280x800; actual_source=1280x800; actual_presentation=1280x800; policy_revision=4; contract_policy_revision=4; query_generation=9; selected_source=0x0; selected_presentation=0x0; format=44; format_supported=1; shape_supported=1; queue_presentation_support=not-checked; queue_commands_supported=1; variable_feedback_suppressed=0; inactive_reason=application-extent-override-no-source-presentation-split; source_presentation_split=0; active=0
-framegen-vulkan: spatial scaling active: source=854x532; presentation=1280x800; factor=1.5; requested_method=ls1; active_method=ls1; sharpness=0.5; ls1_model_variant=2; ls1_translator=/runtime/libvkd3d-shader.so.1; working_format=37; pipeline=pre-frame-generation; placement_reason=presentation-within-low-resolution-budget
-framegen-vulkan: LS1 scaling unavailable; using framegen-vulkan fallback: test translator unavailable
-framegen-vulkan: spatial scaling variable-surface feedback guard: surface=5678; previous_source=500x500; previous_presentation=750x750; requested=750x750; action=native-feedback-guard
-framegen-vulkan: standalone spatial scaling: frame-generation backend and interop resources were not created
-framegen-vulkan: multi-swapchain spatial-scaling present rejected before semaphore consumption; batch scaling is not supported
 framegen-vulkan: present diagnostics: operation=adaptive-ramp context=1 old_limit=0 new_limit=1
 framegen-vulkan: present diagnostics: operation=adaptive-plan context=1 base_fps=60 target_fps=90 generated=1 max_generated=1 stable_cadence=0 target_clock=1 target_budget_credit_outputs=0.25 target_deferred_budget_output=1 target_phase_error_ms=-2.1 source_interval_samples=60 source_interval_mean_ms=16.6 source_interval_stddev_ms=1.2 source_interval_p95_ms=18.5 source_interval_p99_ms=20.5 generated_count_changes=29 requested_interval_samples=90 requested_interval_mean_ms=11.1 requested_interval_stddev_ms=1.3 requested_interval_p95_ms=13.5 requested_interval_p99_ms=13.5 target_phase_error_samples=60 target_phase_error_rms_ms=2.2 target_phase_error_max_ms=5.5
 framegen-vulkan: present diagnostics: operation=adaptive-wsi-headroom-limit context=1 requested_min_images=3 images=5 requested_generated=2 admitted_generated=1 previous_generated_capacity=2 effective_generated_capacity=1 evidence=higher-multiplier-partial-admission action=retain-proven-generated-capacity
@@ -359,7 +344,7 @@ class DiagnosticsHelperTests(unittest.TestCase):
 
     def test_context_anchors_isolate_layer_roles_and_processes(self):
         records = []
-        for role in ("frame-generation", "spatial-scaling"):
+        for role in ("frame-generation",):
             records.extend(
                 f"framegen-vulkan: present diagnostics: operation=runtime-state-applied context=1 role={role} state_revision={revision}"
                 for revision in (1, 2)
@@ -376,7 +361,7 @@ class DiagnosticsHelperTests(unittest.TestCase):
             result = self._run("--log", str(path), "--lines", "1", "all")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.splitlines(), records + [recent])
-        self.assertIn("earlier_context_records=12", result.stderr)
+        self.assertIn("earlier_context_records=6", result.stderr)
 
     def test_pacing_profile_is_retained_without_verbose_diagnostics(self):
         record = "framegen-vulkan: present diagnostics: operation=pacing-profile version=1 context=1 sources=60 within_batch_mean_ms=8.3 between_batches_mean_ms=8.4"
@@ -505,7 +490,6 @@ class DiagnosticsHelperTests(unittest.TestCase):
             path = self._fixture_path(Path(temporary_directory))
             result = self._run("--log", str(path), "scaling")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("spatial scaling surface virtualized", result.stdout)
         self.assertIn("operation=gamescope-bridge-timing", result.stdout)
         self.assertIn("presentation timing initialized; owner=renderer; transport=VK_EXT_present_timing; active=1", result.stdout)
         self.assertIn("presentation timing fallback; owner=renderer; transport=VK_EXT_present_timing; reason=feedback-or-clock-unavailable", result.stdout)
@@ -517,38 +501,6 @@ class DiagnosticsHelperTests(unittest.TestCase):
         self.assertIn("operation=application-present-mode", result.stdout)
         self.assertIn("operation=application-present-wait", result.stdout)
         self.assertIn("first_failure_result=2 first_failure_present_id=20 first_failure_timeout_ns=0 first_failure_duration_ms=0.02", result.stdout)
-        self.assertIn("spatial scaling surface bridge", result.stdout)
-        self.assertIn("operation=bridge-failure", result.stdout)
-        self.assertIn("reason=association-retired; result=-1000001004", result.stdout)
-        self.assertIn("application_surface=x11; extent_contract=window", result.stdout)
-        self.assertIn("transport=wayland; gamescope_wsi=isolated", result.stdout)
-        self.assertIn("selected_source=854x532", result.stdout)
-        self.assertIn("selected_presentation=1280x800", result.stdout)
-        self.assertIn("surface_extent_mode=fixed", result.stdout)
-        self.assertIn("advertised_source=854x532", result.stdout)
-        self.assertIn("advertised_presentation=1280x800", result.stdout)
-        self.assertIn("actual_source=854x532", result.stdout)
-        self.assertIn("actual_presentation=1280x800", result.stdout)
-        self.assertIn("policy_revision=4", result.stdout)
-        self.assertIn("contract_policy_revision=4", result.stdout)
-        self.assertIn("query_generation=9", result.stdout)
-        self.assertIn("inactive_reason=none", result.stdout)
-        self.assertIn(
-            "inactive_reason=application-extent-override-no-source-presentation-split",
-            result.stdout,
-        )
-        self.assertIn("source_presentation_split=0", result.stdout)
-        self.assertIn("queue_presentation_support=supported", result.stdout)
-        self.assertIn("queue_commands_supported=1", result.stdout)
-        self.assertIn("spatial scaling active", result.stdout)
-        self.assertIn("requested_method=ls1", result.stdout)
-        self.assertIn("active_method=ls1", result.stdout)
-        self.assertIn("ls1_model_variant=2", result.stdout)
-        self.assertIn("pipeline=pre-frame-generation", result.stdout)
-        self.assertIn("LS1 scaling unavailable; using framegen-vulkan fallback", result.stdout)
-        self.assertIn("action=native-feedback-guard", result.stdout)
-        self.assertIn("standalone spatial scaling", result.stdout)
-        self.assertIn("multi-swapchain spatial-scaling present rejected", result.stdout)
         self.assertIn("runtime-transition-pending", result.stdout)
         self.assertIn("swapchain colour pipeline", result.stdout)
         self.assertNotIn("adaptive-ramp", result.stdout)
@@ -677,22 +629,8 @@ class DiagnosticsHelperTests(unittest.TestCase):
                     self.assertIn("pacing_owner=fgvk-target-clock", result.stdout)
                     self.assertIn("scheduler_reset=0", result.stdout)
                     self.assertIn("recreation=0", result.stdout)
-                    self.assertIn("operation=replacement-wsi-prime", result.stdout)
                     self.assertIn("operation=replacement-backend-stabilization", result.stdout)
                     self.assertIn("frame_generation_width=1280", result.stdout)
-                    self.assertIn("spatial_pipeline=pre-frame-generation", result.stdout)
-                    self.assertIn("spatial scaling active", result.stdout)
-                    self.assertIn(
-                        "placement_reason=presentation-within-low-resolution-budget",
-                        result.stdout,
-                    )
-                    self.assertIn("action=native-feedback-guard", result.stdout)
-                    self.assertIn("spatial scaling window extent", result.stdout)
-                    self.assertIn("queried=1152x720", result.stdout)
-                    self.assertIn("current=2560x1440", result.stdout)
-                    self.assertIn("boundary=swapchain-create", result.stdout)
-                    self.assertIn("action=requery-before-application-acquire", result.stdout)
-                    self.assertIn("extent_contract=application-override", result.stdout)
 
     def test_config_preset_correlates_requested_and_applied_state(self):
         with tempfile.TemporaryDirectory() as temporary_directory:

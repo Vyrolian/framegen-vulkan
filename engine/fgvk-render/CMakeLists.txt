@@ -8,7 +8,6 @@ set(PRESENT_RECORD_SOURCES
 set(LAYER_SOURCES
     "src/entrypoint.cpp"
     "src/gamescope_feedback.cpp"
-    "src/gamescope_scaling_surface.cpp"
     "src/instance.cpp"
     "src/present_diagnostics.cpp"
     ${PRESENT_RECORD_SOURCES}
@@ -144,7 +143,6 @@ if(FGVK_BUILD_VK_LAYER)
         target_link_libraries(${target}
             PRIVATE fgvk-adaptive
             PRIVATE fgvk-color
-            PRIVATE fgvk-spatial-scaler
             PRIVATE Threads::Threads
             PRIVATE ${CMAKE_DL_LIBS}
             PUBLIC fgvk-common
@@ -307,16 +305,6 @@ if(BUILD_TESTING)
     fgvk_register_portable_policy_test(
         fgvk-power-profile-update-tests power-profile-update)
 
-    add_executable(fgvk-spatial-scaling-policy-tests
-        "tests/spatial_scaling_policy_tests.cpp")
-    target_include_directories(fgvk-spatial-scaling-policy-tests
-        PRIVATE "src"
-        PRIVATE "../fgvk-common/include")
-    add_test(NAME spatial-scaling-policy
-        COMMAND fgvk-spatial-scaling-policy-tests)
-    fgvk_register_portable_policy_test(
-        fgvk-spatial-scaling-policy-tests spatial-scaling-policy)
-
     add_executable(fgvk-swapchain-retirement-tests
         "tests/swapchain_retirement_tests.cpp")
     target_link_libraries(fgvk-swapchain-retirement-tests
@@ -468,43 +456,6 @@ if(BUILD_TESTING)
         fgvk_register_portable_policy_test(
             fgvk-gamescope-feedback-reader-tests gamescope-feedback-reader)
 
-        add_library(fgvk-surface-client-fixture SHARED
-            "tests/gamescope_surface_client_fixture.cpp")
-        target_link_libraries(fgvk-surface-client-fixture PRIVATE Threads::Threads)
-        set_target_properties(fgvk-surface-client-fixture PROPERTIES
-            OUTPUT_NAME "wayland-client" SOVERSION 0
-            LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/surface-client-fixture")
-        add_custom_command(TARGET fgvk-surface-client-fixture POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E create_symlink
-                "$<TARGET_FILE_NAME:fgvk-surface-client-fixture>"
-                "$<TARGET_FILE_DIR:fgvk-surface-client-fixture>/libxcb.so.1"
-            COMMAND ${CMAKE_COMMAND} -E create_symlink
-                "$<TARGET_FILE_NAME:fgvk-surface-client-fixture>"
-                "$<TARGET_FILE_DIR:fgvk-surface-client-fixture>/libX11-xcb.so.1")
-        add_executable(fgvk-gamescope-scaling-surface-tests
-            "tests/gamescope_scaling_surface_tests.cpp"
-            "src/present_diagnostics.cpp" ${PRESENT_RECORD_SOURCES}
-            "src/gamescope_scaling_surface.cpp")
-        target_include_directories(fgvk-gamescope-scaling-surface-tests
-            PRIVATE "src" "../fgvk-common/include")
-        target_link_libraries(fgvk-gamescope-scaling-surface-tests
-            PRIVATE fgvk-surface-client-fixture fgvk-adaptive Threads::Threads ${CMAKE_DL_LIBS})
-        add_test(NAME gamescope-scaling-surface
-            COMMAND ${CMAKE_COMMAND} -E env
-                "FGVK_PRESENT_DIAGNOSTICS=1"
-                "LD_LIBRARY_PATH=$<TARGET_FILE_DIR:fgvk-surface-client-fixture>"
-                $<TARGET_FILE:fgvk-gamescope-scaling-surface-tests>)
-        add_test(NAME gamescope-scaling-surface-diagnostics-off
-            COMMAND ${CMAKE_COMMAND} -E env
-                "FGVK_PRESENT_DIAGNOSTICS=0"
-                "LD_LIBRARY_PATH=$<TARGET_FILE_DIR:fgvk-surface-client-fixture>"
-                $<TARGET_FILE:fgvk-gamescope-scaling-surface-tests>)
-        fgvk_register_portable_policy_test(
-            fgvk-gamescope-scaling-surface-tests gamescope-scaling-surface-diagnostics-off)
-        fgvk_register_portable_policy_test(
-            fgvk-gamescope-scaling-surface-tests gamescope-scaling-surface)
-        set_tests_properties(gamescope-scaling-surface gamescope-scaling-surface-diagnostics-off
-            PROPERTIES TIMEOUT 30)
     endif()
 
     add_executable(fgvk-adaptive-tests
