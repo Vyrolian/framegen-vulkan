@@ -58,10 +58,20 @@ int main() {
          std::to_string(static_cast<long long>(::getpid())));
     std::filesystem::create_directories(directory);
 
+    const auto& logging = defaults.settings();
+    expect(!logging.log_pacing && !logging.log_trace && !logging.log_wayland &&
+            !logging.log_gpu_cost && !logging.log_present,
+        "logging switches must default to off");
+
     ls::LaunchConfigFile configured;
     configured.settings().disable_steam_overlay = false;
     configured.settings().enable_zink = true;
     configured.settings().force_alsa_audio = true;
+    configured.settings().log_pacing = true;
+    configured.settings().log_trace = false;
+    configured.settings().log_wayland = true;
+    configured.settings().log_gpu_cost = true;
+    configured.settings().log_present = false;
     const auto canonicalPath = directory / "launcher.conf";
     configured.write(canonicalPath);
 
@@ -69,7 +79,12 @@ int main() {
             "version=1\n"
             "disable_steam_overlay=0\n"
             "enable_zink=1\n"
-            "force_alsa_audio=1\n",
+            "force_alsa_audio=1\n"
+            "log_pacing=1\n"
+            "log_trace=0\n"
+            "log_wayland=1\n"
+            "log_gpu_cost=1\n"
+            "log_present=0\n",
         "launcher configuration writer must retain its canonical shell-safe format");
 
     const ls::LaunchConfigFile restored(canonicalPath);
@@ -77,6 +92,10 @@ int main() {
             restored.settings().enable_zink &&
             restored.settings().force_alsa_audio,
         "launcher configuration must round-trip every supported setting");
+    expect(restored.settings().log_pacing && !restored.settings().log_trace &&
+            restored.settings().log_wayland && restored.settings().log_gpu_cost &&
+            !restored.settings().log_present,
+        "launcher configuration must round-trip every logging switch");
 
     for (const auto value : {"0", "1"}) {
         writeText(canonicalPath, std::string("version=1\ndisable_hdr_exposure=") + value +
@@ -94,6 +113,20 @@ int main() {
     writeText(legacyPath, "version=1\nenable_zink=1\nforce_alsa_audio=0\n");
     expect(ls::LaunchConfigFile(legacyPath).settings().disable_steam_overlay,
         "an existing launcher configuration must use the new overlay default");
+    const ls::LaunchConfigFile legacyFile(legacyPath);
+    const auto& legacy = legacyFile.settings();
+    expect(!legacy.log_pacing && !legacy.log_trace && !legacy.log_wayland &&
+            !legacy.log_gpu_cost && !legacy.log_present,
+        "a launcher configuration without logging switches must load them as off");
+    expect(rejects(directory / "duplicate-logging.conf", "version=1\nlog_pacing=1\nlog_pacing=0\n") &&
+            rejects(directory / "duplicate-trace.conf", "version=1\nlog_trace=1\nlog_trace=0\n") &&
+            rejects(directory / "duplicate-wayland.conf", "version=1\nlog_wayland=1\nlog_wayland=0\n") &&
+            rejects(directory / "duplicate-gpu-cost.conf", "version=1\nlog_gpu_cost=1\nlog_gpu_cost=0\n") &&
+            rejects(directory / "duplicate-present.conf", "version=1\nlog_present=1\nlog_present=0\n"),
+        "duplicate logging switches must be rejected");
+    expect(rejects(directory / "invalid-logging.conf", "version=1\nlog_trace=true\n") &&
+            rejects(directory / "invalid-present.conf", "version=1\nlog_present=2\n"),
+        "logging switches must use canonical booleans");
     expect(rejects(directory / "invalid-overlay.conf",
             "version=1\ndisable_steam_overlay=true\n"),
         "overlay launcher policy must accept only canonical booleans");

@@ -3,6 +3,7 @@
 mod app;
 mod config;
 mod launch;
+mod launcher_conf;
 mod picker;
 mod processes;
 mod state;
@@ -14,6 +15,7 @@ fn main() -> eframe::Result {
         std::process::exit(status);
     }
     let path = config::resolve_path(|key| std::env::var_os(key));
+    let launcher_path = launcher_conf::resolve_path(|key| std::env::var_os(key));
     let state_path = state::resolve_path(|key| std::env::var_os(key));
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -27,7 +29,7 @@ fn main() -> eframe::Result {
         options,
         Box::new(move |cc| {
             theme::apply(&cc.egui_ctx);
-            Ok(Box::new(app::App::new(path, state_path)))
+            Ok(Box::new(app::App::new(path, state_path, launcher_path)))
         }),
     )
 }

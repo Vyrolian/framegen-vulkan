@@ -325,6 +325,101 @@ if [[ "$invalid_config_output" != *"ignoring invalid launcher configuration"* ||
 fi
 rm -f -- "$launch_config"
 
+# Logging switches in launcher.conf export the renderer's diagnostic variables as
+# 1. The probe prints each variable separately, with "unset" for an absent one, so
+# a caller's explicit 0 and a missing export are both visible.
+logging_probe='printf "%s|%s|%s|%s|%s\n" "${FGVK_PACING_PROFILE-unset}" "${FGVK_PACING_PROFILE_TRACE-unset}" "${FGVK_PACING_PROFILE_WAYLAND-unset}" "${FGVK_PACING_PROFILE_GPU_SPLIT-unset}" "${FGVK_PRESENT_DIAGNOSTICS-unset}"'
+probe_logging() {
+    local config="$1"
+    shift
+    env -u FGVK_PACING_PROFILE -u FGVK_PACING_PROFILE_TRACE -u FGVK_PACING_PROFILE_WAYLAND \
+        -u FGVK_PACING_PROFILE_GPU_SPLIT -u FGVK_PRESENT_DIAGNOSTICS -u DISABLE_FGVK \
+        -u GAMESCOPE_WAYLAND_DISPLAY -u WAYLAND_DISPLAY \
+        FGVK_LAUNCH_CONFIG="$config" XDG_DATA_HOME="$test_data_home" "$@" \
+        "$launcher" bash -c "$logging_probe" 2> "$test_root/logging.stderr"
+}
+expect_logging() {
+    local label="$1" expected="$2" config="$3"
+    shift 3
+    local actual
+    actual="$(probe_logging "$config" "$@")" || fail "logging probe failed: $label"
+    if [[ "$actual" != "$expected" ]]; then
+        fail "$label: expected $expected, got $actual"
+    fi
+}
+
+logging_keys=(log_pacing log_trace log_wayland log_gpu_cost log_present)
+logging_on_expected=('1|unset|unset|unset|unset' 'unset|1|unset|unset|unset' 'unset|unset|1|unset|unset' '1|unset|unset|1|unset' 'unset|unset|unset|unset|1')
+for index in "${!logging_keys[@]}"; do
+    key="${logging_keys[$index]}"
+    on_config="$test_root/$key-on.conf"
+    off_config="$test_root/$key-off.conf"
+    printf '%s\n' 'version=1' "$key=1" > "$on_config"
+    printf '%s\n' 'version=1' "$key=0" > "$off_config"
+    expect_logging "$key=1 exports its variable" "${logging_on_expected[$index]}" "$on_config"
+    expect_logging "$key=0 exports nothing" 'unset|unset|unset|unset|unset' "$off_config"
+done
+
+logging_none="$test_root/logging-none.conf"
+printf '%s\n' 'version=1' > "$logging_none"
+expect_logging "absent switches export nothing" 'unset|unset|unset|unset|unset' "$logging_none"
+
+logging_all="$test_root/logging-all.conf"
+printf '%s\n' 'version=1' 'log_pacing=1' 'log_trace=1' 'log_wayland=1' 'log_gpu_cost=1' 'log_present=1' > "$logging_all"
+expect_logging "every switch exports its variable" '1|1|1|1|1' "$logging_all"
+
+# A variable typed by the caller always wins, including an explicit 0.
+expect_logging "caller FGVK_PACING_PROFILE=0 keeps pacing off" \
+    '0|unset|unset|unset|unset' "$test_root/log_pacing-on.conf" FGVK_PACING_PROFILE=0
+expect_logging "caller FGVK_PACING_PROFILE=0 wins over GPU cost" \
+    '0|unset|unset|1|unset' "$test_root/log_gpu_cost-on.conf" FGVK_PACING_PROFILE=0
+expect_logging "caller GPU split=0 wins over GPU cost" \
+    '1|unset|unset|0|unset' "$test_root/log_gpu_cost-on.conf" FGVK_PACING_PROFILE_GPU_SPLIT=0
+expect_logging "caller trace=0 wins over trace" \
+    'unset|0|unset|unset|unset' "$test_root/log_trace-on.conf" FGVK_PACING_PROFILE_TRACE=0
+expect_logging "caller present=0 wins over present" \
+    'unset|unset|unset|unset|0' "$test_root/log_present-on.conf" FGVK_PRESENT_DIAGNOSTICS=0
+expect_logging "caller value is kept when the switch is off" \
+    '1|unset|unset|unset|unset' "$logging_none" FGVK_PACING_PROFILE=1
+
+expect_logging "DISABLE_FGVK=1 exports no logging variables" \
+    'unset|unset|unset|unset|unset' "$logging_all" DISABLE_FGVK=1
+
+# A duplicate or non-boolean switch makes the whole file invalid, so nothing is exported.
+logging_duplicate="$test_root/logging-duplicate.conf"
+printf '%s\n' 'version=1' 'log_pacing=1' 'log_trace=1' 'log_trace=0' > "$logging_duplicate"
+expect_logging "duplicate logging switch exports nothing" \
+    'unset|unset|unset|unset|unset' "$logging_duplicate"
+[[ "$(cat "$test_root/logging.stderr")" == *"ignoring invalid launcher configuration"* ]] ||
+    fail "duplicate logging switch was not reported"
+logging_boolean="$test_root/logging-boolean.conf"
+printf '%s\n' 'version=1' 'log_present=true' > "$logging_boolean"
+expect_logging "non-boolean logging switch exports nothing" \
+    'unset|unset|unset|unset|unset' "$logging_boolean"
+[[ "$(cat "$test_root/logging.stderr")" == *"ignoring invalid launcher configuration"* ]] ||
+    fail "non-boolean logging switch was not reported"
+
+# The retired key stays accepted and ignored beside the logging switches.
+logging_retired="$test_root/logging-retired.conf"
+printf '%s\n' 'version=1' 'disable_hdr_exposure=1' 'log_wayland=1' > "$logging_retired"
+expect_logging "retired HDR key is accepted beside a logging switch" \
+    'unset|unset|1|unset|unset' "$logging_retired"
+[[ ! -s "$test_root/logging.stderr" ]] || fail "retired HDR key produced a notice"
+
+# A Flatpak run receives the same exported variables as a native launch.
+logging_flatpak_dir="$test_root/logging-flatpak"
+mkdir -p "$logging_flatpak_dir"
+printf '%s\n' '#!/usr/bin/env bash' "$logging_probe" > "$logging_flatpak_dir/flatpak"
+chmod +x "$logging_flatpak_dir/flatpak"
+flatpak_logging_output="$(env -u FGVK_PACING_PROFILE -u FGVK_PACING_PROFILE_TRACE \
+    -u FGVK_PACING_PROFILE_WAYLAND -u FGVK_PACING_PROFILE_GPU_SPLIT -u FGVK_PRESENT_DIAGNOSTICS \
+    -u DISABLE_FGVK -u GAMESCOPE_WAYLAND_DISPLAY -u WAYLAND_DISPLAY \
+    FGVK_LAUNCH_CONFIG="$test_root/log_gpu_cost-on.conf" XDG_DATA_HOME="$test_data_home" \
+    "$launcher" "$logging_flatpak_dir/flatpak" run example.App)" ||
+    fail "Flatpak logging launch failed"
+[[ "$flatpak_logging_output" == '1|unset|unset|1|unset' ]] ||
+    fail "Flatpak launch did not receive the logging variables: $flatpak_logging_output"
+
 set +e
 no_command_output="$({ "$launcher"; } 2>&1)"
 no_command_status=$?

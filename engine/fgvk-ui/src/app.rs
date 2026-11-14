@@ -11,6 +11,7 @@ use egui::{
 };
 
 use crate::config::{self, Config, ConfigView, FpsMemory, Mode, Profile, ProfileKey, Settings};
+use crate::launcher_conf::{LauncherConf, Logging, Switch};
 use crate::picker::Picker;
 use crate::processes;
 use crate::state;
@@ -35,6 +36,30 @@ const MODES: [Mode; 6] = [
     Mode::Adaptive,
 ];
 const MAX_MULTIPLIERS: [i64; 4] = [2, 3, 4, 5];
+/// The Logging section, in launcher order: the switch, its checkbox label and the hint under it.
+const LOGGING: [(Switch, &str, &str); 5] = [
+    (Switch::Pacing, "Pacing log", "Light timing summaries."),
+    (
+        Switch::Trace,
+        "Detailed trace",
+        "Every present, acquire and wait. Larger file.",
+    ),
+    (
+        Switch::Wayland,
+        "On-screen times",
+        "Compositor presentation feedback.",
+    ),
+    (
+        Switch::GpuCost,
+        "GPU cost",
+        "Frame-generation GPU time. Does not change pacing.",
+    ),
+    (
+        Switch::Present,
+        "Present diagnostics",
+        "Verbose renderer messages on stderr.",
+    ),
+];
 
 enum Status {
     Idle,
@@ -55,6 +80,8 @@ struct NameEdit {
 
 pub struct App {
     config: Config,
+    /// The standalone launcher's `launcher.conf`, which holds the Logging switches.
+    launcher: LauncherConf,
     selected: usize,
     status: Status,
     name_edit: Option<NameEdit>,
@@ -80,10 +107,15 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(path: Result<PathBuf, String>, state_path: Option<PathBuf>) -> Self {
+    pub fn new(
+        path: Result<PathBuf, String>,
+        state_path: Option<PathBuf>,
+        launcher_path: Result<PathBuf, String>,
+    ) -> Self {
         let remembered = state_path.as_deref().and_then(state::load);
         Self {
             config: Config::open(path),
+            launcher: LauncherConf::open(launcher_path),
             selected: 0,
             status: Status::Idle,
             name_edit: None,
@@ -148,13 +180,18 @@ impl App {
     fn content(&mut self, ui: &mut Ui) {
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
-            .show(ui, |ui| match self.config.view() {
-                ConfigView::Missing(path) => self.missing(ui, &path),
-                ConfigView::Invalid(message) => {
-                    self.clear_profile_drafts();
-                    invalid(ui, &message);
+            .show(ui, |ui| {
+                match self.config.view() {
+                    ConfigView::Missing(path) => self.missing(ui, &path),
+                    ConfigView::Invalid(message) => {
+                        self.clear_profile_drafts();
+                        invalid(ui, &message);
+                    }
+                    ConfigView::Ready(settings) => self.editor(ui, settings),
                 }
-                ConfigView::Ready(settings) => self.editor(ui, settings),
+                // The launcher settings are separate from conf.toml, so this section shows
+                // whatever state the profile file is in.
+                self.logging(ui);
             });
     }
 
@@ -620,6 +657,31 @@ impl App {
             "Needed for LSFG and LS1 scaling. Leave empty to remove the setting.",
         );
     }
+
+    /// Logging switches in `launcher.conf`. The launcher exports them as renderer variables when it
+    /// starts a game. A file that fails the strict rules is shown as an error and left unchanged.
+    fn logging(&mut self, ui: &mut Ui) {
+        section(ui, "Logging");
+        let logging = match self.launcher.view() {
+            Ok(logging) => logging,
+            Err(message) => {
+                ui.label(RichText::new(message).color(theme::RED));
+                Logging::default()
+            }
+        };
+        for (switch, label, text) in LOGGING {
+            let mut on = logging.get(switch);
+            if ui.checkbox(&mut on, label).changed() {
+                let result = self.launcher.set(switch, on);
+                self.report(result);
+            }
+            hint(ui, text);
+        }
+        hint(
+            ui,
+            "Applies the next time a game starts. Logs: /tmp/fgvk-pacing-*.log",
+        );
+    }
 }
 
 impl eframe::App for App {
@@ -629,8 +691,13 @@ impl eframe::App for App {
             return;
         }
         self.last_poll = Instant::now();
-        if !self.has_pending() && self.config.changed_on_disk() {
-            self.config.reload();
+        if !self.has_pending() {
+            if self.config.changed_on_disk() {
+                self.config.reload();
+            }
+            if self.launcher.changed_on_disk() {
+                self.launcher.reload();
+            }
         }
     }
 

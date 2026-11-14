@@ -12,6 +12,12 @@ namespace ls {
         bool disable_steam_overlay{true};
         bool enable_zink{false};
         bool force_alsa_audio{false};
+        /// Logging switches. The launcher exports the matching renderer variables when true.
+        bool log_pacing{false};
+        bool log_trace{false};
+        bool log_wayland{false};
+        bool log_gpu_cost{false};
+        bool log_present{false};
     };
 
     /// Strict standalone launcher configuration kept separate from Renderer TOML.

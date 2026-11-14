@@ -129,6 +129,25 @@ FGVK_CONFIG="$HOME/.config/framegen-vulkan/conf.toml" FGVK_PROFILE="My game" ~/.
 
 `DISABLE_FGVK=1` bypasses framegen-vulkan. Ordinary game launchers use normal matching.
 
+## Launcher settings
+
+These keys live in `${XDG_CONFIG_HOME:-$HOME/.config}/framegen-vulkan/launcher.conf`, or in `FGVK_LAUNCH_CONFIG` when that is set. The `fgvk` launcher reads them before the game starts. Boolean keys take only `0` or `1`. A duplicate or unknown key makes the whole file invalid, and the launcher then applies no settings from it.
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `version` | required | Must be `1`. |
+| `disable_steam_overlay` | `1` | Turns off Steam's in-game overlay and FPS counter before the game starts, which may reduce stutter and may affect Steam Input. |
+| `enable_zink` | `0` | Runs OpenGL through Vulkan. |
+| `force_alsa_audio` | `0` | Changes the audio path for compatibility problems. |
+| `disable_hdr_exposure` | Not written | Retired. `0` or `1` is still accepted and ignored. |
+| `log_pacing` | `0` | Exports `FGVK_PACING_PROFILE=1`: light pacing summaries. |
+| `log_trace` | `0` | Exports `FGVK_PACING_PROFILE_TRACE=1`: every present, acquire and wait. Larger file. |
+| `log_wayland` | `0` | Exports `FGVK_PACING_PROFILE_WAYLAND=1`: compositor presentation feedback. |
+| `log_gpu_cost` | `0` | Exports `FGVK_PACING_PROFILE_GPU_SPLIT=1` and `FGVK_PACING_PROFILE=1`: frame-generation GPU time. Does not change pacing. |
+| `log_present` | `0` | Exports `FGVK_PRESENT_DIAGNOSTICS=1`: verbose renderer messages on stderr. |
+
+A logging key exports its variable only when the caller has not already set that variable, so a value in the launch options always wins, including `=0`. The Logging section of the `fgvk` settings window writes the five `log_*` keys.
+
 ## Environment-only configuration
 
 With `FGVK_ENV=1`, `FGVK_GPU_HEADROOM_PERCENT=0|5|10|15|20` selects the same reserve. Other values are rejected.

@@ -194,6 +194,16 @@ fgvk_launch_enable_zink=0
 fgvk_launch_force_alsa_audio=0
 fgvk_launch_enable_zink_seen=0
 fgvk_launch_force_alsa_audio_seen=0
+fgvk_launch_log_pacing=0
+fgvk_launch_log_trace=0
+fgvk_launch_log_wayland=0
+fgvk_launch_log_gpu_cost=0
+fgvk_launch_log_present=0
+fgvk_launch_log_pacing_seen=0
+fgvk_launch_log_trace_seen=0
+fgvk_launch_log_wayland_seen=0
+fgvk_launch_log_gpu_cost_seen=0
+fgvk_launch_log_present_seen=0
 fgvk_launch_config_valid=1
 if [[ -f "$fgvk_launch_config_path" ]]; then
     while IFS= read -r fgvk_launch_line || [[ -n "$fgvk_launch_line" ]]; do
@@ -259,6 +269,51 @@ if [[ -f "$fgvk_launch_config_path" ]]; then
                 fgvk_launch_force_alsa_audio="$fgvk_launch_value"
                 fgvk_launch_force_alsa_audio_seen=1
                 ;;
+            log_pacing)
+                if [[ "$fgvk_launch_log_pacing_seen" != 0 ||
+                        "$fgvk_launch_value" != 0 && "$fgvk_launch_value" != 1 ]]; then
+                    fgvk_launch_config_valid=0
+                    break
+                fi
+                fgvk_launch_log_pacing="$fgvk_launch_value"
+                fgvk_launch_log_pacing_seen=1
+                ;;
+            log_trace)
+                if [[ "$fgvk_launch_log_trace_seen" != 0 ||
+                        "$fgvk_launch_value" != 0 && "$fgvk_launch_value" != 1 ]]; then
+                    fgvk_launch_config_valid=0
+                    break
+                fi
+                fgvk_launch_log_trace="$fgvk_launch_value"
+                fgvk_launch_log_trace_seen=1
+                ;;
+            log_wayland)
+                if [[ "$fgvk_launch_log_wayland_seen" != 0 ||
+                        "$fgvk_launch_value" != 0 && "$fgvk_launch_value" != 1 ]]; then
+                    fgvk_launch_config_valid=0
+                    break
+                fi
+                fgvk_launch_log_wayland="$fgvk_launch_value"
+                fgvk_launch_log_wayland_seen=1
+                ;;
+            log_gpu_cost)
+                if [[ "$fgvk_launch_log_gpu_cost_seen" != 0 ||
+                        "$fgvk_launch_value" != 0 && "$fgvk_launch_value" != 1 ]]; then
+                    fgvk_launch_config_valid=0
+                    break
+                fi
+                fgvk_launch_log_gpu_cost="$fgvk_launch_value"
+                fgvk_launch_log_gpu_cost_seen=1
+                ;;
+            log_present)
+                if [[ "$fgvk_launch_log_present_seen" != 0 ||
+                        "$fgvk_launch_value" != 0 && "$fgvk_launch_value" != 1 ]]; then
+                    fgvk_launch_config_valid=0
+                    break
+                fi
+                fgvk_launch_log_present="$fgvk_launch_value"
+                fgvk_launch_log_present_seen=1
+                ;;
             *)
                 fgvk_launch_config_valid=0
                 break
@@ -274,11 +329,18 @@ if [[ -f "$fgvk_launch_config_path" ]]; then
         fgvk_launch_enable_zink=0
         fgvk_launch_force_alsa_audio=0
         fgvk_disable_steam_overlay=1
+        fgvk_launch_log_pacing=0
+        fgvk_launch_log_trace=0
+        fgvk_launch_log_wayland=0
+        fgvk_launch_log_gpu_cost=0
+        fgvk_launch_log_present=0
     fi
 fi
 unset fgvk_launch_config_path fgvk_launch_line fgvk_launch_key fgvk_launch_value
 unset fgvk_launch_version_seen fgvk_launch_config_valid
 unset fgvk_launch_enable_zink_seen fgvk_launch_force_alsa_audio_seen
+unset fgvk_launch_log_pacing_seen fgvk_launch_log_trace_seen fgvk_launch_log_wayland_seen
+unset fgvk_launch_log_gpu_cost_seen fgvk_launch_log_present_seen
 unset fgvk_disable_steam_overlay_seen
 unset fgvk_disable_hdr_exposure_seen
 
@@ -299,6 +361,31 @@ if [[ "$fgvk_launch_force_alsa_audio" == 1 ]]; then
     esac
 fi
 unset fgvk_launch_enable_zink fgvk_launch_force_alsa_audio
+
+# Logging switches from launcher.conf export the renderer's diagnostic variables
+# as 1. A variable the caller already set, including an explicit 0, always wins,
+# and nothing is exported when framegen-vulkan is disabled. FGVK_PACING_PROFILE=1
+# is also required by GPU split timing, so either pacing or GPU cost exports it.
+if [[ "${DISABLE_FGVK:-0}" != 1 ]]; then
+    if [[ "$fgvk_launch_log_pacing" == 1 || "$fgvk_launch_log_gpu_cost" == 1 ]] &&
+            [[ -z "${FGVK_PACING_PROFILE+x}" ]]; then
+        export FGVK_PACING_PROFILE=1
+    fi
+    if [[ "$fgvk_launch_log_trace" == 1 && -z "${FGVK_PACING_PROFILE_TRACE+x}" ]]; then
+        export FGVK_PACING_PROFILE_TRACE=1
+    fi
+    if [[ "$fgvk_launch_log_wayland" == 1 && -z "${FGVK_PACING_PROFILE_WAYLAND+x}" ]]; then
+        export FGVK_PACING_PROFILE_WAYLAND=1
+    fi
+    if [[ "$fgvk_launch_log_gpu_cost" == 1 && -z "${FGVK_PACING_PROFILE_GPU_SPLIT+x}" ]]; then
+        export FGVK_PACING_PROFILE_GPU_SPLIT=1
+    fi
+    if [[ "$fgvk_launch_log_present" == 1 && -z "${FGVK_PRESENT_DIAGNOSTICS+x}" ]]; then
+        export FGVK_PRESENT_DIAGNOSTICS=1
+    fi
+fi
+unset fgvk_launch_log_pacing fgvk_launch_log_trace fgvk_launch_log_wayland
+unset fgvk_launch_log_gpu_cost fgvk_launch_log_present
 
 # vkBasalt is no longer bundled. An ENABLE_VKBASALT request is ignored with one
 # notice. The variables are removed here, and DISABLE_VKBASALT=1 keeps any

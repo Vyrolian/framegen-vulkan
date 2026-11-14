@@ -406,7 +406,7 @@ impl Config {
     }
 }
 
-fn modified_time(path: &Path) -> Option<SystemTime> {
+pub(crate) fn modified_time(path: &Path) -> Option<SystemTime> {
     fs::metadata(path).and_then(|meta| meta.modified()).ok()
 }
 
@@ -722,7 +722,7 @@ fn write_global_dll(doc: &mut DocumentMut, dll: Option<&str>) {
 ///
 /// Symbolic links are followed so the link itself survives. The original file's
 /// permissions carry over to the replacement.
-fn write_atomically(path: &Path, text: &str) -> io::Result<()> {
+pub(crate) fn write_atomically(path: &Path, text: &str) -> io::Result<()> {
     let target = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let Some(file_name) = target.file_name() else {
         return Err(io::Error::new(

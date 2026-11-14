@@ -47,6 +47,11 @@ LaunchConfigFile::LaunchConfigFile(const std::filesystem::path& path) {
     bool enableZinkSeen = false;
     bool forceAlsaAudioSeen = false;
     bool disableSteamOverlaySeen = false;
+    bool logPacingSeen = false;
+    bool logTraceSeen = false;
+    bool logWaylandSeen = false;
+    bool logGpuCostSeen = false;
+    bool logPresentSeen = false;
     std::string line;
     while (std::getline(input, line)) {
         const auto content = trim(line);
@@ -85,6 +90,31 @@ LaunchConfigFile::LaunchConfigFile(const std::filesystem::path& path) {
                 throw ls::error("duplicate force_alsa_audio launcher setting");
             this->launchConf.force_alsa_audio = parseBoolean(key, value);
             forceAlsaAudioSeen = true;
+        } else if (key == "log_pacing") {
+            if (logPacingSeen)
+                throw ls::error("duplicate log_pacing launcher setting");
+            this->launchConf.log_pacing = parseBoolean(key, value);
+            logPacingSeen = true;
+        } else if (key == "log_trace") {
+            if (logTraceSeen)
+                throw ls::error("duplicate log_trace launcher setting");
+            this->launchConf.log_trace = parseBoolean(key, value);
+            logTraceSeen = true;
+        } else if (key == "log_wayland") {
+            if (logWaylandSeen)
+                throw ls::error("duplicate log_wayland launcher setting");
+            this->launchConf.log_wayland = parseBoolean(key, value);
+            logWaylandSeen = true;
+        } else if (key == "log_gpu_cost") {
+            if (logGpuCostSeen)
+                throw ls::error("duplicate log_gpu_cost launcher setting");
+            this->launchConf.log_gpu_cost = parseBoolean(key, value);
+            logGpuCostSeen = true;
+        } else if (key == "log_present") {
+            if (logPresentSeen)
+                throw ls::error("duplicate log_present launcher setting");
+            this->launchConf.log_present = parseBoolean(key, value);
+            logPresentSeen = true;
         } else {
             throw ls::error("unknown launcher setting: " + std::string(key));
         }
@@ -104,7 +134,12 @@ void LaunchConfigFile::write(const std::filesystem::path& path) const {
             << "enable_zink="
             << static_cast<int>(this->launchConf.enable_zink) << '\n'
             << "force_alsa_audio="
-            << static_cast<int>(this->launchConf.force_alsa_audio) << '\n';
+            << static_cast<int>(this->launchConf.force_alsa_audio) << '\n'
+            << "log_pacing=" << static_cast<int>(this->launchConf.log_pacing) << '\n'
+            << "log_trace=" << static_cast<int>(this->launchConf.log_trace) << '\n'
+            << "log_wayland=" << static_cast<int>(this->launchConf.log_wayland) << '\n'
+            << "log_gpu_cost=" << static_cast<int>(this->launchConf.log_gpu_cost) << '\n'
+            << "log_present=" << static_cast<int>(this->launchConf.log_present) << '\n';
         detail::writeConfigurationAtomically(path, output.str());
     } catch (const std::exception& error) {
         throw ls::error("unable to write launcher configuration", error);

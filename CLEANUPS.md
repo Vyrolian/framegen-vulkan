@@ -25,6 +25,8 @@ The optional `disable_hdr_exposure` boolean in standalone `launcher.conf` versio
 
 Standalone `launcher.conf` version 1 gains the optional `disable_steam_overlay` boolean, with true as the absent-field default. Use a matching launcher; older strict readers cannot consume the new field.
 
+Standalone `launcher.conf` version 1 gains the optional logging booleans `log_pacing`, `log_trace`, `log_wayland`, `log_gpu_cost` and `log_present`, with 0 as the absent-field default. Use a matching launcher; older strict readers cannot consume the new fields.
+
 framegen-vulkan supports direct upgrades from framegen-vulkan 2.0.0, with no maximum skipped-version gap, but does not import state from differently named experimental predecessors or pre-public file formats. A data migration can be removed only after framegen-vulkan declares a newer minimum direct-upgrade baseline than its source release or provides an equivalent state-preserving replacement.
 
 When adding transitional compatibility, update this ledger in the same change with its owner, reason, removal gate, and regression test. Prefer one generic contract test over one test per historical version when the implementation does not branch on version.

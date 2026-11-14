@@ -4,6 +4,10 @@ For installations using `fgvk`.
 
 ## 1. Enable logs
 
+Open the Logging section of the `fgvk` settings window and turn on **Present diagnostics**. The switch is saved in `launcher.conf` and applies the next time a game starts through `fgvk`. The other switches in that section are listed in the [configuration reference](CONFIGURATION-REFERENCE.md#launcher-settings).
+
+Use the variables below when the game does not start through `fgvk`, or when you need `FGVK_PRESENT_DIAGNOSTICS_THRESHOLD_MS`, which the window does not offer.
+
 Fully close the game and save its current launch settings so you can restore them afterward.
 
 **Steam or Proton:** prepend the two diagnostics variables to your existing Launch Options, preserving any profile, shader, or other settings. For a basic launch, the result is:
@@ -56,7 +60,7 @@ For timing-field meanings and the limits of log-based comparisons, see [Interpre
 
 ## 4. Restore your settings
 
-Restore the original launch settings and remove the two temporary diagnostics variables.
+Turn off the Logging switches you turned on in the settings window, then restore the original launch settings and remove the two temporary diagnostics variables.
 
 ## 5. Send the report
 
@@ -146,7 +150,7 @@ The Wayland companion's optional `--runtime-log /absolute/new-runtime.log` enabl
 
 ## Lightweight Minecraft pacing capture
 
-Set `FGVK_PACING_PROFILE=1` in the game's existing launch environment and restart it. Keep its working graphics/profile setup. For Prism Launcher, preserve the current Wrapper Command and prefix it with `env FGVK_PACING_PROFILE=1`, for example `env FGVK_PACING_PROFILE=1 mangohud /absolute/path/to/fgvk`. The profiler records CPU boundary/phase timing without enabling the broader presentation diagnostics, health worker, new GPU queries, or per-frame writes. It works with other Vulkan games too.
+For games started through `fgvk`, turn on **Pacing log** in the Logging section of the settings window; it sets the same variable. For other launchers, set `FGVK_PACING_PROFILE=1` in the game's existing launch environment and restart it. Keep its working graphics/profile setup. For Prism Launcher, preserve the current Wrapper Command and prefix it with `env FGVK_PACING_PROFILE=1`, for example `env FGVK_PACING_PROFILE=1 mangohud /absolute/path/to/fgvk`. The profiler records CPU boundary/phase timing without enabling the broader presentation diagnostics, health worker, new GPU queries, or per-frame writes. It works with other Vulkan games too.
 
 The Renderer creates a private `fgvk-pacing-<uid>-<pid>-<timestamp>.log` under `${TMPDIR:-/tmp}` at swapchain creation and prints its path once. Only framegen-vulkan timing and process/profile identity records enter this file; arbitrary game/launcher output, Java arguments and account details are not captured. CPU/GPU-only capture retains up to 16 MiB and restarts with a `pacing-profile-log-wrap` marker when full. With `FGVK_PACING_PROFILE_WAYLAND=1`, the file instead preserves its beginning up to 512 MiB, emits `pacing-profile-capture-limit`, and stops writing; earlier FG/settings portions are never overwritten. `${TMPDIR:-/tmp}` is often RAM-backed (tmpfs), so a full 512 MiB capture can hold that much memory until the file is removed. The session header records `capture_limit_bytes` and `retention=stop|wrap`. Concurrent writers use a nonblocking lock; missing/partial records produce a `pacing-profile-capture-gap` marker. No collection worker is added. Find and filter the newest capture with:
 
