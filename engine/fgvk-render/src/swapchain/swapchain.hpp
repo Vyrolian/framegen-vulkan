@@ -412,7 +412,6 @@ namespace fgvk::layer {
         struct RecoveryState {
             GeneratedImageAdmission generatedImageAdmission;
             OrderedAcquireRecovery orderedAcquireRecovery;
-            PipelineBusyRecovery pipelineBusyRecovery;
             ReplacementBackendStabilization replacementBackendStabilization;
             bool backendPending{false};
             size_t historyWarmupRemaining{0};

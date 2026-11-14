@@ -112,8 +112,7 @@ VkResult VKAPI_CALL present(VkQueue queue, const VkPresentInfoKHR* info) {
     return lowerResult;
 }
 void queueRequest() {
-    // Room for one extra queue only: a family of four with two requested would
-    // now have room for the emulated acquire too (see acquireQueueRequest).
+    // Room for one extra queue only; a larger family is covered at the end of this function.
     std::array families{VkQueueFamilyProperties{.queueCount = 3}};
     std::array priorities{0.25F, 0.75F};
     VkDeviceQueueCreateInfo requested{
@@ -149,95 +148,26 @@ void queueRequest() {
     original.pQueueCreateInfos = split.data();
     expect(!PrivatePresentQueueRequest(original, families, 0).index,
         "ignored other queue requests in the same family");
-}
-void acquireQueueRequest() {
-    std::array priorities{0.25F, 0.75F};
-    VkDeviceQueueCreateInfo requested{
+    // A family with room for two extra queues still gets exactly one: the present
+    // queue at index 2, and no second private queue is reserved.
+    std::array roomyFamilies{VkQueueFamilyProperties{.queueCount = 4}};
+    std::array roomyPriorities{0.25F, 0.75F};
+    VkDeviceQueueCreateInfo roomyRequested{
         .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
-        .queueFamilyIndex = 0, .queueCount = 2, .pQueuePriorities = priorities.data(),
+        .queueFamilyIndex = 0, .queueCount = 2, .pQueuePriorities = roomyPriorities.data(),
     };
-    VkDeviceCreateInfo original{
+    VkDeviceCreateInfo roomyOriginal{
         .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
-        .queueCreateInfoCount = 1, .pQueueCreateInfos = &requested,
+        .queueCreateInfoCount = 1, .pQueueCreateInfos = &roomyRequested,
     };
-    std::array families{VkQueueFamilyProperties{.queueCount = 4}};
-    // Room for both: the present queue at index 2 and the acquire queue at index 3.
-    PrivatePresentQueueRequest both(original, families, 0);
-    auto modified = original;
-    both.apply(modified);
-    expect(both.index == 2 && both.acquireIndex == 3 && modified.pQueueCreateInfos[0].queueCount == 4,
-        "room for two did not reserve the present and acquire queues");
-    expect(requested.queueCount == 2 && priorities[0] == 0.25F && priorities[1] == 0.75F,
-        "two-queue reservation changed the caller's arrays");
-    const float* extraPriorities = modified.pQueueCreateInfos[0].pQueuePriorities;
-    expect(extraPriorities[0] == 0.25F && extraPriorities[1] == 0.75F &&
-            extraPriorities[2] == 0.75F && extraPriorities[3] == 0.75F,
-        "two extra queues did not match the priority array length or the last priority");
-
-    // Room for one: only the present queue is reserved.
-    families[0].queueCount = 3;
-    PrivatePresentQueueRequest one(original, families, 0);
-    auto oneModified = original;
-    one.apply(oneModified);
-    expect(one.index == 2 && !one.acquireIndex && oneModified.pQueueCreateInfos[0].queueCount == 3,
-        "room for one reserved a second queue or changed the count by more than one");
-
-    // No room: neither queue is reserved.
-    families[0].queueCount = 2;
-    PrivatePresentQueueRequest none(original, families, 0);
-    expect(!none.index && !none.acquireIndex, "reserved queues beyond the family's capacity");
-
-    // Three requested of four: room for one extra only, so the acquire queue stays absent.
-    std::array threePriorities{0.1F, 0.2F, 0.3F};
-    VkDeviceQueueCreateInfo threeRequested{
-        .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
-        .queueFamilyIndex = 0, .queueCount = 3, .pQueuePriorities = threePriorities.data(),
-    };
-    VkDeviceCreateInfo threeOriginal{
-        .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
-        .queueCreateInfoCount = 1, .pQueueCreateInfos = &threeRequested,
-    };
-    families[0].queueCount = 4;
-    PrivatePresentQueueRequest three(threeOriginal, families, 0);
-    auto threeModified = threeOriginal;
-    three.apply(threeModified);
-    expect(three.index == 3 && !three.acquireIndex && threeModified.pQueueCreateInfos[0].queueCount == 4 &&
-            threeModified.pQueueCreateInfos[0].pQueuePriorities[3] == 0.3F,
-        "a three-queue request reserved a second extra queue without room");
-}
-// Holds the present lock on another thread while the candidate's acquire target is
-// tried. try_lock never blocks, so a regression fails instead of hanging.
-bool tryAcquireTargetWhilePresentHeld(const std::shared_ptr<DeferredPresentQueue>& candidate) {
-    std::atomic<bool> held{false}, release{false};
-    std::thread holder([&] {
-        const std::lock_guard lock(candidate->mutex);
-        held = true;
-        while (!release.load()) std::this_thread::sleep_for(100us);
-    });
-    while (!held.load()) std::this_thread::sleep_for(100us);
-    auto target = candidate->acquireTarget();
-    const bool acquired = target.second.try_lock();
-    if (acquired) target.second.unlock();
-    release = true;
-    holder.join();
-    return acquired;
-}
-void acquireTargetAvoidsPresentLock() {
-    auto withAcquire = std::make_shared<DeferredPresentQueue>();
-    withAcquire->queue = handle<VkQueue>(7);
-    withAcquire->acquireQueue = handle<VkQueue>(8);
-    const auto target = withAcquire->acquireTarget();
-    expect(target.first == handle<VkQueue>(8) && &target.second == &withAcquire->acquireMutex,
-        "the emulated acquire did not select its own queue and lock");
-    auto withoutAcquire = std::make_shared<DeferredPresentQueue>();
-    withoutAcquire->queue = handle<VkQueue>(7);
-    const auto fallback = withoutAcquire->acquireTarget();
-    expect(fallback.first == handle<VkQueue>(7) && &fallback.second == &withoutAcquire->mutex,
-        "without a second queue the acquire did not select the present queue and lock");
-    expect(tryAcquireTargetWhilePresentHeld(withAcquire),
-        "the emulated acquire could not take its lock while the present lock was held");
-    expect(!tryAcquireTargetWhilePresentHeld(withoutAcquire),
-        "without a second queue the acquire did not share the present lock");
+    PrivatePresentQueueRequest roomyReservation(roomyOriginal, roomyFamilies, 0);
+    auto roomyModified = roomyOriginal;
+    roomyReservation.apply(roomyModified);
+    expect(roomyReservation.index == 2 && roomyModified.pQueueCreateInfos[0].queueCount == 3,
+        "room for two extra queues did not reserve exactly one");
+    const float* roomyExtra = roomyModified.pQueueCreateInfos[0].pQueuePriorities;
+    expect(roomyExtra[0] == 0.25F && roomyExtra[1] == 0.75F && roomyExtra[2] == 0.75F,
+        "the single extra queue did not take the last requested priority");
 }
 std::mutex readinessMutex;
 std::condition_variable readinessChanged;
@@ -3501,7 +3431,7 @@ int main(int argc, char** argv) {
     generatedPreparedOrderAndBudget(); generatedPreparationFallbackAndGates();
     generatedPreparedRetirement(); generatedPreparedStop(); generatedPreparationErrors();
     generatedYieldSignalledOnce();
-    queueRequest(); acquireQueueRequest(); acquireTargetAvoidsPresentLock();
+    queueRequest();
     privateSubmitWithoutTailIsUnchanged(); privateSubmitAppendsTail();
     privateSubmitFailureLeavesTail(); privateSubmitForeignChainBypassesTail();
     privateSubmitRecordsHistory(); privateSubmitHistoryIgnoresFailure();

@@ -354,13 +354,6 @@ namespace ls {
         return profile.ultra_performance || profile.performance_mode;
     }
 
-    /// The global precision choice takes precedence over every profile preset.
-    [[nodiscard]] constexpr bool effectiveAllowFp16(
-            const GlobalConf& global, const GameConf& profile) noexcept {
-        static_cast<void>(profile);
-        return global.allow_fp16;
-    }
-
     /// Scheduler duration represented by the public fractional-seconds value.
     [[nodiscard]] constexpr std::chrono::milliseconds
     dynamicCadenceProbeIntervalDuration(const float seconds) noexcept {

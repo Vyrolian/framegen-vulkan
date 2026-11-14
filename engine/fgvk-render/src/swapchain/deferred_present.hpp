@@ -96,16 +96,9 @@ uint64_t handleBits(const Handle handle) {
 // A device-private queue from the same family as the application's graphics
 // queue. The application never receives this queue's index. Multiple surfaces
 // share the lock, but never hold it while sleeping.
-//
-// acquireQueue is a second private queue, present only when the family had room
-// for it. F10: the emulated acquire no longer submits on it. It is still created
-// and wait-idled under acquireMutex, and lock order everywhere both are held stays
-// mutex before acquireMutex. No path takes mutex while holding acquireMutex.
 struct DeferredPresentQueue {
     VkQueue queue{};
     std::mutex mutex;
-    VkQueue acquireQueue{};
-    std::mutex acquireMutex;
     // F10: set by the first failed host acquire signal (ImportSemaphoreFdKHR). It is never
     // cleared, so the device uses the queued acquire from then on.
     std::atomic<bool> hostAcquireDisabled{false};
@@ -155,13 +148,6 @@ struct DeferredPresentQueue {
     size_t readMarkerSamplesLocked(uint64_t* const cursor, PresentMarkerSample* const out,
             const size_t max) noexcept {
         return marker && readMarkerSamples ? readMarkerSamples(marker.get(), cursor, out, max) : 0;
-    }
-
-    // The queue and lock for an acquire submit. F10: the emulated acquire no longer calls
-    // this (it submits on queue under mutex). Kept only for acquireTargetAvoidsPresentLock.
-    [[nodiscard]] std::pair<VkQueue, std::mutex&> acquireTarget() {
-        if (acquireQueue != VK_NULL_HANDLE) return {acquireQueue, acquireMutex};
-        return {queue, mutex};
     }
 
     // D7d: the in-flight call. Both are no-ops unless history is set.

@@ -2378,52 +2378,6 @@ int main() {
             scalingRetryBudget.available(changedPolicyEpisode),
         "scaling admission retry did not distinguish a new policy revision");
 
-    PipelineBusyRecovery pipelineBusy;
-    auto now = PipelineBusyRecovery::TimePoint{};
-    for (size_t frame = 0; frame < 12; ++frame) {
-        const auto busy = pipelineBusy.reportBusy(now);
-        expect(!busy.requestHistoryWarmup,
-            "normal one-frame GPU overlap requested history warm-up");
-        expect(busy.consecutiveFrames == 1,
-            "a ready frame did not end the previous busy interval");
-        const auto ready = pipelineBusy.reportReady(now + 8ms);
-        expect(ready.resumed && !ready.historyWarmupRequested,
-            "transient pipeline overlap recovered as a temporal failure");
-        now += 16ms;
-    }
-
-    pipelineBusy.reset();
-    const auto busyStart = PipelineBusyRecovery::TimePoint{};
-    expect(!pipelineBusy.reportBusy(busyStart).requestHistoryWarmup,
-        "pipeline pressure requested warm-up immediately");
-    expect(!pipelineBusy.reportBusy(busyStart + 249ms).requestHistoryWarmup,
-        "pipeline pressure requested warm-up before the sustained threshold");
-    expect(pipelineBusy.reportBusy(busyStart + 250ms).requestHistoryWarmup,
-        "sustained pipeline pressure did not request history warm-up");
-    expect(!pipelineBusy.reportBusy(busyStart + 300ms).requestHistoryWarmup,
-        "one busy interval requested history warm-up more than once");
-    const auto busyRecovery = pipelineBusy.reportReady(busyStart + 320ms);
-    expect(busyRecovery.resumed && busyRecovery.historyWarmupRequested &&
-            busyRecovery.bypassedFrames == 4,
-        "sustained pipeline recovery lost its one-shot warm-up state");
-
-    // Reproduce the hardware trace: every submitted warm-up frame remains in
-    // flight for the following game present. Transient busy/ready alternation
-    // must allow the 3 -> 2 -> 1 sequence to terminate instead of rearming it.
-    pipelineBusy.reset();
-    size_t fixedWarmupRemaining = 3;
-    now = PipelineBusyRecovery::TimePoint{};
-    while (fixedWarmupRemaining > 0) {
-        fixedWarmupRemaining--;
-        const auto busy = pipelineBusy.reportBusy(now + 8ms);
-        if (busy.requestHistoryWarmup && fixedWarmupRemaining == 0)
-            fixedWarmupRemaining = 3;
-        static_cast<void>(pipelineBusy.reportReady(now + 16ms));
-        now += 24ms;
-    }
-    expect(fixedWarmupRemaining == 0,
-        "transient pipeline overlap trapped fixed mode in history warm-up");
-
     RealFramePacer framePacer;
     const auto pacingStart = RealFramePacer::TimePoint{};
     expect(framePacer.schedule(pacingStart, 60) == pacingStart,

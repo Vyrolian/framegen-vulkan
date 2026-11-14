@@ -95,8 +95,6 @@ framegen-vulkan: present diagnostics: operation=ordered-acquire-quarantine conte
 framegen-vulkan: present diagnostics: operation=ordered-acquire-retry context=1 phase=history-warmup bypassed_frames=12 action=warm-history-before-probe
 framegen-vulkan: present diagnostics: operation=ordered-acquire-recovered context=1 phase=native-stabilization recovery_ms=400 action=native-only
 framegen-vulkan: present diagnostics: operation=ordered-acquire-stabilized context=1 phase=history-warmup recovery_ms=2400 terminal_reason=stabilization-deadline-elapsed action=warm-history-before-normal-policy
-framegen-vulkan: present diagnostics: operation=pipeline-busy-bypass context=1 consecutive_frames=1 total_bypassed_frames=16 duration_ms=0 planned=1 history_action=preserved action=native-present
-framegen-vulkan: present diagnostics: operation=pipeline-busy-recovered context=1 bypassed_frames=1 total_recoveries=16 duration_ms=8 history_warmup_requested=0
 framegen-vulkan: present diagnostics: operation=render-fence-budget-missed context=1 planned=1 action=native-present
 framegen-vulkan: present diagnostics: operation=present-breakdown context=1 total_ms=44.4 render_fence_ms=0.1 schedule_ms=1.0 source_copy_ms=1.2 acquire_ms=40 generated_submit_ms=0.4 generated_present_ms=0.5 original_present_ms=0.6 unattributed_ms=0.6 frame=42 sequence=84
 framegen-vulkan: present diagnostics: operation=resume-generated-frames context=1
@@ -494,7 +492,6 @@ class DiagnosticsHelperTests(unittest.TestCase):
         self.assertIn("fixed-cadence-collapse-probe-start", result.stdout)
         self.assertIn("fixed-cadence-collapse-probe-recovered", result.stdout)
         self.assertIn("fixed-cadence-collapse-recovery-verified", result.stdout)
-        self.assertIn("pipeline-busy-bypass", result.stdout)
         self.assertIn("render-fence-budget-missed", result.stdout)
         self.assertIn("resume-generated-frames", result.stdout)
         self.assertIn("generated-image-recovered", result.stdout)
@@ -609,8 +606,6 @@ class DiagnosticsHelperTests(unittest.TestCase):
             "ordered-acquire-budget-exhausted",
             "ordered-acquire-retry",
             "ordered-acquire-recovered",
-            "pipeline-busy-bypass",
-            "pipeline-busy-recovered",
             "render-fence-budget-missed",
             "history-warmup",
             "gamescope-focus",
@@ -760,8 +755,6 @@ class DiagnosticsHelperTests(unittest.TestCase):
         self.assertIn("ordered-acquire-classification-split", result.stdout)
         self.assertIn("ordered-acquire-native-saturation", result.stdout)
         self.assertIn("ordered-acquire-recovered", result.stdout)
-        self.assertIn("pipeline-busy-bypass", result.stdout)
-        self.assertIn("pipeline-busy-recovered", result.stdout)
         self.assertIn("operation=present-breakdown", result.stdout)
         self.assertIn("renderer-memory operation=private-context-prepared", result.stdout)
         self.assertIn("renderer-memory operation=private-context-applied", result.stdout)

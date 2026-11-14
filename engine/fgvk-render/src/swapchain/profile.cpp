@@ -457,7 +457,6 @@ ProfileUpdateDecision Swapchain::updateProfile(
         // pressure sample produced by the previous requested workload.
         this->recoveryState.generatedImageAdmission.reset();
         this->recoveryState.orderedAcquireRecovery.reset();
-        this->recoveryState.pipelineBusyRecovery.reset();
     }
 
     if (disabling) {
@@ -471,7 +470,6 @@ ProfileUpdateDecision Swapchain::updateProfile(
     if (enabling) {
         this->recoveryState.generatedImageAdmission.reset();
         this->recoveryState.orderedAcquireRecovery.reset();
-        this->recoveryState.pipelineBusyRecovery.reset();
         this->recoveryState.historyWarmupRemaining =
             generationSchedulerPolicy(this->profile, this->gamescopeRefreshHz)
             ? 0
@@ -723,7 +721,6 @@ void Swapchain::updateGamescopeRefreshRate(
     if (automaticTargetChanged) {
         this->recoveryState.generatedImageAdmission.reset();
         this->recoveryState.orderedAcquireRecovery.reset();
-        this->recoveryState.pipelineBusyRecovery.reset();
     }
     this->realFramePacer.reset();
     this->smoothCadenceBaseCap.reset();
@@ -748,7 +745,6 @@ void Swapchain::updateGamescopeRefreshRate(
         } else {
             this->recoveryState.generatedImageAdmission.reset();
             this->recoveryState.orderedAcquireRecovery.reset();
-            this->recoveryState.pipelineBusyRecovery.reset();
             if (this->generationPolicyResetGate.request(
                     confirmedSteamMenuSuspension) &&
                     !this->resetGenerationScheduler(

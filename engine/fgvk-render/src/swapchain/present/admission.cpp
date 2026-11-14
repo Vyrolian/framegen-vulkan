@@ -92,7 +92,6 @@ bool Swapchain::recoverBackendIfReady(const vk::Vulkan& vk) {
 
     this->recoveryState.backendPending = false;
     this->recoveryState.generatedImageAdmission.reset();
-    this->recoveryState.pipelineBusyRecovery.reset();
     if (!this->resetGenerationScheduler(
             DiagnosticsClock::now(), "backend-recovery")) {
         this->recoveryState.historyWarmupRemaining =

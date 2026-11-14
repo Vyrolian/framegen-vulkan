@@ -188,33 +188,6 @@ namespace fgvk::layer {
         return activeMultiplier - 1;
     }
 
-    /// Project a requested profile onto the GPU resources already owned by a
-    /// live swapchain. Root retains the unmodified requested profile for the
-    /// requested recreation; the existing context can still apply unrelated
-    /// live-safe fields without changing scaler allocation, optical-flow
-    /// dimensions, or the selected frame-generation model.
-    [[nodiscard]] inline ls::GameConf maskRecreatedProfileResourcesForLiveUpdate(
-            const ls::GameConf& current,
-            const ls::GameConf& requested,
-            const bool generatedFrameCapacityPending = false) {
-        auto live = requested;
-        live.scaling_enabled = current.scaling_enabled;
-        live.swapchain_image_count_compatibility =
-            current.swapchain_image_count_compatibility;
-        live.scaling_method = current.scaling_method;
-        live.scaling_factor = current.scaling_factor;
-        live.scaling_supersampling = current.scaling_supersampling;
-        live.scaling_sharpness = current.scaling_sharpness;
-        live.flow_scale = current.flow_scale;
-        live.performance_mode = current.performance_mode;
-        if (generatedFrameCapacityPending) {
-            live.adaptive = current.adaptive;
-            live.multiplier = current.multiplier;
-            live.adaptive_max_multiplier = current.adaptive_max_multiplier;
-        }
-        return live;
-    }
-
     struct RecreatedProfileResourceKey {
         bool scalingEnabled{false};
         ls::ScalingMethod scalingMethod{ls::ScalingMethod::Native};

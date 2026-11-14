@@ -1937,14 +1937,6 @@ int main() {
                 resourceChangeStarted + std::chrono::seconds(4) +
                     LiveProfileResourceRecreation::quietPeriod) == 12,
         "Generated-capacity growth must share the live recreation boundary");
-    const auto capacityLiveProfile = maskRecreatedProfileResourcesForLiveUpdate(
-        current, capacityRequest, true
-    );
-    expect(capacityLiveProfile.adaptive == current.adaptive &&
-            capacityLiveProfile.multiplier == current.multiplier &&
-            capacityLiveProfile.adaptive_max_multiplier ==
-                current.adaptive_max_multiplier,
-        "Pending generated capacity must retain the active scheduling shape");
 
     auto scalingCurrent = current;
     scalingCurrent.scaling_enabled = true;
@@ -2076,50 +2068,6 @@ int main() {
             decision.frameGenerationBackendChanged &&
             decision.frameGenerationChanged,
         "A combined resource and frame-generation update must apply the safe subset and retain every deferral");
-
-    auto liveProfile = maskRecreatedProfileResourcesForLiveUpdate(current, next);
-    expect(!liveProfile.scaling_enabled &&
-            liveProfile.scaling_factor == current.scaling_factor &&
-            liveProfile.scaling_sharpness == current.scaling_sharpness &&
-            liveProfile.flow_scale == current.flow_scale &&
-            liveProfile.performance_mode == current.performance_mode &&
-            !liveProfile.frame_generation_enabled,
-        "A live projection must retain GPU resources while applying the FG switch");
-    decision = classifyProfileUpdate(current, liveProfile, 3, true);
-    expect(decision.action == ProfileUpdateAction::ApplyLive &&
-            decision.frameGenerationChanged &&
-            !decision.spatialScalingChanged &&
-            !decision.frameGenerationBackendChanged,
-        "Masking pending resource changes must expose the independent live FG update");
-
-    auto liveCurrent = liveProfile;
-    auto laterRequested = next;
-    laterRequested.frame_generation_enabled = true;
-    laterRequested.target_fps = 120;
-    laterRequested.adaptive_stable_cadence = true;
-    decision = classifyProfileUpdate(
-        liveCurrent, laterRequested, 3, true
-    );
-    expect(decision.action == ProfileUpdateAction::ApplyLive &&
-            decision.swapchainRecreationDeferred,
-        "The requested scaling change must remain pending while later live changes apply");
-    liveProfile = maskRecreatedProfileResourcesForLiveUpdate(
-        liveCurrent, laterRequested
-    );
-    decision = classifyProfileUpdate(liveCurrent, liveProfile, 3, true);
-    expect(decision.action == ProfileUpdateAction::ApplyLive &&
-            decision.frameGenerationChanged &&
-            decision.generationPolicyChanged &&
-            !decision.spatialScalingChanged &&
-            !decision.frameGenerationBackendChanged,
-        "Pending resource changes must not block a later live FG/Adaptive update");
-    expect(!liveProfile.scaling_enabled &&
-            liveProfile.flow_scale == current.flow_scale &&
-            liveProfile.performance_mode == current.performance_mode &&
-            liveProfile.frame_generation_enabled &&
-            liveProfile.target_fps == 120 &&
-            liveProfile.adaptive_stable_cadence,
-        "Sequential live projections must preserve current resources and newest policy");
 
     auto equivalentUltra = current;
     equivalentUltra.flow_scale = ls::GameConfDefaults::ultraPerformanceFlowScale;

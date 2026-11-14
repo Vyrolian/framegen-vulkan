@@ -634,30 +634,6 @@ namespace {
             "warm-up did not continue after an intermittent busy frame");
     }
 
-    void testTransientBusyFrameDoesNotRearmCompletedWarmup() {
-        Harness harness(120, 3);
-        PipelineBusyRecovery pipelineBusy;
-
-        for (size_t frame = 0;
-                frame < AdaptiveScheduler::historyWarmupFrameCount(); ++frame) {
-            harness.now += 16ms;
-            harness.scheduler.consumeHistoryWarmupFrame(harness.now);
-
-            const auto busy = pipelineBusy.reportBusy(harness.now + 8ms);
-            if (busy.requestHistoryWarmup) {
-                harness.scheduler.ensureHistoryWarmup(
-                    AdaptiveScheduler::historyWarmupFrameCount(), true
-                );
-            }
-            static_cast<void>(pipelineBusy.reportReady(harness.now + 16ms));
-        }
-
-        require(!harness.scheduler.historyWarmupActive(),
-            "normal GPU overlap rearmed a completed Adaptive warm-up");
-        require(harness.scheduler.historyWarmupRemaining() == 0,
-            "Adaptive warm-up did not reach a generation-eligible state");
-    }
-
     void testInvalidConfigurationIsRejectedAtBoundary() {
         bool invalidTargetRejected = false;
         try {
@@ -6970,7 +6946,6 @@ int main() {
         {"transport recovery invalidates stable cadence", testTransportRecoveryInvalidatesStableCadence},
         {"explicit acquire timeout preserves validated cadence", testExplicitAcquireTimeoutPreservesValidatedCadence},
         {"busy warm-up notification is idempotent", testBusyWarmupNotificationIsIdempotent},
-        {"transient busy frame does not rearm warm-up", testTransientBusyFrameDoesNotRearmCompletedWarmup},
         {"invalid configuration is rejected", testInvalidConfigurationIsRejectedAtBoundary},
         {"generated delivery window contract", testGeneratedDeliveryWindowContract},
         {"replacement backend stabilization is bounded", testReplacementBackendStabilizationIsBounded},

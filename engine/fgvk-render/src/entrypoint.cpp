@@ -1076,8 +1076,8 @@ namespace {
                     if (result != VK_SUCCESS) privateQueue->queue = VK_NULL_HANDLE;
                 }
                 // F9c: the private queue's tail timeline. Every submit on that queue signals
-                // it, and the emulated acquire waits it on the acquire queue. On failure it stays
-                // null and the acquire runs without the tail wait.
+                // it, and the host acquire signal reads it. On failure it stays null and the
+                // acquire is always queued.
                 if (privateQueue->queue) {
                     const VkSemaphoreTypeCreateInfo tailType{
                         .sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
@@ -1094,30 +1094,12 @@ namespace {
                     // D7b: the submit history exists only with the pacing profile.
                     privateQueue->history = present_diagnostics::pacingProfileEnabled();
                 }
-                // The second private queue exists only when the family had room for both. Like
-                // the present queue, it is never registered in queueIdentities, so the application
-                // cannot see it. F10: no emulated acquire submits on it any more, so
-                // FGVK_INTERNAL_ACQUIRE_QUEUE only changes whether it is created (the acquire
-                // path itself is the same either way).
-                const char* acquireQueueSwitch = std::getenv("FGVK_INTERNAL_ACQUIRE_QUEUE");
-                const bool acquireQueueAllowed = !(acquireQueueSwitch && std::strcmp(acquireQueueSwitch, "0") == 0);
-                if (privatePresentQueue.acquireIndex && acquireQueueAllowed) {
-                    wrapper->second.df().GetDeviceQueue(*device, *layerQueueFamily,
-                        *privatePresentQueue.acquireIndex, &privateQueue->acquireQueue);
-                    if (privateQueue->acquireQueue && wrapper->second.loaderdatafunc()) {
-                        const auto result = (*wrapper->second.loaderdatafunc())(*device, privateQueue->acquireQueue);
-                        if (result != VK_SUCCESS) privateQueue->acquireQueue = VK_NULL_HANDLE;
-                    }
-                }
-                const bool acquireQueueActive = privateQueue->queue != VK_NULL_HANDLE &&
-                    privateQueue->acquireQueue != VK_NULL_HANDLE;
                 // F10: the host acquire signal needs the tail timeline and both counter functions.
                 // It is also refused for the device's lifetime after a failed import.
                 const bool hostAcquireAvailable = privateQueue->tail != VK_NULL_HANDLE &&
                     wrapper->second.df().GetSemaphoreCounterValueKHR != nullptr &&
                     wrapper->second.df().ImportSemaphoreFdKHR != nullptr;
-                std::cerr << "framegen-vulkan: internal acquire queue: active="
-                          << (acquireQueueActive ? 1 : 0) << " internal_prepare="
+                std::cerr << "framegen-vulkan: internal acquire queue: internal_prepare="
                           << (std::getenv("FGVK_INTERNAL_PREPARE") && std::strcmp(std::getenv("FGVK_INTERNAL_PREPARE"), "0") == 0 ? 0 : 1)
                           << " acquire_tail=" << (privateQueue->tail != VK_NULL_HANDLE ? 1 : 0)
                           << " host_acquire=" << (hostAcquireAvailable ? 1 : 0)
@@ -1239,11 +1221,10 @@ namespace {
         const auto lower = reinterpret_cast<PFN_vkDeviceWaitIdle>(
             instance_info->funcs.GetDeviceProcAddr(device, "vkDeviceWaitIdle"));
         // vkDeviceWaitIdle host-synchronises every queue of the device, so it holds
-        // the private queues' locks too. Lock order: mutex before acquireMutex.
+        // the private queue's lock too.
         if (const auto owned = instance_info->deferredPresentQueues.find(device);
                 owned != instance_info->deferredPresentQueues.end()) {
             const std::lock_guard queueLock(owned->second->mutex);
-            const std::lock_guard acquireLock(owned->second->acquireMutex);
             return lower(device);
         }
         return lower(device);
@@ -1270,11 +1251,6 @@ namespace {
             {
                 const std::lock_guard queueLock(owned->second->mutex);
                 const auto result = lower(owned->second->queue);
-                if (result != VK_SUCCESS) return result;
-            }
-            if (owned->second->acquireQueue != VK_NULL_HANDLE) {
-                const std::lock_guard acquireLock(owned->second->acquireMutex);
-                const auto result = lower(owned->second->acquireQueue);
                 if (result != VK_SUCCESS) return result;
             }
         }

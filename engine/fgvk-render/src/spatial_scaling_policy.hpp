@@ -1547,44 +1547,6 @@ namespace fgvk::layer {
         );
     }
 
-    /// Compatibility wrapper for callers that only need variable-surface
-    /// policy. Fixed-surface activation intentionally requires an explicit
-    /// capability contract and therefore returns no extent here.
-    [[nodiscard]] inline std::optional<SpatialScalingExtents>
-    scalingExtentsForCreate(
-            const ls::GameConf& profile,
-            const VkSurfaceCapabilitiesKHR& realCapabilities,
-            const VkExtent2D requestedExtent,
-            const std::optional<SpatialScalingExtents>&
-                previousVariableExtents = std::nullopt) noexcept {
-        return scalingDecisionForCreate(
-            profile, true, 0, realCapabilities, requestedExtent,
-            previousVariableExtents
-        ).extents;
-    }
-
-    [[nodiscard]] inline bool variableSurfaceScalingFeedbackDetected(
-            const ls::GameConf& profile,
-            const VkSurfaceCapabilitiesKHR& realCapabilities,
-            const VkExtent2D requestedExtent,
-            const std::optional<SpatialScalingExtents>&
-                previousVariableExtents,
-            const bool managedGamescopeCreateRelay = false) noexcept {
-        return ls::spatialScalingRequested(profile) &&
-            validSpatialScalingFactor(profile.scaling_factor) &&
-            profile.scaling_factor > 1.0F &&
-            !fixedSurfaceExtent(realCapabilities.currentExtent) &&
-            !managedGamescopeCreateRelay &&
-            previousVariableExtents &&
-            sameExtent(
-                requestedExtent, previousVariableExtents->presentation
-            ) &&
-            !sameExtent(
-                previousVariableExtents->source,
-                previousVariableExtents->presentation
-            );
-    }
-
     /// Commit the surface-scoped feedback state only after the replacement
     /// swapchain and its framegen-vulkan context have both been created successfully.
     /// A compositor echo retains the previous pair so repeated recreations

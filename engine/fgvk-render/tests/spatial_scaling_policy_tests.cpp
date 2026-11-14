@@ -837,34 +837,25 @@ int main() {
         .minImageExtent = {16, 16},
         .maxImageExtent = {1280, 800},
     };
-    const auto customFactor = scalingExtentsForCreate(
-        profile, variableCreate, {640, 400}
-    );
+    const auto customFactor = scalingDecisionForCreate(
+        profile, true, 0, variableCreate, {640, 400}
+    ).extents;
     expect(customFactor &&
             sameExtent(customFactor->source, {640, 400}) &&
             sameExtent(customFactor->presentation, {960, 600}),
         "Variable surfaces must preserve the requested source and scale the lower WSI extent");
-    expect(variableSurfaceScalingFeedbackDetected(
-            profile, variableCreate, {960, 600}, customFactor),
-        "A compositor-echoed variable presentation extent must be detected");
-    expect(!scalingExtentsForCreate(
-            profile, variableCreate, {960, 600}, customFactor),
+    expect(!scalingDecisionForCreate(
+            profile, true, 0, variableCreate, {960, 600}, customFactor).extents,
         "A compositor-echoed extent must not compound the scale factor");
     expect(scalingDecisionForCreate(
             profile, true, 7, variableCreate, {960, 600}, customFactor
         ).inactiveReason == SpatialScalingInactiveReason::
             VariableSurfaceFeedback,
         "Variable compositor feedback must expose a stable inactive reason");
-    expect(!variableSurfaceScalingFeedbackDetected(
-            profile, variableCreate, {800, 500}, customFactor) &&
-            scalingExtentsForCreate(
-                profile, variableCreate, {800, 500}, customFactor
-            ).has_value(),
+    expect(scalingDecisionForCreate(
+            profile, true, 0, variableCreate, {800, 500}, customFactor
+        ).extents.has_value(),
         "A genuinely different variable source request must remain scalable");
-    const auto fixedFeedbackCapabilities = fixedCapabilities(960, 600);
-    expect(!variableSurfaceScalingFeedbackDetected(
-            profile, fixedFeedbackCapabilities, {960, 600}, customFactor),
-        "Fixed surfaces must not enter the variable feedback policy");
 
     VkSurfaceCapabilitiesKHR managedVariableCreate{
         .currentExtent = {UINT32_MAX, UINT32_MAX},
@@ -875,10 +866,6 @@ int main() {
         .source = {1280, 720},
         .presentation = {1920, 1080},
     };
-    expect(!variableSurfaceScalingFeedbackDetected(
-            profile, managedVariableCreate, {1920, 1080},
-            previousManagedExtents, true),
-        "A managed Gamescope create relay must distinguish a real resolution change from uncontracted feedback");
     const auto managedPreviousPresentationRequest = scalingDecisionForCreate(
         profile, true, 7, managedVariableCreate, {1920, 1080},
         previousManagedExtents, std::nullopt, std::nullopt,
@@ -1021,15 +1008,15 @@ int main() {
         "An intermediate factor step must retain the proven maximum until it is reached");
 
     profile.scaling_factor = 2.0F;
-    const auto clampedCustomFactor = scalingExtentsForCreate(
-        profile, variableCreate, {800, 600}
-    );
+    const auto clampedCustomFactor = scalingDecisionForCreate(
+        profile, true, 0, variableCreate, {800, 600}
+    ).extents;
     expect(clampedCustomFactor &&
             sameExtent(clampedCustomFactor->presentation, {1066, 800}),
         "Variable-surface scaling must preserve aspect ratio at the WSI maximum");
 
-    expect(!scalingExtentsForCreate(
-            profile, variableCreate, {1280, 800}),
+    expect(!scalingDecisionForCreate(
+            profile, true, 0, variableCreate, {1280, 800}).extents,
         "A variable surface with no enlargement headroom must fail closed");
     expect(scalingDecisionForCreate(
             profile, true, 7, variableCreate, {1280, 800}

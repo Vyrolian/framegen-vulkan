@@ -374,7 +374,6 @@ void Swapchain::commitFrameGenerationResources(
     this->recoveryState.backendPending = false;
     this->recoveryState.generatedImageAdmission.reset();
     this->recoveryState.orderedAcquireRecovery.reset();
-    this->recoveryState.pipelineBusyRecovery.reset();
     this->fixedRefreshBudget.reset();
     this->realFramePacer.reset();
     this->smoothCadenceBaseCap.reset();
