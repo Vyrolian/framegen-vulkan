@@ -27,7 +27,6 @@ capture instead; these files contain only framegen-vulkan timing records.
 Presets:
   hdr          HDR/scRGB selection, transport packing, passthrough, and initialization
   config       configuration reloads and pending/applied safe runtime transitions
-  scaling      Gamescope presentation, runtime-transition, and swapchain failure records
   adaptive     Adaptive policy, stabilization, ramp, rescue, and cadence
   recovery     generated-image fallback, history warm-up, and in-place recovery
   performance  fixed-rate telemetry plus slow presentation and GPU operations
@@ -50,7 +49,6 @@ Options:
 
 Examples:
   fgvk-diagnostics hdr
-  fgvk-diagnostics scaling
   fgvk-diagnostics adaptive recovery
   fgvk-diagnostics --lines 2000 all > fgvk-report.txt
   fgvk-diagnostics --session previous --lines 2000 all > previous-report.txt
@@ -60,7 +58,7 @@ EOF
 }
 
 list_presets() {
-  printf '%s\n' hdr config scaling adaptive recovery performance lifecycle startup layers errors all
+  printf '%s\n' hdr config adaptive recovery performance lifecycle startup layers errors all
 }
 
 while (($#)); do
@@ -261,9 +259,7 @@ add_pattern "$renderer_prefix presentation timing (initialized|fallback);"
 add_pattern "$renderer_prefix present diagnostics: operation=gamescope-presentation-feedback"
 # Live profile resource policy records are low-frequency swapchain/startup
 # metadata. Keep them in every focused report so combined Fixed/Adaptive
-# failures cannot be misread as frame-generation-only sessions. The focused
-# scaling preset adds related colour, runtime-transition, and generic
-# swapchain failures.
+# failures cannot be misread as frame-generation-only sessions.
 live_profile_record="$renderer_prefix (live profile resource change|frame generation was enabled after the application device was created without external interop)"
 add_pattern "$live_profile_record"
 live_recreation_record="$renderer_prefix present diagnostics: operation=(generated-present-recreation-drain|original-present-recreation-propagate|swapchain-recreation-observed|swapchain-create-observed|replacement-backend-stabilization)"
@@ -274,7 +270,7 @@ add_pattern "$renderer_prefix present diagnostics: operation=(runtime-health|pre
 
 for preset in "${presets[@]}"; do
   case "$preset" in
-    adaptive|recovery|performance|scaling)
+    adaptive|recovery|performance)
       add_pattern "$renderer_prefix present diagnostics: operation=(application-acquire|application-queue-present)"
       ;;
   esac
@@ -288,14 +284,6 @@ for preset in "${presets[@]}"; do
       add_pattern "$renderer_prefix (updated configuration in place|configuration changes requiring GPU resource reconstruction|process-static configuration changes|global backend construction changed)"
       add_pattern "$renderer_prefix renderer-memory operation=private-context-(prepared|applied)"
       add_pattern "$renderer_prefix present diagnostics: operation=(runtime-transition-pending|runtime-transition-prepared|runtime-transition-failed|runtime-transition-applied|runtime-transition-recreation-requested|runtime-state-applied)"
-      ;;
-    scaling)
-      # Preserve full bridge records, including protocol/stage/drop fields and legacy VRR margins.
-      # Keep the complete wait record, including first_failure_* call identity.
-      add_pattern "$renderer_prefix present diagnostics: operation=(gamescope-bridge-timing|application-present-mode|application-present-wait)"
-      add_pattern "$renderer_prefix (swapchain colour pipeline|swapchain creation failed|swapchain presentation failed)"
-      add_pattern "$renderer_prefix Gamescope application HDR feedback"
-      add_pattern "$renderer_prefix present diagnostics: operation=(runtime-transition-pending|runtime-transition-prepared|runtime-transition-failed|runtime-transition-applied|runtime-transition-recreation-requested|runtime-state-applied|gamescope-refresh-rate-applied)"
       ;;
     adaptive)
       add_pattern "$renderer_prefix present diagnostics: operation=adaptive-"

@@ -1,7 +1,7 @@
 ## Unreleased: spatial scaling removed
 
 - The renderer no longer contains spatial scaling, the LS1 and framegen-vulkan Scaler paths, or the Gamescope scaling bridge.
-- `scaling_enabled` is ignored. When the active profile sets it, the renderer prints `framegen-vulkan: spatial scaling was removed; scaling_enabled is ignored` once per process.
+- The retired scaling keys (`scaling_enabled`, `scaling_method`, `scaling_factor`, `scaling_supersampling`, and `scaling_sharpness`) are accepted and ignored, so old `conf.toml` files still load; framegen-vulkan no longer writes them.
 
 ## What's new in MAKO Renderer v4.6.0
 

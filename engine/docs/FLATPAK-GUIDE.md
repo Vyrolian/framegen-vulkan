@@ -6,7 +6,7 @@ Complete the steps below for each app. Installing the native Renderer or creatin
 
 In `~/.config/framegen-vulkan/conf.toml`, set `active_in` to the game's executable, such as `Game.exe` or `dolphin-emu`, and enable the features you want. Match the executable, not the Flatpak application ID.
 
-Frame Generation and LS1 require Lossless Scaling's default Steam version: set `dll` to its absolute `Lossless.dll` path. Without it, turn Frame Generation off and choose the framegen-vulkan Scaler.
+Frame Generation requires Lossless Scaling's default Steam version: set `dll` to its absolute `Lossless.dll` path. Without it, turn Frame Generation off.
 
 ## Identify the application and runtime
 
@@ -56,7 +56,7 @@ flatpak override --user --filesystem="$HOME/.config/framegen-vulkan:rw" "$appid"
 flatpak override --user --env=FGVK_CONFIG="$HOME/.config/framegen-vulkan/conf.toml" "$appid"
 ```
 
-For Frame Generation or LS1, replace the example with the folder containing your configured `Lossless.dll`. Otherwise, skip this block:
+For Frame Generation, replace the example with the folder containing your configured `Lossless.dll`. Otherwise, skip this block:
 
 ```bash
 fgvk_dll_directory="/absolute/path/to/steamapps/common/Lossless Scaling"

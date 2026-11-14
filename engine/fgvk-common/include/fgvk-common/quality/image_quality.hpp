@@ -54,29 +54,6 @@ namespace fgvk::quality {
         std::vector<uint8_t> detailMask;
     };
 
-    struct SpatialRegressionScene {
-        uint32_t sourceWidth;
-        uint32_t sourceHeight;
-        uint32_t presentationWidth;
-        uint32_t presentationHeight;
-        std::vector<uint8_t> source;
-        std::vector<uint8_t> reference;
-        std::vector<uint8_t> focusMask;
-        std::vector<uint8_t> detailMask;
-    };
-
-    struct CombinedRegressionScene {
-        uint32_t sourceWidth;
-        uint32_t sourceHeight;
-        uint32_t presentationWidth;
-        uint32_t presentationHeight;
-        std::vector<uint8_t> previous;
-        std::vector<uint8_t> current;
-        std::vector<uint8_t> reference;
-        std::vector<uint8_t> focusMask;
-        std::vector<uint8_t> detailMask;
-    };
-
     struct ImageQualityMetrics {
         double meanAbsoluteError;
         double focusMeanAbsoluteError;
@@ -98,13 +75,6 @@ namespace fgvk::quality {
         QualitySceneKind kind
     );
 
-    inline constexpr ImageQualityThresholds spatialQualityThresholds{
-        .maximumMeanAbsoluteError = 0.08,
-        .maximumFocusMeanAbsoluteError = 0.12,
-        .maximumSevereFocusErrorFraction = 0.20,
-        .maximumDetailMeanAbsoluteError = 0.15,
-    };
-
     /// Build one deterministic temporal interpolation scene. The endpoints
     /// are time 0 and 1; interpolation must be strictly between them.
     [[nodiscard]] RegressionScene makeImageQualityRegressionScene(
@@ -121,50 +91,9 @@ namespace fgvk::quality {
     /// motion-history regressions.
     [[nodiscard]] RegressionScene makeAmdImageQualityRegressionScene();
 
-    /// Build low-resolution source and vector-rendered native-resolution
-    /// reference images for the actual framegen-vulkan or LS1 spatial pipeline.
-    [[nodiscard]] SpatialRegressionScene makeSpatialQualityRegressionScene(
-        QualitySceneKind kind, float scalingFactor, float time = 0.5F
-    );
-
-    /// Build a spatial scene for an exact production source/presentation
-    /// extent pair. This overload lets hardware qualification exercise real
-    /// display resolutions without duplicating the procedural renderer.
-    [[nodiscard]] SpatialRegressionScene makeSpatialQualityRegressionScene(
-        QualitySceneKind kind, uint32_t sourceWidth, uint32_t sourceHeight,
-        uint32_t presentationWidth, uint32_t presentationHeight,
-        float time = 0.5F
-    );
-
-    /// Build low-resolution temporal endpoints and a vector-rendered
-    /// native-resolution interpolation reference for the production
-    /// spatial-scaling-to-LSFG handoff.
-    [[nodiscard]] CombinedRegressionScene makeCombinedQualityRegressionScene(
-        QualitySceneKind kind, float scalingFactor,
-        float interpolation = 0.5F
-    );
-
-    /// Build a combined scaling/LSFG scene for an exact production extent
-    /// pair.
-    [[nodiscard]] CombinedRegressionScene makeCombinedQualityRegressionScene(
-        QualitySceneKind kind, uint32_t sourceWidth, uint32_t sourceHeight,
-        uint32_t presentationWidth, uint32_t presentationHeight,
-        float interpolation = 0.5F
-    );
-
     /// Compare a generated midpoint frame with the scene's ideal midpoint.
     [[nodiscard]] ImageQualityMetrics evaluateImageQuality(
         const RegressionScene& scene, std::span<const uint8_t> generated
-    );
-
-    [[nodiscard]] ImageQualityMetrics evaluateImageQuality(
-        const SpatialRegressionScene& scene,
-        std::span<const uint8_t> generated
-    );
-
-    [[nodiscard]] ImageQualityMetrics evaluateImageQuality(
-        const CombinedRegressionScene& scene,
-        std::span<const uint8_t> generated
     );
 
     /// Apply deliberately broad corruption/ghosting guardrails. Metrics remain

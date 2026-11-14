@@ -375,7 +375,7 @@ class DiagnosticsHelperTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_directory:
             path = Path(temporary_directory) / "pacing.log"
             path.write_text(record + "\n" + gpu + "\n" + timing + "\n" + output + "\n" + wait + "\n" + wayland + "\n" + wayland_gap + "\n" + content + "\n", encoding="utf-8")
-            for preset in ("all", "adaptive", "recovery", "performance", "scaling", "hdr"):
+            for preset in ("all", "adaptive", "recovery", "performance", "hdr"):
                 result = self._run("--log", str(path), preset)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIn(record, result.stdout)
@@ -397,7 +397,7 @@ class DiagnosticsHelperTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "detailed.log"
             path.write_text("\n".join(records) + "\n", encoding="utf-8")
-            for preset in ("all", "adaptive", "recovery", "performance", "scaling", "hdr"):
+            for preset in ("all", "adaptive", "recovery", "performance", "hdr"):
                 result = self._run("--log", str(path), preset)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(result.stdout.splitlines(), records)
@@ -405,7 +405,7 @@ class DiagnosticsHelperTests(unittest.TestCase):
     def test_frame_boundaries_are_retained_by_focused_presets(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             path = self._fixture_path(Path(temporary_directory))
-            for preset in ("adaptive", "recovery", "performance", "scaling"):
+            for preset in ("adaptive", "recovery", "performance"):
                 result = self._run("--log", str(path), preset)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIn("operation=application-acquire", result.stdout)
@@ -484,26 +484,6 @@ class DiagnosticsHelperTests(unittest.TestCase):
         self.assertIn("render layer active", result.stdout)
         self.assertNotIn("mode=hdr10-pq", result.stdout)
         self.assertNotIn("HDR10 transport", result.stdout)
-
-    def test_scaling_preset_keeps_extent_activation_and_lifecycle_policy(self):
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            path = self._fixture_path(Path(temporary_directory))
-            result = self._run("--log", str(path), "scaling")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("operation=gamescope-bridge-timing", result.stdout)
-        self.assertIn("presentation timing initialized; owner=renderer; transport=VK_EXT_present_timing; active=1", result.stdout)
-        self.assertIn("presentation timing fallback; owner=renderer; transport=VK_EXT_present_timing; reason=feedback-or-clock-unavailable", result.stdout)
-        self.assertIn("repeated_timestamps=94", result.stdout)
-        self.assertIn("late_latch_feedbacks=23", result.stdout)
-        self.assertIn("timing_protocol=2 timestamp_kind=prediction", result.stdout)
-        self.assertIn("queue_ready_mean_ms=2.5", result.stdout)
-        self.assertIn("compositor_hold_mean_ms=8", result.stdout)
-        self.assertIn("operation=application-present-mode", result.stdout)
-        self.assertIn("operation=application-present-wait", result.stdout)
-        self.assertIn("first_failure_result=2 first_failure_present_id=20 first_failure_timeout_ns=0 first_failure_duration_ms=0.02", result.stdout)
-        self.assertIn("runtime-transition-pending", result.stdout)
-        self.assertIn("swapchain colour pipeline", result.stdout)
-        self.assertNotIn("adaptive-ramp", result.stdout)
 
     def test_adaptive_preset_keeps_fractional_pacing_contract(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -611,7 +591,7 @@ class DiagnosticsHelperTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_directory:
             path = self._fixture_path(Path(temporary_directory))
             for preset in (
-                "hdr", "config", "scaling", "adaptive", "recovery", "performance",
+                "hdr", "config", "adaptive", "recovery", "performance",
                 "lifecycle", "startup", "layers", "errors", "all",
             ):
                 with self.subTest(preset=preset):

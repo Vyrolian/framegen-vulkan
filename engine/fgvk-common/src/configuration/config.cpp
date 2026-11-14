@@ -31,7 +31,7 @@ void ConfigFile::createDefaultConfigFile(const std::filesystem::path& path) {
 
 [global]
 # dll = '/media/games/Lossless Scaling/Lossless.dll' # if you don't have LS in the default location
-allow_fp16 = true # request FP16 model/scaling arithmetic; false selects FP32
+allow_fp16 = true # request FP16 model arithmetic; false selects FP32
 pacing_correction = true # centre generated frames from measured GPU present times
 
 [[profile]]
@@ -44,12 +44,7 @@ active_in = [ # see the wiki for more info
 multiplier = 4
 frame_generation_provisioned = true
 frame_generation_enabled = true
-scaling_enabled = false
 swapchain_image_count_compatibility = false
-scaling_method = 'ls1'
-scaling_factor = 1.5
-scaling_supersampling = false
-scaling_sharpness = 0.8
 frame_generation_refresh_threshold = 0
 base_fps_cap = 0
 gpu_headroom_percent = 0
@@ -95,13 +90,8 @@ ConfigFile::ConfigFile() {
         .frame_generation_provisioned =
             GameConfDefaults::frameGenerationProvisioned,
         .frame_generation_enabled = GameConfDefaults::frameGenerationEnabled,
-        .scaling_enabled = GameConfDefaults::scalingEnabled,
         .swapchain_image_count_compatibility =
             GameConfDefaults::swapchainImageCountCompatibility,
-        .scaling_method = GameConfDefaults::scalingMethod,
-        .scaling_factor = GameConfDefaults::scalingFactor,
-        .scaling_supersampling = GameConfDefaults::scalingSupersampling,
-        .scaling_sharpness = GameConfDefaults::scalingSharpness,
         .frame_generation_refresh_threshold =
             GameConfDefaults::frameGenerationRefreshThreshold,
         .base_fps_cap = GameConfDefaults::baseFpsCap,
@@ -168,11 +158,6 @@ namespace {
             return Pacing::None;
         throw ls::error("unknown pacing method: " + str);
     }
-    ScalingMethod scalingMethodFromString(const std::string& value) {
-        if (const auto method = scalingMethodFromName(value))
-            return *method;
-        throw ls::error("unknown scaling method: " + value);
-    }
     GamescopeVrrMode gamescopeVrrModeFromString(const std::string& value) {
         if (const auto mode = gamescopeVrrModeFromName(value))
             return *mode;
@@ -199,28 +184,6 @@ namespace {
                     GameConfLimits::maximumMultiplier
                 )
             );
-        if (!(conf.scaling_factor >= GameConfLimits::minimumScalingFactor &&
-                conf.scaling_factor <= GameConfLimits::maximumScalingFactor)) {
-            throw ls::error(
-                "scaling_factor must be between " + formatFloatingLimit(
-                    GameConfLimits::minimumScalingFactor
-                ) + " and " + formatFloatingLimit(
-                    GameConfLimits::maximumScalingFactor
-                )
-            );
-        }
-        if (!(conf.scaling_sharpness >=
-                    GameConfLimits::minimumScalingSharpness &&
-                conf.scaling_sharpness <=
-                    GameConfLimits::maximumScalingSharpness)) {
-            throw ls::error(
-                "scaling_sharpness must be between " + formatFloatingLimit(
-                    GameConfLimits::minimumScalingSharpness
-                ) + " and " + formatFloatingLimit(
-                    GameConfLimits::maximumScalingSharpness
-                )
-            );
-        }
         if (conf.gpu_headroom_percent > 20 || conf.gpu_headroom_percent % 5 != 0)
             throw ls::error("gpu_headroom_percent must be 0, 5, 10, 15 or 20");
         if (conf.base_fps_cap > GameConfLimits::maximumBaseFpsCap)
@@ -299,8 +262,8 @@ namespace {
             .pacing_correction = tbl["pacing_correction"].value_or(true)
         };
 
-        // Availability belongs to LSFG/LS1 loading, not profile validity.
-        // Preserve missing paths so open scaling remains usable.
+        // Availability belongs to LSFG loading, not profile validity.
+        // Preserve missing paths so the global section still loads.
         return conf;
     }
     /// parse a game profile configuration
@@ -324,27 +287,10 @@ namespace {
             .frame_generation_enabled = tbl["frame_generation_enabled"].value_or(
                 GameConfDefaults::frameGenerationEnabled
             ),
-            .scaling_enabled = tbl["scaling_enabled"].value_or(
-                GameConfDefaults::scalingEnabled
-            ),
             .swapchain_image_count_compatibility =
                 tbl["swapchain_image_count_compatibility"].value_or(
                     GameConfDefaults::swapchainImageCountCompatibility
                 ),
-            .scaling_method = scalingMethodFromString(
-                tbl["scaling_method"].value_or<std::string>(
-                    scalingMethodName(GameConfDefaults::scalingMethod)
-                )
-            ),
-            .scaling_factor = tbl["scaling_factor"].value_or(
-                GameConfDefaults::scalingFactor
-            ),
-            .scaling_supersampling = tbl["scaling_supersampling"].value_or(
-                GameConfDefaults::scalingSupersampling
-            ),
-            .scaling_sharpness = tbl["scaling_sharpness"].value_or(
-                GameConfDefaults::scalingSharpness
-            ),
             .frame_generation_refresh_threshold =
                 tbl["frame_generation_refresh_threshold"].value_or(
                     GameConfDefaults::frameGenerationRefreshThreshold
@@ -431,15 +377,10 @@ namespace {
             conf.frame_generation_provisioned
         );
         profile.insert("frame_generation_enabled", conf.frame_generation_enabled);
-        profile.insert("scaling_enabled", conf.scaling_enabled);
         profile.insert(
             "swapchain_image_count_compatibility",
             conf.swapchain_image_count_compatibility
         );
-        profile.insert("scaling_method", scalingMethodName(conf.scaling_method));
-        profile.insert("scaling_factor", conf.scaling_factor);
-        profile.insert("scaling_supersampling", conf.scaling_supersampling);
-        profile.insert("scaling_sharpness", conf.scaling_sharpness);
         profile.insert(
             "frame_generation_refresh_threshold",
             static_cast<int64_t>(conf.frame_generation_refresh_threshold)
@@ -505,13 +446,8 @@ namespace {
             .frame_generation_provisioned =
                 GameConfDefaults::frameGenerationProvisioned,
             .frame_generation_enabled = GameConfDefaults::frameGenerationEnabled,
-            .scaling_enabled = GameConfDefaults::scalingEnabled,
             .swapchain_image_count_compatibility =
                 GameConfDefaults::swapchainImageCountCompatibility,
-            .scaling_method = GameConfDefaults::scalingMethod,
-            .scaling_factor = GameConfDefaults::scalingFactor,
-            .scaling_supersampling = GameConfDefaults::scalingSupersampling,
-            .scaling_sharpness = GameConfDefaults::scalingSharpness,
             .frame_generation_refresh_threshold =
                 GameConfDefaults::frameGenerationRefreshThreshold,
             .base_fps_cap = GameConfDefaults::baseFpsCap,
@@ -547,28 +483,12 @@ namespace {
         const char* frame_generation_enabled = std::getenv("FGVK_FRAME_GENERATION_ENABLED");
         if (frame_generation_enabled)
             conf.frame_generation_enabled = std::string(frame_generation_enabled) != "0";
-        const char* scaling_enabled = std::getenv("FGVK_SCALING_ENABLED");
-        if (scaling_enabled)
-            conf.scaling_enabled = std::string(scaling_enabled) != "0";
         const char* swapchain_image_count_compatibility =
             std::getenv("FGVK_SWAPCHAIN_IMAGE_COUNT_COMPATIBILITY");
         if (swapchain_image_count_compatibility) {
             conf.swapchain_image_count_compatibility =
                 std::string(swapchain_image_count_compatibility) != "0";
         }
-        const char* scaling_method = std::getenv("FGVK_SCALING_METHOD");
-        if (scaling_method)
-            conf.scaling_method = scalingMethodFromString(scaling_method);
-        const char* scaling_factor = std::getenv("FGVK_SCALING_FACTOR");
-        if (scaling_factor) conf.scaling_factor = std::stof(scaling_factor);
-        const char* scaling_supersampling =
-            std::getenv("FGVK_SCALING_SUPERSAMPLING");
-        if (scaling_supersampling)
-            conf.scaling_supersampling =
-                std::string(scaling_supersampling) != "0";
-        const char* scaling_sharpness = std::getenv("FGVK_SCALING_SHARPNESS");
-        if (scaling_sharpness)
-            conf.scaling_sharpness = std::stof(scaling_sharpness);
         const char* frame_generation_refresh_threshold =
             std::getenv("FGVK_FRAME_GENERATION_REFRESH_THRESHOLD");
         if (frame_generation_refresh_threshold) {

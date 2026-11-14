@@ -662,7 +662,7 @@ impl App {
         }
         hint(
             ui,
-            "Needed for LSFG and LS1 scaling. Leave empty to remove the setting.",
+            "Needed for frame generation. Leave empty to remove the setting.",
         );
     }
 

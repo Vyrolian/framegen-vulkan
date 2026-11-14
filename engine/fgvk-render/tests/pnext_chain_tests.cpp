@@ -91,29 +91,20 @@ namespace {
             .swapchainCount = 1,
             .pPresentIds = ids,
         };
-        for (const bool removeMode : {false, true}) {
-            const FilteredPresentPNextChain filtered(&id, removeMode, true);
-            expect(filtered.valid(), "present ID2 prefix was rejected");
-            const auto* copied = static_cast<const VkPresentId2KHR*>(
-                filtered.head());
-            expect(copied != &id && copied->sType == id.sType &&
-                    copied->swapchainCount == 1 && copied->pPresentIds == ids,
-                "present ID2 filtering lost its count or borrowed IDs");
-            const void* tail = copied->pNext;
-            if (!removeMode) {
-                const auto* keptMode = static_cast<
-                    const VkSwapchainPresentModeInfoEXT*>(tail);
-                expect(keptMode != &mode && keptMode->sType == mode.sType &&
-                        keptMode->swapchainCount == 1 &&
-                        keptMode->pPresentModes == modes,
-                    "present ID2 filtering lost the retained mode");
-                tail = keptMode->pNext;
-            }
-            expect(tail == &fence && id.pNext == &mode &&
-                    mode.pNext == &regions && regions.pNext == &fence &&
-                    ids[0] == 0x123456789abcdef0ULL,
-                "present ID2 filtering changed caller data or the fence suffix");
-        }
+        const FilteredPresentPNextChain passthrough(&id, false);
+        expect(passthrough.valid() && passthrough.head() == &id,
+            "present ID2 prefix without a mode removal was copied");
+        const FilteredPresentPNextChain filtered(&id, true);
+        expect(filtered.valid(), "present ID2 prefix was rejected");
+        const auto* copied = static_cast<const VkPresentId2KHR*>(
+            filtered.head());
+        expect(copied != &id && copied->sType == id.sType &&
+                copied->swapchainCount == 1 && copied->pPresentIds == ids,
+            "present ID2 filtering lost its count or borrowed IDs");
+        expect(copied->pNext == &regions && id.pNext == &mode &&
+                mode.pNext == &regions && regions.pNext == &fence &&
+                ids[0] == 0x123456789abcdef0ULL,
+            "present ID2 filtering changed caller data or the retained suffix");
     }
 #endif
 
@@ -192,7 +183,7 @@ namespace {
             .swapchainCount = 1,
             .pTimingInfos = timingPayload,
         };
-        const FilteredPresentPNextChain filtered(&timings, true, false);
+        const FilteredPresentPNextChain filtered(&timings, true);
         expect(filtered.valid(),
             "EXT present timing prefix rejected the first Proton present");
         const auto* copied = static_cast<
@@ -219,8 +210,7 @@ namespace {
             .swapchainCount = 1,
             .pRegions = nullptr,
         };
-        // Null pTimingInfos is legal. Exercise timing between two removals,
-        // and a scaling-only removal that must retain the dynamic mode node.
+        // Null pTimingInfos is legal and must stay in an untouched suffix.
         const detail::PresentTimingsInfoExtLayout nullTimings{
             .sType = detail::presentTimingsInfoExtType,
             .pNext = &regions,
@@ -229,38 +219,11 @@ namespace {
         };
         auto modeHead = mode;
         modeHead.pNext = &nullTimings;
-        for (const bool removeMode : {false, true}) {
-            const FilteredPresentPNextChain spatial(
-                &modeHead, removeMode, true
-            );
-            expect(spatial.valid(),
-                "EXT timing between filtered present nodes was rejected");
-            const void* timingHead = spatial.head();
-            if (!removeMode) {
-                const auto* keptMode = static_cast<
-                    const VkSwapchainPresentModeInfoEXT*>(timingHead);
-                expect(keptMode != &modeHead &&
-                        keptMode->sType == modeHead.sType &&
-                        keptMode->pPresentModes == modes,
-                    "scaling-only filter removed the retained mode override");
-                timingHead = keptMode->pNext;
-            }
-            const auto* keptTiming = static_cast<
-                const detail::PresentTimingsInfoExtLayout*>(timingHead);
-            expect(keptTiming != &nullTimings &&
-                    keptTiming->sType == nullTimings.sType &&
-                    keptTiming->swapchainCount == 1 &&
-                    keptTiming->pTimingInfos == nullptr &&
-                    keptTiming->pNext == &fence,
-                "region filtering changed a null timing payload or suffix");
-        }
-        const FilteredPresentPNextChain suffix(&modeHead, true, false);
+        const FilteredPresentPNextChain suffix(&modeHead, true);
         expect(suffix.valid() && suffix.head() == &nullTimings,
             "timing in an untouched suffix was unnecessarily copied");
-        const FilteredPresentPNextChain absent(&timings, false, true);
-        const FilteredPresentPNextChain disabled(&timings, false, false);
-        expect(absent.valid() && absent.head() == &timings &&
-                disabled.valid() && disabled.head() == &timings,
+        const FilteredPresentPNextChain disabled(&timings, false);
+        expect(disabled.valid() && disabled.head() == &timings,
             "passthrough timing chain changed without a removal target");
 
         const VkBaseInStructure unknown{
@@ -269,7 +232,7 @@ namespace {
         };
         auto unknownTimings = timings;
         unknownTimings.pNext = &unknown;
-        const FilteredPresentPNextChain rejected(&unknownTimings, true, false);
+        const FilteredPresentPNextChain rejected(&unknownTimings, true);
         expect(!rejected.valid() && rejected.head() == &unknownTimings &&
                 rejected.unsupportedStructureType() == unknown.sType &&
                 unknownTimings.pNext == &unknown &&
@@ -391,59 +354,12 @@ int main() {
         .pDeviceMasks = nullptr,
         .mode = VK_DEVICE_GROUP_PRESENT_MODE_LOCAL_BIT_KHR,
     };
-    const auto* const originalPresentLink = immutablePresentPrefix.pNext;
-    const FilteredPresentPNextChain filteredRegions(
-        &immutablePresentPrefix, false, true
-    );
-    expect(filteredRegions.valid(),
-        "known immutable present prefix could not be copied");
-    expect(immutablePresentPrefix.pNext == originalPresentLink,
-        "filter rewrote caller-owned immutable present storage");
-    const auto* copiedPrefix = reinterpret_cast<
-        const VkDeviceGroupPresentInfoKHR*>(filteredRegions.head());
-    expect(copiedPrefix != &immutablePresentPrefix,
-        "nested filtering retained the caller-owned prefix node");
-    expect(copiedPrefix->sType == immutablePresentPrefix.sType &&
-            copiedPrefix->mode == immutablePresentPrefix.mode,
-        "nested filtering did not preserve the known prefix payload");
-    expect(copiedPrefix->pNext == &presentTail,
-        "nested present-region node was not safely filtered");
-
-    VkSwapchainPresentModeInfoEXT presentModeInfo{
-        .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_MODE_INFO_EXT,
-        .pNext = &regions,
-        .swapchainCount = 0,
-        .pPresentModes = nullptr,
-    };
-    const FilteredPresentPNextChain filteredBoth(
-        &presentModeInfo, true, true
-    );
-    expect(filteredBoth.valid() && filteredBoth.head() == &presentTail,
-        "two present-chain targets were not filtered together");
-    expect(presentModeInfo.pNext == &regions && regions.pNext == &presentTail,
-        "multi-target filtering rewrote the application chain");
-
     const FilteredPresentPNextChain disabledPresentFilter(
-        &immutablePresentPrefix, false, false
+        &immutablePresentPrefix, false
     );
     expect(disabledPresentFilter.valid() &&
             disabledPresentFilter.head() == &immutablePresentPrefix,
         "disabled present filtering copied or changed the input chain");
-
-    VkBaseInStructure unknownPrefix{
-        .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
-        .pNext = reinterpret_cast<const VkBaseInStructure*>(&regions),
-    };
-    const FilteredPresentPNextChain unknownFilter(
-        &unknownPrefix, false, true
-    );
-    expect(!unknownFilter.valid() &&
-            unknownFilter.unsupportedStructureType() ==
-                VK_STRUCTURE_TYPE_APPLICATION_INFO,
-        "unknown prefix was truncated instead of failing closed");
-    expect(unknownPrefix.pNext ==
-            reinterpret_cast<const VkBaseInStructure*>(&regions),
-        "failed filtering changed the unknown input prefix");
 
     std::cout << "pNext chain tests passed\n";
     return 0;

@@ -46,11 +46,6 @@ fgvk::backend::LosslessDllInspection fgvk::backend::inspectLosslessDll(
             return ModelCompatibility{.compatible = false, .reason = error.what()};
         }
     };
-    const auto ls1 = [&archive](const Ls1Mode mode) {
-        return inspectCapability([&archive, mode] {
-            static_cast<void>(resolveLs1ModelResources(*archive, mode));
-        });
-    };
     return {
         .fileSha256 = archive->fileSha256,
         .resourceLayoutSha256 = archive->resourceLayoutSha256,
@@ -60,7 +55,5 @@ fgvk::backend::LosslessDllInspection fgvk::backend::inspectLosslessDll(
         .lsfgFp32Performance = lsfg(false, true),
         .lsfgFp16Quality = lsfg(true, false),
         .lsfgFp16Performance = lsfg(true, true),
-        .ls1Quality = ls1(Ls1Mode::Quality),
-        .ls1Performance = ls1(Ls1Mode::Performance),
     };
 }

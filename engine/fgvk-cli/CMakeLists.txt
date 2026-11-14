@@ -18,7 +18,6 @@ add_executable(fgvk-cli ${CLI_SOURCES})
 
 target_link_libraries(fgvk-cli
     PRIVATE fgvk-cli-support
-    PRIVATE fgvk-spatial-scaler
     PUBLIC fgvk-common
     PUBLIC fgvk-backend)
 

@@ -25,8 +25,6 @@ namespace fgvk::backend {
         ModelCompatibility lsfgFp32Performance;
         ModelCompatibility lsfgFp16Quality;
         ModelCompatibility lsfgFp16Performance;
-        ModelCompatibility ls1Quality;
-        ModelCompatibility ls1Performance;
     };
 
     [[nodiscard]] LosslessDllInspection inspectLosslessDll(
@@ -34,8 +32,8 @@ namespace fgvk::backend {
     );
 
     /// Inspect the complete runtime LSFG registry at the selected precision,
-    /// including DirectX translation only for FP32, without a Vulkan device
-    /// or any LS1 model. Native SPIR-V inspection needs no translator.
+    /// including DirectX translation only for FP32, without a Vulkan device.
+    /// Native SPIR-V inspection needs no translator.
     [[nodiscard]] ModelCompatibility inspectLsfgRegistry(
         const std::filesystem::path& dll, bool fp16
     );

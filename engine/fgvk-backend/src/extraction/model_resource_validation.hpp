@@ -2,8 +2,6 @@
 
 #pragma once
 
-#include "fgvk-backend/ls1.hpp"
-
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -26,21 +24,6 @@ namespace fgvk::backend::detail {
         uint32_t logicalId{0};
         ShaderResourceContract contract;
     };
-
-    struct Ls1ShaderSpec {
-        uint32_t resourceId;
-        ShaderResourceContract contract;
-        uint32_t storageImageFormat;
-    };
-
-    struct Ls1ModelSpec {
-        Ls1ShaderSpec reconstruction;
-        Ls1ShaderSpec stage1;
-        std::optional<Ls1ShaderSpec> stage2;
-        std::optional<Ls1ShaderSpec> stage3;
-    };
-
-    [[nodiscard]] Ls1ModelSpec ls1ModelSpec(Ls1Mode mode, uint32_t variant);
 
     struct SpirvShaderInfo {
         bool declaresFloat16{false};

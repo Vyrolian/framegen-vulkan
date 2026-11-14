@@ -6,7 +6,7 @@ framegen-vulkan reads its profiles from `~/.config/framegen-vulkan/conf.toml`. E
 
 1. Create `~/.config/framegen-vulkan/conf.toml` from the example below.
 2. Set `active_in` to the game's executable name, such as `Game.exe`. Match the game's process, not its launcher, Steam title, or ROM filename.
-3. Enable Frame Generation and/or Scaling for that profile.
+3. Enable Frame Generation for that profile.
 4. Add `~/.local/bin/fgvk %command%` to the game's Steam launch options, then start the game.
 5. Run `~/.local/bin/fgvk-cli validate` after each change.
 
@@ -24,18 +24,13 @@ frame_generation_provisioned = true
 frame_generation_enabled = true
 multiplier = 2
 
-scaling_enabled = false
-scaling_method = "ls1"
-scaling_factor = 1.5
-scaling_supersampling = false
-scaling_sharpness = 0.8
 ```
 
 framegen-vulkan activates on the next launch of a matched process. If nothing matches, framegen-vulkan stays inactive. `FGVK_PROFILE` selects an exact profile and overrides automatic matching.
 
 ### Lossless Scaling availability
 
-**The framegen-vulkan Scaler works without Lossless Scaling.** Frame Generation and LS1 require it. If framegen-vulkan reports it missing, install Lossless Scaling or set `dll` to the correct `Lossless.dll` path, then restart the game.
+**Frame Generation requires Lossless Scaling's `Lossless.dll`.** If framegen-vulkan reports it missing, install Lossless Scaling or set `dll` to the correct `Lossless.dll` path, then restart the game.
 
 ## Settings window
 
@@ -53,7 +48,7 @@ The window has these controls:
 | Performance mode | `performance_mode` for the selected profile. |
 | FP16 (faster) | `[global] allow_fp16`. Restart the game to apply. |
 | Pacing correction | `[global] pacing_correction`. Restart the game to apply. |
-| Lossless.dll | The `dll` path for Frame Generation and LS1 scaling. Leave it empty to remove the setting. |
+| Lossless.dll | The `dll` path for Frame Generation. Leave it empty to remove the setting. |
 
 Typed values apply when you press Enter or leave the field. Sliders apply when you release them, and buttons apply at once. Live settings change a running game; restart-only settings apply the next time the game starts. See [Applying changes](#applying-changes).
 
@@ -102,30 +97,15 @@ With Fractional Adaptive and automatic real-frame priority, sustained native FPS
 
 For games that switch between 30 FPS cutscenes and 60 FPS gameplay on a 60 Hz display, try Fractional Adaptive with a 2x ceiling, a 60 FPS target, and `dynamic_cadence_recovery = true`. Recovery clears base caps and selects automatic real-frame priority; keep those settings to let gameplay reach its native rate. Its checks can briefly lower output FPS or hitch. `frame_generation_refresh_threshold` checks display Hz, not the game's real FPS.
 
-## Spatial scaling
-
-Enable `scaling_enabled` before launching. Set Steam's game resolution to the display maximum, then choose a lower in-game resolution. Gamescope is recommended; try different display modes if needed.
-
-| `scaling_method` | Use it for |
-| --- | --- |
-| `native` | Simple model-free reconstruction |
-| `fgvk` | Open framegen-vulkan Scaler with anti-ringing and sharpening |
-| `ls1` | Highest-quality LS1 scaling; requires Lossless Scaling |
-| `ls1-performance` | Lower-cost LS1 scaling; requires Lossless Scaling |
-
-`scaling_factor` targets 1.0–2.0× output dimensions, within display limits; `scaling_sharpness` adjusts sharpening except with `native`. `scaling_supersampling` can improve quality on supported Gamescope surfaces, with higher GPU and memory use. LS1 failures fall back to the framegen-vulkan Scaler.
-
-For 1920×1080 output at 1.5×, aim for a 1280×720 input. Raising the factor without lowering the in-game resolution increases GPU and memory cost. Check source and presentation sizes in [diagnostics](COLLECT_DIAGNOSTICS.md); see [Scaling](SCALING.md) for supported display setups.
-
 ## Performance and device selection
 
 | Setting | What it does |
 | --- | --- |
-| `ultra_performance = true` (restart) | Uses 70% Flow Scale, the lighter model, and `ls1-performance` when scaling is enabled. |
+| `ultra_performance = true` (restart) | Uses 70% Flow Scale and the lighter model. |
 | `flow_scale` | 25–100% motion-estimation resolution; lower saves GPU work at a quality cost. Ultra Performance fixes it at 70%. |
 | `gpu_headroom_percent` | Live, Frame Generation-only reserve that reduces real FPS to keep spare GPU capacity; see below. Off by default. |
 | `performance_mode = true` | Uses the lighter Frame Generation model, which reduces GPU work with potentially more artifacts. |
-| `allow_fp16` (restart, `[global]`) | FP16 for supported Frame Generation models and the framegen-vulkan Scaler; `false` uses FP32. LS1 always uses FP32. |
+| `allow_fp16` (restart, `[global]`) | FP16 for supported Frame Generation models; `false` uses FP32. |
 | `pacing_correction` (restart, `[global]`) | On by default. Measures when each output gets the GPU after its present and moves real frames so generated frames sit midway between them. `false` keeps the uncorrected timing. |
 | `dll` (restart) | Lossless.dll path override; leave unset for automatic detection. |
 | `gpu` (restart) | Optional GPU name, vendor/device ID, or PCI bus ID. Multi-GPU Frame Generation is unsupported. |
@@ -136,7 +116,7 @@ Set `gpu_headroom_percent` to 5, 10, 15, or 20 to reserve that share of GPU capa
 
 framegen-vulkan smooths readings and gradually reduces real FPS when usage stays high. Adaptive can use more generated frames within its qualified multiplier ceiling; Fixed keeps its multiplier, so output FPS can fall too. Adaptive is preferable when you want to regain real FPS as scenes become lighter. Brief spikes can still reach 100%, and the reserve is not a power or temperature limit.
 
-Supported AMD telemetry must be readable for the game's GPU; Gamescope is optional. Missing readings restore ordinary pacing. Existing caps and a minimum real-frame rate limit how much load framegen-vulkan can remove. GPU Headroom does not independently control scaling, and it is mutually exclusive with `dynamic_cadence_recovery`. See the [setting reference](CONFIGURATION-REFERENCE.md#gpu-headroom) for floors and compatibility limits.
+Supported AMD telemetry must be readable for the game's GPU; Gamescope is optional. Missing readings restore ordinary pacing. Existing caps and a minimum real-frame rate limit how much load framegen-vulkan can remove. GPU Headroom is mutually exclusive with `dynamic_cadence_recovery`. See the [setting reference](CONFIGURATION-REFERENCE.md#gpu-headroom) for floors and compatibility limits.
 
 ## Compatibility
 
@@ -155,9 +135,9 @@ HDR swapchains run without frame generation; `disable_hdr_exposure` in old launc
 
 | Timing | Common settings |
 | --- | --- |
-| Restart | Enabling `frame_generation_provisioned` or `scaling_enabled`; `dll`; `allow_fp16`; `pacing_correction`; `gpu`; `ultra_performance`; `swapchain_image_count_compatibility`; launcher compatibility settings |
-| Live | `frame_generation_enabled`; most Frame Generation timing and cap settings; `scaling_method` and `scaling_sharpness`; `flow_scale`; `performance_mode`; `gpu_headroom_percent` |
-| May wait for resolution change or restart | `scaling_factor`, `scaling_supersampling`, and changes needing more Frame Generation capacity |
+| Restart | Enabling `frame_generation_provisioned`; `dll`; `allow_fp16`; `pacing_correction`; `gpu`; `ultra_performance`; `swapchain_image_count_compatibility`; launcher compatibility settings |
+| Live | `frame_generation_enabled`; most Frame Generation timing and cap settings; `flow_scale`; `performance_mode`; `gpu_headroom_percent` |
+| May wait for resolution change or restart | Changes needing more Frame Generation capacity |
 
 Some live changes rebuild resources and may briefly hitch. See [Runtime transitions](RUNTIME-TRANSITIONS.md) for details.
 

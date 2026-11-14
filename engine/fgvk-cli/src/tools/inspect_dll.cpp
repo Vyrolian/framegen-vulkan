@@ -3,7 +3,6 @@
 #include "inspect_dll.hpp"
 
 #include "fgvk-backend/dll_inspection.hpp"
-#include "fgvk-backend/ls1.hpp"
 
 #include <exception>
 #include <iostream>
@@ -17,21 +16,6 @@ namespace {
         if (!status.reason.empty())
             std::cout << " (" << status.reason << ')';
         std::cout << '\n';
-    }
-
-    [[nodiscard]] fgvk::backend::ModelCompatibility inspectTranslation(
-            const std::filesystem::path& dll,
-            const fgvk::backend::Ls1Mode mode) {
-        try {
-            for (uint32_t variant = 0; variant < 5U; ++variant) {
-                static_cast<void>(fgvk::backend::loadLs1ShaderSet(
-                    dll, mode, static_cast<float>(variant) / 4.0F
-                ));
-            }
-            return {.compatible = true, .reason = {}};
-        } catch (const std::exception& error) {
-            return {.compatible = false, .reason = error.what()};
-        }
     }
 }
 
@@ -47,32 +31,8 @@ int fgvk::cli::inspect_dll::run(const Options& options) {
                   << (compatible ? "true" : "false") << "}\n";
         return compatible ? 0 : 1;
     }
-    if (options.ls1Mode) {
-        // Use exactly the runtime loader and selected sharpness variant. An
-        // unrelated LSFG family or LS1 variant must not veto this selection.
-        // Only status leaves the process; no licensed payload is serialized.
-        bool compatible = false;
-        try {
-            static_cast<void>(fgvk::backend::loadLs1ShaderSet(
-                options.dll, *options.ls1Mode, options.sharpness
-            ));
-            compatible = true;
-        } catch (const std::exception& error) {
-            std::cerr << "framegen-vulkan: LS1 availability inspection failed: "
-                      << error.what() << '\n';
-        }
-        std::cout << "{\"schema_version\":1,\"compatible\":"
-                  << (compatible ? "true" : "false") << "}\n";
-        return compatible ? 0 : 1;
-    }
     try {
         const auto inspection = fgvk::backend::inspectLosslessDll(options.dll);
-        const auto qualityTranslation = inspectTranslation(
-            options.dll, fgvk::backend::Ls1Mode::Quality
-        );
-        const auto performanceTranslation = inspectTranslation(
-            options.dll, fgvk::backend::Ls1Mode::Performance
-        );
         std::cout << "framegen-vulkan model DLL inspection\n"
                   << "  dll_sha256: " << inspection.fileSha256 << '\n'
                   << "  resource_layout_sha256: "
@@ -83,17 +43,10 @@ int fgvk::cli::inspect_dll::run(const Options& options) {
         printStatus("LSFG FP32 Performance", inspection.lsfgFp32Performance);
         printStatus("LSFG FP16 Quality", inspection.lsfgFp16Quality);
         printStatus("LSFG FP16 Performance", inspection.lsfgFp16Performance);
-        printStatus("LS1 Quality resources", inspection.ls1Quality);
-        printStatus("LS1 Performance resources", inspection.ls1Performance);
-        printStatus("LS1 Quality translation", qualityTranslation);
-        printStatus("LS1 Performance translation", performanceTranslation);
 
         const bool coreCompatible =
             inspection.lsfgFp32Quality.compatible &&
-            inspection.lsfgFp32Performance.compatible &&
-            inspection.ls1Quality.compatible &&
-            inspection.ls1Performance.compatible &&
-            qualityTranslation.compatible && performanceTranslation.compatible;
+            inspection.lsfgFp32Performance.compatible;
         std::cout << "  result: "
                   << (coreCompatible ? "compatible" : "partially compatible")
                   << '\n';

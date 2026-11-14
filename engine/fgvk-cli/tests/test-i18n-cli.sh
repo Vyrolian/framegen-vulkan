@@ -47,16 +47,12 @@ help_output="$("$cli" --help 2>&1)" || fail "--help failed: $help_output"
     fail "framegen-vulkan quality-regression command disappeared from help"
 [[ $help_output == *'inspect-dll'* ]] ||
     fail "framegen-vulkan inspect-dll command disappeared from help"
-[[ $help_output == *'spatial-quality-regression'* ]] ||
-    fail "framegen-vulkan spatial-quality-regression command disappeared from help"
-[[ $help_output == *'combined-quality-regression'* ]] ||
-    fail "framegen-vulkan combined-quality-regression command disappeared from help"
-[[ $help_output == *'spatial-profile'* ]] ||
-    fail "framegen-vulkan spatial-profile command disappeared from help"
 [[ $help_output == *'synchronization-validation-canary'* ]] ||
     fail "framegen-vulkan synchronization-validation-canary command disappeared from help"
-[[ $help_output == *'--width <INT>'* && $help_output == *'--height <INT>'* ]] ||
-    fail "framegen-vulkan exact-resolution options disappeared from help"
+[[ $help_output != *'spatial-quality-regression'* &&
+        $help_output != *'spatial-profile'* &&
+        $help_output != *'combined-quality-regression'* ]] ||
+    fail "retired scaling commands are still listed in help"
 
 run_failure "$cli" quality-regression --scene unknown-scene
 [[ $command_output == 'error: unknown quality scene: unknown-scene' ]] ||
@@ -66,51 +62,14 @@ run_failure "$cli" inspect-dll --dll /tmp/fgvk-cli-missing-lossless.dll
 [[ $command_output == *'framegen-vulkan model DLL inspection failed: failed to stat dll file'* ]] ||
     fail "missing DLL inspection did not fail cleanly: $command_output"
 
-for method in ls1 ls1-performance; do
-    for sharpness in 0 0.25 0.5 0.75 1; do
-        run_failure "$cli" inspect-dll --dll /tmp/fgvk-cli-missing-lossless.dll \
-            --ls1 "$method" --sharpness "$sharpness"
-        [[ $command_output == *'{"schema_version":1,"compatible":false}'* ]] ||
-            fail "selected LS1 inspection did not emit its status contract: $command_output"
-    done
+run_failure "$cli" inspect-dll --dll /tmp/fgvk-cli-missing-lossless.dll --ls1 ls1
+[[ $command_output == *'USAGE:'* ]] ||
+    fail "retired LS1 inspection option was not rejected: $command_output"
+
+for retired in spatial-quality-regression spatial-profile combined-quality-regression; do
+    run_failure "$cli" "$retired" --method native
+    [[ $command_output == *'USAGE:'* ]] ||
+        fail "retired scaling command $retired was not rejected: $command_output"
 done
-run_failure "$cli" inspect-dll --dll /tmp/fgvk-cli-missing-lossless.dll --ls1 unrelated
-[[ $command_output == 'error: --ls1 requires ls1 or ls1-performance' ]] ||
-    fail "unknown LS1 method was not rejected: $command_output"
-run_failure "$cli" inspect-dll --dll /tmp/fgvk-cli-missing-lossless.dll --ls1 ls1 --sharpness nan
-[[ $command_output == *'requires a valid finite number'* ]] ||
-    fail "non-finite LS1 sharpness was not rejected: $command_output"
-
-run_failure "$cli" spatial-quality-regression --method unknown-method
-[[ $command_output == 'error: unknown spatial quality method: unknown-method' ]] ||
-    fail "unknown spatial method did not fail closed: $command_output"
-
-run_failure "$cli" spatial-quality-regression --method native --factor 1.0
-[[ $command_output == 'error: spatial quality factor must be above 1.0 and at most 2.0' ]] ||
-    fail "Native scaling method parsing regressed: $command_output"
-
-run_failure "$cli" spatial-profile --method unknown-method
-[[ $command_output == 'error: unknown spatial profile method: unknown-method' ]] ||
-    fail "unknown spatial profile method did not fail closed: $command_output"
-
-run_failure "$cli" spatial-profile --method native --width +1280 --factor +1.0
-[[ $command_output == 'error: spatial profile factor must be above 1.0 and at most 2.0' ]] ||
-    fail "Native scaling or leading-plus parsing regressed: $command_output"
-
-run_failure "$cli" spatial-profile --method fgvk --width nope
-[[ $command_output == 'error: --width requires a valid finite number: nope' ]] ||
-    fail "invalid spatial profile width did not fail cleanly: $command_output"
-
-run_failure "$cli" spatial-profile --method fgvk --factor nan
-[[ $command_output == 'error: --factor requires a valid finite number: nan' ]] ||
-    fail "non-finite spatial profile factor did not fail cleanly: $command_output"
-
-run_failure "$cli" combined-quality-regression --method unknown-method
-[[ $command_output == 'error: unknown combined quality spatial method: unknown-method' ]] ||
-    fail "unknown combined spatial method did not fail closed: $command_output"
-
-run_failure "$cli" combined-quality-regression --method native --factor 1.0
-[[ $command_output == 'error: combined quality factor must be above 1.0 and at most 2.0' ]] ||
-    fail "Native combined-scaling method parsing regressed: $command_output"
 
 printf 'fgvk-cli i18n contract: PASS\n'

@@ -6,7 +6,6 @@
 #include "extraction/model_resources.hpp"
 #include "extraction/lsfg_shader_set.hpp"
 #include "extraction/spirv_fp16.hpp"
-#include "fgvk-backend/ls1.hpp"
 #include "fgvk-common/helpers/errors.hpp"
 
 #include <algorithm>
@@ -423,24 +422,10 @@ namespace {
             "native Vulkan model did not take precedence over DirectX translation");
     }
 
-    void addLs1Table(Resources& resources, const int64_t offset) {
-        // Independently spell out the supported table to detect mistakes in
-        // the production graph, mode, and variant declarations.
-        for (uint32_t id = 141U; id <= 161U; ++id) {
-            const fgvk::backend::detail::ShaderResourceContract contract = id == 146U
-                ? fgvk::backend::detail::ShaderResourceContract{2, 1, 1, 1}
-                : fgvk::backend::detail::ShaderResourceContract{
-                    1, 1, id >= 148U && (id - 148U) % 3U == 0 ? 0U : 1U, 0};
-            resources.emplace(fgvk::backend::ModelResourceSelection{offset}.resourceId(id),
-                reflectedDxbc(contract));
-        }
-    }
-
     void testRelocatedTables() {
         using namespace fgvk::backend;
         for (const int64_t offset : {-140, 1, 700, 9000}) {
             Resources resources;
-            addLs1Table(resources, offset);
             addLsfgTable(resources, offset);
             resources.emplace(90000U, std::vector<uint8_t>{1, 2, 3});
             const DllResourceArchive archive{.resources = std::move(resources)};
@@ -458,35 +443,22 @@ namespace {
                             "resolved LSFG bytes do not belong to the selected archive");
                     }
             }
-            for (const auto mode : {Ls1Mode::Quality, Ls1Mode::Performance}) {
-                require(resolveLs1ModelResources(archive, mode).idOffset == offset,
-                    "wrong complete LS1 table selected");
-                for (uint32_t variant = 0; variant < 5; ++variant)
-                    require(resolveLs1ModelResources(archive, mode, variant).idOffset == offset,
-                        "selected LS1 loader disagrees with inspection");
-            }
         }
     }
 
     void testUnsafeDiscoveryAndCanonicalPreference() {
         using namespace fgvk::backend;
         Resources resources;
-        addLs1Table(resources, 1000);
         addLsfgTable(resources, 1000);
-        addLs1Table(resources, 2000);
         addLsfgTable(resources, 2000);
         const DllResourceArchive ambiguous{.resources = resources};
         for (int repeat = 0; repeat < 2; ++repeat) {
-            requireFailure([&] { static_cast<void>(resolveLs1ModelResources(
-                ambiguous, Ls1Mode::Quality)); }, "ambiguous LS1 tables accepted");
             requireFailure([&] { static_cast<void>(resolveLsfgModelResources(
                 ambiguous, false, false)); }, "ambiguous LSFG tables accepted");
         }
-        addLs1Table(resources, 0);
         addLsfgTable(resources, 0);
         const DllResourceArchive canonical{.resources = resources};
-        require(resolveLs1ModelResources(canonical, Ls1Mode::Quality).idOffset == 0 &&
-                resolveLsfgModelResources(canonical, false, false).idOffset == 0,
+        require(resolveLsfgModelResources(canonical, false, false).idOffset == 0,
             "canonical models did not take precedence over ambiguous relocated tables");
 
         Resources mixed;
@@ -500,33 +472,14 @@ namespace {
             "runtime LSFG registry mixed shared stages from different tables");
 
         resources.clear();
-        addLs1Table(resources, 1000);
         addLsfgTable(resources, 1000);
-        for (const uint32_t missing : {1141U, 1161U, 1304U, 1400U}) {
+        for (const uint32_t missing : {1304U, 1400U}) {
             auto incomplete = resources;
             incomplete.erase(missing);
             const DllResourceArchive archive{.resources = std::move(incomplete)};
-            if (missing < 1200U) {
-                requireFailure([&] { static_cast<void>(resolveLs1ModelResources(
-                    archive, Ls1Mode::Quality, 0)); }, "partial relocated LS1 table accepted");
-                require(resolveLsfgModelResources(archive, false, false).idOffset == 1000,
-                    "bad LS1 table vetoed LSFG");
-            } else {
-                requireFailure([&] { static_cast<void>(resolveLsfgModelResources(
-                    archive, true, true)); }, "partial relocated LSFG table accepted");
-                require(resolveLs1ModelResources(archive, Ls1Mode::Quality).idOffset == 1000,
-                    "bad LSFG table vetoed LS1");
-            }
+            requireFailure([&] { static_cast<void>(resolveLsfgModelResources(
+                archive, true, true)); }, "partial relocated LSFG table accepted");
         }
-        auto noReflection = resources;
-        noReflection.at(1141U) = syntheticDxbc();
-        requireFailure([&] { static_cast<void>(resolveLs1ModelResources(
-            {.resources = noReflection}, Ls1Mode::Quality)); },
-            "relocated LS1 accepted a graph without reflection proof");
-        auto shuffled = resources;
-        std::swap(shuffled.at(1147U), shuffled.at(1148U));
-        requireFailure([&] { static_cast<void>(resolveLs1ModelResources(
-            {.resources = shuffled}, Ls1Mode::Quality)); }, "shuffled LS1 stages accepted");
         auto swappedPrecision = resources;
         for (const bool performance : {false, true})
             for (const auto& spec : detail::lsfgShaderSpecs(performance))
@@ -547,17 +500,6 @@ namespace {
         addLsfgTable(oversized, 0);
         require(resolveLsfgModelResources({.resources = oversized}, true, false).idOffset == 0,
             "discovery limit incorrectly rejected a canonical table");
-
-        Resources selected;
-        selected.emplace(141U, syntheticDxbc());
-        selected.emplace(146U, syntheticDxbc());
-        const DllResourceArchive oneVariant{.resources = selected};
-        require(resolveLs1ModelResources(oneVariant, Ls1Mode::Performance, 0).idOffset == 0,
-            "unrelated missing LS1 variants vetoed canonical selected loader");
-        requireFailure([&] { static_cast<void>(resolveLs1ModelResources(
-            oneVariant, Ls1Mode::Performance)); }, "incomplete canonical family inspection accepted");
-        requireFailure([&] { static_cast<void>(resolveLs1ModelResources(
-            oneVariant, Ls1Mode::Performance, 5)); }, "invalid variant accepted");
     }
 
     void testReflectionAndIdBounds() {
@@ -700,68 +642,6 @@ namespace {
                 outsidePath)); },
             "out-of-range PE resource was accepted"
         );
-
-        // Two metadata-only resources are enough for one canonical LS1
-        // Performance variant. Replacement must invalidate its resolved model
-        // even when size and mtime are restored by an updater.
-        auto model = syntheticPe(syntheticDxbc());
-        writeInteger<uint16_t>(model, 0x24eU, 2U);
-        writeInteger<uint32_t>(model, 0x258U, 146U);
-        writeInteger<uint32_t>(model, 0x25cU, 0x800000b0U);
-        writeInteger<uint16_t>(model, 0x2beU, 1U);
-        writeInteger<uint32_t>(model, 0x2c4U, 0xd0U);
-        writeInteger<uint32_t>(model, 0x2d0U, 0x1100U);
-        writeInteger<uint32_t>(model, 0x2d4U, static_cast<uint32_t>(syntheticDxbc().size()));
-        const auto modelPath = temporary.path / "model.dll";
-        writeFile(modelPath, model);
-        const auto modelArchive = fgvk::backend::loadDllResourceArchive(modelPath);
-        require(fgvk::backend::resolveLs1ModelResources(*modelArchive,
-                fgvk::backend::Ls1Mode::Performance, 0).idOffset == 0,
-            "synthetic selected model did not resolve");
-        {
-            const char* previous = std::getenv("FGVK_VKD3D_SHADER_PATH");
-            const std::string previousPath = previous ? previous : "";
-            struct RestoreTranslator {
-                std::string path;
-                bool present;
-                ~RestoreTranslator() {
-                    if (present) ::setenv("FGVK_VKD3D_SHADER_PATH", path.c_str(), 1);
-                    else ::unsetenv("FGVK_VKD3D_SHADER_PATH");
-                    ::unsetenv("FGVK_TEST_TRANSLATION_FAILURE");
-                }
-            } restore{previousPath, previous != nullptr};
-            ::setenv("FGVK_VKD3D_SHADER_PATH", FGVK_TEST_TRANSLATOR_PATH, 1);
-            using namespace fgvk::backend;
-            const auto sdr = loadLs1ShaderSet(modelPath, Ls1Mode::Performance, 0.0F, false);
-            const auto hdr = loadLs1ShaderSet(modelPath, Ls1Mode::Performance, 0.0F, true);
-            require(sdr.stage1 == hdr.stage1 && sdr.reconstruction != hdr.reconstruction,
-                "HDR must preserve model feature precision and replace reconstruction storage");
-            const auto storageFormat = [](const std::vector<uint8_t>& bytes) {
-                std::vector<uint32_t> words(bytes.size() / sizeof(uint32_t));
-                std::memcpy(words.data(), bytes.data(), bytes.size());
-                for (size_t i = 5; i < words.size(); i += words.at(i) >> 16U)
-                    if ((words.at(i) & 0xffffU) == 25U && words.at(i + 7) == 2U)
-                        return words.at(i + 8);
-                return UINT32_MAX;
-            };
-            require(storageFormat(sdr.reconstruction) == 4 && storageFormat(hdr.reconstruction) == 2,
-                "LS1 reconstruction must select RGBA8 for SDR and RGBA16F for HDR");
-            ::setenv("FGVK_TEST_TRANSLATION_FAILURE", "compile", 1);
-            require(loadLs1ShaderSet(modelPath, Ls1Mode::Performance, 0.0F, false).reconstruction == sdr.reconstruction &&
-                    loadLs1ShaderSet(modelPath, Ls1Mode::Performance, 0.0F, true).reconstruction == hdr.reconstruction,
-                "SDR and HDR cache entries must remain distinct without retranslating");
-        }
-        const auto modelTime = std::filesystem::last_write_time(modelPath);
-        model[0x300U] = 0U;
-        writeFile(modelPath, model);
-        std::filesystem::last_write_time(modelPath, modelTime);
-        const auto replacement = fgvk::backend::loadDllResourceArchive(modelPath);
-        requireFailure([&] { static_cast<void>(fgvk::backend::resolveLs1ModelResources(
-            *replacement, fgvk::backend::Ls1Mode::Performance, 0)); },
-            "DLL replacement reused a stale successful model resolution");
-        require(fgvk::backend::resolveLs1ModelResources(*modelArchive,
-                fgvk::backend::Ls1Mode::Performance, 0).idOffset == 0,
-            "DLL replacement invalidated an existing immutable archive");
     }
 
     void testShaderContainersAndRequiredBindings() {
@@ -843,41 +723,6 @@ namespace {
                 );
             }
         }
-
-        std::unordered_map<uint32_t, std::vector<uint8_t>> ls1Resources;
-        for (uint32_t id = 141U; id <= 161U; ++id)
-            ls1Resources.emplace(id, syntheticDxbc());
-        ls1Resources.emplace(9999U, std::vector<uint8_t>{1U});
-        for (uint32_t removed = 141U; removed <= 161U; ++removed) {
-            auto changed = ls1Resources;
-            changed.erase(removed);
-            for (const auto mode : {fgvk::backend::Ls1Mode::Quality,
-                    fgvk::backend::Ls1Mode::Performance}) {
-                const bool required = removed == 146U ||
-                    (mode == fgvk::backend::Ls1Mode::Quality ? removed >= 147U : removed <= 145U);
-                const auto validate = [&] {
-                    static_cast<void>(fgvk::backend::resolveLs1ModelResources(
-                        {.resources = changed}, mode));
-                };
-                if (required) requireFailure(validate, "missing selected LS1 graph resource accepted");
-                else validate();
-            }
-        }
-        static_cast<void>(fgvk::backend::resolveLs1ModelResources(
-            {.resources = ls1Resources}, fgvk::backend::Ls1Mode::Quality
-        ));
-        static_cast<void>(fgvk::backend::resolveLs1ModelResources(
-            {.resources = ls1Resources}, fgvk::backend::Ls1Mode::Performance
-        ));
-        ls1Resources.erase(141U);
-        static_cast<void>(fgvk::backend::resolveLs1ModelResources(
-            {.resources = ls1Resources}, fgvk::backend::Ls1Mode::Quality
-        ));
-        requireFailure(
-            [&] { static_cast<void>(fgvk::backend::resolveLs1ModelResources(
-                {.resources = ls1Resources}, fgvk::backend::Ls1Mode::Performance)); },
-            "LS1 Performance did not fail independently of Quality"
-        );
     }
 }
 

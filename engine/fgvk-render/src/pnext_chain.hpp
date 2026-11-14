@@ -306,17 +306,13 @@ namespace fgvk::layer {
     class FilteredPresentPNextChain {
     public:
         FilteredPresentPNextChain(const void* original,
-                const bool removePresentMode,
-                const bool removePresentRegions) : filteredHead(original) {
-            if (!removePresentMode && !removePresentRegions)
+                const bool removePresentMode) : filteredHead(original) {
+            if (!removePresentMode)
                 return;
 
             const auto selectedForRemoval = [=](
                     const VkStructureType type) {
-                return (removePresentMode && type ==
-                        VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_MODE_INFO_EXT) ||
-                    (removePresentRegions && type ==
-                        VK_STRUCTURE_TYPE_PRESENT_REGIONS_KHR);
+                return type == VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_MODE_INFO_EXT;
             };
 
             const VkBaseInStructure* finalRemoved = nullptr;

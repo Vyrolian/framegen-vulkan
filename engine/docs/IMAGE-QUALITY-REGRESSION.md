@@ -1,6 +1,6 @@
 # Procedural image-quality regression
 
-framegen-vulkan includes deterministic procedural scenes and three real-GPU commands for catching corruption, temporal trails, detail loss, and disocclusion errors. Default source images are deliberately odd-sized at 321×181; spatial and combined references are rendered directly at the presentation resolution.
+framegen-vulkan includes deterministic procedural scenes and a real-GPU command for catching corruption, temporal trails, detail loss, and disocclusion errors. Default source images are deliberately odd-sized at 321×181.
 
 The available scenes are `motion-boundary`, `traffic`, `crowd`, `camera-pan`, and `hud-disocclusion`.
 
@@ -16,39 +16,7 @@ fgvk-cli quality-regression \
   --output ./fgvk-quality-result
 ```
 
-Run one production spatial scaler offscreen:
-
-```bash
-fgvk-cli spatial-quality-regression \
-  --scene crowd \
-  --method ls1 \
-  --factor 1.5 \
-  --width 2560 \
-  --height 1440 \
-  --sharpness 0.5 \
-  --scene-time 0.5 \
-  --output ./fgvk-spatial-result
-```
-
-Run the direct pre-Frame Generation spatial-to-LSFG handoff:
-
-```bash
-fgvk-cli combined-quality-regression \
-  --scene camera-pan \
-  --method ls1-performance \
-  --factor 1.5 \
-  --width 3840 \
-  --height 2160 \
-  --sharpness 0.5 \
-  --interpolation 0.67 \
-  --flow 0.75 \
-  --performance-mode \
-  --output ./fgvk-combined-result
-```
-
-Use `--dll /path/to/Lossless.dll` when automatic discovery is unavailable and `--gpu "GPU name"` on a multi-GPU system. LSFG and combined commands request FP16 by default and report an error when the selected GPU or model cannot provide it. Pass `--no-fp16` for FP32; `--allow-fp16` explicitly requests FP16. The [experimental native build](BUILDING-FROM-SOURCE.md#experimental-forced-lsfg-fp16) may convert an FP32-only LSFG graph when FP16 is requested; earlier blanket conversion failed moving-edge checks, and game image quality remains unqualified. See the build guide for the current precision protections and validation limits. Check `experimental_fp16=forced` to distinguish it from native FP16, and retain quality failures as failures. Standalone spatial commands preserve their FP32 default and accept the same flags. Combined commands apply the choice to LSFG and framegen-vulkan Scaler. LS1 Quality and LS1 Performance always run at FP32, including when combined with FP16 LSFG. An actual LS1 model or pipeline failure still falls back to framegen-vulkan Scaler at the selected precision; strict CLI quality runs reject that method fallback. Precision comparisons must specify the intended flag for each run and check the backend's `precision=fp16` or `precision=fp32` inspection record; `FP16 allowed` alone does not prove hardware support. `--performance-mode` selects the lighter frame-generation model. Spatial methods are `native`, `fgvk`, `ls1`, and `ls1-performance`. `--width` and `--height` must be supplied together; they select the exact presentation resolution while the production factor policy derives the source extent.
-
-The spatial command runs the production scaler and fails if an LS1 request falls back to framegen-vulkan. The combined command reconstructs each endpoint directly into a presentation-sized LSFG source and scores the generated result against a presentation-resolution reference. It does not exercise the high-resolution post-Frame Generation placement or a WSI swapchain; those remain fgvk Gym boundaries.
+Use `--dll /path/to/Lossless.dll` when automatic discovery is unavailable and `--gpu "GPU name"` on a multi-GPU system. LSFG commands request FP16 by default and report an error when the selected GPU or model cannot provide it. Pass `--no-fp16` for FP32; `--allow-fp16` explicitly requests FP16. The [experimental native build](BUILDING-FROM-SOURCE.md#experimental-forced-lsfg-fp16) may convert an FP32-only LSFG graph when FP16 is requested; earlier blanket conversion failed moving-edge checks, and game image quality remains unqualified. See the build guide for the current precision protections and validation limits. Check `experimental_fp16=forced` to distinguish it from native FP16, and retain quality failures as failures. Precision comparisons must specify the intended flag for each run and check the backend's `precision=fp16` or `precision=fp32` inspection record; `FP16 allowed` alone does not prove hardware support. `--performance-mode` selects the lighter frame-generation model.
 
 ## Temporal frame-generation sequences
 
@@ -62,7 +30,7 @@ fgvk-cli quality-regression --scene traffic --no-fp16 --flow 1.0 \
 
 The scene advances through a deterministic 24-step forward/reverse cycle. Both source images are initialized before priming history, and each subsequent source image is uploaded after previous GPU users complete. Every generated output is read back, scored against its corresponding reference, and returned to its reusable image layout. This mode measures correctness, not throughput: uploads, waits, scoring, and readbacks are intentional and untimed.
 
-Artifacts include `sources/0.ppm` through the final source step, one `frame-N-output-M/` directory per generated image, and `sequence.tsv` with every output or history-only step. The completion marker identifies the recipe, scene clock, source/output/history counts, and output capacity. `--width` and `--height` together override the default 321×181 temporal source extent, with a maximum of 16 megapixels and 16384 pixels per dimension. These flags remain presentation extents for spatial and combined commands.
+Artifacts include `sources/0.ppm` through the final source step, one `frame-N-output-M/` directory per generated image, and `sequence.tsv` with every output or history-only step. The completion marker identifies the recipe, scene clock, source/output/history counts, and output capacity. `--width` and `--height` together override the default 321×181 temporal source extent, with a maximum of 16 megapixels and 16384 pixels per dimension.
 
 fgvk Gym owns the temporal plan, case selection, repeated execution, complete artifact validation, and byte-for-byte repeatability checks. A passing sequence establishes bounded procedural correctness; it does not prove perceptual equivalence to another model or correctness for all game motion.
 
@@ -74,7 +42,7 @@ fgvk Gym owns the temporal plan, case selection, repeated execution, complete ar
 
 Each command reports normalized whole-frame error, focus-region error, the fraction of severe focus errors, and fine-detail error. These broad guardrails catch corruption, endpoint duplication, destructive ghosting, and major detail loss; they do not rank visual quality perceptually.
 
-Frame-generation artifacts contain `previous.ppm`, `current.ppm`, `reference.ppm`, and `generated.ppm`. Spatial artifacts contain `source.ppm`, `reference.ppm`, and `generated.ppm`. Combined artifacts contain low-resolution `previous.ppm` and `current.ppm` plus presentation-resolution `reference.ppm` and `generated.ppm`.
+Artifacts contain `previous.ppm`, `current.ppm`, `reference.ppm`, and `generated.ppm`.
 
 ## fgvk Gym hardware validation
 

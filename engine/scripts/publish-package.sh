@@ -201,13 +201,13 @@ $manual_release_notes
 > [!TIP]
 > **Try the game’s V-Sync setting both on and off.** Neither setting is universally best: the result depends on the game, its FPS cap, VRR, and the compositor. Keep whichever option feels smoother and more responsive for that game.
 
-Every game, renderer, and display setup behaves differently. Compare Fixed Frame Generation, Adaptive Frame Generation, and scaling-only operation one setting at a time. If Frame Generation or Scaling does not work, test Fullscreen, Borderless Fullscreen, and Windowed; none is universally best. For Scaling, also test in-game resolutions and verify that the input is smaller than the display. Changing display mode can change GPU cost. Restart after changing a setting labelled **(Restart)**. Flow Scale and Lighter FG Model normally apply live and may cause one brief hitch while framegen-vulkan replaces their private resources.
+Every game, renderer, and display setup behaves differently. Compare Fixed Frame Generation and Adaptive Frame Generation one setting at a time. If Frame Generation does not work, test Fullscreen, Borderless Fullscreen, and Windowed; none is universally best. Changing display mode can change GPU cost. Restart after changing a setting labelled **(Restart)**. Flow Scale and Lighter FG Model normally apply live and may cause one brief hitch while framegen-vulkan replaces their private resources.
 
 - **Adaptive target behaviour:** Adaptive varies the generated-frame count toward an average target. It cannot reduce a native frame rate already above that target, and the result still depends on the selected multiplier plus available GPU and compositor capacity.
 - **Quality and latency tuning:** Higher multipliers and lower real-frame rates can increase ghosting and input latency. Smooth Cadence may improve motion consistency while reducing responsiveness, so compare the available choices per game.
 
 > [!IMPORTANT]
-> framegen-vulkan does not contain or distribute Lossless Scaling, \`Lossless.dll\`, or extracted proprietary model payloads. Fixed or Adaptive Frame Generation and LS1 scaling read selected resources at runtime from a lawful, user-supplied Lossless Scaling installation. The open framegen-vulkan Scaler does not use it. framegen-vulkan does not alter the user's DLL file, and translated resources remain process-local. Users are responsible for complying with the terms applicable to their copy.
+> framegen-vulkan does not contain or distribute Lossless Scaling, \`Lossless.dll\`, or extracted proprietary model payloads. Fixed or Adaptive Frame Generation reads selected resources at runtime from a lawful, user-supplied Lossless Scaling installation. framegen-vulkan does not alter the user's DLL file, and translated resources remain process-local. Users are responsible for complying with the terms applicable to their copy.
 
 ## Installation
 
@@ -233,7 +233,7 @@ To remove it later, run \`~/.local/bin/fgvk-installer --uninstall\` from a termi
 
 The host archive includes 64-bit and 32-bit Vulkan layers; the CLI is 64-bit.
 
-Configure profiles in \`~/.config/framegen-vulkan/conf.toml\`, then validate them with \`~/.local/bin/fgvk-cli validate\`. Set the licensed DLL path in the profile when using Frame Generation or LS1 scaling, then use \`~/.local/bin/fgvk %command%\` for a direct Steam launch. Run \`~/.local/bin/fgvk\` without arguments to open the settings window.
+Configure profiles in \`~/.config/framegen-vulkan/conf.toml\`, then validate them with \`~/.local/bin/fgvk-cli validate\`. Set the licensed DLL path in the profile when using Frame Generation, then use \`~/.local/bin/fgvk %command%\` for a direct Steam launch. Run \`~/.local/bin/fgvk\` without arguments to open the settings window.
 
 ### Arch Linux package
 
@@ -268,9 +268,9 @@ Keep the previous archives until the new version has been tested with your games
 
 ## Before you play
 
-- Test framegen-vulkan per game. Start with Frame Generation and Scaling disabled, then enable one path at a time before combining them.
-- If you use Frame Generation or LS1 scaling, confirm the detected \`Lossless.dll\` path before launching. Leaving it blank permits normal discovery. framegen-vulkan Scaler does not need it.
-- Do not combine framegen-vulkan with another frame-generation or scaling Vulkan wrapper for the same game.
+- Test framegen-vulkan per game. Start with Frame Generation disabled, then enable it and compare the result.
+- If you use Frame Generation, confirm the detected \`Lossless.dll\` path before launching. Leaving it blank permits normal discovery.
+- Do not combine framegen-vulkan with another frame-generation Vulkan wrapper for the same game.
 
 EOF
 

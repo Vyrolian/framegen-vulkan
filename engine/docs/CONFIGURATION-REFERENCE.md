@@ -23,12 +23,6 @@ active_in = ["Game.exe"]
 frame_generation_provisioned = true
 frame_generation_enabled = true
 multiplier = 2
-
-scaling_enabled = false
-scaling_method = "ls1"
-scaling_factor = 1.5
-scaling_supersampling = false
-scaling_sharpness = 0.8
 ```
 
 ### AC and battery settings
@@ -59,8 +53,8 @@ Known launchers and helpers stay inactive while their child games can match. The
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `dll` | Automatic | Optional absolute path to `Lossless.dll`. LSFG and LS1 require it; framegen-vulkan Scaler and Native Resolution do not. |
-| `allow_fp16` | `true` | Selects FP16 for supported LSFG models and framegen-vulkan Scaler; `false` selects FP32. If a model lacks native FP16, select FP32. LS1 always uses FP32. Requires restart; Ultra Performance respects this choice. [Experimental source builds](BUILDING-FROM-SOURCE.md#experimental-forced-lsfg-fp16) have separate limits. |
+| `dll` | Automatic | Optional absolute path to `Lossless.dll`. Frame Generation requires it. |
+| `allow_fp16` | `true` | Selects FP16 for supported LSFG models; `false` selects FP32. If a model lacks native FP16, select FP32. Requires restart; Ultra Performance respects this choice. [Experimental source builds](BUILDING-FROM-SOURCE.md#experimental-forced-lsfg-fp16) have separate limits. |
 | `pacing_correction` | `true` | Fixed Frame Generation with internal images: a GPU timestamp after each output's present measures when the private present queue next runs, and the real frames are moved (at most ±1 ms) so each generated frame lands on the midpoint of its two reals. Corrects only the mean difference; no target times, no waits. Requires restart. `FGVK_REAL_OFFSET_US` overrides it: `auto` turns it on, `0` turns it off, another number from −1000 to 1000 sets a fixed offset in microseconds. |
 
 ## Profile settings
@@ -69,7 +63,7 @@ Known launchers and helpers stay inactive while their child games can match. The
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `frame_generation_provisioned` | `true` | Prepares Frame Generation at process start. Set `false` for Scaling-only use. Requires restart. |
+| `frame_generation_provisioned` | `true` | Prepares Frame Generation at process start. Set `false` to skip Frame Generation interop. Requires restart. |
 | `frame_generation_enabled` | `true` | Live execution state. `false` pauses generation. |
 | `multiplier` | `2` | Fixed total output multiplier, from 2–5. |
 | `adaptive` | `false` | Enables Adaptive instead of Fixed generation. |
@@ -87,16 +81,15 @@ Known launchers and helpers stay inactive while their child games can match. The
 
 See [Adaptive validation](ADAPTIVE-VALIDATION.md) for scheduling details.
 
-### Scaling
+### Swapchain
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `scaling_enabled` | `false` | Enables scaling at process start. Requires restart. |
-| `scaling_method` | `ls1` | `native`, `fgvk`, `ls1`, or `ls1-performance`. LS1 failures fall back to framegen-vulkan Scaler. |
-| `scaling_factor` | `1.5` | Target output-to-source ratio per dimension from 1.0–2.0; the surface, display target, and resource limits may reduce the effective ratio. |
-| `scaling_supersampling` | `false` | Allows supported variable Gamescope surfaces to render beyond the display target before downsampling. |
-| `scaling_sharpness` | `0.8` | Sharpening strength from 0.0–1.0. |
 | `swapchain_image_count_compatibility` | `false` | Preserves the game's requested swapchain image minimum. Use only for games that otherwise fail to start. Requires restart. |
+
+### Retired scaling keys
+
+The spatial scaler was removed. `scaling_enabled`, `scaling_method`, `scaling_factor`, `scaling_supersampling`, and `scaling_sharpness` (and their `FGVK_SCALING_*` environment variables) are retired. They are accepted and ignored, so old files still load, and framegen-vulkan does not write them.
 
 ### Performance and device selection
 
@@ -105,7 +98,7 @@ See [Adaptive validation](ADAPTIVE-VALIDATION.md) for scheduling details.
 | `gpu_headroom_percent` | `0` | GPU Headroom reserve: `0` (Off), `5`, `10`, `15`, or `20` percent. Live, Frame Generation only; see below. |
 | `flow_scale` | `0.8` | LSFG motion-estimation resolution from 0.25–1.0. Lower values reduce GPU cost and may reduce quality. |
 | `performance_mode` | `false` | Uses the lighter LSFG model. |
-| `ultra_performance` | `false` | Restart-bound lighter preset using 70% Flow Scale, the lighter model and LS1 Performance when scaling is enabled. Respects the global precision choice. |
+| `ultra_performance` | `false` | Restart-bound lighter preset using 70% Flow Scale and the lighter model. Respects the global precision choice. |
 | `gpu` | Automatic | Optional GPU name, vendor/device ID, or PCI bus ID. Cross-GPU Frame Generation is unsupported. |
 | `pacing` | `none` | Compatibility field; `none` is the only supported value. |
 
@@ -117,7 +110,7 @@ Changes apply live while Frame Generation is active. Off stops Headroom sampling
 
 Fixed retains its selected multiplier, so reserving capacity may lower both real and output FPS. Releasing Headroom does not force a native-frame probe: ordinary Fixed/FIFO pacing can retain that generated workload after the scene becomes lighter, including with Headroom Off. Use Adaptive when restoring a higher real-frame rate after load changes is important. Adaptive can use more generated frames within its configured ceiling and existing qualification rules. Neither policy changes model quality, Flow Scale or clocks. The controller never deliberately caps below 20 real FPS; Adaptive additionally respects `Target FPS / available maximum multiplier`. For example, a 90 FPS target with a 2× ceiling cannot trade away real frames below 45 FPS. A higher permitted multiplier allows more room but can increase interpolation artifacts and input latency. The utilization target is not guaranteed when generation is expensive, another process consumes the GPU, or the floor is reached.
 
-GPU Headroom is dormant with Frame Generation disabled or refresh-paused, during confirmed Steam-menu suspension, and during ordered-acquire recovery. It does not independently control scaling. Dynamic Cadence Recovery is mutually exclusive: enabling Headroom disables Recovery; enabling Recovery clears Headroom. Profile and separate power-mode settings preserve the reserve. Live Status distinguishes unavailable telemetry and a reached real-frame floor; diagnostics record decisions independently of the saved setting.
+GPU Headroom is dormant with Frame Generation disabled or refresh-paused, during confirmed Steam-menu suspension, and during ordered-acquire recovery. Dynamic Cadence Recovery is mutually exclusive: enabling Headroom disables Recovery; enabling Recovery clears Headroom. Profile and separate power-mode settings preserve the reserve. Live Status distinguishes unavailable telemetry and a reached real-frame floor; diagnostics record decisions independently of the saved setting.
 
 See [Adaptive validation](ADAPTIVE-VALIDATION.md#gpu-headroom) for controller sampling and recovery, and [Runtime transitions](RUNTIME-TRANSITIONS.md) for when edits take effect.
 
@@ -158,7 +151,7 @@ Set `FGVK_ENV=1` to build one profile from environment variables instead of TOML
 - Fixed and identity: `FGVK_GPU`, `FGVK_MULTIPLIER`, `FGVK_FRAME_GENERATION_PROVISIONED`, `FGVK_FRAME_GENERATION_ENABLED`, `FGVK_FRAME_GENERATION_REFRESH_THRESHOLD`, `FGVK_BASE_FPS_CAP`;
 - Adaptive: `FGVK_ADAPTIVE`, `FGVK_ADAPTIVE_AUTO_BASE_FPS_CAP`, `FGVK_ADAPTIVE_FRACTIONAL_REAL_FRAME_PRIORITY`, `FGVK_TARGET_FPS`, `FGVK_ADAPTIVE_TARGET_REFRESH_RATE`, `FGVK_ADAPTIVE_MAX_MULTIPLIER`, `FGVK_ADAPTIVE_STABLE_CADENCE`, `FGVK_DYNAMIC_CADENCE_RECOVERY`, `FGVK_DYNAMIC_CADENCE_PROBE_INTERVAL_SECONDS`;
 - Gamescope VRR: `FGVK_GAMESCOPE_VRR_MODE` (`follow-steam`, `on`, or `off`);
-- Scaling: `FGVK_SCALING_ENABLED`, `FGVK_SCALING_METHOD`, `FGVK_SCALING_FACTOR`, `FGVK_SCALING_SUPERSAMPLING`, `FGVK_SCALING_SHARPNESS`, `FGVK_SWAPCHAIN_IMAGE_COUNT_COMPATIBILITY`; and
+- Compatibility: `FGVK_SWAPCHAIN_IMAGE_COUNT_COMPATIBILITY`; and
 - resources: `FGVK_ULTRA_PERFORMANCE`, `FGVK_FLOW_SCALE`, `FGVK_PERFORMANCE_MODE`, `FGVK_PACING`.
 
 
@@ -168,13 +161,13 @@ Set `FGVK_ENV=1` to build one profile from environment variables instead of TOML
 
 `FGVK_PACING_PROFILE_COPY=1` implies the trace and backend GPU timing, and adds native copy timestamp queries in the existing copy command buffers, plus optional supported KHR/EXT device-to-host clock calibration; its reports retain calibration uncertainty and separate estimated copy-end timing from WSI semaphore signals and physical scanout. It moves generated copies onto the application's present thread with fence-based render-slot admission, so its pacing is not the product's.
 
-`FGVK_PACING_PROFILE=1` enables independent process-start CPU pacing/phase summaries and application acquire/present observations without broad presentation diagnostics. The default is a private, bounded timing-only capture under `${TMPDIR:-/tmp}`; `FGVK_PACING_PROFILE_LOG` selects a new absolute file or `stderr` for console-only output. See the [pacing capture guide](COLLECT_DIAGNOSTICS.md#lightweight-minecraft-pacing-capture). `FGVK_PACING_PROFILE_GPU=1` additionally enables backend GPU timestamp collection and implies the CPU capture; to read completed queries the backend waits for every in-flight batch on each source, on the application's present thread, so the game's present can be held for most of a GPU frame and its frame rate drops: do not use it to measure pacing. It is diagnostic measurement overhead and excludes game rendering, application-device scaling/copies and scanout. Profiling changes no saved profile or pacing policy.
+`FGVK_PACING_PROFILE=1` enables independent process-start CPU pacing/phase summaries and application acquire/present observations without broad presentation diagnostics. The default is a private, bounded timing-only capture under `${TMPDIR:-/tmp}`; `FGVK_PACING_PROFILE_LOG` selects a new absolute file or `stderr` for console-only output. See the [pacing capture guide](COLLECT_DIAGNOSTICS.md#lightweight-minecraft-pacing-capture). `FGVK_PACING_PROFILE_GPU=1` additionally enables backend GPU timestamp collection and implies the CPU capture; to read completed queries the backend waits for every in-flight batch on each source, on the application's present thread, so the game's present can be held for most of a GPU frame and its frame rate drops: do not use it to measure pacing. It is diagnostic measurement overhead and excludes game rendering, application-device copies and scanout. Profiling changes no saved profile or pacing policy.
 
 `FGVK_PACING_PROFILE_GPU_SPLIT=1` adds non-draining GPU boundaries to a `FGVK_PACING_PROFILE=1` capture. It has no effect without that switch and does not imply `FGVK_PACING_PROFILE_GPU=1`. It never drains or waits on in-flight work, changes no wait, path or schedule, and does not make the drained GPU profile active. The backend reads each batch's boundaries only after the existing completion fence has signalled, and a query that is not ready yet is skipped. Each completed generated backend batch emits one `pacing-profile-gpu-split` version 1 record, correlated to its source with `source`, `backend_frame`, the application copy's `game_done_ns` and `source_copy_end_ns`, and the backend's `fg_start_ns`, `prepass_end_ns`, `generated_end_ns` and `batch_end_ns`. Every time is CLOCK_MONOTONIC nanoseconds, the same base as `started_ns`; zero means unknown. The render half stays zero unless the application device enabled calibrated timestamps. The backend half needs VK_KHR_calibrated_timestamps (or its EXT form) with the device and CLOCK_MONOTONIC domains; without it the backend logs `framegen-vulkan: GPU split profile unavailable; reason=calibration` once and stays off. Each generated output the deferred worker copies at its deadline also emits one `pacing-profile-output-gpu` version 1 record, with `source`, `available` and the copy's `copy_start_ns` and `copy_end_ns` on the GPU. It is read after the render slot's fence, so it can appear a few batches after its output, and a skipped output reports `available=0`. The boundaries are GPU ordering points, so bottom-of-pipe timestamps can still cost some overlap on some drivers. Compare with the switch off before reading small differences as pacing.
 
 `FGVK_PACING_PROFILE_WAYLAND=1` implies CPU capture and adds native Wayland `wp_presentation` feedback on the application's borrowed surface. It records compositor-reported presentation timestamps/discards separately from lower-call timing, without GPU queries, socket reads, commits, target-time changes or an event-reader worker. It uses a private event queue serviced by the application's existing display reader. The [capture guide](COLLECT_DIAGNOSTICS.md#lightweight-minecraft-pacing-capture) describes clock domains, bounded storage, protocol/callback gaps and ambiguous commit association. This process-start observer adds protocol and dispatch overhead; remove it after the capture.
 
-`FGVK_PACING_PROFILE_CONTENT=1` implies CPU capture and arms an explicit-trigger image sequence capture for Fixed 2x SDR without spatial scaling. It records at most 128 small real/generated picture pairs plus source/history/image/queue identities, using the existing copy commands and completed render-fence boundary. No capture GPU resources or readback are created before the named trigger exists. Pictures are stored separately from timing-only logs and add transfer/readback/I/O overhead. See the same [capture guide](COLLECT_DIAGNOSTICS.md#lightweight-minecraft-pacing-capture) for warm-scene triggering, bounds and offline analysis.
+`FGVK_PACING_PROFILE_CONTENT=1` implies CPU capture and arms an explicit-trigger image sequence capture for Fixed 2x SDR. It records at most 128 small real/generated picture pairs plus source/history/image/queue identities, using the existing copy commands and completed render-fence boundary. No capture GPU resources or readback are created before the named trigger exists. Pictures are stored separately from timing-only logs and add transfer/readback/I/O overhead. See the same [capture guide](COLLECT_DIAGNOSTICS.md#lightweight-minecraft-pacing-capture) for warm-scene triggering, bounds and offline analysis.
 
 ## Presentation acquisition timeout
 

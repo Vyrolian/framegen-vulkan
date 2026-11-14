@@ -23,12 +23,11 @@ namespace {
 }
 
 struct fgvk::backend::ModelResolutionCache {
-    // First key: native LSFG FP32/FP16, DirectX LSFG, or LS1 Q/P.
-    // Second: mode/variant or all.
+    // First key: native LSFG FP32/FP16 or DirectX LSFG.
+    // Second: mode or all.
     std::map<std::pair<uint32_t, uint32_t>, ResolutionOutcome> selections;
     std::optional<ResolutionOutcome> relocatedLsfg;
     std::optional<ResolutionOutcome> relocatedLsfgDxbc;
-    std::optional<ResolutionOutcome> relocatedLs1;
 };
 
 namespace {
@@ -64,15 +63,6 @@ namespace {
         return {requireResolution(found->second)};
     }
 
-    template<typename Action>
-    void visitLs1(const Ls1Mode mode, const uint32_t variant, Action action) {
-        const auto spec = detail::ls1ModelSpec(mode, variant);
-        action(spec.reconstruction);
-        action(spec.stage1);
-        if (spec.stage2) action(*spec.stage2);
-        if (spec.stage3) action(*spec.stage3);
-    }
-
     bool validateLsfg(const DllResourceArchive& archive,
             const ModelResourceSelection selection,
             const bool fp16, const bool performance) {
@@ -97,17 +87,6 @@ namespace {
                 spec.contract, "LSFG DirectX resource " +
                     std::to_string(selection.resourceId(id)));
         }
-    }
-
-    void validateLs1(const DllResourceArchive& archive,
-            const ModelResourceSelection selection, const Ls1Mode mode,
-            const uint32_t variant, const bool requireReflection) {
-        visitLs1(mode, variant, [&](const detail::Ls1ShaderSpec& spec) {
-            const auto& data = selection.resource(archive, spec.resourceId);
-            const auto name = "LS1 resource " +
-                std::to_string(selection.resourceId(spec.resourceId));
-            detail::validateDxbcResourceBindings(data, spec.contract, name, requireReflection);
-        });
     }
 
     template<typename Validate>
@@ -149,19 +128,6 @@ namespace {
                 if (declaresFloat16 != fp16)
                     throw ls::error("relocated LSFG table has unproven precision order");
             }
-        });
-    }
-
-    int64_t discoverLs1(const DllResourceArchive& archive) {
-        const auto anchor = detail::ls1ModelSpec(Ls1Mode::Quality, 0).reconstruction;
-        return discoverTable(archive, anchor.resourceId, "LS1", [&](const auto selection) {
-            // Use the distinctive reconstruction interface as an early filter.
-            detail::validateDxbcResourceBindings(
-                selection.resource(archive, anchor.resourceId), anchor.contract,
-                "LS1 reconstruction candidate");
-            for (const auto mode : {Ls1Mode::Quality, Ls1Mode::Performance})
-                for (uint32_t variant = 0; variant < 5U; ++variant)
-                    validateLs1(archive, selection, mode, variant, true);
         });
     }
 
@@ -227,26 +193,6 @@ fgvk::backend::ModelResourceSelection fgvk::backend::resolveLsfgDxbcModelResourc
                         validateLsfgDxbc(archive, selection, mode);
                 });
             });
-        }
-    });
-}
-
-fgvk::backend::ModelResourceSelection fgvk::backend::resolveLs1ModelResources(
-        const DllResourceArchive& archive, const Ls1Mode mode,
-        const std::optional<uint32_t> variant) {
-    if (variant && *variant >= 5U)
-        throw ls::error("invalid LS1 model variant");
-    return cachedResolution(archive, {mode == Ls1Mode::Quality ? 4U : 5U,
-            variant.value_or(5U)}, [&](ModelResolutionCache& cache) {
-        try {
-            const uint32_t begin = variant.value_or(0U);
-            const uint32_t end = variant ? begin + 1U : 5U;
-            for (uint32_t i = begin; i < end; ++i)
-                validateLs1(archive, {}, mode, i, false);
-            return int64_t{0};
-        } catch (const ls::error& error) {
-            return relocatedAfterFailure(error, cache.relocatedLs1,
-                [&] { return discoverLs1(archive); });
         }
     });
 }

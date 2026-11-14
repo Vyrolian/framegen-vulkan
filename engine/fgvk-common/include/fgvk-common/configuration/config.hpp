@@ -21,7 +21,7 @@ namespace ls {
     struct GlobalConf {
         /// optional dll override
         std::optional<std::string> dll;
-        /// request supported FP16 model/scaling arithmetic; false selects FP32
+        /// request supported FP16 model arithmetic; false selects FP32
         bool allow_fp16{true};
         /// centre generated outputs between their reals from measured GPU present times
         /// (FGVK_REAL_OFFSET_US overrides); read once when the layer starts
@@ -54,18 +54,6 @@ namespace ls {
         if (value == "off") return GamescopeVrrMode::Off;
         return std::nullopt;
     }
-
-    /// Spatial reconstruction implementation selected for a profile.
-    enum class ScalingMethod : uint8_t {
-        /// Preserve the game's native image while the Scaling Engine remains provisioned.
-        Native,
-        /// framegen-vulkan's open, single-pass edge-adaptive scaler.
-        Fgvk,
-        /// Lossless Scaling's multi-pass LS1 neural model.
-        Ls1,
-        /// Lossless Scaling's lower-cost LS1 neural model.
-        Ls1Performance,
-    };
 
     /// Optional Fractional Adaptive source cap selected from cadence-friendly
     /// real/generated ratios. Auto preserves the ordinary Fractional policy.
@@ -131,45 +119,12 @@ namespace ls {
         return 0.0;
     }
 
-    [[nodiscard]] constexpr const char* scalingMethodName(
-            const ScalingMethod method) noexcept {
-        switch (method) {
-            case ScalingMethod::Native:
-                return "native";
-            case ScalingMethod::Fgvk:
-                return "fgvk";
-            case ScalingMethod::Ls1:
-                return "ls1";
-            case ScalingMethod::Ls1Performance:
-                return "ls1-performance";
-        }
-        return "fgvk";
-    }
-
-    [[nodiscard]] constexpr std::optional<ScalingMethod>
-    scalingMethodFromName(const std::string_view value) noexcept {
-        if (value == "native")
-            return ScalingMethod::Native;
-        if (value == "fgvk")
-            return ScalingMethod::Fgvk;
-        if (value == "ls1")
-            return ScalingMethod::Ls1;
-        if (value == "ls1-performance")
-            return ScalingMethod::Ls1Performance;
-        return std::nullopt;
-    }
-
     /// Renderer defaults used when a game profile omits fields
     struct GameConfDefaults {
         static constexpr size_t multiplier = 2;
         static constexpr bool frameGenerationProvisioned = true;
         static constexpr bool frameGenerationEnabled = true;
-        static constexpr bool scalingEnabled = false;
         static constexpr bool swapchainImageCountCompatibility = false;
-        static constexpr ScalingMethod scalingMethod = ScalingMethod::Ls1;
-        static constexpr float scalingFactor = 1.5F;
-        static constexpr bool scalingSupersampling = false;
-        static constexpr float scalingSharpness = 0.8F;
         static constexpr uint32_t frameGenerationRefreshThreshold = 0;
         static constexpr uint32_t baseFpsCap = 0;
         static constexpr uint32_t gpuHeadroomPercent = 0;
@@ -197,10 +152,6 @@ namespace ls {
     struct GameConfLimits {
         static constexpr size_t minimumMultiplier = 2;
         static constexpr size_t maximumMultiplier = 5;
-        static constexpr float minimumScalingFactor = 1.0F;
-        static constexpr float maximumScalingFactor = 2.0F;
-        static constexpr float minimumScalingSharpness = 0.0F;
-        static constexpr float maximumScalingSharpness = 1.0F;
         static constexpr std::array<uint32_t, 5> gpuHeadroomPercentPresets{0, 5, 10, 15, 20};
         static constexpr uint32_t minimumBaseFpsCap = 0;
         static constexpr uint32_t maximumBaseFpsCap = 1000;
@@ -243,20 +194,10 @@ namespace ls {
         };
         /// allow frame synthesis to be toggled live without changing its mode
         bool frame_generation_enabled{GameConfDefaults::frameGenerationEnabled};
-        /// provision the scaling engine independently from frame synthesis
-        bool scaling_enabled{GameConfDefaults::scalingEnabled};
         /// preserve the application's requested swapchain image minimum
         bool swapchain_image_count_compatibility{
             GameConfDefaults::swapchainImageCountCompatibility
         };
-        /// spatial reconstruction implementation
-        ScalingMethod scaling_method{GameConfDefaults::scalingMethod};
-        /// ratio between the source and output dimensions when scaling
-        float scaling_factor{GameConfDefaults::scalingFactor};
-        /// allow the scaled presentation to exceed a proven display target
-        bool scaling_supersampling{GameConfDefaults::scalingSupersampling};
-        /// normalized scaler sharpening strength
-        float scaling_sharpness{GameConfDefaults::scalingSharpness};
         /// Select full precision, compact buffers, or approximate HDR10 generation.
         /// pause synthesis at or below a confirmed refresh rate; zero disables it
         uint32_t frame_generation_refresh_threshold{
@@ -305,40 +246,6 @@ namespace ls {
 
     [[nodiscard]] GameConf profileForPowerSource(
         const GameConf& profile, PowerSource source);
-
-    /// Whether this profile should retain the spatial reconstruction lane.
-    /// Native Resolution is the model-free baseline inside that lane so a
-    /// running process can switch models without replacing its WSI objects.
-    [[nodiscard]] constexpr bool spatialScalingRequested(
-            const GameConf& profile) noexcept {
-        return profile.scaling_enabled;
-    }
-
-    /// Whether this profile can change the source or presentation extent.
-    /// A 1.0 factor retains the live reconstruction lane but remains spatially
-    /// inactive, so it must not alter unrelated swapchain provisioning.
-    [[nodiscard]] constexpr bool spatialScalingMayActivate(
-            const GameConf& profile) noexcept {
-        return spatialScalingRequested(profile) &&
-            profile.scaling_factor > GameConfLimits::minimumScalingFactor;
-    }
-
-    /// Spatial model selected after applying cross-feature presets. Ultra
-    /// Performance keeps a disabled scaling engine dormant, but uses the
-    /// lower-cost licensed model whenever that engine is provisioned.
-    [[nodiscard]] constexpr ScalingMethod effectiveScalingMethod(
-            const GameConf& profile) noexcept {
-        return profile.scaling_enabled && profile.ultra_performance
-            ? ScalingMethod::Ls1Performance
-            : profile.scaling_method;
-    }
-
-    /// Whether this method requires user-supplied licensed model resources.
-    [[nodiscard]] constexpr bool licensedScalingModelRequested(
-            const ScalingMethod method) noexcept {
-        return method == ScalingMethod::Ls1 ||
-            method == ScalingMethod::Ls1Performance;
-    }
 
     /// Flow scale selected for backend construction after applying presets.
     [[nodiscard]] constexpr float effectiveFlowScale(

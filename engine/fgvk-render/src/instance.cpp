@@ -415,9 +415,6 @@ Root::Root() :
                      "active: policy=application-minimum; lifetime=process; "
                      "generated-headroom=disabled\n";
     }
-    if (this->active_profile->scaling_enabled) {
-        std::cerr << "framegen-vulkan: spatial scaling was removed; scaling_enabled is ignored\n";
-    }
 }
 
 ConfigurationUpdateResult Root::update(const bool forceConfigurationPoll) {

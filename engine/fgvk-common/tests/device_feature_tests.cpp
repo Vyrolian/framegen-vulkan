@@ -70,25 +70,25 @@ namespace {
         unavailableDeviceFunctions().assign(
             interopFunctions.begin(), interopFunctions.end()
         );
-        const auto scalingOnly = vk::initVulkanDeviceFuncs(
+        const auto frameGenerationFree = vk::initVulkanDeviceFuncs(
             instanceFunctions, device, true, false
         );
-        expect(!scalingOnly.SignalSemaphoreKHR &&
-                !scalingOnly.WaitSemaphoresKHR &&
-                !scalingOnly.GetMemoryFdKHR &&
-                !scalingOnly.ImportSemaphoreFdKHR &&
-                !scalingOnly.GetSemaphoreFdKHR,
-            "Scaling-only loading must tolerate absent frame-generation interop");
-        expect(scalingOnly.GetDeviceQueue && scalingOnly.QueueSubmit &&
-                scalingOnly.CreateImage && scalingOnly.CmdDispatch,
-            "Scaling-only loading must retain required core device functions");
-        expect(scalingOnly.CreateSwapchainKHR &&
-                scalingOnly.GetSwapchainImagesKHR &&
-                scalingOnly.AcquireNextImageKHR &&
-                scalingOnly.QueuePresentKHR &&
-                scalingOnly.DestroySwapchainKHR,
-            "Scaling-only graphical loading must retain every WSI function");
-        expect(scalingOnly.AcquireNextImage2KHR,
+        expect(!frameGenerationFree.SignalSemaphoreKHR &&
+                !frameGenerationFree.WaitSemaphoresKHR &&
+                !frameGenerationFree.GetMemoryFdKHR &&
+                !frameGenerationFree.ImportSemaphoreFdKHR &&
+                !frameGenerationFree.GetSemaphoreFdKHR,
+            "Frame-generation-free loading must tolerate absent frame-generation interop");
+        expect(frameGenerationFree.GetDeviceQueue && frameGenerationFree.QueueSubmit &&
+                frameGenerationFree.CreateImage && frameGenerationFree.CmdDispatch,
+            "Frame-generation-free loading must retain required core device functions");
+        expect(frameGenerationFree.CreateSwapchainKHR &&
+                frameGenerationFree.GetSwapchainImagesKHR &&
+                frameGenerationFree.AcquireNextImageKHR &&
+                frameGenerationFree.QueuePresentKHR &&
+                frameGenerationFree.DestroySwapchainKHR,
+            "Frame-generation-free graphical loading must retain every WSI function");
+        expect(frameGenerationFree.AcquireNextImage2KHR,
             "Graphical loading must retain the supported optional acquisition API");
 
         makeUnavailable("vkAcquireNextImage2KHR");
@@ -105,7 +105,7 @@ namespace {
             static_cast<void>(vk::initVulkanDeviceFuncs(
                 instanceFunctions, device, true, false
             ));
-        }, "Scaling-only loading must still reject a missing core function");
+        }, "Frame-generation-free loading must still reject a missing core function");
 
         const std::array graphicalFunctions{
             "vkCreateSwapchainKHR",
@@ -120,7 +120,7 @@ namespace {
                 static_cast<void>(vk::initVulkanDeviceFuncs(
                     instanceFunctions, device, true, false
                 ));
-            }, "Scaling-only graphical loading must reject a missing WSI function");
+            }, "Frame-generation-free graphical loading must reject a missing WSI function");
         }
 
         for (const std::string_view function : interopFunctions) {

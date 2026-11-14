@@ -105,8 +105,8 @@ For a native or Proton game, set this Steam launch option:
 Use the absolute path: if you put ~/.local/bin ahead of /usr/bin in PATH, a
 user-local fgvk would otherwise shadow the packaged one.
 
-Frame generation and LS1 spatial scaling need a user-owned Lossless.dll from
-Lossless Scaling; the open framegen-vulkan Scaler does not. LS1 and DirectX LSFG models
+Frame generation needs a user-owned Lossless.dll from
+Lossless Scaling. DirectX LSFG models
 additionally need vkd3d (lib32-vkd3d for 32-bit games). Both are optional dependencies.
 
 Do not run upstream's fgvk-installer: it targets ~/.local and would create a

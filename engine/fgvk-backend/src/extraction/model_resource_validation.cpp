@@ -298,7 +298,7 @@ void fgvk::backend::detail::validateDxbcResourceBindings(
         if (!discovery && !expected.contains({type, slot}))
             continue;
         // D3D_SIT_CBUFFER/TEXTURE/SAMPLER/UAV_RWTYPED; image bindings must be
-        // single, non-array Texture2D resources as consumed by the LS1 graph.
+        // single, non-array Texture2D resources as consumed by the LSFG DirectX graph.
         if (slots != 1U ||
                 ((type == 2U || type == 4U) ? dimension != 4U
                     : (type != 0U && type != 3U) || dimension != 0U) ||
@@ -408,22 +408,6 @@ fgvk::backend::detail::validateSpirvComputeShader(
     }
     info.exactBindings = actual == expected;
     return info;
-}
-
-fgvk::backend::detail::Ls1ModelSpec fgvk::backend::detail::ls1ModelSpec(
-        const Ls1Mode mode, const uint32_t variant) {
-    if (variant >= 5U)
-        throw ls::error("invalid LS1 model variant");
-    constexpr uint32_t rgba8 = 4U;
-    constexpr uint32_t r8Snorm = 20U;
-    const Ls1ShaderSpec reconstruction{146U, {2, 1, 1, 1}, rgba8};
-    if (mode == Ls1Mode::Performance)
-        return {reconstruction, {141U + variant, {1, 1, 1, 0}, r8Snorm},
-            std::nullopt, std::nullopt};
-    const uint32_t first = 147U + variant * 3U;
-    return {reconstruction, {first, {1, 1, 1, 0}, rgba8},
-        Ls1ShaderSpec{first + 1U, {1, 1, 0, 0}, rgba8},
-        Ls1ShaderSpec{first + 2U, {1, 1, 1, 0}, r8Snorm}};
 }
 
 uint32_t fgvk::backend::detail::lsfgResourceId(

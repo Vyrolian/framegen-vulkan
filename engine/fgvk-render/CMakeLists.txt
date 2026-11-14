@@ -28,7 +28,6 @@ set(LAYER_SOURCES
     "src/swapchain/status.cpp")
 
 set(ADAPTIVE_SOURCE "src/adaptive_scheduler.cpp")
-set(SPATIAL_SCALER_SOURCE "src/spatial_scaler.cpp")
 set(COLOR_PIPELINE_SOURCE "src/color_pipeline.cpp")
 
 # Keep explicit target membership while detecting a newly added implementation
@@ -37,7 +36,6 @@ set(COLOR_PIPELINE_SOURCE "src/color_pipeline.cpp")
 set(RENDERER_PRODUCTION_SOURCES
     ${LAYER_SOURCES}
     ${ADAPTIVE_SOURCE}
-    ${SPATIAL_SCALER_SOURCE}
     ${COLOR_PIPELINE_SOURCE})
 configure_file(
     "${CMAKE_CURRENT_SOURCE_DIR}/check-source-inventory.cmake.in"
@@ -58,20 +56,6 @@ target_include_directories(fgvk-adaptive
 set_target_properties(fgvk-adaptive PROPERTIES
     CXX_VISIBILITY_PRESET hidden
     VISIBILITY_INLINES_HIDDEN ON)
-
-if(FGVK_BUILD_VK_LAYER OR FGVK_BUILD_CLI)
-    add_library(fgvk-spatial-scaler STATIC
-        ${SPATIAL_SCALER_SOURCE})
-    add_dependencies(fgvk-spatial-scaler fgvk-renderer-source-inventory)
-    target_include_directories(fgvk-spatial-scaler
-        PUBLIC "src")
-    target_link_libraries(fgvk-spatial-scaler
-        PUBLIC fgvk-common
-        PUBLIC fgvk-backend)
-    set_target_properties(fgvk-spatial-scaler PROPERTIES
-        CXX_VISIBILITY_PRESET hidden
-        VISIBILITY_INLINES_HIDDEN ON)
-endif()
 
 if(FGVK_BUILD_VK_LAYER OR BUILD_TESTING)
     find_package(Threads REQUIRED)
@@ -167,9 +151,6 @@ if(FGVK_BUILD_VK_LAYER)
 endif()
 
 if(BUILD_TESTING)
-    add_executable(fgvk-spatial-command-recording-tests "tests/spatial_command_recording_tests.cpp")
-    target_include_directories(fgvk-spatial-command-recording-tests PRIVATE src)
-    add_test(NAME spatial-command-recording COMMAND fgvk-spatial-command-recording-tests)
     add_test(NAME renderer-source-inventory
         COMMAND "${CMAKE_COMMAND}" -P
             "${CMAKE_CURRENT_BINARY_DIR}/check-source-inventory.cmake")
@@ -185,8 +166,6 @@ if(BUILD_TESTING)
         set_tests_properties(${test_name} PROPERTIES
             LABELS "portable-policy")
     endfunction()
-
-    fgvk_register_portable_policy_test(fgvk-spatial-command-recording-tests spatial-command-recording)
 
     add_dependencies(fgvk-portable-policy-test-binaries
         fgvk-external-fd-tests fgvk-descriptor-pool-tests fgvk-shader-pipeline-tests

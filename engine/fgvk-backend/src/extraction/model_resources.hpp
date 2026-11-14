@@ -3,7 +3,6 @@
 #pragma once
 
 #include "dll_reader.hpp"
-#include "fgvk-backend/ls1.hpp"
 
 #include <cstdint>
 #include <optional>
@@ -34,12 +33,5 @@ namespace fgvk::backend {
     [[nodiscard]] ModelResourceSelection resolveLsfgDxbcModelResources(
         const DllResourceArchive& archive,
         std::optional<bool> performance = std::nullopt);
-
-    /// A variant selects only that LS1 graph on the canonical path. With no
-    /// variant, inspect all five graphs of the requested mode. Discovery needs
-    /// the complete reflected LS1 table to identify stage and variant order.
-    [[nodiscard]] ModelResourceSelection resolveLs1ModelResources(
-        const DllResourceArchive& archive, Ls1Mode mode,
-        std::optional<uint32_t> variant = std::nullopt);
 
 }

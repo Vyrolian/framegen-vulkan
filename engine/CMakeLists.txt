@@ -183,13 +183,6 @@ if(BUILD_TESTING AND UNIX)
         set_tests_properties(arch-package-release-pin
             arch-package-contract PROPERTIES LABELS "portable-policy")
     endif()
-
-    add_test(NAME embedded-spatial-scaling-spirv-freshness
-        COMMAND "${FGVK_PYTHON3_EXECUTABLE}"
-            "${CMAKE_CURRENT_SOURCE_DIR}/scripts/generate-spatial-scaling-spirv.py"
-            --check)
-    set_tests_properties(embedded-spatial-scaling-spirv-freshness PROPERTIES
-        LABELS "portable-policy")
 endif()
 
 set(CMAKE_CXX_STANDARD 20)

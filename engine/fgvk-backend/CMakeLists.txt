@@ -3,7 +3,6 @@ set(BACKEND_SOURCES
     "src/extraction/dll_inspection.cpp"
     "src/extraction/dll_reader.cpp"
     "src/extraction/dxbc_translation.cpp"
-    "src/extraction/ls1_shader_set.cpp"
     "src/extraction/spirv_image_format.cpp"
     "src/extraction/spirv_output_split.cpp"
     "src/extraction/spirv_fp16.cpp"

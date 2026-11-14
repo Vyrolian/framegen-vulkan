@@ -83,12 +83,6 @@ int main() {
                 fgvk::quality::QualitySceneKind::HudDisocclusion
             ).maximumFocusMeanAbsoluteError == 0.14,
         "large-disocclusion scenes must use their calibrated focus guardrails");
-    expect(fgvk::quality::spatialQualityThresholds.maximumMeanAbsoluteError == 0.08 &&
-            fgvk::quality::spatialQualityThresholds.maximumFocusMeanAbsoluteError == 0.12 &&
-            fgvk::quality::spatialQualityThresholds.maximumSevereFocusErrorFraction == 0.20 &&
-            fgvk::quality::spatialQualityThresholds.maximumDetailMeanAbsoluteError == 0.15,
-        "spatial quality guardrails must remain at their hardware-calibrated values");
-
     const auto scene = fgvk::quality::makeAmdImageQualityRegressionScene();
     const auto repeated = fgvk::quality::makeAmdImageQualityRegressionScene();
     expect(scene.width == 321 && scene.height == 181,
@@ -161,126 +155,11 @@ int main() {
             scene.detailMask == explicitLegacy.detailMask,
         "the legacy AMD entry point must remain the motion-boundary midpoint");
 
-    for (const auto& descriptor : catalog) {
-        const auto spatial = fgvk::quality::makeSpatialQualityRegressionScene(
-            descriptor.kind, 1.5F, 0.37F
-        );
-        const auto spatialRepeated = fgvk::quality::makeSpatialQualityRegressionScene(
-            descriptor.kind, 1.5F, 0.37F
-        );
-        expect(spatial.sourceWidth == 321 && spatial.sourceHeight == 181 &&
-                spatial.presentationWidth == 482 && spatial.presentationHeight == 272,
-            "spatial scenes must preserve the source and rounded presentation extents");
-        expect(spatial.source == spatialRepeated.source &&
-                spatial.reference == spatialRepeated.reference &&
-                spatial.focusMask == spatialRepeated.focusMask &&
-                spatial.detailMask == spatialRepeated.detailMask,
-            "spatial scenes must be deterministic");
-        expect(spatial.source.size() ==
-                static_cast<size_t>(spatial.sourceWidth) * spatial.sourceHeight * 4 &&
-                spatial.reference.size() == static_cast<size_t>(
-                    spatial.presentationWidth
-                ) * spatial.presentationHeight * 4,
-            "spatial scenes must produce complete RGBA8 source and reference images");
-        expect(std::ranges::count(spatial.focusMask, uint8_t{1}) > 100 &&
-                std::ranges::count(spatial.detailMask, uint8_t{1}) > 50,
-            "spatial scenes must preserve focused fine-detail coverage");
-        const auto spatialPerfect = fgvk::quality::evaluateImageQuality(
-            spatial, spatial.reference
-        );
-        expect(fgvk::quality::passesImageQualityRegression(
-                spatialPerfect, fgvk::quality::spatialQualityThresholds),
-            "every ideal spatial reference must pass its quality guardrails");
-
-        auto spatialCorruption = spatial.reference;
-        for (size_t pixel = 0; pixel < spatial.focusMask.size(); ++pixel) {
-            if (spatial.focusMask[pixel] == 0)
-                continue;
-            const size_t offset = pixel * 4;
-            spatialCorruption[offset] = 255;
-            spatialCorruption[offset + 1] = 0;
-            spatialCorruption[offset + 2] = 255;
-        }
-        expect(!fgvk::quality::passesImageQualityRegression(
-                fgvk::quality::evaluateImageQuality(spatial, spatialCorruption),
-                fgvk::quality::spatialQualityThresholds),
-            "focused spatial corruption must fail the broad regression guardrails");
-
-        const auto combined = fgvk::quality::makeCombinedQualityRegressionScene(
-            descriptor.kind, 1.5F, 0.37F
-        );
-        const auto combinedRepeated =
-            fgvk::quality::makeCombinedQualityRegressionScene(
-                descriptor.kind, 1.5F, 0.37F
-            );
-        expect(combined.sourceWidth == spatial.sourceWidth &&
-                combined.sourceHeight == spatial.sourceHeight &&
-                combined.presentationWidth == spatial.presentationWidth &&
-                combined.presentationHeight == spatial.presentationHeight,
-            "combined scenes must use the same source-to-presentation extent contract");
-        expect(combined.previous == combinedRepeated.previous &&
-                combined.current == combinedRepeated.current &&
-                combined.reference == combinedRepeated.reference &&
-                combined.focusMask == combinedRepeated.focusMask &&
-                combined.detailMask == combinedRepeated.detailMask,
-            "combined frame-generation and scaling scenes must be deterministic");
-        expect(combined.previous != combined.current &&
-                std::ranges::count(combined.focusMask, uint8_t{1}) > 500 &&
-                std::ranges::count(combined.detailMask, uint8_t{1}) > 50,
-            "combined scenes must retain motion and fine-detail coverage");
-        const auto combinedPerfect = fgvk::quality::evaluateImageQuality(
-            combined, combined.reference
-        );
-        expect(fgvk::quality::passesImageQualityRegression(
-                combinedPerfect,
-                fgvk::quality::imageQualityThresholds(descriptor.kind)),
-            "every ideal combined reference must pass its scene guardrails");
-    }
-
     expectInvalidArgument([] {
         static_cast<void>(fgvk::quality::makeImageQualityRegressionScene(
             fgvk::quality::QualitySceneKind::Traffic, 0.0F
         ));
     }, "temporal endpoints must not be accepted as interpolation targets");
-    const auto exactSpatial = fgvk::quality::makeSpatialQualityRegressionScene(
-        fgvk::quality::QualitySceneKind::Traffic,
-        320, 180, 640, 360, 0.37F
-    );
-    expect(exactSpatial.sourceWidth == 320 &&
-            exactSpatial.sourceHeight == 180 &&
-            exactSpatial.presentationWidth == 640 &&
-            exactSpatial.presentationHeight == 360,
-        "exact spatial scenes must preserve production extents");
-    expect(exactSpatial.source.size() == 320U * 180U * 4U &&
-            exactSpatial.reference.size() == 640U * 360U * 4U,
-        "exact spatial scenes must render complete source and reference images");
-    expectInvalidArgument([] {
-        static_cast<void>(fgvk::quality::makeSpatialQualityRegressionScene(
-            fgvk::quality::QualitySceneKind::Crowd, 1.0F
-        ));
-    }, "spatial regression must reject a non-upscaling factor");
-    expectInvalidArgument([] {
-        static_cast<void>(fgvk::quality::makeSpatialQualityRegressionScene(
-            fgvk::quality::QualitySceneKind::CameraPan, 4.1F
-        ));
-    }, "spatial regression must reject excessive output dimensions");
-    expectInvalidArgument([] {
-        static_cast<void>(fgvk::quality::makeSpatialQualityRegressionScene(
-            fgvk::quality::QualitySceneKind::HudDisocclusion, 1.5F, 1.1F
-        ));
-    }, "spatial regression must reject an out-of-range scene time");
-    expectInvalidArgument([] {
-        static_cast<void>(fgvk::quality::makeCombinedQualityRegressionScene(
-            fgvk::quality::QualitySceneKind::Traffic, 1.5F, 1.0F
-        ));
-    }, "combined regression must reject temporal endpoints");
-    expectInvalidArgument([] {
-        static_cast<void>(fgvk::quality::makeSpatialQualityRegressionScene(
-            fgvk::quality::QualitySceneKind::Traffic,
-            1920, 1080, 1280, 720, 0.5F
-        ));
-    }, "exact spatial scenes must reject downscaling extents");
-
     const auto temporalA = fgvk::quality::makeImageQualityRegressionScene(
         fgvk::quality::QualitySceneKind::Traffic, 321, 181, 0.0F, 0.25F, 0.5F);
     const auto temporalB = fgvk::quality::makeImageQualityRegressionScene(

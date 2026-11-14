@@ -52,13 +52,8 @@ namespace {
             left.frame_generation_provisioned ==
                 right.frame_generation_provisioned &&
             left.frame_generation_enabled == right.frame_generation_enabled &&
-            left.scaling_enabled == right.scaling_enabled &&
             left.swapchain_image_count_compatibility ==
                 right.swapchain_image_count_compatibility &&
-            left.scaling_method == right.scaling_method &&
-            left.scaling_factor == right.scaling_factor &&
-            left.scaling_supersampling == right.scaling_supersampling &&
-            left.scaling_sharpness == right.scaling_sharpness &&
             left.frame_generation_refresh_threshold ==
                 right.frame_generation_refresh_threshold &&
             left.base_fps_cap == right.base_fps_cap &&
@@ -134,17 +129,15 @@ namespace {
         unsetenv("FGVK_ENV");
     }
 
-    void testOptionalLosslessScaling(const std::filesystem::path& directory) {
+    void testOptionalLosslessDll(const std::filesystem::path& directory) {
         const auto dll = directory / "removed-Lossless.dll";
         const auto path = directory / "optional-lossless.toml";
         ls::ConfigFile fixture;
         fixture.global().dll = dll.string();
         ls::GameConf game;
-        game.name = "open-scaling";
+        game.name = "dll-optional";
         game.active_in = {"Game.exe"};
         game.frame_generation_provisioned = false;
-        game.scaling_enabled = true;
-        game.scaling_method = ls::ScalingMethod::Fgvk;
         fixture.profiles() = {game};
         fixture.write(path);
         for (const bool installed : {false, true, false}) {
@@ -152,7 +145,7 @@ namespace {
             else std::filesystem::remove(dll);
             ls::ConfigFile parsed(path);
             expect(parsed.global().dll == dll.string() && sameGameConf(parsed.profiles().front(), game),
-                "DLL removal must not invalidate or reset open-scaling profiles");
+                "DLL removal must not invalidate or reset a profile without frame generation");
             parsed.write(path);
         }
         ls::Identification identity;
@@ -162,17 +155,13 @@ namespace {
         setenv("FGVK_ENV", "1", 1);
         setenv("FGVK_DLL_PATH", dll.c_str(), 1);
         setenv("FGVK_FRAME_GENERATION_PROVISIONED", "0", 1);
-        setenv("FGVK_SCALING_ENABLED", "1", 1);
-        setenv("FGVK_SCALING_METHOD", "fgvk", 1);
         const ls::WatchedConfig environment;
         expect(environment.get().global().dll == dll.string() &&
-                environment.get().profiles().front().scaling_method == ls::ScalingMethod::Fgvk,
-            "A missing environment DLL must not block open scaling");
+                !environment.get().profiles().front().frame_generation_provisioned,
+            "A missing environment DLL must not block a profile without frame generation");
         unsetenv("FGVK_ENV");
         unsetenv("FGVK_DLL_PATH");
         unsetenv("FGVK_FRAME_GENERATION_PROVISIONED");
-        unsetenv("FGVK_SCALING_ENABLED");
-        unsetenv("FGVK_SCALING_METHOD");
     }
 
     void testPowerProfiles(const std::filesystem::path& directory) {
@@ -308,12 +297,7 @@ active_in = "game"
 removed_profile_option = true
 adaptive = false
 frame_generation_provisioned = false
-scaling_enabled = true
 swapchain_image_count_compatibility = true
-scaling_method = "ls1"
-scaling_factor = 1.75
-scaling_supersampling = true
-scaling_sharpness = 0.6
 frame_generation_refresh_threshold = 60
 base_fps_cap = 60
 adaptive_auto_base_fps_cap = true
@@ -336,17 +320,8 @@ int main() {
                 ls::GameConfDefaults::frameGenerationProvisioned &&
             defaults.frame_generation_enabled ==
                 ls::GameConfDefaults::frameGenerationEnabled &&
-            defaults.scaling_enabled ==
-                ls::GameConfDefaults::scalingEnabled &&
             defaults.swapchain_image_count_compatibility ==
                 ls::GameConfDefaults::swapchainImageCountCompatibility &&
-            defaults.scaling_method ==
-                ls::GameConfDefaults::scalingMethod &&
-            defaults.scaling_factor == ls::GameConfDefaults::scalingFactor &&
-            defaults.scaling_supersampling ==
-                ls::GameConfDefaults::scalingSupersampling &&
-            defaults.scaling_sharpness ==
-                ls::GameConfDefaults::scalingSharpness &&
             defaults.frame_generation_refresh_threshold ==
                 ls::GameConfDefaults::frameGenerationRefreshThreshold &&
             defaults.base_fps_cap == ls::GameConfDefaults::baseFpsCap &&
@@ -374,46 +349,10 @@ int main() {
                 ls::GameConfDefaults::performanceMode &&
             defaults.pacing == ls::GameConfDefaults::pacing,
         "GameConf must use the Renderer profile defaults");
-    expect(defaults.scaling_method == ls::ScalingMethod::Ls1,
-        "LS1 Quality must be the default spatial scaling method");
     expect(ls::GameConfDefaults::flowScale == 0.8F,
         "new Renderer profiles must default to the 80% Flow Scale");
     expect(ls::GameConfDefaults::adaptiveStableCadence,
         "Smooth Cadence must default to on for new standalone Renderer profiles");
-    expect(ls::scalingMethodFromName("native") ==
-                ls::ScalingMethod::Native &&
-            std::string_view(ls::scalingMethodName(
-                ls::ScalingMethod::Native)) == "native" &&
-            !ls::licensedScalingModelRequested(ls::ScalingMethod::Native) &&
-            ls::licensedScalingModelRequested(ls::ScalingMethod::Ls1) &&
-            ls::licensedScalingModelRequested(
-                ls::ScalingMethod::Ls1Performance),
-        "Native and licensed scaling method identities must remain explicit");
-    auto nativeEngine = defaults;
-    nativeEngine.scaling_enabled = true;
-    nativeEngine.scaling_method = ls::ScalingMethod::Native;
-    expect(ls::spatialScalingRequested(nativeEngine),
-        "Native must retain the model-free reconstruction lane for live switching");
-    nativeEngine.scaling_factor = 1.0F;
-    expect(!ls::spatialScalingMayActivate(nativeEngine),
-        "An enabled 1.0 scaler must remain spatially inactive");
-    nativeEngine.scaling_factor = 1.5F;
-    expect(ls::spatialScalingMayActivate(nativeEngine),
-        "An enabled scaler above 1.0 must retain activation provisioning");
-    nativeEngine.scaling_method = ls::ScalingMethod::Fgvk;
-    expect(ls::spatialScalingRequested(nativeEngine),
-        "A selected scaler must activate when the engine is enabled");
-    expect(ls::effectiveScalingMethod(nativeEngine) ==
-            ls::ScalingMethod::Fgvk,
-        "An ordinary scaling profile must retain its selected method");
-    nativeEngine.ultra_performance = true;
-    expect(ls::effectiveScalingMethod(nativeEngine) ==
-            ls::ScalingMethod::Ls1Performance,
-        "Ultra Performance must select LS1 Performance for an enabled engine");
-    nativeEngine.scaling_enabled = false;
-    expect(ls::effectiveScalingMethod(nativeEngine) ==
-            ls::ScalingMethod::Fgvk,
-        "Ultra Performance must not activate or overwrite a disabled scaler");
 
     const auto directory = std::filesystem::temp_directory_path() /
         ("fgvk-config-test-" + std::to_string(static_cast<long long>(::getpid())));
@@ -421,7 +360,7 @@ int main() {
 
     unsetenv("FGVK_ENV");
     testGpuHeadroom(directory);
-    testOptionalLosslessScaling(directory);
+    testOptionalLosslessDll(directory);
     testPowerProfiles(directory);
     testLegacyRootSelectionIsIgnored(directory);
 
@@ -520,14 +459,9 @@ int main() {
     expect(config.get().profiles().front().frame_generation_refresh_threshold == 60,
         "The accepted configuration must expose the refresh-rate threshold");
     expect(!config.get().profiles().front().frame_generation_provisioned &&
-            config.get().profiles().front().scaling_enabled &&
             config.get().profiles().front()
-                .swapchain_image_count_compatibility &&
-            config.get().profiles().front().scaling_method ==
-                ls::ScalingMethod::Ls1 &&
-            config.get().profiles().front().scaling_factor == 1.75F &&
-            config.get().profiles().front().scaling_sharpness == 0.6F,
-        "The accepted configuration must expose the scaling policy");
+                .swapchain_image_count_compatibility,
+        "The accepted configuration must expose provisioning and image-count compatibility");
     expect(config.get().profiles().front().ultra_performance &&
             config.get().profiles().front().flow_scale == 0.95F &&
             !config.get().profiles().front().performance_mode &&
@@ -554,7 +488,7 @@ int main() {
     expect(std::ranges::equal(
             config.get().profiles(), canonicalConfig.profiles(), sameGameConf
         ),
-        "A canonical Renderer write must preserve scaling configuration");
+        "A canonical Renderer write must preserve every accepted profile setting");
 
     // Real short writes must preserve the previous file, including when the
     // process has permission to open it. Exercise every configuration writer.
@@ -704,47 +638,49 @@ gamescope_vrr_mode = "automatic"
             "Cadence probe intervals outside 0.1-3 seconds must be rejected");
     }
 
-    for (const auto& [field, value] : {
-            std::pair{"scaling_factor", "0.99"},
-            std::pair{"scaling_factor", "2.01"},
-            std::pair{"scaling_factor", "nan"},
-            std::pair{"scaling_sharpness", "-0.01"},
-            std::pair{"scaling_sharpness", "1.01"},
-            std::pair{"scaling_sharpness", "inf"},
-        }) {
-        const auto invalidScalingPath = directory /
-            ("invalid-" + std::string(field) + '-' + value + ".toml");
-        writeText(invalidScalingPath,
-            "version = 2\n[[profile]]\n" + std::string(field) + " = " +
-            value + "\n");
-        bool invalidScalingRejected = false;
-        try {
-            static_cast<void>(ls::ConfigFile(invalidScalingPath));
-        } catch (const std::exception&) {
-            invalidScalingRejected = true;
-        }
-        expect(invalidScalingRejected,
-            "Scaling values outside their public ranges must be rejected");
-    }
-
-    const auto scalingOnlyPath = directory / "scaling-only.toml";
-    writeText(scalingOnlyPath, R"(version = 2
+    // Retired scaling keys stay accepted and ignored: an old file loads, a
+    // rewrite drops them, and out-of-range values cannot reject the file.
+    const auto retiredScalingPath = directory / "retired-scaling.toml";
+    writeText(retiredScalingPath, R"(version = 2
+[global]
+allow_fp16 = true
 [[profile]]
+name = "retired-scaling"
 frame_generation_provisioned = false
 frame_generation_enabled = false
 scaling_enabled = true
-scaling_factor = 1.5
-scaling_sharpness = 0.5
+swapchain_image_count_compatibility = true
+scaling_method = "ls1"
+scaling_factor = 1.75
+scaling_supersampling = true
+scaling_sharpness = 0.6
+multiplier = 3
+flow_scale = 0.95
 )");
-    const ls::ConfigFile scalingOnlyConfiguration(scalingOnlyPath);
-    const auto& scalingOnlyProfile =
-        scalingOnlyConfiguration.profiles().front();
-    expect(!scalingOnlyProfile.frame_generation_provisioned &&
-            !scalingOnlyProfile.frame_generation_enabled &&
-            scalingOnlyProfile.scaling_enabled &&
-            scalingOnlyProfile.scaling_factor == 1.5F &&
-            scalingOnlyProfile.scaling_sharpness == 0.5F,
-        "Scaling configuration must remain independent of frame generation");
+    const ls::ConfigFile retiredScaling(retiredScalingPath);
+    const auto& retiredProfile = retiredScaling.profiles().front();
+    expect(!retiredProfile.frame_generation_provisioned &&
+            !retiredProfile.frame_generation_enabled &&
+            retiredProfile.swapchain_image_count_compatibility &&
+            retiredProfile.multiplier == 3 && retiredProfile.flow_scale == 0.95F,
+        "Retired scaling keys must not prevent loading the supported settings");
+    retiredScaling.write(retiredScalingPath);
+    expect(readText(retiredScalingPath).find("scaling_") == std::string::npos,
+        "Rewriting a configuration must drop the retired scaling keys");
+    expect(std::ranges::equal(retiredScaling.profiles(),
+            ls::ConfigFile(retiredScalingPath).profiles(), sameGameConf),
+        "Retired scaling keys must round-trip as absent settings");
+    const auto invalidRetiredPath = directory / "invalid-retired-scaling.toml";
+    writeText(invalidRetiredPath, R"(version = 2
+[[profile]]
+name = "invalid-retired-scaling"
+scaling_method = "bogus"
+scaling_factor = 9.0
+scaling_sharpness = 7.0
+)");
+    expect(ls::ConfigFile(invalidRetiredPath).profiles().front().name ==
+            "invalid-retired-scaling",
+        "Out-of-range retired scaling values must not reject the file");
 
     ls::ConfigFile detectionConfig;
     detectionConfig.profiles() = {
@@ -878,12 +814,7 @@ scaling_sharpness = 0.5
     setenv("FGVK_FRAME_GENERATION_REFRESH_THRESHOLD", "130", 1);
     setenv("FGVK_FRAME_GENERATION_PROVISIONED", "0", 1);
     setenv("FGVK_ULTRA_PERFORMANCE", "1", 1);
-    setenv("FGVK_SCALING_ENABLED", "1", 1);
     setenv("FGVK_SWAPCHAIN_IMAGE_COUNT_COMPATIBILITY", "1", 1);
-    setenv("FGVK_SCALING_METHOD", "native", 1);
-    setenv("FGVK_SCALING_FACTOR", "2", 1);
-    setenv("FGVK_SCALING_SUPERSAMPLING", "1", 1);
-    setenv("FGVK_SCALING_SHARPNESS", "0.75", 1);
     const ls::WatchedConfig environmentConfig;
     expect(environmentConfig.get().profiles().front().adaptive_target_refresh_rate,
         "Environment profiles must accept automatic refresh targeting");
@@ -903,28 +834,15 @@ scaling_sharpness = 0.5
                     .adaptive_fractional_real_frame_priority ==
                 ls::AdaptiveFractionalRealFramePriority::Auto &&
             environmentConfig.get().profiles().front().ultra_performance &&
-            environmentConfig.get().profiles().front().scaling_enabled &&
             environmentConfig.get().profiles().front()
-                .swapchain_image_count_compatibility &&
-            environmentConfig.get().profiles().front().scaling_method ==
-                ls::ScalingMethod::Native &&
-            ls::spatialScalingRequested(
-                environmentConfig.get().profiles().front()) &&
-            environmentConfig.get().profiles().front().scaling_factor == 2.0F &&
-            environmentConfig.get().profiles().front().scaling_supersampling &&
-            environmentConfig.get().profiles().front().scaling_sharpness == 0.75F,
-        "Environment configuration must expose scaling and cadence policy");
+                .swapchain_image_count_compatibility,
+        "Environment configuration must expose cadence and swapchain policy");
     unsetenv("FGVK_DYNAMIC_CADENCE_RECOVERY");
     unsetenv("FGVK_DYNAMIC_CADENCE_PROBE_INTERVAL_SECONDS");
     unsetenv("FGVK_FRAME_GENERATION_REFRESH_THRESHOLD");
     unsetenv("FGVK_FRAME_GENERATION_PROVISIONED");
     unsetenv("FGVK_ULTRA_PERFORMANCE");
-    unsetenv("FGVK_SCALING_ENABLED");
     unsetenv("FGVK_SWAPCHAIN_IMAGE_COUNT_COMPATIBILITY");
-    unsetenv("FGVK_SCALING_METHOD");
-    unsetenv("FGVK_SCALING_FACTOR");
-    unsetenv("FGVK_SCALING_SUPERSAMPLING");
-    unsetenv("FGVK_SCALING_SHARPNESS");
     unsetenv("FGVK_ADAPTIVE");
     unsetenv("FGVK_ADAPTIVE_AUTO_BASE_FPS_CAP");
     unsetenv("FGVK_ADAPTIVE_FRACTIONAL_REAL_FRAME_PRIORITY");

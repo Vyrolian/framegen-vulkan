@@ -18,7 +18,7 @@ expect_precision() {
     }
 }
 
-for command in benchmark debug quality-regression combined-quality-regression; do
+for command in benchmark debug quality-regression; do
     arguments=()
     [[ "$command" != debug ]] || arguments=("frames with spaces")
     expect_precision fp16-allowed "$command" "${arguments[@]}"
@@ -47,28 +47,19 @@ for arguments in '--hdr10' '--hdr-reduced-precision' '--hdr-white-nits 203'; do
     fi
 done
 
-for command in spatial-quality-regression spatial-profile; do
-    expect_precision fp32 "$command"
-    expect_precision fp32 "$command" --no-fp16
-    expect_precision fp16-allowed "$command" --allow-fp16
-    expect_precision fp16-allowed "$command" -a
-    expect_precision fp32 "$command" --allow-fp16 --no-fp16
-    expect_precision fp16-allowed "$command" --no-fp16 --allow-fp16
+for command in spatial-quality-regression spatial-profile combined-quality-regression; do
+    if "$cli" "$command" >/dev/null 2>&1; then
+        printf 'Retired scaling command accepted: %s\n' "$command" >&2
+        exit 1
+    fi
 done
 
 expect_precision fp16-allowed inspect-dll --dll "synthetic input" --lsfg
 expect_precision fp32 inspect-dll --dll "synthetic input" --lsfg --no-fp16
-expect_precision fp16-allowed inspect-dll --dll "synthetic input" --ls1 ls1
-expect_precision fp32 inspect-dll --dll "synthetic input" --ls1 ls1 --no-fp16
-for invalid in ls1 no-fp16; do
-    args=(--dll "synthetic input")
-    if [[ "$invalid" == ls1 ]]; then
-        args+=(--lsfg --ls1 ls1)
-    else
-        args+=(--no-fp16)
-    fi
-    if "$cli" inspect-dll "${args[@]}" >/dev/null 2>&1; then
-        printf 'Conflicting inspection options accepted\n' >&2
+for invalid in "--no-fp16" "--lsfg --ls1 ls1"; do
+    read -r -a args <<< "$invalid"
+    if "$cli" inspect-dll --dll "synthetic input" "${args[@]}" >/dev/null 2>&1; then
+        printf 'Conflicting inspection options accepted: %s\n' "$invalid" >&2
         exit 1
     fi
 done

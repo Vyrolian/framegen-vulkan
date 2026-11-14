@@ -240,7 +240,7 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
     // Build a filtered copy of the present-chain prefix: Vulkan input chains
     // are const and may be shared or stored in read-only memory.
     const FilteredPresentPNextChain filteredPresentChain(
-        nextChain, this->privateOrderedTransport, false
+        nextChain, this->privateOrderedTransport
     );
     if (!filteredPresentChain.valid()) {
         throw ls::vulkan_error(

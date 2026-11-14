@@ -1,9 +1,9 @@
 framegen-vulkan standalone archive
 ================================
 
-framegen-vulkan provides Frame Generation and spatial scaling for Vulkan games on SteamOS and Linux. The archive includes matching 64-bit and 32-bit Vulkan layers, the command-line tools, and the managed installer.
+framegen-vulkan provides Frame Generation for Vulkan games on SteamOS and Linux. The archive includes matching 64-bit and 32-bit Vulkan layers, the command-line tools, and the managed installer.
 
-Frame Generation and LS1 scaling require a user-owned installation of the default public version of Lossless Scaling from Steam. framegen-vulkan can use beta branches, but they are not validated; the default public branch is recommended. The open framegen-vulkan Scaler does not require Lossless.dll.
+Frame Generation requires a user-owned installation of the default public version of Lossless Scaling from Steam. framegen-vulkan can use beta branches, but they are not validated; the default public branch is recommended.
 
 Install or update
 -----------------
@@ -33,9 +33,7 @@ Installing framegen-vulkan does not activate it for every game. A standalone nat
     frame_generation_enabled = true
     multiplier = 2
 
-    scaling_enabled = false
-
-2. Enable Frame Generation and/or scaling in the profile. Set dll to your Lossless.dll path if automatic discovery fails. To use the open framegen-vulkan Scaler without the DLL, set frame_generation_enabled = false, scaling_enabled = true, and scaling_method = "fgvk". Settings that need a restart take effect the next time the game starts.
+2. Enable Frame Generation in the profile. Set dll to your Lossless.dll path if automatic discovery fails. Settings that need a restart take effect the next time the game starts.
 3. Check the file with ~/.local/bin/fgvk-cli validate.
 
 Run ~/.local/bin/fgvk with no arguments to open the settings window. It edits the same conf.toml file.
