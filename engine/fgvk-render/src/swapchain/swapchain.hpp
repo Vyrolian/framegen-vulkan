@@ -499,9 +499,6 @@ namespace fgvk::layer {
             // destination images are replaced.
             std::optional<vk::Image> staging;
             std::optional<vk::Semaphore> staged;
-            // S6: signalled by the worker on the private queue and waited once on the
-            // game queue, right after the staging copy. Used only with the yield enabled.
-            std::optional<vk::Semaphore> yielded;
             std::optional<vk::CommandBuffer> stagingCopy;
             // One pre-recorded copy per swapchain image, from staging to that
             // image, recorded lazily and cleared whenever the destination images

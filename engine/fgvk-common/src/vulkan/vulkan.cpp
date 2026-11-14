@@ -2,7 +2,6 @@
 
 #include "fgvk-common/vulkan/vulkan.hpp"
 #include "fgvk-common/vulkan/device_features.hpp"
-#include "fgvk-common/vulkan/queue_priority.hpp"
 #include "fgvk-common/helpers/errors.hpp"
 #include "fgvk-common/helpers/pointers.hpp"
 
@@ -262,107 +261,11 @@ namespace {
         return func;
     }
 
-    /// Global queue priority for the backend's compute queue. An empty
-    /// `requested` name means the environment asked for nothing, so no query or
-    /// device change happens.
-    struct GlobalPriorityPlan {
-        std::string_view requested;
-        std::optional<VkQueueGlobalPriorityKHR> priority;
-        const char* extension{};
-        bool queryFeature{};
-        std::string_view decided;
-    };
-
-    /// Enable only the globalPriorityQuery feature the KHR list query needs.
-    bool supportsGlobalPriorityQueryFeature(const VulkanInstanceFuncs& fi, const VkPhysicalDevice physdev) {
-        VkPhysicalDeviceGlobalPriorityQueryFeaturesKHR query{
-            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_GLOBAL_PRIORITY_QUERY_FEATURES_KHR,
-        };
-        VkPhysicalDeviceFeatures2 features{
-            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
-            .pNext = &query,
-        };
-        fi.GetPhysicalDeviceFeatures2(physdev, &features);
-        return query.globalPriorityQuery == VK_TRUE;
-    }
-
-    /// Global priorities the compute family accepts, from VK_KHR_global_priority.
-    std::vector<VkQueueGlobalPriorityKHR> queueFamilyGlobalPriorities(
-            const VulkanInstanceFuncs& fi, const VkPhysicalDevice physdev, const uint32_t familyIndex) {
-        uint32_t familyCount{};
-        fi.GetPhysicalDeviceQueueFamilyProperties2(physdev, &familyCount, nullptr);
-        if (familyIndex >= familyCount)
-            return {};
-        std::vector<VkQueueFamilyGlobalPriorityPropertiesKHR> priorities(familyCount);
-        std::vector<VkQueueFamilyProperties2> families(familyCount);
-        for (size_t index = 0; index < familyCount; ++index) {
-            priorities[index].sType = VK_STRUCTURE_TYPE_QUEUE_FAMILY_GLOBAL_PRIORITY_PROPERTIES_KHR;
-            families[index].sType = VK_STRUCTURE_TYPE_QUEUE_FAMILY_PROPERTIES_2;
-            families[index].pNext = &priorities[index];
-        }
-        fi.GetPhysicalDeviceQueueFamilyProperties2(physdev, &familyCount, families.data());
-        const auto& found = priorities.at(familyIndex);
-        const auto count = std::min<uint32_t>(found.priorityCount, VK_MAX_GLOBAL_PRIORITY_SIZE);
-        return {found.priorities, found.priorities + count};
-    }
-
-    /// Resolve the experiment's request without changing unrequested device creation.
-    GlobalPriorityPlan planGlobalPriority(const VulkanInstanceFuncs& fi, const VkPhysicalDevice physdev,
-            const uint32_t familyIndex, const std::string_view environment) {
-        GlobalPriorityPlan plan{};
-        if (!vk::requestedQueueGlobalPriority(environment))
-            return plan;
-        plan.requested = environment;
-
-        bool khr{};
-        bool ext{};
-        try {
-            khr = supportsDeviceExtension(fi, physdev, VK_KHR_GLOBAL_PRIORITY_EXTENSION_NAME);
-            ext = !khr && supportsDeviceExtension(fi, physdev, VK_EXT_GLOBAL_PRIORITY_EXTENSION_NAME);
-        } catch (const std::exception&) {
-            khr = false;
-            ext = false;
-        }
-        // Only the KHR query can list a family's priorities; EXT alone can only attempt.
-        const bool listed = khr && fi.GetPhysicalDeviceQueueFamilyProperties2 != nullptr;
-        const auto supported = listed
-            ? queueFamilyGlobalPriorities(fi, physdev, familyIndex)
-            : std::vector<VkQueueGlobalPriorityKHR>{};
-        const auto selection = vk::selectGlobalPriority(
-            environment, listed, (khr && !listed) || ext, supported
-        );
-        switch (selection.outcome) {
-            case vk::GlobalPrioritySelectionOutcome::Unsupported:
-                plan.decided = "unsupported";
-                return plan;
-            case vk::GlobalPrioritySelectionOutcome::NotListed:
-                plan.decided = "invalid-value";
-                return plan;
-            case vk::GlobalPrioritySelectionOutcome::NotRequested:
-            case vk::GlobalPrioritySelectionOutcome::Selected:
-                break;
-        }
-        if (selection.outcome != vk::GlobalPrioritySelectionOutcome::Selected)
-            return plan;
-        plan.priority = selection.priority;
-        plan.extension = khr ? VK_KHR_GLOBAL_PRIORITY_EXTENSION_NAME : VK_EXT_GLOBAL_PRIORITY_EXTENSION_NAME;
-        plan.queryFeature = listed && supportsGlobalPriorityQueryFeature(fi, physdev);
-        return plan;
-    }
-
-    /// Diagnostic only: one line per requested experiment, after the outcome is known.
-    void logGlobalPriority(const std::string_view requested, const std::string_view result) {
-        std::clog << "framegen-vulkan: backend queue global priority: requested=" << requested
-                  << " result=" << result << '\n';
-    }
-
     /// create a logical device
     ls::owned_ptr<VkDevice> createLogicalDevice(const VulkanInstanceFuncs& fi,
             VkPhysicalDevice physdev, uint32_t cfi, bool fp16,
-            const OptionalDeviceFeatures optionalFeatures,
-            const std::string_view queuePriorityRequest) {
+            const OptionalDeviceFeatures optionalFeatures) {
         const float queuePriority{1.0F}; // highest priority
-        const auto priorityPlan = planGlobalPriority(fi, physdev, cfi, queuePriorityRequest);
         const auto supportedFeatures = queryFeatures(fi, physdev);
         const VkPhysicalDeviceFeatures requestedFeatures{
             .shaderStorageImageExtendedFormats =
@@ -373,23 +276,10 @@ namespace {
             VkResult result{};
             VkDevice device{};
         };
-        // A retry rebuilds the whole chain, so a rejected priority leaves no trace in it.
-        const auto create = [&](const bool withPriority) {
-            const bool priority = withPriority && priorityPlan.priority.has_value();
-            const bool queryFeature = priority && priorityPlan.queryFeature;
-            VkPhysicalDeviceGlobalPriorityQueryFeaturesKHR priorityQuery{
-                .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_GLOBAL_PRIORITY_QUERY_FEATURES_KHR,
-                .globalPriorityQuery = VK_TRUE,
-            };
-            VkDeviceQueueGlobalPriorityCreateInfoKHR priorityInfo{
-                .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_GLOBAL_PRIORITY_CREATE_INFO_KHR,
-            };
-            if (priority)
-                priorityInfo.globalPriority = *priorityPlan.priority;
-            void* featureTail = queryFeature ? static_cast<void*>(&priorityQuery) : nullptr;
+        const auto create = [&] {
             VkPhysicalDeviceRobustness2FeaturesEXT requestedRobustness2{
                 .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT,
-                .pNext = featureTail,
+                .pNext = nullptr,
                 .robustBufferAccess2 = VK_FALSE,
                 .robustImageAccess2 = optionalFeatures.robustImageAccess2,
                 .nullDescriptor = VK_FALSE,
@@ -397,13 +287,13 @@ namespace {
             const VkPhysicalDeviceVulkan12Features requestedFeaturesVulkan12{
                 .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
                 .pNext = optionalFeatures.robustImageAccess2
-                    ? static_cast<void*>(&requestedRobustness2) : featureTail,
+                    ? static_cast<void*>(&requestedRobustness2) : nullptr,
                 .shaderFloat16 = fp16,
                 .timelineSemaphore = VK_TRUE
             };
             const VkDeviceQueueCreateInfo requestedQueueInfo{
                 .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
-                .pNext = priority ? &priorityInfo : nullptr,
+                .pNext = nullptr,
                 .queueFamilyIndex = cfi,
                 .queueCount = 1,
                 .pQueuePriorities = &queuePriority
@@ -417,8 +307,6 @@ namespace {
                 requestedExtensions.push_back(VK_EXT_ROBUSTNESS_2_EXTENSION_NAME);
             if (optionalFeatures.calibratedTimestamps)
                 requestedExtensions.push_back(optionalFeatures.calibratedTimestamps);
-            if (priority)
-                requestedExtensions.push_back(priorityPlan.extension);
             const VkDeviceCreateInfo deviceInfo{
                 .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
                 .pNext = &requestedFeaturesVulkan12,
@@ -433,23 +321,10 @@ namespace {
             return attempt;
         };
 
-        const bool wantsPriority = priorityPlan.priority.has_value();
-        auto attempt = create(wantsPriority);
-        std::string_view outcome = priorityPlan.decided;
-        if (wantsPriority) {
-            outcome = "granted";
-            if (attempt.result == VK_ERROR_NOT_PERMITTED_KHR ||
-                    attempt.result == VK_ERROR_INITIALIZATION_FAILED) {
-                // The priority was refused. Retry once without the priority, queue struct and extension.
-                attempt = create(false);
-                outcome = "not-permitted";
-            }
-        }
+        const auto attempt = create();
         if (attempt.result != VK_SUCCESS)
             throw ls::vulkan_error(attempt.result, "vkCreateDevice() failed");
         const VkDevice handle = attempt.device;
-        if (!priorityPlan.requested.empty())
-            logGlobalPriority(priorityPlan.requested, outcome);
 
         auto defunc =
             dpa<PFN_vkDestroyDevice>(fi, handle, "vkDestroyDevice");
@@ -739,8 +614,7 @@ Vulkan::Vulkan(const std::string& appName, version appVersion,
         PhysicalDeviceSelector selectPhysicalDevice,
         bool isGraphical,
         std::optional<PFN_vkSetDeviceLoaderData> setLoaderData,
-        const std::optional<std::filesystem::path>& cachefile,
-        const std::string_view queuePriorityRequest) :
+        const std::optional<std::filesystem::path>& cachefile) :
     instance(createInstance(
         appName, appVersion,
         engineName, engineVersion
@@ -764,8 +638,7 @@ Vulkan::Vulkan(const std::string& appName, version appVersion,
         this->phys_dev,
         this->queueFamilyIdx,
         this->fp16,
-        this->optionalDeviceFeatures,
-        queuePriorityRequest
+        this->optionalDeviceFeatures
     )),
     setLoaderData(setLoaderData),
     device_funcs(initVulkanDeviceFuncs(

@@ -179,16 +179,13 @@ namespace vk {
         /// @param isGraphical whether the device is graphical (rather than compute)
         /// @param setLoaderData optional function to set loader data
         /// @param cachefile optional path to pipeline cache file
-        /// @param queuePriorityRequest diagnostic FGVK_BACKEND_QUEUE_PRIORITY value read by the caller;
-        ///        only the exact values "high" and "realtime" request a global queue priority
         /// @throws ls::vulkan_error on failure
         Vulkan(const std::string& appName, version appVersion,
             const std::string& engineName, version engineVersion,
             PhysicalDeviceSelector selectPhysicalDevice,
             bool isGraphical = false,
             std::optional<PFN_vkSetDeviceLoaderData> setLoaderData = std::nullopt,
-            const std::optional<std::filesystem::path>& cachefile = std::nullopt,
-            std::string_view queuePriorityRequest = {});
+            const std::optional<std::filesystem::path>& cachefile = std::nullopt);
 
         /// create based on an existing externally managed vulkan instance.
         /// @param instance vulkan instance handle

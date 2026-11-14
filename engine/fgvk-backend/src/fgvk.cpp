@@ -382,15 +382,12 @@ namespace {
     /// create a Vulkan instance
     vk::Vulkan createVulkanInstance(vk::PhysicalDeviceSelector selectPhysicalDevice) {
         try {
-            // The only read of the A/B queue-priority experiment. Unset or unknown values change nothing.
-            const char* queuePriority = std::getenv("FGVK_BACKEND_QUEUE_PRIORITY");
             return{
                 "fgvk", vk::version{2, 0, 0},
                 "fgvk-engine", vk::version{2, 0, 0},
                 selectPhysicalDevice,
                 false, std::nullopt,
-                findCacheFilePath(),
-                queuePriority ? std::string_view(queuePriority) : std::string_view{}
+                findCacheFilePath()
             };
         } catch (const std::exception& e) {
             throw backend::error("Unable to initialize Vulkan", e);

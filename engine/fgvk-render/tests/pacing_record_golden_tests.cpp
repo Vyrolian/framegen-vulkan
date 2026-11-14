@@ -68,7 +68,7 @@ void profileScenario() {
         .queueLockAcquired = start + 2ms, .readinessChecked = true, .readinessStarted = start + 1ms,
         .readinessFinished = start + 2ms, .readinessDeadline = start + 2ms,
         .readinessResult = VK_SUCCESS, .queue = fakeQueue(), .presentWait = fakeSemaphore(0x5000),
-        .arrival = start, .readyAt = start + 2ms, .slack = -1ms, .marginStep = 250us, .marginBias = 125us});
+        .arrival = start, .readyAt = start + 2ms, .slack = -1ms});
     const auto sample = profile.output(start + 9ms, start + 10ms, VK_ERROR_OUT_OF_DATE_KHR, {
         .scheduled = start + 9ms, .imageIndex = 2, .deferred = true, .copyChecked = true,
         .copyStatus = VK_SUCCESS, .copySampledAt = start + 10ms});
@@ -209,11 +209,10 @@ std::string runScenario(const std::filesystem::path& root, const char* name, boo
     if (child == 0) {
         for (const char* gate : {"FGVK_PACING_PROFILE", "FGVK_PACING_PROFILE_GPU", "FGVK_PACING_PROFILE_TRACE",
                 "FGVK_PACING_PROFILE_WAYLAND", "FGVK_PACING_PROFILE_COPY", "FGVK_PACING_PROFILE_CONTENT",
-                "FGVK_PACING_PROFILE_GPU_SPLIT", "FGVK_PRESENT_DIAGNOSTICS", "FGVK_OUTPUT_MARGIN_MS"})
+                "FGVK_PACING_PROFILE_GPU_SPLIT", "FGVK_PRESENT_DIAGNOSTICS"})
             unsetenv(gate);
         setenv("FGVK_PACING_PROFILE", profile ? "1" : "0", 1);
         if (!profile) setenv("FGVK_PACING_PROFILE_TRACE", "1", 1);
-        else setenv("FGVK_OUTPUT_MARGIN_MS", "1.5", 1);
         setenv("FGVK_PACING_PROFILE_LOG", log.c_str(), 1);
         initializePacingProfileLog();
         if (profile) profileScenario(); else traceScenario();

@@ -193,9 +193,9 @@ namespace fgvk::layer::present_diagnostics {
             double phase{};
             uint64_t presentId{};
             // S1: first output only; slack is the signed deadline-minus-readiness
-            // before the shift, and marginStep is the applied B1 increment.
+            // before the shift.
             Clock::time_point readyAt{};
-            Clock::duration slack{}, marginStep{}, marginBias{};
+            Clock::duration slack{};
         };
         struct OutputSample {
             size_t ordinal{}, source{};

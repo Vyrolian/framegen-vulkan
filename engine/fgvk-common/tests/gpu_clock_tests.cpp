@@ -1,7 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 
 #include "fgvk-common/vulkan/gpu_clock.hpp"
-#include "fgvk-common/vulkan/queue_priority.hpp"
 
 #include <array>
 #include <cstdint>
@@ -60,52 +59,9 @@ namespace {
         expect(vk::gpuTicksToMonotonicNs(1, 0, base, 64, 0.0F) == 0,
             "a zero timestamp period must be unknown");
     }
-
-    void testGlobalPrioritySelection() {
-        using vk::GlobalPrioritySelectionOutcome;
-        const std::array<VkQueueGlobalPriorityKHR, 0> none{};
-        const std::array lowAndMedium{
-            VK_QUEUE_GLOBAL_PRIORITY_LOW, VK_QUEUE_GLOBAL_PRIORITY_MEDIUM,
-        };
-        const std::array highAndRealtime{
-            VK_QUEUE_GLOBAL_PRIORITY_HIGH, VK_QUEUE_GLOBAL_PRIORITY_REALTIME,
-        };
-
-        // Unset or other values request nothing and select nothing.
-        expect(vk::selectGlobalPriority("", true, true, highAndRealtime).outcome ==
-                GlobalPrioritySelectionOutcome::NotRequested,
-            "an unset request must not select a priority");
-        expect(vk::selectGlobalPriority("medium", true, false, highAndRealtime).outcome ==
-                GlobalPrioritySelectionOutcome::NotRequested,
-            "an unknown request must not select a priority");
-        expect(vk::selectGlobalPriority("HIGH", true, false, highAndRealtime).outcome ==
-                GlobalPrioritySelectionOutcome::NotRequested,
-            "requests are exact, case-sensitive values");
-
-        // Without either extension the requested priority is unsupported.
-        expect(vk::selectGlobalPriority("high", false, false, highAndRealtime).outcome ==
-                GlobalPrioritySelectionOutcome::Unsupported,
-            "a request without the extension must be unsupported");
-
-        // With the KHR list, a priority the family does not list is refused.
-        expect(vk::selectGlobalPriority("high", true, false, lowAndMedium).outcome ==
-                GlobalPrioritySelectionOutcome::NotListed,
-            "a priority absent from the family list must not be selected");
-
-        // A listed priority is selected, and the EXT attempt needs no list.
-        const auto realtime = vk::selectGlobalPriority("realtime", true, false, highAndRealtime);
-        expect(realtime.outcome == GlobalPrioritySelectionOutcome::Selected &&
-                realtime.priority == VK_QUEUE_GLOBAL_PRIORITY_REALTIME,
-            "a listed realtime request must be selected");
-        const auto attempt = vk::selectGlobalPriority("high", false, true, none);
-        expect(attempt.outcome == GlobalPrioritySelectionOutcome::Selected &&
-                attempt.priority == VK_QUEUE_GLOBAL_PRIORITY_HIGH,
-            "an EXT-only request must be selected for a creation attempt");
-    }
 }
 
 int main() {
     testTickMapping();
-    testGlobalPrioritySelection();
     return 0;
 }

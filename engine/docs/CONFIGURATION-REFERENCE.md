@@ -160,7 +160,3 @@ Set `FGVK_ENV=1` to build one profile from environment variables instead of TOML
 ## Presentation acquisition timeout
 
 `FGVK_PRESENT_ACQUIRE_TIMEOUT_MS` limits how long framegen-vulkan waits for generated-image availability before native recovery. Adaptive VRR delivery and constrained Fixed image pools enforce a 50 ms limit when no explicit value is set. For a focused stall reproduction, try `25` and include the log. See [presentation recovery](LIFECYCLE.md) for deadline and fallback rules.
-
-## Backend queue priority experiment
-
-`FGVK_BACKEND_QUEUE_PRIORITY=high` or `FGVK_BACKEND_QUEUE_PRIORITY=realtime` is an A/B experiment, read once when the backend device is created, that asks for a global priority on the private frame-generation compute queue. It needs VK_KHR_global_priority (or its EXT form), and the compute family must list the requested level; if the driver refuses the priority during device creation, framegen-vulkan retries once without it. It is not a tuning setting, and it may cost game frame rate because the higher-priority queue can take GPU time from the game. Unset or any other value changes nothing. Each backend device logs `framegen-vulkan: backend queue global priority: requested=<high|realtime> result=<granted|not-permitted|unsupported|invalid-value>` once: `unsupported` means neither extension is present, `invalid-value` means the family does not list the requested level, and `not-permitted` means the driver refused the priority and the device was created without it.

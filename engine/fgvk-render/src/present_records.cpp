@@ -325,9 +325,7 @@ void appendPacingOutput(std::ostream& line, const uint64_t context, const VkSwap
          << " phase=" << observed.phase
          << " present_id=" << observed.presentId
          << " ready_ns=" << ns(observed.readyAt)
-         << " slack_ns=" << std::chrono::duration_cast<std::chrono::nanoseconds>(observed.slack).count()
-         << " margin_step_ns=" << std::chrono::duration_cast<std::chrono::nanoseconds>(observed.marginStep).count()
-         << " margin_bias_ns=" << std::chrono::duration_cast<std::chrono::nanoseconds>(observed.marginBias).count();
+         << " slack_ns=" << std::chrono::duration_cast<std::chrono::nanoseconds>(observed.slack).count();
     line << '\n';
 }
 
@@ -753,8 +751,6 @@ void formatPacingWindowBody(const PacingWindowPayload& payload, const PacingProf
              << ' ' << names[index] << "_max_ms=" << sample.maximum
              << ' ' << names[index] << "_over_33ms=" << sample.over33ms;
     }
-    line << " output_margin_ms=" << std::chrono::duration<double, std::milli>(fgvk::layer::outputMargin()).count();
-    line << " generated_yield=" << fgvk::layer::generatedYieldEnabled();
     if (const auto presentIdReleases = fgvk::layer::ReleaseGate::global().presentIdReleases(); presentIdReleases)
         line << " present_id_gate_releases=" << presentIdReleases;
     if (fgvk::layer::realOffsetAuto()) {

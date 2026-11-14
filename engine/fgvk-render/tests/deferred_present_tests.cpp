@@ -1819,7 +1819,6 @@ void readinessExtensionIsBounded() {
         if (signalledInExtension) {
             expect(completion->readyAt != DeferredPresent::Clock::time_point{} &&
                 completion->slack == now + 1ms - completion->readyAt &&
-                completion->marginStep == OutputMarginController{}.step(completion->slack, outputMargin()) &&
                 completion->calls[0].scheduled == now + 1ms + completion->readinessShift,
                 "readiness diagnostics lost the pre-shift deadline or applied margin");
             expect(!completion->readinessMiss && completion->calls[0].lateReadiness &&
@@ -3081,8 +3080,7 @@ void generatedPreparedOrderAndBudget() {
         expect(done && done->count == multiplier && done->result == VK_SUCCESS,
             "prepared multiplier batch failed");
         expect(done->readyAt == DeferredPresent::Clock::time_point{} &&
-            done->slack == DeferredPresent::Clock::duration{} &&
-            done->marginStep == DeferredPresent::Clock::duration{},
+            done->slack == DeferredPresent::Clock::duration{},
             "a batch without a readiness wait reported readiness or margin data");
         expect(pool->held == 0 && pool->peak <= 2 && pool->order.size() == multiplier,
             "prepared multiplier batch leaked or over-acquired images");
@@ -3170,9 +3168,6 @@ void generatedPreparedStop() {
         !done->calls[0].skipped && pool.held == 0 && pool.order.size() == 1 && copySubmits.size() == 1,
         "stop stranded a prepared image or failed to finish");
 }
-// S6: the yield is signalled exactly once per job. A prepared copy carries it as its
-// first signal. Without a prepared copy an empty submit releases it before the slot,
-// and the deadline copy or the skip does not signal it again.
 // S7: the real offset moves a tail real by the offset, keeps a quarter interval after the
 // generated present, and changes nothing when it is zero.
 namespace real_offset_checks {
@@ -3190,50 +3185,6 @@ static_assert(realDeadlineWithOffset(at(1000), at(0), us(2000), us(-1000)) == at
 static_assert(realDeadlineWithOffset(at(300), at(0), us(2000), us(-1000)) == at(300));
 }
 
-void generatedYieldSignalledOnce() {
-    const auto yield = handle<VkSemaphore>(65);
-    // 0 prepared, 1 early acquire misses, 2 no early attempt (direct images), 3 acquire error.
-    for (unsigned mode = 0; mode < 4; ++mode) {
-        PreparedPool pool;
-        preparedPool = &pool;
-        if (mode == 1) pool.misses = 1;
-        if (mode == 3) pool.failAcquire = true;
-        copySubmits.clear();
-        auto queue = std::make_shared<DeferredPresentQueue>();
-        queue->queue = handle<VkQueue>(7);
-        DeferredPresent worker(queue, preparedPresent);
-        auto copy = preparedCopy();
-        copy.yield = yield;
-        if (mode == 2) copy.internalImages = false;
-        const auto due = DeferredPresent::Clock::now() + 60ms;
-        expect(worker.beginBatch(1, {.overlap = true}), "yield batch rejected");
-        expect(worker.enqueueGeneratedCopy(handle<VkSwapchainKHR>(11), nullptr, due, copy),
-            "yield generated output rejected");
-        worker.closeBatch();
-        const auto done = worker.finish(UINT64_MAX, false);
-        expect(done && done->count == 1 && pool.held == 0, "yield batch failed or leaked an image");
-        if (mode == 0) {
-            expect(done->calls[0].generatedPrepared && copySubmits.size() == 1 &&
-                copySubmits[0].count == 1 && copySubmits[0].waits == 2 && copySubmits[0].signals == 3 &&
-                copySubmits[0].signalSemaphores[0] == yield &&
-                copySubmits[0].signalSemaphores[1] == copy.presentWaits[0] &&
-                copySubmits[0].signalSemaphores[2] == copy.continuation &&
-                copySubmits[0].fence == copy.fence && pool.copiedAt[0] < due,
-                "a prepared copy did not carry the yield before its slot");
-            continue;
-        }
-        expect(copySubmits.size() == 2 && copySubmits[0].count == 0 && copySubmits[0].waits == 0 &&
-            copySubmits[0].signals == 1 && copySubmits[0].signalSemaphores[0] == yield &&
-            copySubmits[0].fence == VK_NULL_HANDLE && pool.copiedAt[0] < due,
-            "an unprepared output did not release the yield before its slot");
-        const auto& last = copySubmits[1];
-        expect(last.fence == copy.fence && last.waitSemaphores[last.waits - 1] == copy.staged &&
-            last.signalSemaphores[last.signals - 1] == copy.continuation &&
-            last.signals == (mode == 3 ? 1u : 2u) && last.count == (mode == 3 ? 0u : 1u) &&
-            last.signalSemaphores[0] != yield && done->calls[0].skipped == (mode == 3),
-            "the deadline copy or skip signalled the yield again or lost its contract");
-    }
-}
 // Errors must consume the staging/continuation contract once without retrying
 // an acquire or submitting a failed copy twice.
 void generatedPreparationErrors() {
@@ -3262,43 +3213,6 @@ void generatedPreparationErrors() {
 }
 
 namespace {
-constexpr bool marginControllerSimulation(std::chrono::nanoseconds drift, bool noisy = false) {
-    using namespace std::chrono_literals;
-    OutputMarginController controller;
-    auto slack = 0ns;
-    auto sum = 0ns;
-    for (int i = 0; i < 400; ++i) {
-        const auto noise = noisy ? (i % 2 ? 1ms : -1ms) : 0ms;
-        const auto step = controller.step(slack + noise, 2ms);
-        if (step < 0ns || step > 500us || controller.bias < 0ns || controller.bias > 500us)
-            return false;
-        slack += step - drift;
-        if (!noisy && slack > 2250us) return false;
-        if (i >= 199 && !noisy && (slack < 1750us || slack > 2250us)) return false;
-        if (i >= 200) sum += slack + noise;
-    }
-    return !noisy || (sum / 200 >= 1500us && sum / 200 <= 2500us);
-}
-static_assert(marginControllerSimulation(0ns));
-static_assert(marginControllerSimulation(200us));
-static_assert(marginControllerSimulation(400us));
-static_assert(marginControllerSimulation(200us, true));
-static_assert([] {
-    OutputMarginController controller;
-    for (const auto slack : {-10ms, 0ms, 10ms})
-        if (controller.step(slack, 0ms) != 0ns || controller.bias != 0ns) return false;
-    (void)controller.step(-10ms, 2ms);
-    if (controller.bias == 0ns) return false;
-    if (!controller.below) return false;
-    controller.reset();
-    if (controller.bias != 0ns || controller.below) return false;
-    (void)controller.step(3ms, 2ms);
-    if (controller.below) return false;
-    for (int i = 0; i < 200; ++i)
-        if (controller.step(i == 0 ? -10ms : 0ms, 2ms) > 500us) return false;
-    return controller.step(0ms, 0ms) == 0ns && controller.bias == 0ns;
-}());
-
 // S8b: markers of real k-1, generated k, real k at a 13 ms source period. The generated
 // output lands `bias` after the midpoint of the unmoved reals; each real lands at its slot
 // plus the controller's current offset (its response). Noise moves reals in pairs and the
@@ -3430,7 +3344,6 @@ int main(int argc, char** argv) {
     }
     generatedPreparedOrderAndBudget(); generatedPreparationFallbackAndGates();
     generatedPreparedRetirement(); generatedPreparedStop(); generatedPreparationErrors();
-    generatedYieldSignalledOnce();
     queueRequest();
     privateSubmitWithoutTailIsUnchanged(); privateSubmitAppendsTail();
     privateSubmitFailureLeavesTail(); privateSubmitForeignChainBypassesTail();
