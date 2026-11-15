@@ -285,6 +285,8 @@ namespace fgvk::layer::present_diagnostics {
             bool lowLatency{};
             Samples lowLatencyExtra;
             uint32_t lowLatencyKinds{};
+            // Released batches start at their own readiness (the setting, as for low_latency).
+            bool justInTime{};
         };
         static constexpr std::array<std::string_view, PresentModeSlotCount> presentModeSlotNames{
             "none", "immediate", "mailbox", "fifo", "fifo_relaxed", "fifo_latest_ready", "other"};
@@ -391,10 +393,11 @@ namespace fgvk::layer::present_diagnostics {
             window.configuredCapFps = configuredCap;
         }
         // One call per present; delay samples only the capped sources the setting governs.
-        void lowLatency(bool enabled, Clock::duration delay, uint32_t kinds) {
+        void lowLatency(bool enabled, Clock::duration delay, uint32_t kinds, bool justInTime) {
             window.lowLatency = enabled;
             if (enabled) window.lowLatencyExtra.add(delay);
             window.lowLatencyKinds = kinds;
+            window.justInTime = justInTime;
         }
         void phaseTiming(const std::array<Clock::duration, 9>& durations) {
             lastPhases = durations;

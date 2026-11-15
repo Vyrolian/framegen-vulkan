@@ -3618,6 +3618,109 @@ constexpr std::chrono::nanoseconds outputOffsetWindup(bool hold) {
 static_assert(outputOffsetWindup(false) == -OutputOffsetController::limit);
 static_assert(outputOffsetWindup(true) >= -std::chrono::microseconds{270});
 static_assert(outputOffsetWindup(true) <= -std::chrono::microseconds{200});
+
+// L2 (low_latency): readiness at a simulated instant. The wait returns once the value's instant has
+// passed, within its timeout, and otherwise times out at the timeout.
+std::array<DeferredPresent::Clock::time_point, 3> simulatedReady{};
+VkResult VKAPI_CALL readyAtInstant(VkDevice, const VkSemaphoreWaitInfo* info, uint64_t timeout) {
+    const auto ready = simulatedReady.at(info->pValues[0]);
+    const auto limit = DeferredPresent::Clock::now() + std::chrono::nanoseconds(static_cast<int64_t>(timeout));
+    if (ready > limit) {
+        std::this_thread::sleep_until(limit);
+        return VK_TIMEOUT;
+    }
+    std::this_thread::sleep_until(ready);
+    return VK_SUCCESS;
+}
+struct ReleasedPair {
+    std::optional<DeferredPresent::Completion> first, second;
+    DeferredPresent::Clock::time_point start{};
+};
+// Two overlapped released batches of two real outputs each, 8 ms apart. Batch A is ready 10 ms after
+// the start and batch B `readyB` after it. B is admitted while A is still outputting.
+ReleasedPair releasedPair(const bool justInTime, const std::chrono::milliseconds readyB) {
+    auto queue = std::make_shared<DeferredPresentQueue>();
+    queue->queue = handle<VkQueue>(7);
+    VkSwapchainKHR swapchain = handle<VkSwapchainKHR>(11);
+    VkSemaphore wait = handle<VkSemaphore>(12);
+    uint32_t image = 0;
+    VkPresentInfoKHR info{.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+        .waitSemaphoreCount = 1, .pWaitSemaphores = &wait,
+        .swapchainCount = 1, .pSwapchains = &swapchain, .pImageIndices = &image};
+    DeferredPresent worker(queue, timedPresent);
+    ReleasedPair pair;
+    pair.start = DeferredPresent::Clock::now();
+    const auto interval = 8ms;
+    simulatedReady[1] = pair.start + 10ms;
+    simulatedReady[2] = pair.start + readyB;
+    expect(worker.beginBatch(2, {.device = handle<VkDevice>(21), .semaphore = handle<VkSemaphore>(31),
+            .value = 1, .wait = readyAtInstant, .deadline = pair.start + 1s, .overlap = true,
+            .justInTime = justInTime, .outputInterval = interval}),
+        "first released batch rejected");
+    expect(worker.enqueue(info, pair.start), "first released batch's first output rejected");
+    image = 1;
+    expect(worker.enqueue(info, pair.start + interval), "first released batch's second output rejected");
+    worker.closeBatch();
+    expect(worker.beginBatch(2, {.device = handle<VkDevice>(21), .semaphore = handle<VkSemaphore>(31),
+            .value = 2, .wait = readyAtInstant, .deadline = pair.start + 1s, .overlap = true,
+            .justInTime = justInTime, .outputInterval = interval}),
+        "second released batch rejected while the first was outputting");
+    image = 2;
+    expect(worker.enqueue(info, pair.start), "second released batch's first output rejected");
+    image = 3;
+    expect(worker.enqueue(info, pair.start + interval), "second released batch's second output rejected");
+    worker.closeBatch();
+    pair.first = worker.finish(UINT64_MAX);
+    pair.second = worker.finish(UINT64_MAX);
+    return pair;
+}
+bool releasedPairCompleted(const ReleasedPair& pair) {
+    return pair.first && pair.second && pair.first->count == 2 && pair.second->count == 2 &&
+        !pair.first->calls[0].skipped && !pair.first->calls[1].skipped &&
+        !pair.second->calls[0].skipped && !pair.second->calls[1].skipped;
+}
+// The chain (worker run(): previousScheduled + interval - interval / 16) holds the next batch's first output
+// to the previous batch's last output: its scheduled slot, or its actual start when that came first.
+DeferredPresent::Clock::time_point chainedFloorAfter(const DeferredPresent::Completion& previous,
+        const std::chrono::nanoseconds interval) {
+    const auto& last = previous.calls[previous.count - 1];
+    return std::min(last.scheduled, last.started) + interval - interval / 16;
+}
+// L2 (low_latency): a released batch starts at its own readiness. Batch B becomes ready 21 ms after the
+// start, after batch A's real output (about 18 ms: its 10 ms readiness plus one interval). The chain would
+// hold B to A's planned phase plus 7.5 ms (about 25.5 ms); just-in-time starts it at its readiness.
+void justInTimeBatchStartsAtItsReadiness() {
+    const auto interval = 8ms;
+    const auto justInTime = releasedPair(true, 21ms);
+    expect(releasedPairCompleted(justInTime), "just-in-time released pair did not complete");
+    const auto readyB = justInTime.start + 21ms;
+    const auto& firstOfB = justInTime.second->calls[0];
+    expect(firstOfB.scheduled >= readyB && firstOfB.scheduled < readyB + 1ms,
+        "just-in-time batch did not start within 1 ms of its own readiness");
+    expect(firstOfB.scheduled < chainedFloorAfter(*justInTime.first, interval),
+        "just-in-time batch was held to the previous batch's planned phase");
+    expect(justInTime.second->calls[1].started >= firstOfB.started + interval - 1ms,
+        "just-in-time batch lost its spacing from its first output");
+
+    // The same two batches without just-in-time keep the chained start.
+    const auto chained = releasedPair(false, 21ms);
+    expect(releasedPairCompleted(chained), "chained released pair did not complete");
+    expect(chained.second->calls[0].scheduled >= chainedFloorAfter(*chained.first, interval),
+        "chained batch was not held to the previous batch's planned phase");
+}
+// L2 (low_latency): a batch ready before the previous real output started keeps a quarter interval after
+// that real output's actual start.
+void justInTimeBatchKeepsQuarterIntervalAfterPreviousReal() {
+    const auto interval = 8ms;
+    const auto early = releasedPair(true, 12ms);
+    expect(releasedPairCompleted(early), "early-ready released pair did not complete");
+    const auto previousReal = early.first->calls[1].started;
+    const auto& firstOfB = early.second->calls[0];
+    expect(firstOfB.scheduled >= previousReal + interval / 4,
+        "a batch ready before the previous real output started did not keep a quarter interval after it");
+    expect(firstOfB.scheduled < chainedFloorAfter(*early.first, interval),
+        "a batch ready before the previous real output started was held to the planned phase");
+}
 }
 
 int main([[maybe_unused]] int argc, [[maybe_unused]] char** argv) {
@@ -3637,6 +3740,7 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char** argv) {
     twoIdentifiedBatchesJoinTheirOwnRecords(); threeIdentifiedBatchesJoinInAnyOrder();
     timingRequestIsCopiedAndRebuilt(); sixKnownNodesAreAccepted();
     overlappedChainShiftsLaterOutputs(); expeditedOutputAnchorsNextBatch();
+    justInTimeBatchStartsAtItsReadiness(); justInTimeBatchKeepsQuarterIntervalAfterPreviousReal();
     generatedCopyPresentsAcquiredImage(); generatedCopySkipsWithoutImage(); generatedCopySkipsOutOfRangeImage();
     generatedCopyNeedsOpenBatch(); generatedCopyChainWaitsPreceding(); generatedCopyChainSkipWaitsPreceding();
     generatedCopyAddsPrivateTail(); generatedSkipAddsPrivateTail();

@@ -582,7 +582,7 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
     if (lowLatencyOn && lastSubmit)
         this->releaseGate.recordLastSubmit(lastSubmit->semaphore, lastSubmit->value, releasePoint);
     if (this->pacingProfile) this->pacingProfile->lowLatency(lowLatencyOn, releaseDelay,
-        this->releaseGate.consumedKinds());
+        this->releaseGate.consumedKinds(), lowLatencyOn);
     bool readyOutputPacing = fixedReadyOutputPacingEligible(
         this->profile, directUnthrottled || nativeFifoOutputPacing,
         compositorOutputTiming || applicationTimingOwner,
@@ -1063,7 +1063,7 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         // is slower, while the game continues; the release wait owns the cap.
         const auto count = plan.scheduledGeneratedFrames.size() + 1;
         invocation.pacedOutputs = this->realFramePacer.scheduleReleasedOutputs(
-            DiagnosticsClock::now(), capInterval, count);
+            DiagnosticsClock::now(), capInterval, count, lowLatencyOn);
         if (invocation.pacedOutputs) {
             const auto batchPeriod = invocation.pacedOutputs->interval * static_cast<int64_t>(count);
             invocation.readyOutputPacing = true;
@@ -1076,6 +1076,9 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
             // at most a quarter output slot of spacing is kept.
             invocation.readinessDeadline = limiterArrival + 3 * batchPeriod;
             invocation.releasedOverlap = true;
+            // With low_latency the worker starts this batch at its own readiness (see
+            // RealFramePacer::scheduleReleasedOutputs and the worker's justInTime rule).
+            invocation.justInTime = lowLatencyOn;
             invocation.releasedJoinTolerance = invocation.pacedOutputs->interval / 4;
             invocation.releasedOutputLimit = limiterArrival + 3 * batchPeriod +
                 invocation.pacedOutputs->interval / 8;

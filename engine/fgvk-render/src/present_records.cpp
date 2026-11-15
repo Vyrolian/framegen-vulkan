@@ -709,6 +709,8 @@ void formatPacingWindowBody(const PacingWindowPayload& payload, const PacingProf
             any = true;
         }
         if (!any) line << "none";
+        // just_in_time: whether released batches start at their own readiness in this window.
+        line << " just_in_time=" << (window.justInTime ? 1 : 0);
     }
     const auto ms = [](Clock::duration duration) {
         return std::chrono::duration<double, std::milli>(duration).count();

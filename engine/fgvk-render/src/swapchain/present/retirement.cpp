@@ -53,9 +53,10 @@ VkResult Swapchain::completeDeferredPresent(const uint64_t timeoutNs, const bool
                     ++this->diagnosticsState.fixedGeneratedFrames;
             }
         if (completion.result == VK_SUCCESS && completion.count && !completion.readinessMiss)
+            // A just-in-time batch's readiness shift is not carried into the planned phase.
             this->realFramePacer.completeOutputBatch(
                 completion.calls[completion.count - 1].started - completion.calls[completion.count - 1].offset,
-                completion.readinessShift);
+                completion.justInTime ? DiagnosticsClock::duration{} : completion.readinessShift);
         else if (completion.readinessMiss)
             this->realFramePacer.resetOutputs();
         else if (completion.result != VK_SUCCESS)
@@ -144,7 +145,7 @@ bool Swapchain::beginDeferredPresentBatch(const vk::Vulkan& vk, const size_t lim
         const uint64_t readyValue, const DiagnosticsClock::time_point readyDeadline, const bool capOwned,
         const std::optional<DiagnosticsClock::time_point> releasedOutputLimit,
         const DiagnosticsClock::duration releasedJoinTolerance,
-        const bool overlap, const DiagnosticsClock::duration outputInterval,
+        const bool overlap, const bool justInTime, const DiagnosticsClock::duration outputInterval,
         const DiagnosticsClock::time_point arrival) {
     if (!this->info.deferredPresentQueue) return false;
     if (!this->deferredPresent) {
@@ -160,7 +161,7 @@ bool Swapchain::beginDeferredPresentBatch(const vk::Vulkan& vk, const size_t lim
         .latestOutput = releasedOutputLimit.value_or(DiagnosticsClock::time_point::max()),
         .joinTolerance = releasedJoinTolerance,
         .expediteOnJoin = releasedOutputLimit.has_value(),
-        .overlap = overlap, .outputInterval = outputInterval,
+        .overlap = overlap, .justInTime = justInTime, .outputInterval = outputInterval,
         // Diagnostics only: the arrival is observed when the pacing profile is enabled.
         .arrival = this->pacingProfile ? arrival : DiagnosticsClock::time_point{},
         .copyFence = this->pacingProfile && present_diagnostics::pacingGpuProfileEnabled() && !this->renderSlots.empty()

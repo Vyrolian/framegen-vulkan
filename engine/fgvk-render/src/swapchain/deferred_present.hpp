@@ -331,6 +331,9 @@ public:
         bool readinessMiss{};
         // Diagnostics only: output spacing of the batch.
         Clock::duration outputInterval{};
+        // The batch started at its own readiness (Readiness::justInTime). Its readiness shift is
+        // not carried into the planned phase of the next batch.
+        bool justInTime{};
         // Presented generated outputs whose following real output in the same batch
         // started less than outputInterval/2 after the generated start.
         [[nodiscard]] size_t compressedGeneratedPairs() const {
@@ -373,6 +376,10 @@ public:
         // are skipped only for readiness, stopping, or no lower image at the end of
         // their give-up window. Late readiness gets one bounded extension.
         bool overlap{};
+        // low_latency, released batches only: the first output starts at the batch's own
+        // readiness. Only the previous real output's start plus a quarter interval can hold it
+        // later (see run()). The chain floor from the previous batch's planned phase is not applied.
+        bool justInTime{};
         Clock::duration outputInterval{};
         // Diagnostics only: limiter arrival of the batch. Set only with the pacing profile.
         Clock::time_point arrival{};
@@ -1415,7 +1422,9 @@ private:
                 nextOutputDeadline(current.deadline + batchShift,
                     batch.jobs[index - 1].deadline + batchShift,
                     batch.aggregate.calls[index - 1].started - batch.aggregate.calls[index - 1].offset);
-            if (first && havePrevious && ready.overlap && ready.outputInterval > Clock::duration::zero() &&
+            // A just-in-time batch does not chain from the previous batch's planned phase (see the readiness below).
+            if (first && havePrevious && ready.overlap && !ready.justInTime &&
+                    ready.outputInterval > Clock::duration::zero() &&
                     Clock::now() - previousFinished < ready.outputInterval)
                 deadline = std::max(deadline, previousScheduled + ready.outputInterval -
                     ready.outputInterval / 16);
@@ -1515,9 +1524,15 @@ private:
                     if (!readinessMiss) {
                         readyAt = Clock::now();
                         slack = unmovedReady - readyAt;
-                        readinessShift = std::max(Clock::duration{}, readyAt - unmovedReady);
+                        // L2: a just-in-time batch starts at its readiness. Only the quarter-interval
+                        // guard after the previous real output's actual start can hold it later.
+                        // batchShift below carries that hold to the batch's later outputs.
+                        const auto start = ready.justInTime && havePrevious
+                            ? std::max(readyAt, previousStarted + ready.outputInterval / 4)
+                            : readyAt;
+                        readinessShift = std::max(Clock::duration{}, start - unmovedReady);
                         unmovedReady += readinessShift;
-                        deadline = std::max(deadline, readyAt);
+                        deadline = std::max(deadline, start);
                     }
                 }
                 batchShift = unmovedReady - current.deadline;
@@ -1821,6 +1836,7 @@ private:
             lock.lock();
             batch.aggregate.source = ready.source;
             batch.aggregate.outputInterval = ready.outputInterval;
+            batch.aggregate.justInTime = ready.justInTime;
             batch.aggregate.readinessShift = readinessShift;
             batch.aggregate.readyAt = readyAt;
             batch.aggregate.slack = slack;

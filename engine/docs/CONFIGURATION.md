@@ -70,7 +70,7 @@ Enable `frame_generation_provisioned` before launching to allow Frame Generation
 | `multiplier` | Fixed output multiplier, 2–5. Start at 2. |
 | `adaptive_stable_cadence` | Favours consistent delivery; compare on and off for responsiveness. |
 | `base_fps_cap` | Limits real FPS. Off adds no manual cap. |
-| `low_latency` | On by default. With frame generation at a cap, the game starts each frame later, just in time, instead of queueing up to three frames ahead. Off keeps the release at the cap deadline. Live. The latency effect is not yet measured in a game run. |
+| `low_latency` | On by default. With frame generation at a cap, the game starts each frame later, just in time, instead of queueing up to three frames ahead. Off keeps the release at the cap deadline. It also starts each output batch the moment its frames are ready. Live. The latency effect is not yet measured in a game run. |
 
 Older files can still contain `adaptive`, `adaptive_max_multiplier`, `adaptive_auto_base_fps_cap`, `adaptive_fractional_real_frame_priority`, `adaptive_target_refresh_rate`, `target_fps`, `dynamic_cadence_recovery`, and `dynamic_cadence_probe_interval_seconds`. These keys are accepted and ignored: a profile with `adaptive = true` runs Fixed with its `multiplier`, and framegen-vulkan does not write them.
 

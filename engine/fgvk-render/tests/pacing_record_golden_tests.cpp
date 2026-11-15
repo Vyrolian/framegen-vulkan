@@ -38,7 +38,7 @@ void profileScenario() {
     profile.beginSource(start);
     profile.settings(true, true, 2, 60);
     // low_latency on, a 3 ms release delay, and the vkd3d, dxvk and acquire kinds used.
-    profile.lowLatency(true, 3ms, 1u | 4u | 8u);
+    profile.lowLatency(true, 3ms, 1u | 4u | 8u, true);
     profile.policy(false, 60, true);
     profile.backendScheduled(0);
     profile.wait(PacingProfile::SourceCapWait, 3ms);

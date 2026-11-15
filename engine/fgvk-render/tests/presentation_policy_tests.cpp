@@ -188,6 +188,36 @@ namespace {
             "uncapped released pacing did not requalify after an arrival gap");
     }
 
+    // low_latency (just-in-time): a released batch whose planned phase is still
+    // pending starts at its nominal time, where the chained batch is held to
+    // that phase. Both paths keep the same bookkeeping for a later chained batch.
+    void testJustInTimeReleasedBatchIgnoresPendingPhase() {
+        using Clock = RealFramePacer::Clock;
+        const Clock::time_point start{};
+        constexpr auto source = 16ms;
+        const auto arrivals = start + 12ms;
+
+        RealFramePacer chained;
+        const auto firstChained = chained.scheduleReleasedOutputs(start, source, 2);
+        expect(firstChained && firstChained->at(0) == start && firstChained->interval == 8ms,
+            "chained released batch did not start at its nominal time");
+        const auto held = chained.scheduleReleasedOutputs(arrivals, source, 2);
+        expect(held && held->at(0) == start + 16ms,
+            "chained released batch lost its planned-phase hold");
+
+        RealFramePacer justInTime;
+        const auto firstJust = justInTime.scheduleReleasedOutputs(start, source, 2, true);
+        expect(firstJust && firstJust->at(0) == start && firstJust->interval == 8ms,
+            "just-in-time released batch did not start at its nominal time");
+        const auto ready = justInTime.scheduleReleasedOutputs(arrivals, source, 2, true);
+        expect(ready && ready->at(0) == arrivals && ready->interval == 8ms,
+            "just-in-time released batch was held to the planned phase");
+        // Its planned end is start + 20 ms, so a chained batch at start + 22 ms holds to start + 28 ms.
+        const auto after = justInTime.scheduleReleasedOutputs(start + 22ms, source, 2);
+        expect(after && after->at(0) == start + 28ms,
+            "a chained batch after a just-in-time batch lost the planned phase");
+    }
+
     // One late released block is a transient, not a new cadence. A slower
     // period needs a second consecutive slower block and then adopts the
     // smaller of the two means. A block that is not slower clears that pending
@@ -2398,6 +2428,7 @@ int main() {
     testReleasedOutputsStayInsideTheSourceInterval();
     testReleasedOutputsUseMeasuredSourcePeriod();
     testReleasedUncappedOutputsUseQualifiedPeriod();
+    testJustInTimeReleasedBatchIgnoresPendingPhase();
     testSlowerReleasedBlocksNeedConsecutiveConfirmation();
     testOrderedAcquirePolicyRecord();
     std::cout << "presentation policy tests passed\n";

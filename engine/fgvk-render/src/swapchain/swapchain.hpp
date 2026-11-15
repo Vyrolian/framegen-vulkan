@@ -177,7 +177,8 @@ namespace fgvk::layer {
             uint64_t readyValue, std::chrono::steady_clock::time_point readyDeadline, bool capOwned,
             std::optional<std::chrono::steady_clock::time_point> releasedOutputLimit = std::nullopt,
             std::chrono::steady_clock::duration releasedJoinTolerance = {},
-            bool overlap = false, std::chrono::steady_clock::duration outputInterval = {},
+            bool overlap = false, bool justInTime = false,
+            std::chrono::steady_clock::duration outputInterval = {},
             std::chrono::steady_clock::time_point arrival = {});
         [[nodiscard]] bool hasDeferredPresent() const { return static_cast<bool>(this->deferredPresent); }
         // True while an admitted batch is still outputting or waiting to be joined.
@@ -290,6 +291,8 @@ namespace fgvk::layer {
             std::chrono::steady_clock::duration releasedJoinTolerance{};
             // The released batch may keep spacing while one newer source batch is admitted.
             bool releasedOverlap{false};
+            // low_latency with a released batch: the worker starts the batch at its own readiness.
+            bool justInTime{false};
             mutable std::chrono::steady_clock::duration outputWait{};
             std::chrono::steady_clock::duration readinessWait{};
             present_diagnostics::PacingProfile* profiler{};

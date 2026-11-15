@@ -1156,7 +1156,7 @@ namespace fgvk::layer {
                 this->resetOutputs();
                 return OutputBatch{now, interval, count};
             }
-            return this->chainDetachedOutputs(now, interval, count);
+            return this->chainDetachedOutputs(now, interval, count, false);
         }
 
         /// A source-cap deadline owned by the application's release wait
@@ -1174,8 +1174,13 @@ namespace fgvk::layer {
         /// Space it only on a qualified, uninterrupted measured period. Until
         /// that cadence is proven, return nullopt so the caller's ready-output
         /// path carries the warm-up.
+        ///
+        /// justInTime (low_latency): the batch's nominal first output is `now`,
+        /// and the worker starts it at the batch's own readiness instead of
+        /// after the previous batch's planned output phase.
         [[nodiscard]] std::optional<OutputBatch> scheduleReleasedOutputs(
-                const TimePoint now, const Clock::duration sourceInterval, const size_t count) {
+                const TimePoint now, const Clock::duration sourceInterval, const size_t count,
+                const bool justInTime = false) {
             if (count < 2 || count > GeneratedFramePlan::capacity + 1) {
                 this->resetOutputs();
                 return std::nullopt;
@@ -1196,7 +1201,7 @@ namespace fgvk::layer {
                 this->resetOutputs();
                 return std::nullopt;
             }
-            return this->chainDetachedOutputs(now, interval, count);
+            return this->chainDetachedOutputs(now, interval, count, justInTime);
         }
 
         /// Rephase a substantially late retained tail. Normal sleep overshoot
@@ -1300,14 +1305,21 @@ namespace fgvk::layer {
         /// thread. VKD3D-Proton runs both on its D3D12 queue-submission
         /// thread, where any join stalls later game submissions. Bound the
         /// phase hold to three quarters of a slot and shorten only that gap.
+        ///
+        /// justInTime batches (released, low_latency) take no such hold and count
+        /// no requalification: their nominal first output is `now`, and the
+        /// worker moves it to readiness. lastOutputAt, readyOutputCount and
+        /// readyOutputHold are still written, so a later batch that is not
+        /// just-in-time chains from the same bookkeeping.
         [[nodiscard]] OutputBatch chainDetachedOutputs(
-                const TimePoint now, const Clock::duration interval, const size_t count) {
+                const TimePoint now, const Clock::duration interval, const size_t count,
+                const bool justInTime) {
             auto first = now;
             if (this->readyOutputCount != count) {
                 this->resetOutputs();
-            } else if (this->readyOutputRequalification) {
+            } else if (!justInTime && this->readyOutputRequalification) {
                 --this->readyOutputRequalification;
-            } else if (this->lastOutputAt) {
+            } else if (!justInTime && this->lastOutputAt) {
                 const auto next = *this->lastOutputAt + interval;
                 if (next > now) {
                     if (next - now < interval)

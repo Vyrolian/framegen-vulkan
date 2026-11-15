@@ -58,7 +58,7 @@ VkResult Swapchain::presentGeneratedFrames(
             this->frameState.backendTimelineIndex + plan.scheduledGeneratedFrames.size() - 1,
             invocation.readinessDeadline, invocation.capReadyOutputPacing,
             invocation.releasedOutputLimit, invocation.releasedJoinTolerance,
-            invocation.releasedOverlap,
+            invocation.releasedOverlap, invocation.justInTime,
             invocation.pacedOutputs ? invocation.pacedOutputs->interval : DiagnosticsClock::duration{},
             invocation.limiterArrival);
     struct CloseDeferredBatch {
