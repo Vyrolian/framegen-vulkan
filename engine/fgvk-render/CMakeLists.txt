@@ -314,6 +314,13 @@ if(BUILD_TESTING)
     add_test(NAME release-gate COMMAND fgvk-release-gate-tests)
     fgvk_register_portable_policy_test(fgvk-release-gate-tests release-gate)
 
+    # Reflex frame limit: the pure interval rule and the per-swapchain request state.
+    add_executable(fgvk-reflex-frame-limit-tests "tests/reflex_frame_limit_tests.cpp")
+    target_include_directories(fgvk-reflex-frame-limit-tests PRIVATE "src")
+    target_link_libraries(fgvk-reflex-frame-limit-tests PRIVATE Threads::Threads)
+    add_test(NAME reflex-frame-limit COMMAND fgvk-reflex-frame-limit-tests)
+    fgvk_register_portable_policy_test(fgvk-reflex-frame-limit-tests reflex-frame-limit)
+
     add_executable(fgvk-render-slot-ring-tests "tests/render_slot_ring_tests.cpp")
     target_include_directories(fgvk-render-slot-ring-tests PRIVATE "src")
     add_test(NAME render-slot-ring COMMAND fgvk-render-slot-ring-tests)

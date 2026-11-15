@@ -1427,16 +1427,21 @@ namespace {
     }
 
     // get device-level function pointers
-    // Reflex pass-through, pacing profile on only: each call is recorded, then forwarded with its
-    // arguments unchanged. The extension is never advertised; these answer only an app that asks for it.
+    // Reflex wrappers. A request on a framegen-vulkan swapchain is remembered and forwarded with the
+    // frame limit applied (reflex_frame_limit.hpp); any other request is forwarded unchanged. The
+    // extension is never advertised; these answer only an app that asks for it.
     VkResult VKAPI_CALL myvkSetLatencySleepModeNV(VkDevice device, VkSwapchainKHR swapchain,
             const VkLatencySleepModeInfoNV* info) {
         static thread_local CachedLower<PFN_vkSetLatencySleepModeNV, VkDevice> lower;
         const auto next = lower.get(device, [&] {
             return instance_info->funcs.GetDeviceProcAddr(device, "vkSetLatencySleepModeNV"); });
         if (!next) return VK_ERROR_EXTENSION_NOT_PRESENT;
-        const auto result = next(device, swapchain, info);
-        if (info) present_diagnostics::recordReflexMode(info->lowLatencyMode, info->lowLatencyBoost,
+        if (!info) return next(device, swapchain, info);
+        const auto send = [&](const ReflexFrameLimit::Forward& forward) {
+            return next(device, swapchain, &forward.info);
+        };
+        const auto result = ReflexFrameLimitRegistry::get(swapchain)->applicationRequest(swapchain, *info, send);
+        present_diagnostics::recordReflexMode(info->lowLatencyMode, info->lowLatencyBoost,
             info->minimumIntervalUs, result);
         return result;
     }
@@ -1464,10 +1469,10 @@ namespace {
         next(device, swapchain, info);
     }
 
-    // The Reflex wrapper for a command the next layer exports, with the pacing profile on only.
-    // Profile off, or a next layer without the command, returns nothing and the lookup stays unchanged.
+    // The Reflex wrapper for a command the next layer exports. A next layer without the command
+    // returns nothing and the lookup stays unchanged. Recording inside the wrappers is still
+    // gated by the pacing profile.
     PFN_vkVoidFunction reflexPassThrough(VkDevice device, const char* name) {
-        if (!present_diagnostics::pacingProfileEnabled()) return nullptr;
         PFN_vkVoidFunction wrapper{};
         if (std::string_view(name) == "vkSetLatencySleepModeNV")
             wrapper = reinterpret_cast<PFN_vkVoidFunction>(myvkSetLatencySleepModeNV);
@@ -2567,6 +2572,7 @@ namespace {
                       << '\n';
         }
         auto context = layer_info->root.takeSwapchainContext(swapchain);
+        ReflexFrameLimitRegistry::erase(swapchain);
         instance_info->swapchainInfos.erase(swapchain);
         instance_info->swapchains.erase(swapchain);
         instance_info->nativeSwapchains.erase(swapchain);

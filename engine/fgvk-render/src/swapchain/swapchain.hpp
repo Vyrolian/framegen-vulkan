@@ -24,6 +24,7 @@
 #include "swapchain/deferred_present.hpp"
 #include "swapchain/internal_images.hpp"
 #include "swapchain/present_feedback_probe.hpp"
+#include "swapchain/reflex_frame_limit.hpp"
 #include "swapchain/release_gate.hpp"
 #include "swapchain/uncapped_auto_cap.hpp"
 
@@ -31,6 +32,7 @@
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -201,6 +203,12 @@ namespace fgvk::layer {
         }
         [[nodiscard]] VkExtent2D frameGenerationResourceExtent() const {
             return this->info.extent;
+        }
+        /// Reflex sleep mode of this swapchain: the application's request and the frame limit
+        /// it is forwarded with (reflex_frame_limit.hpp).
+        [[nodiscard]] ReflexFrameLimit& reflexFrameLimit(VkSwapchainKHR swapchain) {
+            if (!this->reflexLimit) this->reflexLimit = ReflexFrameLimitRegistry::get(swapchain);
+            return *this->reflexLimit;
         }
         /// Profile currently applied to this context, read by the F5 internal-image gate.
         [[nodiscard]] const ls::GameConf& appliedProfile() const {
@@ -468,6 +476,9 @@ namespace fgvk::layer {
         // Source-cap deadline moved to the application's own release wait;
         // see release_gate.hpp. Learns per context; holds presents until then.
         ReleaseGateOwner releaseGate;
+        // Reflex request of this swapchain, shared with the Reflex wrapper through
+        // ReflexFrameLimitRegistry; fetched at the first present.
+        std::shared_ptr<ReflexFrameLimit> reflexLimit;
         // Actual scheduled batch, including the real image; never the user's
         // unproven maximum multiplier. Reset before native/history fallbacks.
         size_t bridgeOutputBatchSize{1};

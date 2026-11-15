@@ -47,7 +47,8 @@ Known launchers and helpers stay inactive while their child games can match. The
 | `frame_generation_enabled` | `true` | Live execution state. `false` pauses generation. |
 | `multiplier` | `2` | Fixed total output multiplier, from 2–5. |
 | `adaptive_stable_cadence` | `true` | Favours a stable validated cadence when available. |
-| `base_fps_cap` | `0` | Real-frame cap; `0` disables it. |
+| `base_fps_cap` | `0` | Real-frame cap; `0` disables it. With Frame Generation on, the minimum frame interval a Reflex-enabled game requests is raised to this cap's interval, so the game holds the cap itself. |
+| `cap_lead_frames` | `3` | Frames the game may run ahead of the cap, 1 to 3; values outside that range are clamped, with a log line. Lower means less latency. Live, read on each configuration reload. |
 
 See [Fixed validation](ADAPTIVE-VALIDATION.md) for pacing details.
 

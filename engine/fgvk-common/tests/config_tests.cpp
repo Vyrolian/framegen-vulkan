@@ -150,6 +150,27 @@ target_fps = 144
             "A lone retired handheld table must not reject the file");
     }
 
+    // cap_lead_frames is a live profile key of 1 to 3, default 3. A value outside that range is
+    // clamped when the file is read, and a rewrite keeps the clamped value.
+    void testCapLeadFrames(const std::filesystem::path& directory) {
+        const auto path = directory / "cap-lead-frames.toml";
+        const std::pair<const char*, uint32_t> cases[] = {
+            {"", 3}, {"cap_lead_frames = 1\n", 1}, {"cap_lead_frames = 2\n", 2},
+            {"cap_lead_frames = 3\n", 3}, {"cap_lead_frames = 0\n", 1},
+            {"cap_lead_frames = -4\n", 1}, {"cap_lead_frames = 9\n", 3},
+        };
+        for (const auto& [line, expected] : cases) {
+            writeText(path, std::string("version = 2\n[[profile]]\nname = 'game'\n") + line);
+            const ls::ConfigFile parsed(path);
+            expect(parsed.profiles().front().cap_lead_frames == expected,
+                "cap_lead_frames must read 1 to 3 with a default of 3 and clamp outside that range");
+        }
+        writeText(path, "version = 2\n[[profile]]\nname = 'game'\ncap_lead_frames = 2\n");
+        ls::ConfigFile(path).write(path);
+        expect(readText(path).find("cap_lead_frames = 2") != std::string::npos,
+            "Rewriting a configuration must keep cap_lead_frames");
+    }
+
     // Native Remote Play used to write a root selection key. Files that still
     // contain it must load, and matching must ignore it.
     void testLegacyRootSelectionIsIgnored(const std::filesystem::path& directory) {
@@ -267,6 +288,7 @@ int main() {
             defaults.swapchain_image_count_compatibility ==
                 ls::GameConfDefaults::swapchainImageCountCompatibility &&
             defaults.base_fps_cap == ls::GameConfDefaults::baseFpsCap &&
+            defaults.cap_lead_frames == ls::GameConfDefaults::capLeadFrames &&
             defaults.adaptive_stable_cadence ==
                 ls::GameConfDefaults::adaptiveStableCadence &&
             defaults.ultra_performance ==
@@ -290,6 +312,7 @@ int main() {
     testRetiredAdaptiveKeys(directory);
     testOptionalLosslessDll(directory);
     testRetiredPowerTables(directory);
+    testCapLeadFrames(directory);
     testLegacyRootSelectionIsIgnored(directory);
 
     const auto defaultPath = directory / "default.toml";

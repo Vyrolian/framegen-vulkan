@@ -28,6 +28,7 @@ const GAMES_BOX_WIDTH: f32 = 380.0;
 /// Space between an entry's name and its Remove button.
 const REMOVE_GAP: f32 = 2.0;
 const NO_GAMES: &str = "No games yet. Add an executable name or pick a running program.";
+const CAP_LEAD_TIP: &str = "frames the game may run ahead of the cap; lower = less latency";
 const MODES: [Mode; 5] = [
     Mode::Off,
     Mode::Fixed(2),
@@ -392,6 +393,7 @@ impl App {
 
         ui.add_space(6.0);
         self.fps_limit(ui, profile);
+        self.cap_lead(ui, profile);
     }
 
     fn games(&mut self, ui: &mut Ui, profile: &Profile) {
@@ -579,6 +581,24 @@ impl App {
         }
         if let Some(value) = dragged.filter(|value| *value != profile.base_fps_cap) {
             let result = self.config.set_base_fps_cap(&profile.key, value);
+            self.report(result);
+        }
+    }
+
+    /// Frames the game may run ahead of the cap. Buttons apply at once.
+    fn cap_lead(&mut self, ui: &mut Ui, profile: &Profile) {
+        let mut chosen = None;
+        let row = ui.horizontal(|ui| {
+            ui.label("Cap lead");
+            for frames in config::CAP_LEAD_FRAMES_RANGE {
+                if option_button(ui, frames.to_string(), frames == profile.cap_lead_frames) {
+                    chosen = Some(frames);
+                }
+            }
+        });
+        row.response.on_hover_text(CAP_LEAD_TIP);
+        if let Some(frames) = chosen {
+            let result = self.config.set_cap_lead_frames(&profile.key, frames);
             self.report(result);
         }
     }
@@ -958,6 +978,7 @@ mod tests {
             mode: Mode::Fixed(2),
             flow_scale: 0.8,
             base_fps_cap: 0,
+            cap_lead_frames: 3,
             performance_mode: false,
         }
     }

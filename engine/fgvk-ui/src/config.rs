@@ -29,6 +29,7 @@ pub const DEFAULT_FPS_LIMIT: i64 = 60;
 pub const MULTIPLIER_RANGE: RangeInclusive<i64> = 2..=5;
 pub const FPS_LIMIT_RANGE: RangeInclusive<i64> = 1..=1000;
 pub const BASE_FPS_CAP_RANGE: RangeInclusive<i64> = 0..=1000;
+pub const CAP_LEAD_FRAMES_RANGE: RangeInclusive<i64> = 1..=3;
 pub const FLOW_SCALE_RANGE: RangeInclusive<f64> = 0.25..=1.0;
 
 /// Values shown for keys the file leaves out. They match the Renderer defaults.
@@ -37,6 +38,7 @@ const DEFAULT_FLOW_SCALE: f64 = 0.8;
 const DEFAULT_ALLOW_FP16: bool = true;
 const DEFAULT_PACING_CORRECTION: bool = true;
 const DEFAULT_PERFORMANCE_MODE: bool = false;
+const DEFAULT_CAP_LEAD_FRAMES: i64 = 3;
 
 /// Chooses the configuration path from an environment lookup.
 ///
@@ -107,6 +109,8 @@ pub struct Profile {
     pub mode: Mode,
     pub flow_scale: f64,
     pub base_fps_cap: i64,
+    /// Frames the game may run ahead of the cap, 1 to 3. Out-of-range file values read clamped.
+    pub cap_lead_frames: i64,
     pub performance_mode: bool,
 }
 
@@ -293,6 +297,14 @@ impl Config {
         })
     }
 
+    /// Frames the game may run ahead of the cap. Only 1 to 3 is written.
+    pub fn set_cap_lead_frames(&mut self, key: &ProfileKey, value: i64) -> Result<(), String> {
+        check_i64("Cap lead", value, &CAP_LEAD_FRAMES_RANGE)?;
+        self.edit_profile(key, |table| {
+            set_value(table, "cap_lead_frames", Value::from(value))
+        })
+    }
+
     pub fn set_performance_mode(&mut self, key: &ProfileKey, value: bool) -> Result<(), String> {
         self.edit_profile(key, |table| {
             set_value(table, "performance_mode", Value::from(value));
@@ -460,6 +472,8 @@ fn read_profile(index: usize, table: &Table) -> Profile {
         mode: Mode::from_settings(enabled, int_or(table, "multiplier", DEFAULT_MULTIPLIER)),
         flow_scale: float_or(table, "flow_scale", DEFAULT_FLOW_SCALE),
         base_fps_cap: int_or(table, "base_fps_cap", 0),
+        cap_lead_frames: int_or(table, "cap_lead_frames", DEFAULT_CAP_LEAD_FRAMES)
+            .clamp(*CAP_LEAD_FRAMES_RANGE.start(), *CAP_LEAD_FRAMES_RANGE.end()),
         performance_mode: table
             .get("performance_mode")
             .and_then(Item::as_bool)
@@ -810,6 +824,45 @@ mod tests {
         assert_eq!(profile.mode, Mode::Fixed(2));
         assert!((profile.flow_scale - 0.8).abs() < f64::EPSILON);
         assert_eq!(profile.base_fps_cap, 0);
+        assert_eq!(
+            profile.cap_lead_frames, 3,
+            "missing key reads as the renderer default"
+        );
+    }
+
+    #[test]
+    fn cap_lead_frames_reads_clamped_and_round_trips() {
+        let doc = parse("version = 2\n\n[[profile]]\nname = \"Bare\"\ncap_lead_frames = 9\n");
+        assert_eq!(
+            profiles(&doc).remove(0).cap_lead_frames,
+            3,
+            "above the range reads as 3"
+        );
+        let doc = parse("version = 2\n\n[[profile]]\nname = \"Bare\"\ncap_lead_frames = 0\n");
+        assert_eq!(
+            profiles(&doc).remove(0).cap_lead_frames,
+            1,
+            "below the range reads as 1"
+        );
+
+        let dir = temp_dir("cap-lead");
+        let path = dir.join(FILE_NAME);
+        fs::write(&path, BASE).expect("write fixture");
+        let mut config = Config::open(Ok(path.clone()));
+        let alpha = key(0, "Alpha");
+        assert_eq!(ready(&config).profiles[0].cap_lead_frames, 3);
+        config.set_cap_lead_frames(&alpha, 1).expect("lead 1 saves");
+        assert_eq!(ready(&config).profiles[0].cap_lead_frames, 1);
+        assert!(
+            config.set_cap_lead_frames(&alpha, 4).is_err(),
+            "4 is outside the 1 to 3 control"
+        );
+        assert_eq!(
+            ready(&config).profiles[0].cap_lead_frames,
+            1,
+            "a refused value writes nothing"
+        );
+        fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

@@ -36,7 +36,7 @@ void profileScenario() {
     const auto start = Clock::time_point{10s};
     PacingProfile profile;
     profile.beginSource(start);
-    profile.settings(true, true, 2, 60);
+    profile.settings(true, true, 2, 60, 3);
     profile.policy(false, 60, true);
     profile.backendScheduled(0);
     profile.wait(PacingProfile::SourceCapWait, 3ms);

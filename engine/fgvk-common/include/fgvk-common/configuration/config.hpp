@@ -39,6 +39,7 @@ namespace ls {
         static constexpr bool frameGenerationEnabled = true;
         static constexpr bool swapchainImageCountCompatibility = false;
         static constexpr uint32_t baseFpsCap = 0;
+        static constexpr uint32_t capLeadFrames = 3;
         static constexpr bool adaptiveStableCadence = true;
         static constexpr bool ultraPerformance = false;
         static constexpr float ultraPerformanceFlowScale = 0.7F;
@@ -53,6 +54,8 @@ namespace ls {
         static constexpr size_t maximumMultiplier = 5;
         static constexpr uint32_t minimumBaseFpsCap = 0;
         static constexpr uint32_t maximumBaseFpsCap = 1000;
+        static constexpr uint32_t minimumCapLeadFrames = 1;
+        static constexpr uint32_t maximumCapLeadFrames = 3;
         static constexpr float minimumFlowScale = 0.25F;
         static constexpr float maximumFlowScale = 1.0F;
     };
@@ -79,6 +82,8 @@ namespace ls {
         };
         /// maximum application-present rate before frame generation; zero disables it
         uint32_t base_fps_cap{GameConfDefaults::baseFpsCap};
+        /// frames the game may run ahead of the cap (1–3); lower = less latency. Read live.
+        uint32_t cap_lead_frames{GameConfDefaults::capLeadFrames};
         bool adaptive_stable_cadence{GameConfDefaults::adaptiveStableCadence};
         /// trade live profile reloads for the lowest supported resource cost
         bool ultra_performance{GameConfDefaults::ultraPerformance};

@@ -45,6 +45,7 @@ The window has these controls:
 | Frame generation | `Off` or a fixed `2x` to `5x` multiplier. |
 | Quality (flow scale) | `flow_scale` from 25% to 100%. Higher values track motion more precisely and cost more GPU time. |
 | FPS limit | Optional real-FPS cap, stored as `base_fps_cap`. Turn it off to remove the manual cap. |
+| Cap lead | `cap_lead_frames`, 1 to 3: how many cap intervals the game may run ahead of the cap before framegen-vulkan holds it. Lower means less latency. Applies live. |
 | Performance mode | `performance_mode` for the selected profile. |
 | FP16 (faster) | `[global] allow_fp16`. Restart the game to apply. |
 | Pacing correction | `[global] pacing_correction`. Restart the game to apply. |
@@ -69,6 +70,7 @@ Enable `frame_generation_provisioned` before launching to allow Frame Generation
 | `multiplier` | Fixed output multiplier, 2–5. Start at 2. |
 | `adaptive_stable_cadence` | Favours consistent delivery; compare on and off for responsiveness. |
 | `base_fps_cap` | Limits real FPS. Off adds no manual cap. |
+| `cap_lead_frames` | 1 to 3 (default 3). Frames the game may run ahead of the cap; lower means less latency. Live. |
 
 Older files can still contain `adaptive`, `adaptive_max_multiplier`, `adaptive_auto_base_fps_cap`, `adaptive_fractional_real_frame_priority`, `adaptive_target_refresh_rate`, `target_fps`, `dynamic_cadence_recovery`, and `dynamic_cadence_probe_interval_seconds`. These keys are accepted and ignored: a profile with `adaptive = true` runs Fixed with its `multiplier`, and framegen-vulkan does not write them.
 
