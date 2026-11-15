@@ -159,6 +159,12 @@ namespace fgvk::layer {
         // D7, D7d (pacing profile only): stores one emulated acquire's release wait value, tail
         // value and time for the stall probe. The caller checks the profile first.
         void noteAcquireProbe(uint32_t applicationIndex, uint64_t waitValue, uint64_t tailValue);
+        // X1: stores a failing result as the sticky error, then wakes an application acquire
+        // blocked on the ring. The store comes first, so the woken acquire returns this error.
+        void failSticky(VkResult error) noexcept {
+            sticky.store(error);
+            ring.abort();
+        }
     };
 
     bool InternalSwapchainImages::Impl::initialize(const vk::Vulkan& vk,
@@ -337,7 +343,7 @@ namespace fgvk::layer {
             lastReleaseValue = value;
             static_cast<void>(ring.complete(applicationIndex, value));
         } else {
-            sticky.store(result);
+            failSticky(result);
             static_cast<void>(ring.complete(applicationIndex, lastReleaseValue));
         }
         return result;
@@ -719,8 +725,12 @@ namespace fgvk::layer {
         // Waits without any lock held when the timeout is finite or unlimited.
         // complete() wakes the wait when a presented image finishes its copy.
         const auto index = impl->ring.acquireWait(timeout);
-        if (!index)
+        if (!index) {
+            // X1: an error that woke this wait is returned, not a timeout.
+            if (const auto error = impl->sticky.load(); error != VK_SUCCESS)
+                return error;
             return timeout == 0 ? VK_NOT_READY : VK_TIMEOUT;
+        }
         const auto ringDone = measured ? present_diagnostics::Clock::now() : present_diagnostics::Clock::time_point{};
         const auto ringWait = measured ? ringDone - ringStarted : present_diagnostics::Clock::duration{};
 
@@ -834,7 +844,7 @@ namespace fgvk::layer {
                 if (measured)
                     submitWait = present_diagnostics::Clock::now() - submitStarted;
                 if (submitted != VK_SUCCESS) {
-                    impl->sticky.store(submitted);
+                    impl->failSticky(submitted);
                     static_cast<void>(impl->ring.release(*index));
                 }
             }
@@ -915,9 +925,12 @@ namespace fgvk::layer {
             }
         }
         if (signalled != VK_SUCCESS)
-            impl->sticky.store(signalled);
+            impl->failSticky(signalled);
+        // Only a clear sticky becomes OUT_OF_DATE, so an earlier error is kept. X1: the
+        // ring is woken only when this exchange stored the error.
         VkResult expected = VK_SUCCESS;
-        impl->sticky.compare_exchange_strong(expected, VK_ERROR_OUT_OF_DATE_KHR);
+        if (impl->sticky.compare_exchange_strong(expected, VK_ERROR_OUT_OF_DATE_KHR))
+            impl->ring.abort();
     }
 
     VkResult InternalSwapchainImages::ensureCopies(const vk::Vulkan& vk,
@@ -990,7 +1003,7 @@ namespace fgvk::layer {
             result = VK_ERROR_UNKNOWN;
         }
         // Nothing was submitted. Free the image at the last value that was, and keep the failure.
-        impl->sticky.store(result);
+        impl->failSticky(result);
         static_cast<void>(impl->ring.complete(applicationIndex, impl->lastReleaseValue));
         return result;
     }
@@ -1175,7 +1188,7 @@ namespace fgvk::layer {
     void InternalSwapchainImages::noteLowerError(const VkResult error) noexcept {
         if (error == VK_ERROR_OUT_OF_DATE_KHR || error == VK_ERROR_SURFACE_LOST_KHR ||
                 error == VK_ERROR_FULL_SCREEN_EXCLUSIVE_MODE_LOST_EXT) {
-            impl->sticky.store(error);
+            impl->failSticky(error);
         }
     }
 

@@ -144,12 +144,12 @@ namespace fgvk::layer {
         }
 
         /// Takes the least recently released free index. A zero timeout never
-        /// waits; UINT64_MAX waits until an index is freed. Only the ring's own
-        /// mutex is held while waiting.
+        /// waits; UINT64_MAX waits until an index is freed or abort() is called.
+        /// Only the ring's own mutex is held while waiting.
         [[nodiscard]] std::optional<uint32_t> acquireWait(const uint64_t timeoutNs) {
             std::unique_lock lock(mutex);
             if (freeOrder.empty() && timeoutNs != 0) {
-                const auto ready = [this] { return !freeOrder.empty(); };
+                const auto ready = [this] { return !freeOrder.empty() || aborted; };
                 if (timeoutNs == UINT64_MAX) {
                     changed.wait(lock, ready);
                 } else {
@@ -158,6 +158,16 @@ namespace fgvk::layer {
                 }
             }
             return takeFreeLocked();
+        }
+
+        /// Wakes every acquireWait blocked on an empty ring, and makes later waits on an
+        /// empty ring return at once. The owner calls it after the sticky error is stored:
+        /// no image may be freed any more, so a blocked application acquire must return
+        /// that error. A free index is still handed out after abort.
+        void abort() {
+            const std::lock_guard lock(mutex);
+            aborted = true;
+            changed.notify_all();
         }
 
         /// Marks an acquired index as presented. The index stays unavailable until complete.
@@ -290,6 +300,8 @@ namespace fgvk::layer {
         std::vector<State> states;
         std::vector<uint64_t> values;
         std::deque<uint32_t> freeOrder;
+        // Set by abort() under mutex and never cleared. False for a ring never aborted.
+        bool aborted{false};
     };
 
     /// Device support for the private image format. Filled by the Vulkan

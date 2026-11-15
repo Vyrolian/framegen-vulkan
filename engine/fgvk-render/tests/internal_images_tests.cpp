@@ -208,6 +208,53 @@ namespace {
             "the blocked acquire did not receive the completed image");
     }
 
+    void testAbortWakesBlockedAcquire() {
+        // Every index is Pending, so no image can be freed: only abort() can end the wait.
+        InternalImageRing ring(2);
+        expect(ring.acquire() == 0u && ring.acquire() == 1u && ring.present(0) && ring.present(1),
+            "setup of an all-pending ring failed");
+        std::atomic<bool> returned{false};
+        std::optional<uint32_t> got{99};
+        std::thread waiter([&] {
+            got = ring.acquireWait(UINT64_MAX);
+            returned = true;
+        });
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        expect(!returned.load(), "an unlimited acquire returned before abort on a ring with no free image");
+        const auto abortedAt = std::chrono::steady_clock::now();
+        ring.abort();
+        while (!returned.load() && std::chrono::steady_clock::now() - abortedAt < std::chrono::seconds(1))
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        expect(returned.load(), "abort did not wake a blocked unlimited acquire within 1 s");
+        waiter.join();
+        expect(!got.has_value(), "a blocked acquire woken by abort returned an index with none free");
+
+        // A ring that was never aborted keeps the finite wait: it times out.
+        InternalImageRing steady(2);
+        expect(steady.acquire().has_value() && steady.acquire().has_value() && steady.present(0),
+            "setup of the never-aborted ring failed");
+        expect(!steady.acquireWait(20'000'000).has_value(),
+            "a never-aborted ring returned an image while none was free");
+    }
+
+    void testAbortKeepsFreeImages() {
+        InternalImageRing ring(2);
+        expect(ring.acquire() == 0u && ring.acquire() == 1u && ring.present(0),
+            "setup of the aborted ring failed");
+        ring.abort();
+        // Nothing is free after abort, so a finite wait returns at once with no index.
+        const auto started = std::chrono::steady_clock::now();
+        expect(!ring.acquireWait(1'000'000'000).has_value(),
+            "an aborted ring with no free image returned an index");
+        expect(std::chrono::steady_clock::now() - started < std::chrono::seconds(1),
+            "an aborted ring with no free image waited");
+        // A completed image is still handed out after abort.
+        expect(ring.complete(0, 9), "completing the pending image failed");
+        const auto got = ring.acquireWait(1'000'000'000);
+        expect(got && *got == 0u && ring.releaseValue(0) == 9,
+            "a free image was not handed out after abort");
+    }
+
     void testAcquireWaitZeroNeverWaits() {
         InternalImageRing ring(2);
         expect(ring.acquire().has_value() && ring.acquire().has_value(), "setup acquisitions failed");
@@ -436,6 +483,8 @@ int main() {
     testRingDescribeReportsStatesAndValues();
     testRingSizeBounds();
     testAcquireWaitsForComplete();
+    testAbortWakesBlockedAcquire();
+    testAbortKeepsFreeImages();
     testAcquireWaitZeroNeverWaits();
     testAcquireWaitTimesOut();
     testCrossThreadExchange();
