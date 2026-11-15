@@ -181,8 +181,8 @@ void sourceIdentity() {
 }
 
 void detailedTrace() {
-    expect(pacingFrameTraceEnabled() && pacingProfileEnabled() && pacingWaylandProfileEnabled() && !enabled(),
-        "the full trace must activate its observers independently of broad diagnostics");
+    expect(pacingFrameTraceEnabled() && pacingProfileEnabled() && pacingWaylandProfileEnabled(),
+        "the full trace must activate its observers");
     // Backend GPU timing drains every in-flight batch, so the trace must not imply it.
     expect(!pacingGpuProfileEnabled(), "the full trace must not enable backend GPU timing");
     initializePacingProfileLog();
@@ -274,7 +274,7 @@ void emit() {
     profile.output(start + 9ms, start + 10ms, VK_SUCCESS, {.imageIndex = 2, .copyChecked = true, .copyStatus = VK_SUCCESS, .copySampledAt = start + 10ms});
     {
         ContextScope scope(17, &profile);
-        fgvk::layer::present_detail::logSlowPresentBreakdown(17, 1, 1, 5ms, {.renderFence = 3ms});
+        fgvk::layer::present_detail::recordPresentPhases(17, 5ms, {.renderFence = 3ms});
         ContextScope wrongOwner(18);
         recordPacingProfilePhases(17, {99ms});
     }
@@ -321,8 +321,6 @@ void emit() {
         recordApplicationPresentWait(device, {}, api, 124, 1000, VK_SUCCESS, start + 1s, start + 1s + 3ms);
     }
     expect(calls == 3, "lightweight wait capture changed lower wait call count");
-    recordApplicationFrameTiming(ApplicationFrameApi::AcquireKhr, 1, {}, start, start + 2ms, VK_SUCCESS, 0);
-    recordApplicationFrameTiming(ApplicationFrameApi::AcquireKhr, 1, {}, start + 1s, start + 1s + 2ms, VK_TIMEOUT, 0);
     recordApplicationFrameTiming(ApplicationFrameApi::Present, 1, {}, start, start + 7ms, {}, {}, 1ms, 5ms);
     recordApplicationFrameTiming(ApplicationFrameApi::Present, 1, {}, start + 1s, start + 1s + 7ms, {}, {}, 1ms, 5ms);
 }
@@ -442,27 +440,11 @@ void traceSwitchOnly() {
     expect(waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 0,
         "trace switch regression failed");
 }
-// F10: the acquire window counts the emulated acquires that signalled on the host and those that were queued.
-void internalAcquireSplitCounts() {
-    ApplicationFrameTiming timing;
-    const auto start = Clock::now();
-    const auto swapchain = fgHandle<VkSwapchainKHR>(0x3000);
-    // Three acquires in one window, two on the host and one queued. The window closes at 1 s.
-    const auto first = timing.observe(1, swapchain, start, start + 1ms, VK_SUCCESS, 0, {}, {},
-        InternalAcquireTiming{0ns, 0ns, 0ns, true});
-    const auto second = timing.observe(1, swapchain, start + 100ms, start + 101ms, VK_SUCCESS, 0, {}, {},
-        InternalAcquireTiming{1ms, 2ms, 3ms, false});
-    const auto third = timing.observe(1, swapchain, start + 1s, start + 1s + 1ms, VK_SUCCESS, 0, {}, {},
-        InternalAcquireTiming{0ns, 0ns, 0ns, true});
-    expect(!first && !second && third && third->internalHost == 2 && third->internalQueued == 1,
-        "the acquire window did not count host and queued emulated acquires");
-}
 }
 int main() {
     // Before any gate is read here: the forked profile-on child must read its own environment.
     fgTimelineThroughProfile();
     timingObservations();
-    internalAcquireSplitCounts();
     outputSequence();
     sourceIdentity();
     traceSwitchOnly();
@@ -483,11 +465,10 @@ int main() {
             setenv("FGVK_PACING_PROFILE", gpuOnly ? "0" : "1", 1);
             setenv("FGVK_PACING_PROFILE_GPU", gpuOnly ? "1" : "0", 1);
             setenv("FGVK_PACING_PROFILE_TRACE", "0", 1);
-            unsetenv("FGVK_PRESENT_DIAGNOSTICS");
             setenv("FGVK_PACING_PROFILE_LOG", path.c_str(), 1);
             // The default log limit is 1 GiB now; this scenario checks the wrap marker at 16 MB.
             setenv("FGVK_PACING_PROFILE_LIMIT_MB", "16", 1);
-            expect(pacingProfileEnabled() && !enabled(), "profiler enabled broad diagnostics");
+            expect(pacingProfileEnabled(), "the pacing profile did not enable its observers");
             expect(pacingGpuProfileEnabled() == gpuOnly, "GPU timing must remain separately opt-in");
             initializePacingProfileLog();
             setupFixture();
@@ -515,7 +496,6 @@ int main() {
         output.find("worst_source_interval_ms=60") != std::string::npos &&
         output.find("worst_source_render_fence_ms=3") != std::string::npos &&
         output.find("worst_source_profiler_publish_ms=1") != std::string::npos &&
-        output.find("operation=application-acquire") != std::string::npos &&
         output.find("deferred_join_mean_ms=5 deferred_join_max_ms=5") != std::string::npos &&
         output.find("operation=application-present-wait") != std::string::npos &&
         output.find("api=KHR2 calls=") != std::string::npos &&
@@ -524,7 +504,7 @@ int main() {
         output.find("copy_checked=1 copy_status=0") != std::string::npos &&
         output.find("operation=pacing-profile-log-wrap") != std::string::npos &&
         std::filesystem::file_size(capture) <= 16 * 1024 * 1024,
-        "capture lost detailed timing or application acquisition records");
+        "capture lost detailed timing or application present records");
     const auto retained = root / "capture-beginning.log";
     const auto child = fork();
     expect(child >= 0, "cannot fork retention regression");
@@ -565,7 +545,6 @@ int main() {
         setenv("FGVK_PACING_PROFILE", "0", 1);
         setenv("FGVK_PACING_PROFILE_GPU", "0", 1);
         setenv("FGVK_PACING_PROFILE_WAYLAND", "0", 1);
-        unsetenv("FGVK_PRESENT_DIAGNOSTICS");
         setenv("FGVK_PACING_PROFILE_LOG", trace.c_str(), 1);
         setupFixture();
         detailedTrace();

@@ -36,7 +36,6 @@ using namespace fgvk::layer::present_detail;
 VkResult Swapchain::presentGeneratedFrames(
         const PresentInvocation& invocation,
         const PresentationFramePlan& plan) {
-    auto maximumAcquireDuration = plan.preacquireDuration;
     auto totalAcquireDuration = plan.preacquireDuration;
     auto generatedSubmitDuration = DiagnosticsClock::duration::zero();
     auto generatedPresentDuration = DiagnosticsClock::duration::zero();
@@ -65,87 +64,18 @@ VkResult Swapchain::presentGeneratedFrames(
         DeferredPresent* worker;
         ~CloseDeferredBatch() { if (worker) worker->closeBatch(); }
     } closeDeferredBatch{deferredTail ? this->deferredPresent.get() : nullptr};
-    uint64_t lastAcquireTimeout = 0;
-    const auto reportOrderedAcquire = [&](const bool timedOut,
-            const bool budgetExhausted,
-            const size_t presentedGeneratedFrames) {
+    const auto reportOrderedAcquire = [&](const bool timedOut) {
         if (!this->privateOrderedTransport)
             return;
 
         const auto observedAt = DiagnosticsClock::now();
-        const bool transitionRecoveryActive = this->recoveryState
-            .orderedAcquireRecovery.transitionRecoveryActive();
         const auto observation =
             this->recoveryState.orderedAcquireRecovery.observe(
                 observedAt, timedOut, acquireDeadlineExceeded,
                 plan.boundedOrderedAcquireProbe
             );
-        if (observation.quarantined) {
+        if (observation.quarantined)
             this->fixedRefreshBudget.reset();
-            if (presentDiagnosticsEnabled()) {
-                std::cerr << "framegen-vulkan: present diagnostics: "
-                             "operation=ordered-acquire-quarantine"
-                          << " context=" << this->diagnosticsState.contextId
-                          << " phase=native-drain"
-                          << " reason="
-                          << (budgetExhausted
-                                ? "budget-exhausted"
-                                : "generated-image-timeout")
-                          << " acquire_total_ms="
-                          << std::chrono::duration<double, std::milli>(
-                                 totalAcquireDuration
-                             ).count()
-                          << " acquire_max_ms="
-                          << std::chrono::duration<double, std::milli>(
-                                 maximumAcquireDuration
-                             ).count()
-                          << " acquire_budget_ms="
-                          << (plan.configuredAcquireTimeout
-                                ? static_cast<double>(
-                                      *plan.configuredAcquireTimeout
-                                  ) / 1'000'000.0
-                                : 0.0)
-                          << " acquire_attempt_timeout_ms="
-                          << static_cast<double>(lastAcquireTimeout) /
-                                1'000'000.0
-                          << " consecutive_failures="
-                          << observation.consecutiveFailures
-                          << " retry_ms="
-                          << std::chrono::duration<double, std::milli>(
-                                 observation.retryDelay
-                             ).count()
-                          << " bypassed_frames="
-                          << observation.bypassedFrames
-                          << " recovery_ms="
-                          << std::chrono::duration<double, std::milli>(
-                                 observation.recoveryDuration
-                             ).count()
-                          << " requested_generated="
-                          << plan.requestedGeneratedFrames.size()
-                          << " admitted_generated="
-                          << plan.admittedGeneratedFrameCount
-                          << " presented_generated="
-                          << presentedGeneratedFrames
-                          << " transition_authorized="
-                          << transitionRecoveryActive
-                          << " frame=" << this->frameState.realFrameIndex
-                          << " sequence=" << this->frameState.sequenceIndex
-                          << " action=native-drain\n";
-            }
-        } else if (observation.recovered && presentDiagnosticsEnabled()) {
-            std::cerr << "framegen-vulkan: present diagnostics: "
-                         "operation=ordered-acquire-recovered"
-                      << " context=" << this->diagnosticsState.contextId
-                      << " consecutive_failures="
-                      << observation.consecutiveFailures
-                      << " requested_generated="
-                      << plan.requestedGeneratedFrames.size()
-                      << " admitted_generated="
-                      << plan.admittedGeneratedFrameCount
-                      << " presented_generated="
-                      << presentedGeneratedFrames
-                      << " action=generated-resume\n";
-        }
     };
 
     // A released native batch lets the worker acquire, copy and present every generated
@@ -268,7 +198,6 @@ VkResult Swapchain::presentGeneratedFrames(
                 orderedGeneratedImageAcquireTimeout(
                     std::nullopt, remainingAcquireBudget
                 );
-            lastAcquireTimeout = acquireTimeout;
             if (acquireBudgetExhausted) {
                 result = VK_TIMEOUT;
                 acquireDeadlineExceeded = true;
@@ -327,9 +256,6 @@ VkResult Swapchain::presentGeneratedFrames(
             }
             const auto acquireDuration =
                 DiagnosticsClock::now() - acquireStarted;
-            maximumAcquireDuration = std::max(
-                maximumAcquireDuration, acquireDuration
-            );
             totalAcquireDuration += acquireDuration;
             if (plan.configuredAcquireTimeout) {
                 const auto acquireBudget =
@@ -341,37 +267,6 @@ VkResult Swapchain::presentGeneratedFrames(
                 if (totalAcquireDuration >= acquireBudget)
                     acquireDeadlineExceeded = true;
             }
-            if (acquireBudgetExhausted && presentDiagnosticsEnabled()) {
-                std::cerr << "framegen-vulkan: present diagnostics: "
-                             "operation=ordered-acquire-budget-exhausted"
-                          << " context=" << this->diagnosticsState.contextId
-                          << " phase=acquire"
-                          << " acquire_total_ms="
-                          << std::chrono::duration<double, std::milli>(
-                                 totalAcquireDuration
-                             ).count()
-                          << " acquire_max_ms="
-                          << std::chrono::duration<double, std::milli>(
-                                 maximumAcquireDuration
-                             ).count()
-                          << " budget_ms="
-                          << static_cast<double>(
-                                 *plan.configuredAcquireTimeout
-                             ) / 1'000'000.0
-                          << " requested_generated="
-                          << plan.requestedGeneratedFrames.size()
-                          << " admitted_generated="
-                          << plan.admittedGeneratedFrameCount
-                          << " presented_generated=" << i
-                          << " frame=" << this->frameState.realFrameIndex
-                          << " sequence=" << this->frameState.sequenceIndex
-                          << " action=stop-acquiring\n";
-            }
-            logSlowPresentOperation(
-                "acquire-generated-image", this->frameState.realFrameIndex,
-                this->frameState.sequenceIndex,
-                acquireStarted, result, i, acquiredImageIndex
-            );
         }
 
         if (result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR) {
@@ -383,15 +278,12 @@ VkResult Swapchain::presentGeneratedFrames(
         }
 
         if (result == VK_TIMEOUT || result == VK_NOT_READY) {
-            reportOrderedAcquire(
-                !acquireBudgetExhausted, acquireBudgetExhausted, i
-            );
+            reportOrderedAcquire(!acquireBudgetExhausted);
             // Backend work is already scheduled on this ordered path, so drain
             // its final timeline value. Fixed and explicit recovery probes
             // retain their direct transport contracts.
             const size_t skippedFrames =
                 plan.scheduledGeneratedFrames.size() - i;
-            this->diagnosticsState.fixedSkippedFrames += skippedFrames;
             const uint64_t finalGeneratedTimelineValue =
                 this->frameState.backendTimelineIndex + skippedFrames - 1;
             auto& fallbackSemaphore = this->postCopySemaphores.at(
@@ -400,7 +292,7 @@ VkResult Swapchain::presentGeneratedFrames(
             if (i) precedingCopy[0] = this->postCopySemaphores.at(
                 (this->frameState.sequenceIndex - 1) % this->postCopySemaphores.size()).second.handle();
 
-            const auto fallbackSubmitStarted = startPresentDiagnostic();
+            const auto fallbackSubmitStarted = startPhaseTimer();
             auto& fallbackCommandBuffer = pass.commandBuffer;
             fallbackCommandBuffer.begin(invocation.vk);
             fallbackCommandBuffer.end(invocation.vk);
@@ -410,15 +302,11 @@ VkResult Swapchain::presentGeneratedFrames(
                 std::array{fallbackSemaphore.handle()}, VK_NULL_HANDLE, 0,
                 this->currentRenderSlot().fence.handle()
             );
-            generatedSubmitDuration += finishPresentDiagnostic(
+            generatedSubmitDuration += finishPhaseTimer(
                 fallbackSubmitStarted
             );
             this->currentRenderSlot().inFlight = true;
 
-            logPresentFallback(
-                this->frameState.realFrameIndex, this->frameState.sequenceIndex, i, skippedFrames,
-                finalGeneratedTimelineValue, "initial-timeout", "scheduled"
-            );
             this->frameState.sequenceIndex += skippedFrames;
             this->frameState.backendTimelineIndex += skippedFrames;
 
@@ -436,17 +324,11 @@ VkResult Swapchain::presentGeneratedFrames(
             if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR)
                 throw ls::vulkan_error(result, "vkQueuePresentKHR() failed");
 
-            const auto presentWorkDuration = finishPresentDiagnostic(
+            const auto presentWorkDuration = finishPhaseTimer(
                 invocation.started
             );
-            logSlowPresentOperation(
-                "present-total", this->frameState.realFrameIndex, this->frameState.sequenceIndex,
-                invocation.started, result
-            );
-            logSlowPresentBreakdown(
-                this->diagnosticsState.contextId,
-                this->frameState.realFrameIndex,
-                this->frameState.sequenceIndex, presentWorkDuration,
+            recordPresentPhases(
+                this->diagnosticsState.contextId, presentWorkDuration,
                 {
                     .renderFence = plan.renderFenceWaitDuration,
                     .schedule = plan.scheduleFramesDuration,
@@ -457,33 +339,6 @@ VkResult Swapchain::presentGeneratedFrames(
                     .originalPresent = originalPresentDuration,
                 }
             );
-            if (presentDiagnosticsEnabled()) {
-                std::cerr << "framegen-vulkan: present diagnostics: "
-                             "operation=generated-delivery-miss"
-                          << " context=" << this->diagnosticsState.contextId
-                          << " reason="
-                          << (acquireBudgetExhausted
-                                ? "acquire-budget-exhausted"
-                                : "acquire-timeout")
-                          << " planned="
-                          << plan.requestedGeneratedFrames.size()
-                          << " on_time=" << i
-                          << " deadline_ms="
-                          << static_cast<double>(
-                                acquireBudgetExhausted
-                                    ? *plan.configuredAcquireTimeout
-                                    : lastAcquireTimeout
-                             ) / 1'000'000.0
-                          << " deadline_scope="
-                          << (acquireBudgetExhausted
-                                ? "application-present"
-                                : "generated-image")
-                          << " application_present_budget_ms="
-                          << static_cast<double>(
-                                plan.configuredAcquireTimeout.value_or(0)
-                             ) / 1'000'000.0
-                          << '\n';
-            }
             this->frameState.realFrameIndex++;
             return result;
         }
@@ -549,7 +404,7 @@ VkResult Swapchain::presentGeneratedFrames(
         const std::array signalSemaphores{presentSemaphore.handle(), continuationSemaphore};
 
         commandBuffer.end(invocation.vk);
-        const auto generatedSubmitStarted = startPresentDiagnostic();
+        const auto generatedSubmitStarted = startPhaseTimer();
         const auto copyFence = i == plan.scheduledGeneratedFrames.size() - 1
             ? this->currentRenderSlot().fence.handle() : VK_NULL_HANDLE;
         present_diagnostics::observeCopySubmission({
@@ -570,13 +425,8 @@ VkResult Swapchain::presentGeneratedFrames(
         });
         if (i == plan.scheduledGeneratedFrames.size() - 1)
             this->currentRenderSlot().inFlight = true;
-        generatedSubmitDuration += finishPresentDiagnostic(
+        generatedSubmitDuration += finishPhaseTimer(
             generatedSubmitStarted
-        );
-        logSlowPresentOperation(
-            "submit-generated-copy", this->frameState.realFrameIndex,
-            this->frameState.sequenceIndex,
-            generatedSubmitStarted, std::nullopt, i
         );
 
         if (this->pacingProfile) this->pacingProfile->generatedPresentMode(generatedMode);
@@ -595,7 +445,7 @@ VkResult Swapchain::presentGeneratedFrames(
             invocation.waitForOutput(invocation.pacedOutputs->at(i));
         else if (invocation.originalPresentDeadline)
             invocation.waitForOutput(*invocation.originalPresentDeadline);
-        const auto generatedPresentStarted = startPresentDiagnostic();
+        const auto generatedPresentStarted = startPhaseTimer();
         result = this->queuePresentWithRetirementFence(
             invocation.vk, invocation.queue, presentInfo, {
                 .scheduled = invocation.pacedOutputs ? invocation.pacedOutputs->at(i)
@@ -605,15 +455,10 @@ VkResult Swapchain::presentGeneratedFrames(
                 .phase = plan.scheduledGeneratedFrames[i],
             }
         );
-        const auto oneGeneratedPresentDuration = finishPresentDiagnostic(
+        const auto oneGeneratedPresentDuration = finishPhaseTimer(
             generatedPresentStarted
         );
         generatedPresentDuration += oneGeneratedPresentDuration;
-        logSlowPresentOperation(
-            "present-generated-image", this->frameState.realFrameIndex,
-            this->frameState.sequenceIndex,
-            generatedPresentStarted, result, i, acquiredImageIndex
-        );
         if (result == VK_ERROR_OUT_OF_DATE_KHR) {
             // The generated image belongs to framegen-vulkan, but the application's real
             // image is still acquired and its copy submission has already
@@ -626,17 +471,6 @@ VkResult Swapchain::presentGeneratedFrames(
                 invocation.nextChain,
                 &originalPresentDuration
             );
-            if (presentDiagnosticsEnabled()) {
-                std::cerr << "framegen-vulkan: present diagnostics: "
-                             "operation=generated-present-recreation-drain"
-                          << " context=" << this->diagnosticsState.contextId
-                          << " frame=" << this->frameState.realFrameIndex
-                          << " sequence=" << this->frameState.sequenceIndex
-                          << " pass=" << i
-                          << " generated_result=" << result
-                          << " original_result=" << originalResult
-                          << " action=return-application-image-before-recreation\n";
-            }
             if (originalResult != VK_SUCCESS &&
                     originalResult != VK_SUBOPTIMAL_KHR &&
                     originalResult != VK_ERROR_OUT_OF_DATE_KHR) {
@@ -644,8 +478,6 @@ VkResult Swapchain::presentGeneratedFrames(
                     originalResult, "vkQueuePresentKHR() failed"
                 );
             }
-            this->diagnosticsState.fixedSkippedFrames +=
-                plan.scheduledGeneratedFrames.size() - i;
             this->frameState.sequenceIndex++;
             this->frameState.backendTimelineIndex++;
             this->frameState.realFrameIndex++;
@@ -653,7 +485,6 @@ VkResult Swapchain::presentGeneratedFrames(
         }
         if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR)
             throw ls::vulkan_error(result, "vkQueuePresentKHR() failed");
-        this->diagnosticsState.fixedGeneratedFrames++;
 
         this->frameState.sequenceIndex++;
         this->frameState.backendTimelineIndex++;
@@ -670,19 +501,12 @@ VkResult Swapchain::presentGeneratedFrames(
             !originalPresentRequestedRecreation)
         throw ls::vulkan_error(result, "vkQueuePresentKHR() failed");
 
-    const auto presentWorkDuration = finishPresentDiagnostic(
+    const auto presentWorkDuration = finishPhaseTimer(
         invocation.started
     );
-    logSlowPresentOperation(
-        "present-total", this->frameState.realFrameIndex,
-        this->frameState.sequenceIndex, invocation.started, result
-    );
-    reportOrderedAcquire(
-        false, false, plan.scheduledGeneratedFrames.size()
-    );
-    logSlowPresentBreakdown(
-        this->diagnosticsState.contextId, this->frameState.realFrameIndex,
-        this->frameState.sequenceIndex, presentWorkDuration,
+    reportOrderedAcquire(false);
+    recordPresentPhases(
+        this->diagnosticsState.contextId, presentWorkDuration,
         {
             .renderFence = plan.renderFenceWaitDuration,
             .schedule = plan.scheduleFramesDuration,

@@ -62,7 +62,6 @@ namespace fgvk::layer {
     struct ReplacementBackendStabilizationDecision {
         bool bypassBackend{false};
         bool resumed{false};
-        bool diagnostic{false};
     };
 
     /// Keep a newly replaced WSI context on its real-frame path briefly before
@@ -83,7 +82,6 @@ namespace fgvk::layer {
             this->until = replacement && frameGenerationActive
                 ? std::optional<Clock::time_point>{now + duration}
                 : std::nullopt;
-            this->diagnosticEmitted = false;
         }
 
         [[nodiscard]] ReplacementBackendStabilizationDecision beforeFrame(
@@ -94,12 +92,7 @@ namespace fgvk::layer {
                 this->until.reset();
                 return {.resumed = true};
             }
-            const bool diagnostic = !this->diagnosticEmitted;
-            this->diagnosticEmitted = true;
-            return {
-                .bypassBackend = true,
-                .diagnostic = diagnostic,
-            };
+            return {.bypassBackend = true};
         }
 
         [[nodiscard]] bool active() const {
@@ -108,7 +101,6 @@ namespace fgvk::layer {
 
     private:
         std::optional<Clock::time_point> until;
-        bool diagnosticEmitted{false};
     };
 
 }

@@ -119,7 +119,7 @@ Ultra Performance remains a process-start policy: the global FP16 choice, Flow S
 
 ## Runtime status and diagnostics
 
-With diagnostics enabled, `runtime-transition-pending`, `runtime-transition-prepared`, `runtime-transition-failed`, `runtime-transition-applied`, and `runtime-transition-recreation-requested` identify the configuration boundary and result. `ordered-acquire-*` distinguishes explicit acquire failure, bounded retry, and transition-scoped recreation. Swapchain create, replacement, retirement, WSI-prime, backend-stabilization, and memory records provide lifecycle evidence. Follow [Collect diagnostics](COLLECT_DIAGNOSTICS.md) to capture a session.
+The stderr lines that request a game-owned swapchain recreation, report that frame generation is unavailable for a swapchain, or announce a live profile-resource change are always written. The per-transition records (pending, prepared, applied, failed and recreation-requested) and the swapchain lifecycle records were removed with the present-diagnostics switch; captures from older builds may still contain them. Follow [Collect diagnostics](COLLECT_DIAGNOSTICS.md) to capture a session.
 
 ## Adding a setting
 

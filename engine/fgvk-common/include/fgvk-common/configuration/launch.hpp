@@ -17,7 +17,6 @@ namespace ls {
         bool log_trace{false};
         bool log_wayland{false};
         bool log_gpu_cost{false};
-        bool log_present{false};
     };
 
     /// Strict standalone launcher configuration kept separate from Renderer TOML.

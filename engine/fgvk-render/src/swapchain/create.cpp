@@ -94,7 +94,6 @@ bool layer::context_ModifySwapchainCreateInfo(const ls::GameConf& profile,
 Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance* backend,
             ls::GameConf profile, SwapchainInfo info,
             const bool fp16Requested,
-            const uint64_t runtimeStateRevision,
             const bool swapchainMaintenance1Enabled) :
         instance(backend),
         privateOrderedTransport(info.privateOrderedTransport),
@@ -140,35 +139,6 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance* backend,
     const bool initialFrameGenerationEnabled = effectiveFrameGenerationEnabled(
         this->profile
     );
-    const bool initialFrameGenerationResourcesAvailable =
-        backend != nullptr && this->colorPipeline.generationSupported;
-    if (present_diagnostics::enabled()) {
-        std::cerr << "framegen-vulkan: present diagnostics: operation=runtime-state-applied"
-                  << " context=" << this->diagnosticsState.contextId
-                  << " role=" << layerRoleName
-                  << " state_revision=" << runtimeStateRevision
-                  << " frame_generation_enabled="
-                  << this->profile.frame_generation_enabled
-                  << " effective_frame_generation_enabled="
-                  << initialFrameGenerationEnabled
-                  << " multiplier=" << this->profile.multiplier
-                  << " base_fps_cap=" << this->profile.base_fps_cap
-                  << " effective_base_fps_cap="
-                  << effectiveBaseFpsCap(this->profile)
-                  << " stable_cadence="
-                  << this->profile.adaptive_stable_cadence
-                  << " effective_flow_scale="
-                  << ls::effectiveFlowScale(this->profile)
-                  << " lighter_model="
-                  << ls::effectivePerformanceMode(this->profile)
-                  << " frame_generation_resources_available="
-                  << initialFrameGenerationResourcesAvailable
-                  << " generated_frame_capacity="
-                  << (initialFrameGenerationResourcesAvailable
-                        ? generatedFrameCapacityForProfile(this->profile) : 0)
-                  << " hdr=" << this->colorPipeline.hdr
-                  << '\n';
-    }
 
     if (!backend && this->colorPipeline.generationSupported) {
         this->colorPipeline.generationSupported = false;
@@ -257,12 +227,6 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance* backend,
 
         const auto configuredAcquireTimeout =
             generatedImageAcquireTimeoutNs();
-        if (present_diagnostics::enabled()) {
-            std::cerr << "framegen-vulkan: present diagnostics enabled; context="
-                      << this->diagnosticsState.contextId
-                      << "; slow operation threshold is "
-                      << present_diagnostics::thresholdMilliseconds() << " ms\n";
-        }
         if (configuredAcquireTimeout) {
             std::cerr << "framegen-vulkan: generated-image acquire timeout requested at "
                       << static_cast<double>(*configuredAcquireTimeout) /

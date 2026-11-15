@@ -2,7 +2,7 @@
 //!
 //! The file is checked with the launcher's own rules: `version=1` is required, boolean keys take
 //! only 0 or 1, a duplicate key or an unknown key makes the whole file invalid, and the retired
-//! `disable_hdr_exposure` key is accepted and ignored. A file that fails these rules is reported
+//! `disable_hdr_exposure` and `log_present` keys are accepted and ignored. A file that fails these rules is reported
 //! and never written. A write changes only the switch being set: the file is rewritten atomically,
 //! and comments, other keys and their values survive.
 
@@ -17,7 +17,8 @@ use crate::config::{self, modified_time, write_atomically};
 const APP_DIR: &str = "framegen-vulkan";
 const FILE_NAME: &str = "launcher.conf";
 const FORMAT_VERSION: &str = "1";
-const RETIRED_KEY: &str = "disable_hdr_exposure";
+/// Keys the launcher no longer acts on. Each is checked like a boolean and then ignored.
+const RETIRED_KEYS: [&str; 2] = ["disable_hdr_exposure", "log_present"];
 const OVERLAY_KEY: &str = "disable_steam_overlay";
 const ZINK_KEY: &str = "enable_zink";
 const ALSA_KEY: &str = "force_alsa_audio";
@@ -31,17 +32,15 @@ pub enum Switch {
     Trace,
     Wayland,
     GpuCost,
-    Present,
 }
 
 impl Switch {
     /// The order the window shows the switches and the launcher writes them.
-    pub const ALL: [Switch; 5] = [
+    pub const ALL: [Switch; 4] = [
         Switch::Pacing,
         Switch::Trace,
         Switch::Wayland,
         Switch::GpuCost,
-        Switch::Present,
     ];
 
     pub fn key(self) -> &'static str {
@@ -50,14 +49,13 @@ impl Switch {
             Switch::Trace => "log_trace",
             Switch::Wayland => "log_wayland",
             Switch::GpuCost => "log_gpu_cost",
-            Switch::Present => "log_present",
         }
     }
 }
 
 /// The logging switches. A key the file leaves out is off.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Logging([bool; 5]);
+pub struct Logging([bool; 4]);
 
 impl Logging {
     pub fn get(self, switch: Switch) -> bool {
@@ -112,7 +110,8 @@ pub fn parse(text: &str) -> Result<Logging, String> {
             version_seen = true;
             continue;
         }
-        let known = [RETIRED_KEY, OVERLAY_KEY, ZINK_KEY, ALSA_KEY].contains(&key)
+        let known = RETIRED_KEYS.contains(&key)
+            || [OVERLAY_KEY, ZINK_KEY, ALSA_KEY].contains(&key)
             || Switch::ALL.iter().any(|switch| switch.key() == key);
         if !known {
             return Err(format!("unknown launcher setting: {key}"));
@@ -324,17 +323,17 @@ mod tests {
     #[test]
     fn parse_reads_the_switches_and_ignores_the_retired_key() {
         let logging = parse(
-            "version=1\ndisable_hdr_exposure=1\ndisable_steam_overlay=0\nenable_zink=1\nforce_alsa_audio=0\nlog_trace=1\n",
+            "version=1\ndisable_hdr_exposure=1\ndisable_steam_overlay=0\nenable_zink=1\nforce_alsa_audio=0\nlog_trace=1\nlog_present=1\n",
         )
         .expect("valid file");
-        assert_eq!(switch_states(logging), [false, true, false, false, false]);
+        assert_eq!(switch_states(logging), [false, true, false, false]);
     }
 
     #[test]
     fn parse_matches_the_launcher_spacing_and_line_endings() {
         let logging = parse("  version = 1  \n# comment\n\nlog_wayland = 1\r\nlog_present=0")
             .expect("valid file");
-        assert_eq!(switch_states(logging), [false, false, true, false, false]);
+        assert_eq!(switch_states(logging), [false, false, true, false]);
     }
 
     #[test]
@@ -347,6 +346,7 @@ mod tests {
             "version=1\ndisable_hdr_exposure=1\ndisable_hdr_exposure=0\n",
             "version=1\nlog_pacing=true\n",
             "version=1\nlog_present=2\n",
+            "version=1\nlog_present=1\nlog_present=0\n",
             "version=1\nunknown_setting=1\n",
             "version=1\nlog_trace=1=0\n",
             "version=1\nlog_trace\n",
@@ -367,11 +367,11 @@ mod tests {
         assert_eq!(
             fs::read_to_string(&path).expect("read back"),
             "version=1\ndisable_steam_overlay=1\nenable_zink=0\nforce_alsa_audio=0\n\
-             log_pacing=0\nlog_trace=1\nlog_wayland=0\nlog_gpu_cost=0\nlog_present=0\n"
+             log_pacing=0\nlog_trace=1\nlog_wayland=0\nlog_gpu_cost=0\n"
         );
         assert_eq!(
             switch_states(conf.view().expect("valid")),
-            [false, true, false, false, false]
+            [false, true, false, false]
         );
         fs::remove_dir_all(&dir).ok();
     }
@@ -440,7 +440,7 @@ mod tests {
 
         let mut conf = LauncherConf::open(Ok(path.clone()));
         assert!(conf.view().expect_err("invalid").contains("must be 0 or 1"));
-        let refused = conf.set(Switch::Present, true).expect_err("write refused");
+        let refused = conf.set(Switch::Trace, true).expect_err("write refused");
         assert!(refused.contains("not changed"), "{refused}");
         assert_eq!(fs::read_to_string(&path).expect("read back"), broken);
         assert!(!dir.join("launcher.conf.tmp").exists());

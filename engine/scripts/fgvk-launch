@@ -208,7 +208,6 @@ fgvk_launch_log_pacing=0
 fgvk_launch_log_trace=0
 fgvk_launch_log_wayland=0
 fgvk_launch_log_gpu_cost=0
-fgvk_launch_log_present=0
 fgvk_launch_log_pacing_seen=0
 fgvk_launch_log_trace_seen=0
 fgvk_launch_log_wayland_seen=0
@@ -316,12 +315,12 @@ if [[ -f "$fgvk_launch_config_path" ]]; then
                 fgvk_launch_log_gpu_cost_seen=1
                 ;;
             log_present)
+                # Retired: the renderer has no present diagnostics switch. Old files stay valid and the value is ignored.
                 if [[ "$fgvk_launch_log_present_seen" != 0 ||
                         "$fgvk_launch_value" != 0 && "$fgvk_launch_value" != 1 ]]; then
                     fgvk_launch_config_valid=0
                     break
                 fi
-                fgvk_launch_log_present="$fgvk_launch_value"
                 fgvk_launch_log_present_seen=1
                 ;;
             *)
@@ -343,7 +342,6 @@ if [[ -f "$fgvk_launch_config_path" ]]; then
         fgvk_launch_log_trace=0
         fgvk_launch_log_wayland=0
         fgvk_launch_log_gpu_cost=0
-        fgvk_launch_log_present=0
     fi
 fi
 unset fgvk_launch_config_path fgvk_launch_line fgvk_launch_key fgvk_launch_value
@@ -390,12 +388,9 @@ if [[ "${DISABLE_FGVK:-0}" != 1 ]]; then
     if [[ "$fgvk_launch_log_gpu_cost" == 1 && -z "${FGVK_PACING_PROFILE_GPU_SPLIT+x}" ]]; then
         export FGVK_PACING_PROFILE_GPU_SPLIT=1
     fi
-    if [[ "$fgvk_launch_log_present" == 1 && -z "${FGVK_PRESENT_DIAGNOSTICS+x}" ]]; then
-        export FGVK_PRESENT_DIAGNOSTICS=1
-    fi
 fi
 unset fgvk_launch_log_pacing fgvk_launch_log_trace fgvk_launch_log_wayland
-unset fgvk_launch_log_gpu_cost fgvk_launch_log_present
+unset fgvk_launch_log_gpu_cost
 
 # vkBasalt is no longer bundled. An ENABLE_VKBASALT request is ignored with one
 # notice. The variables are removed here, and DISABLE_VKBASALT=1 keeps any
@@ -592,10 +587,6 @@ if [[ "$fgvk_steam_overlay_preload_filter_requested" == 1 ]]; then
     unset fgvk_preload_list fgvk_preload_entries fgvk_preload_entry fgvk_retained_preloads
 fi
 # END FGVK_STEAM_OVERLAY_PRELOAD_POLICY
-if [[ "${FGVK_PRESENT_DIAGNOSTICS:-0}" != 0 ]]; then
-    printf 'framegen-vulkan: present diagnostics: operation=launch-environment pid=%s steam_overlay_preload_filter_requested=%s steam_overlay_preload_removed=%s\n' \
-        "$$" "$fgvk_steam_overlay_preload_filter_requested" "$fgvk_steam_overlay_preload_removed" >&2
-fi
 unset fgvk_steam_overlay_preload_removed
 unset fgvk_steam_overlay_preload_filter_requested fgvk_disable_steam_overlay
 unset fgvk_launcher_dir fgvk_data_home fgvk_implicit_layer_path

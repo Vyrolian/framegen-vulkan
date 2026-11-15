@@ -117,12 +117,6 @@ Swapchain::PresentationFramePlan Swapchain::prepareFramePlan(
     // Fixed is a user-selected workload. Only explicit menu/lifecycle
     // transitions and direct transport failures may interrupt it; ordinary
     // gameplay cadence is never used to infer a recovery episode.
-    if (fixedGeneratedFrameCount <
-            this->configuredFixedGeneratedFrames) {
-        this->diagnosticsState.fixedSkippedFrames +=
-            this->configuredFixedGeneratedFrames -
-                fixedGeneratedFrameCount;
-    }
     plan.requestedGeneratedFrames = GeneratedFramePlan::evenlySpaced(
         fixedGeneratedFrameCount
     );
@@ -288,67 +282,20 @@ bool Swapchain::prepareRenderFence(const vk::Vulkan& vk) {
     return true;
 }
 
-void Swapchain::handleRenderFenceBudgetMiss(
-        const PresentationFramePlan& plan) {
+void Swapchain::handleRenderFenceBudgetMiss() {
     std::cerr << "framegen-vulkan: previous render work missed the "
               << renderFenceWaitBudget.count() << " ms "
                  "fence budget; bypassing frame generation for this present; "
                  "native presentation retained\n";
-    if (!plan.historyWarmupActive) {
-        // Fixed history warmup was already recorded as skipped when the plan
-        // was built, so count only a delivery that was still intended.
-        this->diagnosticsState.fixedSkippedFrames +=
-            plan.requestedGeneratedFrames.size();
-    }
     this->recoveryState.backendPending = true;
     this->recoveryState.historyWarmupRemaining = 0;
-    if (presentDiagnosticsEnabled()) {
-        std::cerr << "framegen-vulkan: present diagnostics: "
-                     "operation=render-fence-budget-missed"
-                  << " context=" << this->diagnosticsState.contextId
-                  << " planned=" << plan.requestedGeneratedFrames.size()
-                  << " action=native-present\n";
-    }
-}
-
-void Swapchain::handleGeneratedImageAdmissionPressure(
-        const PresentationFramePlan& plan,
-        const size_t admittedGeneratedFrames,
-        const bool logPressure,
-        const uint64_t acquireTimeoutNanoseconds,
-        const char* const action) {
-    this->recoveryState.generatedImageAdmission.reportBypassedFrame();
-    this->diagnosticsState.fixedSkippedFrames +=
-        plan.requestedGeneratedFrames.size() -
-            admittedGeneratedFrames;
-    if (logPressure && presentDiagnosticsEnabled()) {
-        std::cerr << "framegen-vulkan: present diagnostics: "
-                     "operation=generated-admission-pressure"
-                  << " context=" << this->diagnosticsState.contextId
-                  << " planned=" << plan.requestedGeneratedFrames.size()
-                  << " admitted=" << admittedGeneratedFrames
-                  << " acquire_timeout_ns=" << acquireTimeoutNanoseconds
-                  << " action=" << action << '\n';
-    }
 }
 
 void Swapchain::reportGeneratedImageAdmissionAvailable(
         const size_t requiredStableBatches) {
-    const auto recovery =
-        this->recoveryState.generatedImageAdmission.reportAvailable(
-            requiredStableBatches
-        );
-    if (recovery.resumed && presentDiagnosticsEnabled()) {
-        std::cerr << "framegen-vulkan: present diagnostics: "
-                     "operation=generated-admission-recovered"
-                  << " context=" << this->diagnosticsState.contextId
-                  << " missed_attempts=" << recovery.missedAttempts
-                  << " bypassed_frames=" << recovery.bypassedFrames
-                  << " stable_batches=" << recovery.stableBatches
-                  << " required_stable_batches="
-                  << recovery.requiredStableBatches
-                  << '\n';
-    }
+    static_cast<void>(this->recoveryState.generatedImageAdmission.reportAvailable(
+        requiredStableBatches
+    ));
 }
 
 void Swapchain::preacquireGeneratedImages(
@@ -361,11 +308,10 @@ void Swapchain::preacquireGeneratedImages(
 
     plan.generatedImagesPreacquired = true;
     plan.admittedGeneratedFrameCount = 0;
-    bool logPressure = false;
     VkResult lastAcquireResult = VK_SUCCESS;
     for (size_t i = 0; i < plan.requestedGeneratedFrames.size(); ++i) {
         uint32_t acquiredImage{};
-        const auto acquireStarted = startPresentDiagnostic();
+        const auto acquireStarted = startPhaseTimer();
         lastAcquireResult = invocation.vk.df().AcquireNextImageKHR(
             invocation.vk.dev(), invocation.swapchain,
             acquireTimeout,
@@ -373,7 +319,7 @@ void Swapchain::preacquireGeneratedImages(
             VK_NULL_HANDLE,
             &acquiredImage
         );
-        plan.preacquireDuration += finishPresentDiagnostic(acquireStarted);
+        plan.preacquireDuration += finishPhaseTimer(acquireStarted);
         if (lastAcquireResult == VK_SUCCESS ||
                 lastAcquireResult == VK_SUBOPTIMAL_KHR) {
             plan.preacquiredGeneratedImages.at(
@@ -383,16 +329,9 @@ void Swapchain::preacquireGeneratedImages(
         }
         if (lastAcquireResult == VK_NOT_READY ||
                 lastAcquireResult == VK_TIMEOUT) {
-            logPressure = trackNonblockingAdmission &&
-                this->recoveryState.generatedImageAdmission.reportUnavailable();
-            if (logPressure) {
-                logSlowPresentOperation(
-                    "acquire-generated-image",
-                    this->frameState.realFrameIndex,
-                    this->frameState.sequenceIndex,
-                    acquireStarted, lastAcquireResult, i, acquiredImage
-                );
-            }
+            if (trackNonblockingAdmission)
+                static_cast<void>(
+                    this->recoveryState.generatedImageAdmission.reportUnavailable());
             break;
         }
         throw ls::vulkan_error(
@@ -409,9 +348,6 @@ void Swapchain::preacquireGeneratedImages(
 
     if (trackNonblockingAdmission) {
         // Only the native-first ordered batch tracks nonblocking admission.
-        this->handleGeneratedImageAdmissionPressure(
-            plan, plan.admittedGeneratedFrameCount, logPressure, 0,
-            "native-first"
-        );
+        this->recoveryState.generatedImageAdmission.reportBypassedFrame();
     }
 }

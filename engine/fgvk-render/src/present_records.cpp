@@ -470,45 +470,26 @@ void formatCopy(const CopySlot& slot, std::ostream& line) {
 
 void formatApplicationWindowText(const ApplicationWindowPayload& payload,
         const ApplicationFrameTiming::Window& window, std::ostream& line) {
-    const bool present = payload.api == ApplicationFrameApi::Present;
-    line << "framegen-vulkan: present diagnostics: operation="
-         << (present ? "application-queue-present" : "application-acquire")
+    line << "framegen-vulkan: present diagnostics: operation=application-queue-present"
          << " stream=" << payload.stream << " pid=" << getpid()
          << " tid=" << payload.thread
          << " sample_end_monotonic_ms=" << std::chrono::duration_cast<std::chrono::milliseconds>(payload.finished.time_since_epoch()).count()
-         << (present ? " queue=" : " device=") << reinterpret_cast<void*>(payload.caller)
+         << " queue=" << reinterpret_cast<void*>(payload.caller)
          << " swapchain=" << payload.swapchain
-         << " api=" << (present ? "KHR" : payload.api == ApplicationFrameApi::AcquireKhr ? "KHR" : "KHR2")
+         << " api=KHR"
          << " calls=" << window.calls
          << " entry_interval_samples=" << window.entryInterval.count
          << " entry_interval_mean_ms=" << window.entryInterval.mean()
          << " entry_interval_max_ms=" << window.entryInterval.maximum
          << " duration_mean_ms=" << window.duration.mean()
-         << " duration_max_ms=" << window.duration.maximum;
-    if (present) {
-        line << " includes_intentional_pacing=1"
-             << " configuration_update_samples=" << window.configurationUpdate.count
-             << " configuration_update_mean_ms=" << window.configurationUpdate.mean()
-             << " configuration_update_max_ms=" << window.configurationUpdate.maximum
-             << " deferred_join_samples=" << window.deferredJoin.count
-             << " deferred_join_mean_ms=" << window.deferredJoin.mean()
-             << " deferred_join_max_ms=" << window.deferredJoin.maximum;
-    } else {
-        line << " successful=" << window.successful << " timeouts=" << window.timeouts
-             << " not_ready=" << window.notReady << " errors=" << window.errors
-             << " polls=" << window.polls;
-        // Direct acquires have no F5 split, so their records keep the existing fields only.
-        if (window.internalRingWait.count)
-            line << " internal_samples=" << window.internalRingWait.count
-                 << " internal_ring_wait_mean_ms=" << window.internalRingWait.mean()
-                 << " internal_ring_wait_max_ms=" << window.internalRingWait.maximum
-                 << " internal_queue_lock_mean_ms=" << window.internalQueueLock.mean()
-                 << " internal_queue_lock_max_ms=" << window.internalQueueLock.maximum
-                 << " internal_submit_mean_ms=" << window.internalSubmit.mean()
-                 << " internal_submit_max_ms=" << window.internalSubmit.maximum
-                 << " internal_host=" << window.internalHost
-                 << " internal_queued=" << window.internalQueued;
-    }
+         << " duration_max_ms=" << window.duration.maximum
+         << " includes_intentional_pacing=1"
+         << " configuration_update_samples=" << window.configurationUpdate.count
+         << " configuration_update_mean_ms=" << window.configurationUpdate.mean()
+         << " configuration_update_max_ms=" << window.configurationUpdate.maximum
+         << " deferred_join_samples=" << window.deferredJoin.count
+         << " deferred_join_mean_ms=" << window.deferredJoin.mean()
+         << " deferred_join_max_ms=" << window.deferredJoin.maximum;
     line << '\n';
 }
 
@@ -975,7 +956,6 @@ void handleRecord(Recorder& s, const trace_recorder::TraceRecord& record, const 
         s.pools.copies.release(payload.slot);
         break;
     }
-    case RecordKind::ApplicationAcquireWindow:
     case RecordKind::ApplicationPresentWindow: {
         ApplicationWindowPayload payload{};
         load(payload);
@@ -1085,19 +1065,11 @@ void writeCycle(Recorder& s) {
 
 void writerMain(Recorder& s) {
     {
-        // The writer runs only when the CPU would otherwise idle. The result is recorded once.
+        // The writer runs only when the CPU would otherwise idle. A failed request leaves the
+        // writer at its inherited scheduling class, as before.
         sched_param parameter{};
-        const int status = sched_setscheduler(0, SCHED_IDLE, &parameter);
-        const int error = status == 0 ? 0 : errno;
+        static_cast<void>(sched_setscheduler(0, SCHED_IDLE, &parameter));
         const std::lock_guard lock(s.writeMutex);
-        auto line = classicStream();
-        line << "framegen-vulkan: present diagnostics: operation=pacing-profile-writer version=1"
-             << " pid=" << getpid() << " scheduler=SCHED_IDLE";
-        if (status == 0) line << " result=ok";
-        else line << " result=failed errno=" << error;
-        line << '\n';
-        s.sink.append(line.str());
-        s.sink.flush();
         s.second.start = Clock::now();
     }
     for (;;) {

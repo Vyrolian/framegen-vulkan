@@ -303,10 +303,6 @@ void Swapchain::commitFrameGenerationResources(
     this->configuredFixedGeneratedFrames = fixedGeneratedFrameCount(
         this->profile.multiplier, this->destinationImages.size()
     );
-    this->diagnosticsState.fixedWindowStarted.reset();
-    this->diagnosticsState.fixedRealFrames = 0;
-    this->diagnosticsState.fixedGeneratedFrames = 0;
-    this->diagnosticsState.fixedSkippedFrames = 0;
 
     this->recoveryState.historyWarmupRemaining = historyWarmupFrameCount;
     this->ensureHistoryWarmup();
@@ -327,23 +323,6 @@ bool Swapchain::applyPendingFrameGenerationResources(
                     this->frameGenerationTransition.value().profile
                 );
             this->frameGenerationTransition.prepared();
-            if (present_diagnostics::enabled()) {
-                const auto& requested =
-                    this->frameGenerationTransition.value().profile;
-                std::cerr << "framegen-vulkan: present diagnostics: "
-                             "operation=runtime-transition-prepared"
-                          << " context=" << this->diagnosticsState.contextId
-                          << " state_revision="
-                          << this->frameGenerationTransition.stateRevision()
-                          << " reason=frame-generation-resources"
-                          << " requested_generated_capacity="
-                          << generatedFrameCapacityForProfile(requested)
-                          << " requested_flow_scale="
-                          << ls::effectiveFlowScale(requested)
-                          << " requested_lighter_model="
-                          << ls::effectivePerformanceMode(requested)
-                          << " action=drain-private-work\n";
-            }
         } catch (const std::exception& error) {
             this->preparedFrameGenerationResources.reset();
             this->frameGenerationTransition.failed(
@@ -353,18 +332,6 @@ bool Swapchain::applyPendingFrameGenerationResources(
                          "transition failed; the previous resources remain "
                          "active and retry is scheduled: "
                       << error.what() << '\n';
-            if (present_diagnostics::enabled()) {
-                std::cerr << "framegen-vulkan: present diagnostics: "
-                             "operation=runtime-transition-failed"
-                          << " context=" << this->diagnosticsState.contextId
-                          << " state_revision="
-                          << this->frameGenerationTransition.stateRevision()
-                          << " reason=frame-generation-resources"
-                          << " retry_ms=5000"
-                          << " active_generated_capacity="
-                          << this->destinationImages.size()
-                          << " action=retain-active-resources\n";
-            }
             return true;
         }
     }
@@ -393,8 +360,8 @@ bool Swapchain::applyPendingFrameGenerationResources(
     this->commitFrameGenerationResources(
         std::move(replacement), committedProfile
     );
-    const auto committedRevision =
-        this->frameGenerationTransition.committed();
+    // Commits the transition: it cancels the pending request, so the call stays.
+    static_cast<void>(this->frameGenerationTransition.committed());
 
     std::cerr << "framegen-vulkan: frame-generation resources changed live: "
               << "generated_capacity=" << this->destinationImages.size()
@@ -402,22 +369,5 @@ bool Swapchain::applyPendingFrameGenerationResources(
               << "; lighter_model="
               << ls::effectivePerformanceMode(this->profile)
               << "; transition=private-context\n";
-    if (present_diagnostics::enabled()) {
-        std::cerr << "framegen-vulkan: present diagnostics: "
-                     "operation=runtime-transition-applied"
-                  << " context=" << this->diagnosticsState.contextId
-                  << " state_revision=" << committedRevision.value_or(0)
-                  << " reason=frame-generation-resources"
-                  << " transition=private-context"
-                  << " effective_flow_scale="
-                  << ls::effectiveFlowScale(this->profile)
-                  << " lighter_model="
-                  << ls::effectivePerformanceMode(this->profile)
-                  << " generated_frame_capacity="
-                  << this->destinationImages.size()
-                  << " history_warmup_frames="
-                  << historyWarmupFrameCount
-                  << '\n';
-    }
     return true;
 }

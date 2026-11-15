@@ -38,7 +38,7 @@ const MODES: [Mode; 5] = [
     Mode::Fixed(5),
 ];
 /// The Logging section, in launcher order: the switch, its checkbox label and the hint under it.
-const LOGGING: [(Switch, &str, &str); 5] = [
+const LOGGING: [(Switch, &str, &str); 4] = [
     (Switch::Pacing, "Pacing log", "Light timing summaries."),
     (
         Switch::Trace,
@@ -54,11 +54,6 @@ const LOGGING: [(Switch, &str, &str); 5] = [
         Switch::GpuCost,
         "GPU cost",
         "Frame-generation GPU time. Does not change pacing.",
-    ),
-    (
-        Switch::Present,
-        "Present diagnostics",
-        "Verbose renderer messages on stderr.",
     ),
 ];
 

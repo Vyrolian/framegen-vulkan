@@ -86,10 +86,9 @@ void Swapchain::PresentInvocation::waitForOutput(
         finished - std::max(effectiveDeadline, waitStarted));
     if (readyPacing)
         this->previousOutput = finished;
-    // The old source-cap sleep preceded present diagnostics. Moving that
-    // wait between outputs must not report intentional limiting as slow GPU
-    // work or emit a slow-present record on every capped frame.
-    this->started += finishPresentDiagnostic(waitStarted);
+    // Intentional pacing sleep is not present work. Excluding it keeps the
+    // phase timing from reporting a capped frame as slow GPU work.
+    this->started += finishPhaseTimer(waitStarted);
 }
 
 std::optional<bool> Swapchain::previousBatchBusy() const {
@@ -301,27 +300,6 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         std::clog << "framegen-vulkan: presentation timing fallback; owner=renderer; "
                      "transport=VK_EXT_present_timing; reason=feedback-or-clock-unavailable\n";
 #endif
-    if (presentDiagnosticsEnabled()) {
-        const auto requested = present_diagnostics::applicationPresentMode(
-            this->info.incomingPresentMode, nextChain);
-        if (this->diagnosticsState.applicationPresentMode != requested) {
-            this->diagnosticsState.applicationPresentMode = requested;
-            // Publish a complete record so the background health line cannot
-            // split this startup/live-mode observation between flushed fields.
-            try {
-                std::ostringstream line;
-                line << "framegen-vulkan: present diagnostics: operation=application-present-mode"
-                      << " context=" << this->diagnosticsState.contextId
-                      << " swapchain=" << swapchain
-                      << " requested_present_mode=" << requested.mode
-                      << " dynamic_override=" << requested.dynamic
-                      << " effective_present_mode=" << static_cast<int64_t>(this->info.presentMode)
-                      << " ordered_transport=" << this->privateOrderedTransport
-                      << " action=diagnostic-only\n";
-                std::cerr << line.str();
-            } catch (...) {}
-        }
-    }
     // Match the immutable create-time choice. Ordered SDR filters the
     // application's dynamic MAILBOX override so the private transport stays ordered.
     // Feedback cannot change the game-owned swapchain's creation contract.
@@ -816,7 +794,7 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         .imageIndex = imageIndex,
         .waitSemaphores = waitSemaphores,
         .cadenceStarted = cadenceNow,
-        .started = startPresentDiagnostic(),
+        .started = startPhaseTimer(),
         .limiterArrival = limiterArrival,
         .originalPresentDeadline = sourceDeadlinePacing
             ? std::optional{limiterDeadline} : std::nullopt,
@@ -843,8 +821,6 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         }
     } outputWaitObservation{this->realFramePacer, invocation, this->pacingProfile.get(),
         this->deferredOutputQueuedThisFrame};
-    this->recordPresentCadence(cadenceNow);
-
     if (!this->applyPendingFrameGenerationResources(vk))
         return this->presentNativeFrame(invocation);
 
@@ -860,31 +836,10 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         this->recoveryState.replacementBackendStabilization.beforeFrame(
             presentNow
         );
-    if (replacementStabilization.bypassBackend) {
-        if (replacementStabilization.diagnostic &&
-                presentDiagnosticsEnabled()) {
-            std::cerr << "framegen-vulkan: present diagnostics: "
-                         "operation=replacement-backend-stabilization"
-                      << " context=" << this->diagnosticsState.contextId
-                      << " duration_ms="
-                      << std::chrono::duration<double, std::milli>(
-                             ReplacementBackendStabilization::duration
-                         ).count()
-                      << " action=scaled-real-frame-only\n";
-        }
+    if (replacementStabilization.bypassBackend)
         return this->presentNativeFrame(invocation);
-    }
-    if (replacementStabilization.resumed) {
+    if (replacementStabilization.resumed)
         this->ensureHistoryWarmup();
-        if (presentDiagnosticsEnabled()) {
-            std::cerr << "framegen-vulkan: present diagnostics: "
-                         "operation=replacement-backend-stabilization-complete"
-                      << " context=" << this->diagnosticsState.contextId
-                      << " history_warmup_frames="
-                      << historyWarmupFrameCount
-                      << " action=resume-private-backend\n";
-        }
-    }
     if (!this->recoverBackendIfReady(vk))
         return this->presentNativeFrame(invocation);
 
@@ -898,8 +853,6 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         if (recovery.bypassGeneration) {
             // No backend work or synthetic swapchain acquire is attempted
             // until the direct-failure retry deadline.
-            this->diagnosticsState.fixedSkippedFrames +=
-                this->configuredFixedGeneratedFrames;
             return this->presentNativeFrame(invocation);
         }
         orderedAcquireRecoveryProbe = recovery.limitGeneratedFrames;
@@ -907,28 +860,6 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         if (recovery.beginHistoryWarmup) {
             this->ensureHistoryWarmup();
             this->fixedRefreshBudget.reset();
-            if (presentDiagnosticsEnabled()) {
-                std::cerr << "framegen-vulkan: present diagnostics: "
-                             "operation=ordered-acquire-retry"
-                          << " context=" << this->diagnosticsState.contextId
-                          << " phase=history-warmup"
-                          << " consecutive_failures="
-                          << recovery.consecutiveFailures
-                          << " bypassed_frames="
-                          << recovery.bypassedFrames
-                          << " drain_ms="
-                          << std::chrono::duration<double, std::milli>(
-                                 recovery.drainDuration
-                             ).count()
-                          << " history_warmup_frames="
-                          << historyWarmupFrameCount
-                          << " requested_generated=0"
-                          << " admitted_generated=0"
-                          << " presented_generated=0"
-                          << " frame=" << this->frameState.realFrameIndex
-                          << " sequence=" << this->frameState.sequenceIndex
-                          << " action=warm-history-before-one-frame-probe\n";
-            }
         }
     }
 
@@ -944,21 +875,17 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
     );
     plan.boundedOrderedAcquireProbe = boundedOrderedAcquireProbe;
 
-    if (plan.historyWarmupActive)
-        this->diagnosticsState.fixedSkippedFrames +=
-            plan.requestedGeneratedFrames.size();
-
     this->frameState.nextSourceReleaseTimelineValue = 0;
     // Resolve prior work before acquiring any generated images or reusing
     // their acquire semaphores. A fence-budget miss must leave no new image
     // held by this plan when it falls back to native presentation.
-    const auto renderFenceStarted = startPresentDiagnostic();
+    const auto renderFenceStarted = startPhaseTimer();
     const bool renderFenceReady = this->prepareRenderFence(vk);
-    plan.renderFenceWaitDuration = finishPresentDiagnostic(
+    plan.renderFenceWaitDuration = finishPhaseTimer(
         renderFenceStarted
     );
     if (!renderFenceReady) {
-        this->handleRenderFenceBudgetMiss(plan);
+        this->handleRenderFenceBudgetMiss();
         return this->presentNativeFrame(invocation);
     }
 
@@ -976,20 +903,6 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
             plan.requestedGeneratedFrames.size()
         );
     const bool nativeFirstOrderedBatch = headroomTightOrderedBatch;
-    if (nativeFirstOrderedBatch &&
-            !this->diagnosticsState.orderedGeneratedAdmissionPolicyLogged &&
-            presentDiagnosticsEnabled()) {
-        this->diagnosticsState.orderedGeneratedAdmissionPolicyLogged = true;
-        std::cerr << "framegen-vulkan: present diagnostics: "
-                     "operation=ordered-generated-admission-policy"
-                  << " context=" << this->diagnosticsState.contextId
-                  << " requested_min_images="
-                  << this->info.requestedMinImageCount
-                  << " images=" << this->info.images.size()
-                  << " planned=" << plan.requestedGeneratedFrames.size()
-                  << " acquire_timeout_ns=0"
-                  << " action=native-first\n";
-    }
     if (nativeFirstOrderedBatch) {
         this->preacquireGeneratedImages(
             invocation, plan, true, 0, true
@@ -1022,44 +935,8 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
             const auto probeFinishedAt = DiagnosticsClock::now();
             const auto miss = this->recoveryState.orderedAcquireRecovery
                 .reportNonblockingProbeUnavailable(probeFinishedAt);
-            if (miss.quarantined) {
+            if (miss.quarantined)
                 this->fixedRefreshBudget.reset();
-                if (presentDiagnosticsEnabled()) {
-                    std::cerr << "framegen-vulkan: present diagnostics: "
-                                 "operation=ordered-acquire-quarantine"
-                              << " context="
-                              << this->diagnosticsState.contextId
-                              << " phase=native-drain"
-                              << " reason=bounded-recovery-probe-timeout"
-                              << " acquire_timeout_ns="
-                              << recoveryAcquireTimeout
-                              << " acquire_ms="
-                              << std::chrono::duration<double, std::milli>(
-                                     plan.preacquireDuration
-                                 ).count()
-                              << " consecutive_failures="
-                              << miss.consecutiveFailures
-                              << " retry_ms="
-                              << std::chrono::duration<double, std::milli>(
-                                     miss.retryDelay
-                                 ).count()
-                              << " bypassed_frames="
-                              << miss.bypassedFrames
-                              << " recovery_ms="
-                              << std::chrono::duration<double, std::milli>(
-                                     miss.recoveryDuration
-                                 ).count()
-                              << " requested_generated="
-                              << plan.requestedGeneratedFrames.size()
-                              << " admitted_generated=0"
-                              << " presented_generated=0"
-                              << " frame="
-                              << this->frameState.realFrameIndex
-                              << " sequence="
-                              << this->frameState.sequenceIndex
-                              << " action=native-drain\n";
-                }
-            }
             return this->presentNativeFrame(invocation);
         }
         scheduledGeneratedFrameCount = plan.admittedGeneratedFrameCount;
@@ -1070,7 +947,7 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
     }
 
     if (!bypassGeneratedFrames) {
-        const auto scheduleStarted = startPresentDiagnostic();
+        const auto scheduleStarted = startPhaseTimer();
         try {
             this->instance->scheduleFrames(
                 this->ctx.get(), plan.scheduledGeneratedFrames.timestamps()
@@ -1087,8 +964,6 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
                       << error.what() << '\n';
             this->recoveryState.backendPending = true;
             this->recoveryState.historyWarmupRemaining = 0;
-            this->diagnosticsState.fixedSkippedFrames +=
-                plan.admittedGeneratedFrameCount;
             if (!preacquiredImagesRequireRetirement(
                     plan.generatedImagesPreacquired,
                     plan.admittedGeneratedFrameCount)) {
@@ -1108,18 +983,14 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         }
         if (this->pacingProfile) this->pacingProfile->backendScheduled(this->frameState.backendFrameIndex);
         this->frameState.backendFrameIndex++;
-        plan.scheduleFramesDuration = finishPresentDiagnostic(
+        plan.scheduleFramesDuration = finishPhaseTimer(
             scheduleStarted
-        );
-        logSlowPresentOperation(
-            "schedule-frames", this->frameState.realFrameIndex,
-            this->frameState.sequenceIndex, scheduleStarted
         );
     }
 
-    const auto sourceCopyStarted = startPresentDiagnostic();
+    const auto sourceCopyStarted = startPhaseTimer();
     this->submitSourceCopy(invocation, swapchainImage, sourceImage);
-    plan.submitSourceCopyDuration = finishPresentDiagnostic(
+    plan.submitSourceCopyDuration = finishPhaseTimer(
         sourceCopyStarted
     );
     if (sourceDeadlinePacing && !plan.historyWarmupActive &&

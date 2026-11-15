@@ -109,8 +109,7 @@ namespace {
     bool initializeLayerInfo();
 
     bool finalizeRetiredSwapchain(
-            const VkSwapchainKHR swapchain, const uint64_t timeoutNs,
-            const std::string_view trigger) {
+            const VkSwapchainKHR swapchain, const uint64_t timeoutNs) {
         const auto retirementLock = lockSwapchainRetirement(
             instance_info->retiredSwapchainsMutex, timeoutNs
         );
@@ -152,21 +151,11 @@ namespace {
         instance_info->retiredSwapchainCount.fetch_sub(
             1, std::memory_order_acq_rel
         );
-        if (present_diagnostics::enabled()) {
-            std::cerr << "framegen-vulkan: present diagnostics: "
-                         "operation=swapchain-retirement-complete"
-                      << " role=" << layerRoleName
-                      << " swapchain=" << swapchain
-                      << " trigger=" << trigger
-                      << " pending="
-                      << instance_info->retiredSwapchains.size() << '\n';
-        }
         return true;
     }
 
     void collectRetiredSwapchains(
-            const VkDevice device, const uint64_t timeoutNs,
-            const std::string_view trigger) {
+            const VkDevice device, const uint64_t timeoutNs) {
         if (instance_info->retiredSwapchainCount.load(
                 std::memory_order_acquire) == 0) {
             return;
@@ -197,7 +186,7 @@ namespace {
                     : timeoutNs - static_cast<uint64_t>(elapsed);
             }
             static_cast<void>(finalizeRetiredSwapchain(
-                swapchain, remainingTimeoutNs, trigger
+                swapchain, remainingTimeoutNs
             ));
         }
     }
@@ -240,7 +229,7 @@ namespace {
         }
         for (const auto swapchain : candidates) {
             static_cast<void>(finalizeRetiredSwapchain(
-                swapchain, 0, "same-surface-present"
+                swapchain, 0
             ));
         }
     }
@@ -320,7 +309,7 @@ namespace {
         }
         for (const auto swapchain : candidates)
             static_cast<void>(finalizeRetiredSwapchain(
-                swapchain, UINT64_MAX, "surface-destroy"
+                swapchain, UINT64_MAX
             ));
     }
 
@@ -1220,9 +1209,7 @@ namespace {
             return;
         deviceDispatchEpoch.fetch_add(1, std::memory_order_acq_rel);
 
-        collectRetiredSwapchains(
-            device, 250'000'000, "device-destroy"
-        );
+        collectRetiredSwapchains(device, 250'000'000);
         forceFinalizeRetiredSwapchains(device);
         drainDeferredDevice(device);
         // F9c: the tail timeline goes with its queue. Device destruction requires the
@@ -1537,21 +1524,8 @@ namespace {
             const SurfaceOrigin origin) {
         if (!instance_info || surface == VK_NULL_HANDLE)
             return;
-        bool inserted{};
-        {
-            const std::lock_guard lock(instance_info->surfaceStateMutex);
-            inserted = instance_info->surfaceOrigins.emplace(
-                surface, origin
-            ).second;
-        }
-        if (inserted && present_diagnostics::enabled()) {
-            std::cerr << "framegen-vulkan: present diagnostics: "
-                         "operation=surface-provenance"
-                      << " role=" << layerRoleName
-                      << " surface=" << surface
-                      << " origin=" << surfaceOriginName(origin)
-                      << '\n';
-        }
+        const std::lock_guard lock(instance_info->surfaceStateMutex);
+        instance_info->surfaceOrigins.emplace(surface, origin);
     }
 
     [[nodiscard]] SurfaceOrigin surfaceOrigin(
@@ -1775,21 +1749,6 @@ namespace {
             // layers build the replacement from the same saved revision.
             layer_info->root.update(true);
 
-            if (present_diagnostics::enabled()) {
-                std::cerr << "framegen-vulkan: present diagnostics: "
-                             "operation=swapchain-create-observed"
-                          << " role=" << layerRoleName
-                          << " surface=" << info->surface
-                          << " requested_old_swapchain="
-                          << info->oldSwapchain
-                          << " requested_width=" << info->imageExtent.width
-                          << " requested_height=" << info->imageExtent.height
-                          << " requested_min_images=" << info->minImageCount
-                          << " requested_present_mode="
-                          << static_cast<int>(info->presentMode)
-                          << '\n';
-            }
-
             // create swapchain
             VkSwapchainCreateInfoKHR newInfo = *info;
             bool ownedPresentTiming = false;
@@ -1808,8 +1767,7 @@ namespace {
             if (retainedOldSwapchain) {
                 if (!finalizeRetiredSwapchain(
                         *retainedOldSwapchain,
-                        UINT64_MAX,
-                        "replacement-create")) {
+                        UINT64_MAX)) {
                     throw ls::vulkan_error(
                         VK_ERROR_INITIALIZATION_FAILED,
                         "retained swapchain retirement failed "
@@ -1817,18 +1775,6 @@ namespace {
                     );
                 }
                 retiredNullOldReplacement = true;
-                if (present_diagnostics::enabled()) {
-                    std::cerr << "framegen-vulkan: present diagnostics: "
-                                 "operation=swapchain-retirement-before-replacement"
-                              << " role=" << layerRoleName
-                              << " swapchain="
-                              << *retainedOldSwapchain
-                              << " surface=" << info->surface
-                              << " reason=null-upper-old-swapchain"
-                              << " lower_old_swapchain=0"
-                              << " action=destroy-before-create"
-                              << '\n';
-                }
             }
             auto modification =
                 layer_info->root.modifySwapchainCreateInfo(
@@ -1877,7 +1823,6 @@ namespace {
                         if (shouldRetrySwapchainWithApplicationMinimum(
                                 res, info->minImageCount,
                                 provisionedMinImages)) {
-                            const VkResult initialResult = res;
                             VkSwapchainCreateInfoKHR retryInfo = driverInfo;
                             retryInfo.minImageCount = info->minImageCount;
                             *swapchain = VK_NULL_HANDLE;
@@ -1886,26 +1831,6 @@ namespace {
                             );
                             present_diagnostics::traceVulkanSetup(layerRoleName, *info, retryInfo,
                                 res, res == VK_SUCCESS ? *swapchain : VK_NULL_HANDLE, device);
-                            if (present_diagnostics::enabled()) {
-                                std::cerr << "framegen-vulkan: present diagnostics: "
-                                             "operation=swapchain-create-compatibility-retry"
-                                          << " role=" << layerRoleName
-                                          << " initial_result="
-                                          << static_cast<int>(initialResult)
-                                          << " retry_result="
-                                          << static_cast<int>(res)
-                                          << " requested_min_images="
-                                          << info->minImageCount
-                                          << " provisioned_min_images="
-                                          << provisionedMinImages
-                                          << " retry_min_images="
-                                          << retryInfo.minImageCount
-                                          << " action="
-                                          << (res == VK_SUCCESS
-                                                ? "use-application-minimum"
-                                                : "propagate-retry-failure")
-                                          << '\n';
-                            }
                             if (res == VK_SUCCESS)
                                 newInfo->minImageCount = retryInfo.minImageCount;
                         }
@@ -2195,8 +2120,6 @@ namespace {
             Swapchain* presentingContext = nullptr;
             bool internalPresent = false;
             try {
-                const auto metadata =
-                    instance_info->swapchainInfos.find(swapchain);
                 const auto waitSemaphores = info->waitSemaphoreCount > 0
                     ? std::span<const VkSemaphore>(
                         info->pWaitSemaphores, info->waitSemaphoreCount
@@ -2225,10 +2148,6 @@ namespace {
                     context.requestLiveProfileResourceRecreationAfterPresent(
                         result
                     );
-                const VkSurfaceKHR presentingSurface = metadata ==
-                        instance_info->swapchainInfos.end()
-                    ? VK_NULL_HANDLE
-                    : metadata->second.surface;
                 const bool orderedAcquireRecoveryRecreationRequested =
                     context.requestOrderedAcquireRecreationAfterPresent(
                         result,
@@ -2242,47 +2161,12 @@ namespace {
                     // therefore already reached the presentation engine; make
                     // that proof explicit before replacing the successful
                     // result with the one-shot recreation signal.
-                    if (present_diagnostics::enabled()) {
-                        std::cerr << "framegen-vulkan: present diagnostics: "
-                                     "operation=original-present-recreation-propagate"
-                                  << " context=" << context.diagnosticsId()
-                                  << " result=" << VK_ERROR_OUT_OF_DATE_KHR
-                                  << " action=application-image-submitted-before-recreation\n";
-                    }
                     result = VK_ERROR_OUT_OF_DATE_KHR;
-                }
-                if (result == VK_ERROR_OUT_OF_DATE_KHR &&
-                        present_diagnostics::enabled()) {
-                    std::cerr << "framegen-vulkan: present diagnostics: "
-                                 "operation=swapchain-recreation-observed"
-                              << " context=" << context.diagnosticsId()
-                              << " role=" << layerRoleName
-                              << " swapchain=" << swapchain
-                              << " source="
-                              << (liveProfileRecreationRequested
-                                    ? "guarded-live-profile-request"
-                                    : orderedAcquireRecoveryRecreationRequested
-                                        ? "transition-scoped-acquire-timeout"
-                                    : "upstream-or-driver")
-                              << '\n';
                 }
             } catch (const ls::vulkan_error& e) {
                 if (e.error() != VK_ERROR_OUT_OF_DATE_KHR) {
                     std::cerr << "framegen-vulkan: swapchain presentation failed:\n";
                     std::cerr << "- " << e.what() << '\n';
-                } else if (presentingContextId &&
-                        present_diagnostics::enabled()) {
-                    // Some direct original-image paths report OUT_OF_DATE by
-                    // exception after the application image has already
-                    // traversed the lower role. Preserve the same upper-role
-                    // recreation observation as the normal returned-result
-                    // path so the game receives one coherent signal.
-                    std::cerr << "framegen-vulkan: present diagnostics: "
-                                 "operation=swapchain-recreation-observed"
-                              << " context=" << *presentingContextId
-                              << " role=" << layerRoleName
-                              << " swapchain=" << swapchain
-                              << " source=upstream-or-driver\n";
                 }
 
                 result = e.error();
@@ -2653,15 +2537,6 @@ namespace {
             : swapchainMetadata->second.surface;
         const bool native =
             instance_info->nativeSwapchains.contains(swapchain);
-        if (present_diagnostics::enabled()) {
-            std::cerr << "framegen-vulkan: present diagnostics: "
-                         "operation=swapchain-destroy-observed"
-                      << " role=" << layerRoleName
-                      << " swapchain=" << swapchain
-                      << " surface=" << surface
-                      << " allocation_callbacks=" << (alloc ? 1 : 0)
-                      << '\n';
-        }
         auto context = layer_info->root.takeSwapchainContext(swapchain);
         ReflexFrameLimitRegistry::erase(swapchain);
         instance_info->swapchainInfos.erase(swapchain);
@@ -2680,7 +2555,6 @@ namespace {
             if (!alloc) {
                 const auto now = std::chrono::steady_clock::now();
                 bool inserted = false;
-                size_t pending = 0;
                 {
                     const std::lock_guard retirementLock(
                         instance_info->retiredSwapchainsMutex
@@ -2701,24 +2575,11 @@ namespace {
                             1, std::memory_order_release
                         );
                     }
-                    pending = instance_info->retiredSwapchains.size();
                 }
                 if (!inserted) {
                     std::cerr << "framegen-vulkan: duplicate deferred swapchain "
                                  "retirement ignored\n";
                     return;
-                }
-                if (present_diagnostics::enabled()) {
-                    std::cerr << "framegen-vulkan: present diagnostics: "
-                                 "operation=swapchain-retirement-deferred"
-                              << " role=" << layerRoleName
-                              << " swapchain=" << swapchain
-                              << " reason=await-later-present-and-fence"
-                              << " grace_ms="
-                              << swapchainRetirementGracePeriod.count()
-                              << " pending="
-                              << pending
-                              << '\n';
                 }
                 return;
             }

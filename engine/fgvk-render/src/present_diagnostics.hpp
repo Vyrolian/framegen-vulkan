@@ -26,8 +26,6 @@ namespace fgvk::layer::present_diagnostics {
     using Clock = std::chrono::steady_clock;
 
     [[nodiscard]] uint64_t allocateContextId();
-    /// Return the process-start diagnostic policy shared by all layer paths.
-    [[nodiscard]] bool enabled();
     [[nodiscard]] bool pacingProfileEnabled();
     [[nodiscard]] bool pacingGpuProfileEnabled();
     /// Non-draining split GPU boundaries; active only with FGVK_PACING_PROFILE=1 and FGVK_PACING_PROFILE_GPU_SPLIT=1.
@@ -145,10 +143,6 @@ namespace fgvk::layer::present_diagnostics {
         VkDevice device) noexcept;
     void traceVulkanSurface(std::string_view role, std::string_view api,
         VkInstance instance, VkSurfaceKHR surface, VkResult result) noexcept;
-    /// Return the process-start slow-operation threshold in milliseconds.
-    [[nodiscard]] double thresholdMilliseconds();
-    [[nodiscard]] Clock::time_point start();
-
     /// CPU observations and optional backend GPU spans. No samples feed policy.
     /// Storage and per-frame work remain constant regardless of session length.
     class PacingProfile {
@@ -531,55 +525,9 @@ namespace fgvk::layer::present_diagnostics {
     /// This neither loads libraries nor reads /proc or the environment.
     [[nodiscard]] SteamOverlayLibraries steamOverlayLibraries();
 
-    /// Fixed-size private-present CPU windows, including healthy sub-threshold
-    /// work. Index order is total, fence, schedule, copy, acquire, generated
-    /// submit, generated present, original present, unattributed.
-    class PresentPhaseTiming {
-    public:
-        struct Window {
-            size_t calls{};
-            std::array<BridgePresentTiming::Samples, 9> phases;
-        };
-        std::optional<Window> observe(uint64_t context, Clock::time_point finished,
-                const std::array<double, 9>& milliseconds) {
-            if (!started || context != owner) {
-                owner = context;
-                started = finished;
-                window = {};
-            }
-            ++window.calls;
-            for (size_t index = 0; index < milliseconds.size(); ++index)
-                window.phases[index].add(milliseconds[index]);
-            if (finished - *started < std::chrono::seconds(1))
-                return {};
-            const auto completed = window;
-            window = {};
-            started = finished;
-            return completed;
-        }
-    private:
-        uint64_t owner{};
-        std::optional<Clock::time_point> started;
-        Window window;
-    };
-    void recordPresentPhaseTiming(uint64_t context, size_t frame, size_t sequence,
-        Clock::time_point finished, const std::array<double, 9>& milliseconds) noexcept;
-
     enum class PresentWaitApi { Khr, Khr2 };
 
     enum class ApplicationFrameApi { AcquireKhr, AcquireKhr2, Present };
-
-    /// One F5 emulated acquire: the wait for a free private image, the wait to
-    /// take the acquire submit's lock, and the QueueSubmit call itself (zero when
-    /// no submit is made). F10: host is true when the acquire signalled the
-    /// application's semaphore on the host, with no lock and no submit, so the
-    /// last two are zero. Measured only with the pacing profile.
-    struct InternalAcquireTiming {
-        Clock::duration ringWait{};
-        Clock::duration queueLock{};
-        Clock::duration submit{};
-        bool host{};
-    };
 
     /// Layer entrypoints timed with the pacing profile. The order is fixed; the names are the record text.
     enum class LayerCall : uint8_t {
@@ -619,37 +567,24 @@ namespace fgvk::layer::present_diagnostics {
     void recordReflexSleep(Clock::time_point entered, Clock::time_point exited, VkResult result) noexcept;
     void recordReflexMode(VkBool32 lowLatency, VkBool32 boost, uint32_t minimumIntervalUs, VkResult result) noexcept;
 
-    /// Bounded CPU observations at the application's layer entrypoints. These
+    /// Bounded CPU observations at the application's present entrypoints. These
     /// include intentional pacing, unlike the private-work present timer.
     /// A stream owns one caller/swapchain pair; switching drops its old window.
     class ApplicationFrameTiming {
     public:
         struct Window {
             size_t calls{};
-            size_t successful{};
-            size_t timeouts{};
-            size_t notReady{};
-            size_t errors{};
-            size_t polls{};
             BridgePresentTiming::Samples entryInterval;
             BridgePresentTiming::Samples duration;
             BridgePresentTiming::Samples configurationUpdate;
             BridgePresentTiming::Samples deferredJoin;
-            BridgePresentTiming::Samples internalRingWait;
-            BridgePresentTiming::Samples internalQueueLock;
-            BridgePresentTiming::Samples internalSubmit;
-            // F10: emulated acquires that signalled on the host, and those that took the queued submit.
-            size_t internalHost{};
-            size_t internalQueued{};
         };
 
         [[nodiscard]] std::optional<Window> observe(uintptr_t caller,
                 VkSwapchainKHR swapchain, Clock::time_point started,
-                Clock::time_point finished, std::optional<VkResult> result,
-                std::optional<uint64_t> timeout,
+                Clock::time_point finished,
                 std::optional<Clock::duration> configurationUpdate = {},
-                std::optional<Clock::duration> deferredJoin = {},
-                std::optional<InternalAcquireTiming> internal = {}) {
+                std::optional<Clock::duration> deferredJoin = {}) {
             if (!windowStarted || caller != lastCaller || swapchain != lastSwapchain) {
                 windowStarted = started;
                 previousEntry.reset();
@@ -661,27 +596,11 @@ namespace fgvk::layer::present_diagnostics {
                 window.entryInterval.add(milliseconds(started - *previousEntry));
             previousEntry = started;
             ++window.calls;
-            if (result) {
-                window.successful += *result == VK_SUCCESS || *result == VK_SUBOPTIMAL_KHR;
-                window.timeouts += *result == VK_TIMEOUT;
-                window.notReady += *result == VK_NOT_READY;
-                window.errors += *result < 0;
-            }
-            window.polls += timeout && *timeout == 0;
             window.duration.add(milliseconds(finished - started));
             if (configurationUpdate)
                 window.configurationUpdate.add(milliseconds(*configurationUpdate));
             if (deferredJoin)
                 window.deferredJoin.add(milliseconds(*deferredJoin));
-            if (internal) {
-                window.internalRingWait.add(milliseconds(internal->ringWait));
-                window.internalQueueLock.add(milliseconds(internal->queueLock));
-                window.internalSubmit.add(milliseconds(internal->submit));
-                if (internal->host)
-                    ++window.internalHost;
-                else
-                    ++window.internalQueued;
-            }
             if (finished - *windowStarted < std::chrono::seconds(1))
                 return std::nullopt;
             windowStarted = finished;
@@ -705,7 +624,6 @@ namespace fgvk::layer::present_diagnostics {
         uint64_t context{};
         size_t lowerCalls{};
         Clock::duration lowerDuration{};
-        std::optional<InternalAcquireTiming> internal;
     };
 
     // Only the application acquire wrapper installs this scope. framegen-vulkan's own
@@ -721,7 +639,6 @@ namespace fgvk::layer::present_diagnostics {
         friend void bindApplicationAcquireContext(uint64_t) noexcept;
         friend void recordApplicationAcquireDriver(uint64_t, VkResult, Clock::time_point,
             Clock::time_point, std::optional<uint32_t>) noexcept;
-        friend void recordInternalAcquire(Clock::duration, Clock::duration, Clock::duration, bool) noexcept;
         ApplicationAcquireScope* previous{};
         bool installed{};
         ApplicationAcquireDetails observation;
@@ -729,11 +646,6 @@ namespace fgvk::layer::present_diagnostics {
 
     void bindApplicationAcquireContext(uint64_t context) noexcept;
 
-    /// Attach an F5 emulated acquire's split to the application acquire in progress
-    /// on this thread. host is the F10 host path (queueLock and submit are then zero).
-    /// Does nothing outside an application acquire scope.
-    void recordInternalAcquire(Clock::duration ringWait, Clock::duration queueLock,
-        Clock::duration submit, bool host) noexcept;
     /// F10 per-acquire record, pacing profile only: one line per application acquire of the internal
     /// images. Times are steady-clock; zero means not measured. tailSeen is when this acquire read the
     /// tail counter; tailWaitValue is the tail value the host path waited on (0 on the queued path).
@@ -768,7 +680,9 @@ namespace fgvk::layer::present_diagnostics {
     template<typename Acquire>
     VkResult observeApplicationAcquire(VkDevice device, VkSwapchainKHR swapchain,
             ApplicationFrameApi api, uint64_t timeout, Acquire&& acquire, const uint32_t* imageIndex = nullptr) {
-        if (!enabled() && !pacingProfileEnabled())
+        // Only the frame trace records an application acquire now; the pacing profile keeps no
+        // acquire window, so an untraced acquire reads no clock and installs no scope.
+        if (!pacingFrameTraceEnabled())
             return acquire();
         ApplicationAcquireScope scope;
         const auto started = Clock::now();
@@ -938,7 +852,7 @@ namespace fgvk::layer::present_diagnostics {
     template<typename Wait>
     VkResult observeApplicationPresentWait(VkDevice device, VkSwapchainKHR swapchain,
             PresentWaitApi api, uint64_t presentId, uint64_t timeout, Wait&& wait) {
-        if (!enabled() && !pacingProfileEnabled())
+        if (!pacingProfileEnabled())
             return wait();
         const auto started = Clock::now();
         const auto result = wait();
@@ -959,20 +873,5 @@ namespace fgvk::layer::present_diagnostics {
         uint64_t previousContextId;
         PacingProfile* previousPacingProfile;
     };
-
-    void logSlowOperation(std::string_view operation,
-        size_t frameIndex, size_t sequenceIndex,
-        Clock::time_point started,
-        std::optional<VkResult> result = std::nullopt,
-        std::optional<size_t> passIndex = std::nullopt,
-        std::optional<uint32_t> imageIndex = std::nullopt);
-
-    void logPresentFallback(size_t frameIndex, size_t sequenceIndex,
-        size_t passIndex, size_t skippedFrames, uint64_t timelineValue,
-        std::string_view acquireMode, std::string_view backendWork);
-
-    void logHistoryWarmup(size_t frameIndex, size_t sequenceIndex,
-        size_t remainingFrames, bool recovery,
-        std::optional<uint32_t> acquiredImage);
 
 }

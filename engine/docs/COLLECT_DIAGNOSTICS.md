@@ -4,31 +4,30 @@ For installations using `fgvk`.
 
 ## 1. Enable logs
 
-Open the Logging section of the `fgvk` settings window and turn on **Present diagnostics**. The switch is saved in `launcher.conf` and applies the next time a game starts through `fgvk`. The other switches in that section are listed in the [configuration reference](CONFIGURATION-REFERENCE.md#launcher-settings).
+Open the Logging section of the `fgvk` settings window and turn on **Pacing log**. The switch is saved in `launcher.conf` and applies the next time a game starts through `fgvk`. The other switches in that section are listed in the [configuration reference](CONFIGURATION-REFERENCE.md#launcher-settings).
 
-Use the variables below when the game does not start through `fgvk`, or when you need `FGVK_PRESENT_DIAGNOSTICS_THRESHOLD_MS`, which the window does not offer.
+Use the variables below when the game does not start through `fgvk`.
 
 Fully close the game and save its current launch settings so you can restore them afterward.
 
-**Steam or Proton:** prepend the two diagnostics variables to your existing Launch Options, preserving any profile, shader, or other settings. For a basic launch, the result is:
+**Steam or Proton:** prepend the diagnostics variable to your existing Launch Options, preserving any profile, shader, or other settings. For a basic launch, the result is:
 
 ```text
-FGVK_PRESENT_DIAGNOSTICS=1 FGVK_PRESENT_DIAGNOSTICS_THRESHOLD_MS=25 ~/.local/bin/fgvk %command%
+FGVK_PACING_PROFILE=1 ~/.local/bin/fgvk %command%
 ```
 
 For a system installation, use your normal `fgvk` path.
 
-**Heroic, Lutris or Flatpak:** keep your working setup and add these per-game environment variables:
+**Heroic, Lutris or Flatpak:** keep your working setup and add this per-game environment variable:
 
 ```text
-FGVK_PRESENT_DIAGNOSTICS=1
-FGVK_PRESENT_DIAGNOSTICS_THRESHOLD_MS=25
+FGVK_PACING_PROFILE=1
 ```
 
 **Terminal launch:** capture the game output:
 
 ```bash
-FGVK_PRESENT_DIAGNOSTICS=1 FGVK_PRESENT_DIAGNOSTICS_THRESHOLD_MS=25 \
+FGVK_PACING_PROFILE=1 FGVK_PACING_PROFILE_LOG=stderr \
     fgvk your-game-command 2>&1 | tee "$HOME/Desktop/framegen-vulkan-renderer-session.log"
 ```
 
@@ -52,7 +51,7 @@ For timing-field meanings and the limits of log-based comparisons, see [Interpre
 
 ## 4. Restore your settings
 
-Turn off the Logging switches you turned on in the settings window, then restore the original launch settings and remove the two temporary diagnostics variables.
+Turn off the Logging switches you turned on in the settings window, then restore the original launch settings and remove the temporary diagnostics variables.
 
 ## 5. Send the report
 
@@ -90,7 +89,7 @@ The Wayland companion's optional `--runtime-log /absolute/new-runtime.log` enabl
 
 ## Lightweight Minecraft pacing capture
 
-For games started through `fgvk`, turn on **Pacing log** in the Logging section of the settings window; it sets the same variable. For other launchers, set `FGVK_PACING_PROFILE=1` in the game's existing launch environment and restart it. Keep its working graphics/profile setup. For Prism Launcher, preserve the current Wrapper Command and prefix it with `env FGVK_PACING_PROFILE=1`, for example `env FGVK_PACING_PROFILE=1 mangohud /absolute/path/to/fgvk`. The profiler records CPU boundary/phase timing without enabling the broader presentation diagnostics, health worker, new GPU queries, or per-frame writes. It works with other Vulkan games too.
+For games started through `fgvk`, turn on **Pacing log** in the Logging section of the settings window; it sets the same variable. For other launchers, set `FGVK_PACING_PROFILE=1` in the game's existing launch environment and restart it. Keep its working graphics/profile setup. For Prism Launcher, preserve the current Wrapper Command and prefix it with `env FGVK_PACING_PROFILE=1`, for example `env FGVK_PACING_PROFILE=1 mangohud /absolute/path/to/fgvk`. The profiler records CPU boundary/phase timing and makes no new GPU queries. It does not enable any other renderer logging. It works with other Vulkan games too.
 
 The Renderer creates a private `fgvk-pacing-<uid>-<pid>-<timestamp>.log` under `${TMPDIR:-/tmp}` at swapchain creation and prints its path once. Only framegen-vulkan timing and process/profile identity records enter this file; arbitrary game/launcher output, Java arguments and account details are not captured. CPU/GPU-only capture retains up to 16 MiB and restarts with a `pacing-profile-log-wrap` marker when full. With `FGVK_PACING_PROFILE_WAYLAND=1`, the file instead preserves its beginning up to 512 MiB, emits `pacing-profile-capture-limit`, and stops writing; earlier FG/settings portions are never overwritten. `${TMPDIR:-/tmp}` is often RAM-backed (tmpfs), so a full 512 MiB capture can hold that much memory until the file is removed. The session header records `capture_limit_bytes` and `retention=stop|wrap`. Concurrent writers use a nonblocking lock; missing/partial records produce a `pacing-profile-capture-gap` marker. No collection worker is added.
 
@@ -124,7 +123,7 @@ The companion enables `WAYLAND_DEBUG=client` and `FGVK_PACING_PROFILE_WAYLAND=1`
 
 Analyze both captures with `python3 engine/scripts/analyze-pacing-profile.py /path/to/fgvk-pacing.log --wayland-protocol /path/to/fgvk-wayland-protocol.log`. The matcher joins exact compositor clock/timestamp/sequence/refresh/flags/output identities to feedback-object lifetimes and their next `wl_surface.commit`, deduplicates multiple observers of one commit, and rejects missing/conflicting associations. It compares adjacent lower-call, commit-request and compositor-presentation intervals within their separate clocks; it never subtracts realtime protocol timestamps from monotonic CPU timestamps. Periodic realtime/monotonic calibration rejects interval comparisons if a clock step is detected. Conflicting object IDs from multiple unlabelled display/process streams make coverage partial. Commit timestamps mark client-side protocol marshalling, not socket delivery or compositor receipt; picture progression remains unmeasured. Retain both raw files together when this boundary is under investigation.
 
-Both actual application present-wait APIs now record `application-present-wait` windows in this same lightweight capture, independently of broad diagnostics. They include waiter thread, swapchain, API, called ID range, successes, polls, timeouts, errors and total call duration, including any retained-ID handoff. These are actual calls, unlike `fifo_caller_timing_sources`. `wait_capture=1` identifies windows from a build with this coverage; absence from older captures is unavailable evidence. The report associates waits by process and swapchain within the captured context interval. Every collector preset retains the wait and individual-output records. Wait durations alone do not establish that the producer was blocked by the waiter.
+Both actual application present-wait APIs now record `application-present-wait` windows in this same lightweight capture. They include waiter thread, swapchain, API, called ID range, successes, polls, timeouts, errors and total call duration, including any retained-ID handoff. These are actual calls, unlike `fifo_caller_timing_sources`. `wait_capture=1` identifies windows from a build with this coverage; absence from older captures is unavailable evidence. The report associates waits by process and swapchain within the captured context interval. Every collector preset retains the wait and individual-output records. Wait durations alone do not establish that the producer was blocked by the waiter.
 
 The outer `application-queue-present` window separately records `deferred_join_samples`, `deferred_join_mean_ms` and `deferred_join_max_ms` for the device's retained-output drain before configuration polling. This wait is included in outer present duration and precedes the inner `layer_present` timer. The configuration-update metric excludes it. A large difference between outer and inner present times must not be attributed to game work or wait2 without this phase measurement. Older captures lack the join field; the reader reports it as unavailable. This observation does not change pacing or the drain's synchronization contract.
 
@@ -132,7 +131,7 @@ Version 2 records include the final Smooth Cadence state, effective source cap, 
 
 `ready_batches` and `cap_batches` count planned output spacing. `worker_batches` counts completed retained batches, and `worker_readiness_misses` counts batches that exhausted readiness or failed it and drained images through ordinary semaphore-protected delivery. Planned counts alone do not establish actual submission spacing or physical cadence. Worker readiness runs outside the producer's `readiness_wait` timing; compare output intervals and GPU spans as well.
 
-`source_cap_wait`, `readiness_wait` and `output_wait` separate measured cap sleeps, the native ready-batch timeline wait, and per-output sleeps. `planned_output_interval` records selected CPU output spacing. `output_wake_lateness` and `source_cap_wake_lateness` measure time beyond the later of the requested deadline or entry into the sleep; `source_deadline_lateness` also retains lateness when framegen-vulkan work already passed the cap deadline before the final sleep. Private phase means/maxima separate render-fence waits, scheduling, source copy, generated-image acquisition, generated submission, generated presentation, original presentation and unattributed work. `application-acquire` and `application-queue-present` records add application-boundary blocking and configuration-update windows without broad diagnostics.
+`source_cap_wait`, `readiness_wait` and `output_wait` separate measured cap sleeps, the native ready-batch timeline wait, and per-output sleeps. `planned_output_interval` records selected CPU output spacing. `output_wake_lateness` and `source_cap_wake_lateness` measure time beyond the later of the requested deadline or entry into the sleep; `source_deadline_lateness` also retains lateness when framegen-vulkan work already passed the cap deadline before the final sleep. Private phase means/maxima separate render-fence waits, scheduling, source copy, generated-image acquisition, generated submission, generated presentation, original presentation and unattributed work. The `application-queue-present` record adds application-boundary blocking and configuration-update windows.
 
 `timing_driver_attempts`, `timing_application_attempts`, `timing_ext_attempts`, `timing_google_attempts` and `timing_bridge_attempts` count the timing path actually forwarded to lower presentation. Driver means no explicit Vulkan timing node or private bridge annotation from this call; CPU pacing can still apply. Application means a caller-supplied timing node, without reading or attributing its timestamps. EXT and Google mean framegen-vulkan attached a target; bridge identifies the separate protocol owner. These are attempts, including rejected lower presents, not completed or visible outputs. Deferred delivery records its timing path when admitted and its CPU output observation when joined; window counts can therefore differ. `present_target_interval` measures consecutive strictly increasing framegen-vulkan EXT/Google requests in the host clock, across window boundaries but never across a different or untimed path. `present_target_discontinuities` counts repeated/backwards requests without learning a positive interval. No extra Vulkan query is issued. These fields distinguish an inactive timing path from tightly submitted outputs with distinct targets; targets do not establish effective compositor scheduling, presentation completion or physical visibility. Older version-2 captures lack these optional fields, and the reader reports that evidence as unavailable. `fifo_caller_timing_sources` counts FIFO source batches whose device requested a timing extension or enabled presentation waits. It records capabilities, not whether the caller supplied a timing target or whether CPU pacing was excluded. The earlier synchronous FIFO candidate excluded these batches; the current synchronous fallback preserves caller IDs/waits without consuming their namespace and excludes actual timing nodes instead. Inspect ready-batch counts, ownership and readiness budgets separately.
 

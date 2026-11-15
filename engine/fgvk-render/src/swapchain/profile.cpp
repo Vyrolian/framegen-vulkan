@@ -69,26 +69,6 @@ ProfileUpdateDecision Swapchain::updateProfile(
         this->frameGenerationTransition.request(
             request, runtimeStateRevision, std::chrono::milliseconds(500)
         );
-        if (present_diagnostics::enabled()) {
-            std::cerr << "framegen-vulkan: present diagnostics: "
-                         "operation=runtime-transition-pending"
-                      << " context=" << this->diagnosticsState.contextId
-                      << " state_revision=" << runtimeStateRevision
-                      << " reason=frame-generation-resources"
-                      << " flow_scale_pending="
-                      << (ls::effectiveFlowScale(this->profile) !=
-                            ls::effectiveFlowScale(nextProfile))
-                      << " lighter_model_pending="
-                      << (ls::effectivePerformanceMode(this->profile) !=
-                            ls::effectivePerformanceMode(nextProfile))
-                      << " generated_capacity_pending="
-                      << decision.generatedFrameCapacityExceeded
-                      << " active_generated_capacity="
-                      << this->destinationImages.size()
-                      << " requested_generated_capacity="
-                      << generatedFrameCapacityForProfile(nextProfile)
-                      << " action=prepare-private-context\n";
-        }
     } else if (ls::effectiveFlowScale(this->profile) ==
                 ls::effectiveFlowScale(nextProfile) &&
             ls::effectivePerformanceMode(this->profile) ==
@@ -124,46 +104,6 @@ ProfileUpdateDecision Swapchain::updateProfile(
         decision.action = ProfileUpdateAction::RequestSwapchainRecreation;
     }
 
-    const auto logPendingRecreation = [&]() {
-        if ((!decision.swapchainRecreationDeferred &&
-             !decision.processRestartDeferred) ||
-                !present_diagnostics::enabled()) {
-            return;
-        }
-        std::cerr << "framegen-vulkan: present diagnostics: "
-                     "operation=runtime-transition-pending"
-                  << " context=" << this->diagnosticsState.contextId
-                  << " role=" << layerRoleName
-                  << " state_revision=" << runtimeStateRevision
-                  << " reason=profile-resources"
-                  << " frame_generation_backend_pending="
-                  << decision.frameGenerationBackendChanged
-                  << " flow_scale_pending="
-                  << (ls::effectiveFlowScale(this->profile) !=
-                        ls::effectiveFlowScale(nextProfile))
-                  << " lighter_model_pending="
-                  << (ls::effectivePerformanceMode(this->profile) !=
-                        ls::effectivePerformanceMode(nextProfile))
-                  << " generated_capacity_pending="
-                  << decision.generatedFrameCapacityExceeded
-                  << " available_generated_capacity="
-                  << this->destinationImages.size()
-                  << " available_wsi_generated_capacity="
-                  << existingSwapchainGeneratedFrameCapacity
-                  << " requested_generated_capacity="
-                  << requestedGeneratedFrameCapacity
-                  << " process_restart_required="
-                  << decision.processRestartDeferred
-                  << " action="
-                  << (decision.swapchainRecreationRequested
-                        ? "signal-out-of-date-after-retirement-fenced-present"
-                        : decision.processRestartDeferred
-                        ? "wait-for-process-restart"
-                        : "wait-for-natural-swapchain-recreation")
-                  << '\n';
-    };
-    logPendingRecreation();
-
     if (!this->colorPipeline.generationSupported || !this->instance ||
             !resourcesAvailable) {
         this->profile = std::move(plan.appliedProfile);
@@ -196,10 +136,6 @@ ProfileUpdateDecision Swapchain::updateProfile(
     if (decision.fixedMultiplierChanged ||
             decision.baseFpsCapChanged || enabling || disabling) {
         this->fixedRefreshBudget.reset();
-        this->diagnosticsState.fixedWindowStarted.reset();
-        this->diagnosticsState.fixedRealFrames = 0;
-        this->diagnosticsState.fixedGeneratedFrames = 0;
-        this->diagnosticsState.fixedSkippedFrames = 0;
     }
     if (decision.baseFpsCapChanged || decision.generationPolicyChanged ||
             enabling || disabling) {
@@ -233,45 +169,6 @@ ProfileUpdateDecision Swapchain::updateProfile(
     if (transportLoadTransition) {
         this->recoveryState.orderedAcquireRecovery
             .armTransitionRecreation();
-        if (present_diagnostics::enabled()) {
-            std::cerr << "framegen-vulkan: present diagnostics: "
-                         "operation=ordered-acquire-transition-recovery-armed"
-                      << " context=" << this->diagnosticsState.contextId
-                      << " evidence=explicit-profile-transition"
-                      << " action=one-shot-on-acquire-failure\n";
-        }
-    }
-
-    if (present_diagnostics::enabled()) {
-        std::cerr << "framegen-vulkan: present diagnostics: operation=runtime-state-applied"
-                  << " context=" << this->diagnosticsState.contextId
-                  << " role=" << layerRoleName
-                  << " state_revision=" << runtimeStateRevision
-                  << " transition=live"
-                  << " frame_generation_enabled="
-                  << this->profile.frame_generation_enabled
-                  << " effective_frame_generation_enabled="
-                  << effectiveFrameGenerationEnabled(
-                        this->profile
-                     )
-                  << " multiplier=" << this->profile.multiplier
-                  << " base_fps_cap=" << this->profile.base_fps_cap
-                  << " effective_base_fps_cap="
-                  << effectiveBaseFpsCap(this->profile)
-                  << " stable_cadence="
-                  << this->profile.adaptive_stable_cadence
-                  << " effective_flow_scale="
-                  << ls::effectiveFlowScale(this->profile)
-                  << " lighter_model="
-                  << ls::effectivePerformanceMode(this->profile)
-                  << " frame_generation_resources_available="
-                  << (this->sourceImages.size() == 2 &&
-                        !this->destinationImages.empty() &&
-                        this->syncSemaphore.has_value())
-                  << " generated_frame_capacity="
-                  << this->destinationImages.size()
-                  << " hdr=" << this->colorPipeline.hdr
-                  << '\n';
     }
 
     return decision;
@@ -306,16 +203,6 @@ bool Swapchain::requestLiveProfileResourceRecreationAfterPresent(
     std::cerr << "framegen-vulkan: live profile resource change requested a "
                  "game-owned swapchain recreation after one "
                  "maintenance1-fenced lower present\n";
-    if (present_diagnostics::enabled()) {
-        std::cerr << "framegen-vulkan: present diagnostics: "
-                     "operation=runtime-transition-recreation-requested"
-                  << " context=" << this->diagnosticsState.contextId
-                  << " state_revision=" << *runtimeStateRevision
-                  << " reason=profile-resources"
-                  << " lower_present_result=" << lowerPresentResult
-                  << " signal=VK_ERROR_OUT_OF_DATE_KHR"
-                  << " delivery=one-shot-after-retirement-fence-attachment\n";
-    }
     return true;
 }
 
@@ -337,15 +224,6 @@ bool Swapchain::requestOrderedAcquireRecreationAfterPresent(
     std::cerr << "framegen-vulkan: a generated-image acquire failed after an "
                  "explicit transition; requesting one game-owned swapchain "
                  "recreation\n";
-    if (present_diagnostics::enabled()) {
-        std::cerr << "framegen-vulkan: present diagnostics: "
-                     "operation=ordered-acquire-recreation-requested"
-                  << " context=" << this->diagnosticsState.contextId
-                  << " reason=transition-scoped-generated-image-timeout"
-                  << " lower_present_result=" << lowerPresentResult
-                  << " signal=VK_ERROR_OUT_OF_DATE_KHR"
-                  << " delivery=one-shot-per-context-after-retirement-fence-attachment\n";
-    }
     return true;
 }
 

@@ -60,7 +60,7 @@ int main() {
 
     const auto& logging = defaults.settings();
     expect(!logging.log_pacing && !logging.log_trace && !logging.log_wayland &&
-            !logging.log_gpu_cost && !logging.log_present,
+            !logging.log_gpu_cost,
         "logging switches must default to off");
 
     ls::LaunchConfigFile configured;
@@ -71,7 +71,6 @@ int main() {
     configured.settings().log_trace = false;
     configured.settings().log_wayland = true;
     configured.settings().log_gpu_cost = true;
-    configured.settings().log_present = false;
     const auto canonicalPath = directory / "launcher.conf";
     configured.write(canonicalPath);
 
@@ -83,8 +82,7 @@ int main() {
             "log_pacing=1\n"
             "log_trace=0\n"
             "log_wayland=1\n"
-            "log_gpu_cost=1\n"
-            "log_present=0\n",
+            "log_gpu_cost=1\n",
         "launcher configuration writer must retain its canonical shell-safe format");
 
     const ls::LaunchConfigFile restored(canonicalPath);
@@ -93,8 +91,7 @@ int main() {
             restored.settings().force_alsa_audio,
         "launcher configuration must round-trip every supported setting");
     expect(restored.settings().log_pacing && !restored.settings().log_trace &&
-            restored.settings().log_wayland && restored.settings().log_gpu_cost &&
-            !restored.settings().log_present,
+            restored.settings().log_wayland && restored.settings().log_gpu_cost,
         "launcher configuration must round-trip every logging switch");
 
     for (const auto value : {"0", "1"}) {
@@ -103,6 +100,17 @@ int main() {
         expect(ls::LaunchConfigFile(canonicalPath).settings().enable_zink,
             "the retired launcher key must parse without changing supported settings");
     }
+    for (const auto value : {"0", "1"}) {
+        writeText(canonicalPath, std::string("version=1\nlog_present=") + value +
+            "\nenable_zink=1\n");
+        const ls::LaunchConfigFile retired(canonicalPath);
+        expect(retired.settings().enable_zink && !retired.settings().log_pacing &&
+                !retired.settings().log_trace && !retired.settings().log_wayland &&
+                !retired.settings().log_gpu_cost,
+            "the retired log_present key must parse without changing any supported setting");
+    }
+    expect(rejects(directory / "duplicate-present.conf", "version=1\nlog_present=1\nlog_present=0\n"),
+        "duplicate retired log_present settings must fail closed");
     expect(rejects(directory / "duplicate-hdr.conf",
             "version=1\ndisable_hdr_exposure=1\ndisable_hdr_exposure=0\n"),
         "duplicate HDR settings must fail closed");
@@ -116,13 +124,12 @@ int main() {
     const ls::LaunchConfigFile legacyFile(legacyPath);
     const auto& legacy = legacyFile.settings();
     expect(!legacy.log_pacing && !legacy.log_trace && !legacy.log_wayland &&
-            !legacy.log_gpu_cost && !legacy.log_present,
+            !legacy.log_gpu_cost,
         "a launcher configuration without logging switches must load them as off");
     expect(rejects(directory / "duplicate-logging.conf", "version=1\nlog_pacing=1\nlog_pacing=0\n") &&
             rejects(directory / "duplicate-trace.conf", "version=1\nlog_trace=1\nlog_trace=0\n") &&
             rejects(directory / "duplicate-wayland.conf", "version=1\nlog_wayland=1\nlog_wayland=0\n") &&
-            rejects(directory / "duplicate-gpu-cost.conf", "version=1\nlog_gpu_cost=1\nlog_gpu_cost=0\n") &&
-            rejects(directory / "duplicate-present.conf", "version=1\nlog_present=1\nlog_present=0\n"),
+            rejects(directory / "duplicate-gpu-cost.conf", "version=1\nlog_gpu_cost=1\nlog_gpu_cost=0\n"),
         "duplicate logging switches must be rejected");
     expect(rejects(directory / "invalid-logging.conf", "version=1\nlog_trace=true\n") &&
             rejects(directory / "invalid-present.conf", "version=1\nlog_present=2\n"),

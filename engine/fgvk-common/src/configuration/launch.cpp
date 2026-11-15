@@ -113,7 +113,7 @@ LaunchConfigFile::LaunchConfigFile(const std::filesystem::path& path) {
         } else if (key == "log_present") {
             if (logPresentSeen)
                 throw ls::error("duplicate log_present launcher setting");
-            this->launchConf.log_present = parseBoolean(key, value);
+            static_cast<void>(parseBoolean(key, value)); // Retired; accepted for old launcher files.
             logPresentSeen = true;
         } else {
             throw ls::error("unknown launcher setting: " + std::string(key));
@@ -138,8 +138,7 @@ void LaunchConfigFile::write(const std::filesystem::path& path) const {
             << "log_pacing=" << static_cast<int>(this->launchConf.log_pacing) << '\n'
             << "log_trace=" << static_cast<int>(this->launchConf.log_trace) << '\n'
             << "log_wayland=" << static_cast<int>(this->launchConf.log_wayland) << '\n'
-            << "log_gpu_cost=" << static_cast<int>(this->launchConf.log_gpu_cost) << '\n'
-            << "log_present=" << static_cast<int>(this->launchConf.log_present) << '\n';
+            << "log_gpu_cost=" << static_cast<int>(this->launchConf.log_gpu_cost) << '\n';
         detail::writeConfigurationAtomically(path, output.str());
     } catch (const std::exception& error) {
         throw ls::error("unable to write launcher configuration", error);

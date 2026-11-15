@@ -129,7 +129,6 @@ log_pacing = 0
 log_trace = 0
 log_wayland = 0
 log_gpu_cost = 0
-log_present = 0
 ```
 
 - `disable_steam_overlay`: on by default; it may reduce stutter but disables Steam's in-game overlay and FPS counter and may affect Steam Input.
@@ -139,9 +138,10 @@ log_present = 0
 - `log_trace`: detailed trace of every present, acquire and wait, with a larger file; exports `FGVK_PACING_PROFILE_TRACE=1`.
 - `log_wayland`: compositor presentation feedback; exports `FGVK_PACING_PROFILE_WAYLAND=1`.
 - `log_gpu_cost`: frame-generation GPU time, which does not change pacing; exports `FGVK_PACING_PROFILE_GPU_SPLIT=1` and `FGVK_PACING_PROFILE=1`.
-- `log_present`: verbose renderer messages on stderr; exports `FGVK_PRESENT_DIAGNOSTICS=1`.
 
 The logging switches default to 0 and take only 0 or 1. The Logging section of the `fgvk` settings window writes them. A launcher exports its variable only when the launch options do not already set that variable, so a value typed there wins, including `=0`. Logs are written under `${TMPDIR:-/tmp}` and apply the next time a game starts.
+
+The retired `log_present` key from earlier builds is still accepted (0 or 1, no duplicates) and ignored; framegen-vulkan does not write it.
 
 Enable host MangoHud with `MANGOHUD=1` in the launch option after installing MangoHud and Python 3. MangoHud reads its own configuration. See [layer ordering](LAYER-CHAINING.md#standalone-framegen-vulkan-with-mangohud).
 

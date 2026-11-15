@@ -21,11 +21,11 @@ Generated files and user data have different lifecycles:
 - Persisted values that exist nowhere else are user data. Keep an idempotent migration until framegen-vulkan ends the direct-upgrade path from the affected release.
 - Deny-lists and fail-closed host guards remain current safety rules while stale artifacts could reactivate unsupported behavior.
 
-The optional `disable_hdr_exposure` boolean in standalone `launcher.conf` version 1 is still accepted (0 or 1, no duplicates) and ignored, so old files stay valid.
+The optional `disable_hdr_exposure` and `log_present` booleans in standalone `launcher.conf` version 1 are still accepted (0 or 1, no duplicates) and ignored, so old files stay valid.
 
 Standalone `launcher.conf` version 1 gains the optional `disable_steam_overlay` boolean, with true as the absent-field default. Use a matching launcher; older strict readers cannot consume the new field.
 
-Standalone `launcher.conf` version 1 gains the optional logging booleans `log_pacing`, `log_trace`, `log_wayland`, `log_gpu_cost` and `log_present`, with 0 as the absent-field default. Use a matching launcher; older strict readers cannot consume the new fields.
+Standalone `launcher.conf` version 1 gains the optional logging booleans `log_pacing`, `log_trace`, `log_wayland` and `log_gpu_cost`, with 0 as the absent-field default. Use a matching launcher; older strict readers cannot consume the new fields.
 
 framegen-vulkan supports direct upgrades from framegen-vulkan 2.0.0, with no maximum skipped-version gap, but does not import state from differently named experimental predecessors or pre-public file formats. A data migration can be removed only after framegen-vulkan declares a newer minimum direct-upgrade baseline than its source release or provides an equivalent state-preserving replacement.
 
@@ -44,6 +44,7 @@ When adding transitional compatibility, update this ledger in the same change wi
 
 | Cleanup | Result | Completed |
 | --- | --- | --- |
+| Present diagnostics switch removal | Removed the present-diagnostics environment switch and the operation records only it printed (the slow-operation logs and their threshold, the `application-acquire` and `pacing-profile-writer` records, and their unused state), the `log_present` settings-window switch and its launcher export. A retired `log_present` key is accepted and ignored. The pacing profile records, the d7 stall probe and the always-on lines are unchanged. | 2026-11-15 |
 | Adaptive frame generation | Removed the Adaptive scheduler, its target, ceiling, Smooth Cadence handoff and Dynamic Cadence Recovery, with their settings and tests. Old keys are accepted and ignored, `adaptive = true` runs Fixed with its `multiplier`, and the generated-capacity reservation is `multiplier - 1`. | 2026-11-15 |
 | Native Steam Remote Play removal | Removed the native Steam Remote Play override (`fgvk-remote-play`, `fgvk_remote_play/`, its SDR helper) and the stream-only `current_profile` / `FGVK_FOLLOW_CURRENT_PROFILE` selection. The root `current_profile` key is ignored, so existing files still load and match by `active_in`. Older builds may have left `~/.config/framegen-vulkan/native-remote-play.json` or a `streaming_client.fgvk-original` backup; restore them with that older build's `fgvk-remote-play restore-before-uninstall` before upgrading. This build neither restores nor deletes them and never touches Steam files. | 2026-11-13 |
 | Separate plugin integration and Qt configuration UI removal | Removed the separate plugin integration, its generators and bindings, and the Qt configuration application. The Renderer reads only `~/.config/framegen-vulkan/conf.toml`. Older installations need a one-time migration. | 2026-11-07 |

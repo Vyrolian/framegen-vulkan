@@ -44,14 +44,6 @@ VkResult Swapchain::completeDeferredPresent(const uint64_t timeoutNs, const bool
         this->realFramePacer.recordAcquireWait(DiagnosticsClock::now() - started);
     if (!first) return timeoutNs == 0 ? VK_NOT_READY : VK_TIMEOUT;
     const auto report = [this](const DeferredPresent::Completion& completion) {
-        for (size_t i = 0; i < completion.count; ++i)
-            // An internal real output is a worker copy too, but it is not a generated frame.
-            if (completion.calls[i].workerCopy && completion.calls[i].generated) {
-                if (completion.calls[i].skipped)
-                    ++this->diagnosticsState.fixedSkippedFrames;
-                else
-                    ++this->diagnosticsState.fixedGeneratedFrames;
-            }
         if (completion.result == VK_SUCCESS && completion.count && !completion.readinessMiss)
             // A just-in-time batch's readiness shift is not carried into the planned phase.
             this->realFramePacer.completeOutputBatch(
@@ -707,13 +699,6 @@ VkResult Swapchain::retireAcquiredImagesAndPresent(const vk::Vulkan& vk,
     if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR)
         throw ls::vulkan_error(result, "vkQueuePresentKHR() failed");
 
-    if (presentDiagnosticsEnabled()) {
-        std::cerr << "framegen-vulkan: present diagnostics: "
-                     "operation=retire-acquired-images"
-                  << " context=" << this->diagnosticsState.contextId
-                  << " images=" << acquiredImageIndices.size()
-                  << " reason=backend-schedule-failure\n";
-    }
     this->frameState.realFrameIndex++;
     return result;
 }

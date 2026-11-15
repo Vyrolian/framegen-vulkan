@@ -40,7 +40,6 @@ enum class RecordKind : uint16_t {
     PacingApplication,
     PacingWait,
     PacingCopy,
-    ApplicationAcquireWindow,
     ApplicationPresentWindow,
     ApplicationPresentWaitWindow,
     PacingCall,

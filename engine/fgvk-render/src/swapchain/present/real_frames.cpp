@@ -33,46 +33,6 @@ using namespace fgvk::layer;
 
 using namespace fgvk::layer::present_detail;
 
-void Swapchain::recordPresentCadence(const DiagnosticsClock::time_point presentNow) {
-    if (presentDiagnosticsEnabled()) {
-        if (!this->diagnosticsState.fixedWindowStarted)
-            this->diagnosticsState.fixedWindowStarted = presentNow;
-        const double windowSeconds = std::chrono::duration<double>(
-            presentNow - *this->diagnosticsState.fixedWindowStarted
-        ).count();
-        if (windowSeconds >= 1.0) {
-            const double realFps =
-                static_cast<double>(this->diagnosticsState.fixedRealFrames) /
-                    windowSeconds;
-            const double observedOutputFps =
-                static_cast<double>(this->diagnosticsState.fixedRealFrames +
-                    this->diagnosticsState.fixedGeneratedFrames) / windowSeconds;
-            // Keep opt-in diagnostics from adding field-by-field flush points
-            // to the presentation thread's once-per-second pacing report.
-            std::ostringstream message;
-            message << "framegen-vulkan: present diagnostics: operation=fixed-plan"
-                    << " context=" << this->diagnosticsState.contextId
-                    << " base_fps=" << realFps
-                    << " multiplier=" << this->profile.multiplier
-                    << " generated_per_real="
-                    << (effectiveFrameGenerationEnabled(this->profile)
-                          ? this->configuredFixedGeneratedFrames : 0)
-                    << " observed_output_fps=" << observedOutputFps
-                    << " generated_presented="
-                    << this->diagnosticsState.fixedGeneratedFrames
-                    << " generated_skipped="
-                    << this->diagnosticsState.fixedSkippedFrames
-                    << '\n';
-            std::cerr << message.str();
-            this->diagnosticsState.fixedWindowStarted = presentNow;
-            this->diagnosticsState.fixedRealFrames = 0;
-            this->diagnosticsState.fixedGeneratedFrames = 0;
-            this->diagnosticsState.fixedSkippedFrames = 0;
-        }
-        this->diagnosticsState.fixedRealFrames++;
-    }
-}
-
 VkResult Swapchain::presentNativeFrame(const PresentInvocation& invocation) {
     return this->presentDirectApplicationFrame(invocation);
 }
@@ -93,7 +53,7 @@ VkResult Swapchain::presentDirectApplicationFrame(
         .pSwapchains = &invocation.swapchain,
         .pImageIndices = &invocation.imageIndex,
     };
-    const auto originalPresentStarted = startPresentDiagnostic();
+    const auto originalPresentStarted = startPhaseTimer();
     const auto result = this->queuePresentWithRetirementFence(
         invocation.vk, invocation.queue, presentInfo, {
             .scheduled = invocation.originalPresentDeadline.value_or(DiagnosticsClock::time_point{}),
@@ -101,23 +61,16 @@ VkResult Swapchain::presentDirectApplicationFrame(
         }
     );
     const PresentPhaseDurations phases{
-        .originalPresent = finishPresentDiagnostic(originalPresentStarted),
+        .originalPresent = finishPhaseTimer(originalPresentStarted),
     };
-    const auto presentWorkDuration = finishPresentDiagnostic(
+    const auto presentWorkDuration = finishPhaseTimer(
         invocation.started
     );
     if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR)
         throw ls::vulkan_error(result, "vkQueuePresentKHR() failed");
     static_cast<void>(healthSource);
 
-    logSlowPresentOperation(
-        "present-total", this->frameState.realFrameIndex,
-        this->frameState.sequenceIndex, invocation.started, result
-    );
-    logSlowPresentBreakdown(
-        this->diagnosticsState.contextId, this->frameState.realFrameIndex,
-        this->frameState.sequenceIndex, presentWorkDuration, phases
-    );
+    recordPresentPhases(this->diagnosticsState.contextId, presentWorkDuration, phases);
     this->frameState.realFrameIndex++;
     return result;
 }
@@ -148,7 +101,7 @@ VkResult Swapchain::presentOriginalImage(
     } else if (invocation.originalPresentDeadline) {
         invocation.waitForOutput(*invocation.originalPresentDeadline);
     }
-    const auto originalPresentStarted = startPresentDiagnostic();
+    const auto originalPresentStarted = startPhaseTimer();
     const auto result = this->queuePresentWithRetirementFence(
         invocation.vk, invocation.queue, presentInfo, {
             .scheduled = invocation.originalPresentDeadline.value_or(DiagnosticsClock::time_point{}),
@@ -157,24 +110,7 @@ VkResult Swapchain::presentOriginalImage(
         }
     );
     if (duration)
-        *duration = finishPresentDiagnostic(originalPresentStarted);
-    logSlowPresentOperation(
-        "present-original-image", this->frameState.realFrameIndex, this->frameState.sequenceIndex,
-        originalPresentStarted, result, std::nullopt, invocation.imageIndex
-    );
-    if (result == VK_ERROR_OUT_OF_DATE_KHR && presentDiagnosticsEnabled()) {
-        // Every direct original-image path has already submitted the
-        // application's acquired image to the lower presentation role. Keep
-        // that fact explicit so callers may safely propagate OUT_OF_DATE
-        // without attempting a duplicate present during recreation.
-        std::cerr << "framegen-vulkan: present diagnostics: "
-                     "operation=original-present-recreation-propagate"
-                  << " context=" << this->diagnosticsState.contextId
-                  << " frame=" << this->frameState.realFrameIndex
-                  << " sequence=" << this->frameState.sequenceIndex
-                  << " result=" << result
-                  << " action=application-image-submitted-before-recreation\n";
-    }
+        *duration = finishPhaseTimer(originalPresentStarted);
     return result;
 }
 
@@ -219,7 +155,6 @@ void Swapchain::submitSourceCopy(const PresentInvocation& invocation,
         this->recordRenderSplitEnd(commandBuffer.handle(), this->currentRenderSlot());
     commandBuffer.end(invocation.vk);
 
-    const auto sourceSubmitStarted = startPresentDiagnostic();
     const auto sourceTimelineValue =
         this->frameState.backendTimelineIndex++;
     this->frameState.sequenceIndex++;
@@ -262,10 +197,6 @@ void Swapchain::submitSourceCopy(const PresentInvocation& invocation,
     this->frameState.sourceReleaseTimelineValue =
         this->frameState.nextSourceReleaseTimelineValue;
     this->frameState.nextSourceReleaseTimelineValue = 0;
-    logSlowPresentOperation(
-        "submit-source-copy", this->frameState.realFrameIndex,
-        this->frameState.sequenceIndex, sourceSubmitStarted
-    );
 }
 
 bool Swapchain::recordRenderSplitBegin(const vk::Vulkan& vk,
@@ -320,7 +251,7 @@ VkResult Swapchain::presentHistoryOnly(
         this->presentationSlotFor(invocation.imageIndex)).first;
 
     auto& fallbackCommandBuffer = fallbackPass.commandBuffer;
-    const auto fallbackSubmitStarted = startPresentDiagnostic();
+    const auto fallbackSubmitStarted = startPhaseTimer();
     fallbackCommandBuffer.begin(invocation.vk);
     fallbackCommandBuffer.end(invocation.vk);
     fallbackCommandBuffer.submit(invocation.vk,
@@ -328,16 +259,16 @@ VkResult Swapchain::presentHistoryOnly(
         std::array{fallbackSemaphore.handle()}, VK_NULL_HANDLE, 0,
         this->currentRenderSlot().fence.handle()
     );
-    phases.generatedSubmit = finishPresentDiagnostic(
+    phases.generatedSubmit = finishPhaseTimer(
         fallbackSubmitStarted
     );
     this->currentRenderSlot().inFlight = true;
 
-    const auto historyScheduleStarted = startPresentDiagnostic();
+    const auto historyScheduleStarted = startPhaseTimer();
     try {
         this->instance->scheduleFrameHistory(this->ctx.get());
     } catch (const std::exception& error) {
-        phases.schedule = finishPresentDiagnostic(historyScheduleStarted);
+        phases.schedule = finishPhaseTimer(historyScheduleStarted);
         // The fallback copy is already queued and signals fallbackSemaphore.
         // Present the real image through it and quarantine generation instead
         // of returning an error to the application.
@@ -357,42 +288,19 @@ VkResult Swapchain::presentHistoryOnly(
                 fallbackResult, "vkQueuePresentKHR() failed"
             );
         }
-        const auto presentWorkDuration = finishPresentDiagnostic(
+        const auto presentWorkDuration = finishPhaseTimer(
             invocation.started
         );
-        logSlowPresentOperation(
-            "present-total", this->frameState.realFrameIndex, this->frameState.sequenceIndex,
-            invocation.started, fallbackResult
-        );
-        logSlowPresentBreakdown(
-            this->diagnosticsState.contextId,
-            this->frameState.realFrameIndex,
-            this->frameState.sequenceIndex, presentWorkDuration, phases
-        );
+        recordPresentPhases(this->diagnosticsState.contextId, presentWorkDuration, phases);
         this->frameState.realFrameIndex++;
         return fallbackResult;
     }
-    phases.schedule = finishPresentDiagnostic(historyScheduleStarted);
+    phases.schedule = finishPhaseTimer(historyScheduleStarted);
 
     if (this->pacingProfile) this->pacingProfile->backendScheduled(this->frameState.backendFrameIndex);
     this->frameState.backendFrameIndex++;
-    if (plan.requestedGeneratedFrames.size() >
-            plan.admittedGeneratedFrameCount) {
-        logPresentFallback(
-            this->frameState.realFrameIndex, this->frameState.sequenceIndex, 0,
-            plan.requestedGeneratedFrames.size() -
-                plan.admittedGeneratedFrameCount,
-            sourceTimelineValue, "nonblocking-admission", "history-only"
-        );
-    }
-    if (this->recoveryState.historyWarmupRemaining > 0) {
-        logHistoryWarmup(
-            this->frameState.realFrameIndex, this->frameState.sequenceIndex,
-            this->recoveryState.historyWarmupRemaining,
-            false, std::nullopt
-        );
+    if (this->recoveryState.historyWarmupRemaining > 0)
         this->recoveryState.historyWarmupRemaining--;
-    }
 
     const auto result = this->presentOriginalImage(
         invocation, fallbackSemaphore.handle(), invocation.nextChain,
@@ -401,17 +309,10 @@ VkResult Swapchain::presentHistoryOnly(
     if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR)
         throw ls::vulkan_error(result, "vkQueuePresentKHR() failed");
 
-    const auto presentWorkDuration = finishPresentDiagnostic(
+    const auto presentWorkDuration = finishPhaseTimer(
         invocation.started
     );
-    logSlowPresentOperation(
-        "present-total", this->frameState.realFrameIndex,
-        this->frameState.sequenceIndex, invocation.started, result
-    );
-    logSlowPresentBreakdown(
-        this->diagnosticsState.contextId, this->frameState.realFrameIndex,
-        this->frameState.sequenceIndex, presentWorkDuration, phases
-    );
+    recordPresentPhases(this->diagnosticsState.contextId, presentWorkDuration, phases);
     this->frameState.realFrameIndex++;
     return result;
 }

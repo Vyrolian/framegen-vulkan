@@ -104,19 +104,11 @@ void profileScenario() {
     logPacingPresentMarkerGpu(17, 4, 9, true, true, 10008000, 10008050);
     logPacingPresentMarkerGpu(17, 5, 10, false, false, 10009000, 10009050);
 
-    // Application windows: the second call closes the first window.
-    ApplicationAcquireDetails details{};
-    details.internal = InternalAcquireTiming{1ms, 2ms, 3ms, false};
-    recordApplicationFrameTiming(ApplicationFrameApi::AcquireKhr, 1, fakeSwapchain(), start,
-        start + 2ms, VK_SUCCESS, 1000000, {}, {}, 2u, 17, 1, &details);
-    recordApplicationFrameTiming(ApplicationFrameApi::AcquireKhr, 1, fakeSwapchain(), start + 1s,
-        start + 1s + 2ms, VK_TIMEOUT, 0, {}, {}, std::nullopt, 17, 1, nullptr);
+    // Application present windows: the second call closes the first window.
     recordApplicationFrameTiming(ApplicationFrameApi::Present, 1, fakeSwapchain(), start,
         start + 7ms, VK_SUCCESS, {}, 1ms, 5ms, 3u, 17, 1);
     recordApplicationFrameTiming(ApplicationFrameApi::Present, 1, fakeSwapchain(), start + 1s,
         start + 1s + 7ms, VK_SUCCESS, {}, 1ms, 5ms, 3u, 17, 1);
-    recordApplicationFrameTiming(ApplicationFrameApi::AcquireKhr2, 1, fakeSwapchain(), start + 2s,
-        start + 2s + 1ms, VK_NOT_READY, 0, {}, {}, std::nullopt, 17, 1);
     recordApplicationPresentWait(fakeDevice(), fakeSwapchain(), PresentWaitApi::Khr2, 123, 0,
         VK_TIMEOUT, start, start + 2ms);
     recordApplicationPresentWait(fakeDevice(), fakeSwapchain(), PresentWaitApi::Khr, 124, 1000,
@@ -177,9 +169,8 @@ std::string normalize(const std::string& text) {
     std::string output;
     while (std::getline(lines, line)) {
         if (line.find("operation=pacing-profile-session") != std::string::npos) continue;
-        // The writer reports its own scheduling, cost and process state. Those vary per run and are not records.
-        if (line.find("operation=pacing-profile-writer") != std::string::npos ||
-                line.find("operation=pacing-profile-recorder") != std::string::npos ||
+        // The recorder and thread records report scheduling, cost and process state. Those vary per run and are not records.
+        if (line.find("operation=pacing-profile-recorder") != std::string::npos ||
                 line.find("operation=pacing-profile-thread") != std::string::npos) continue;
         std::string rebuilt;
         size_t position = 0;
@@ -208,7 +199,7 @@ std::string runScenario(const std::filesystem::path& root, const char* name, boo
     if (child == 0) {
         for (const char* gate : {"FGVK_PACING_PROFILE", "FGVK_PACING_PROFILE_GPU", "FGVK_PACING_PROFILE_TRACE",
                 "FGVK_PACING_PROFILE_WAYLAND",
-                "FGVK_PACING_PROFILE_GPU_SPLIT", "FGVK_PRESENT_DIAGNOSTICS"})
+                "FGVK_PACING_PROFILE_GPU_SPLIT"})
             unsetenv(gate);
         setenv("FGVK_PACING_PROFILE", profile ? "1" : "0", 1);
         if (!profile) setenv("FGVK_PACING_PROFILE_TRACE", "1", 1);

@@ -184,7 +184,6 @@ struct ApplicationWindowPayload {
     uint64_t stream{};
     uintptr_t caller{};
     VkSwapchainKHR swapchain{};
-    present_diagnostics::ApplicationFrameApi api{};
     Clock::time_point finished{};
     size_t slot{};
 };
@@ -291,8 +290,7 @@ bool enqueue(const RecordKind kind, const Payload& payload) noexcept {
     return false;
 }
 
-/// Formats one window into the text the analysers read. Shared by the writer and by the
-/// profile-off fallback, which keeps the diagnostics path's stderr output unchanged.
+/// Formats one window into the text the analysers read, on the writer thread.
 void formatPacingWindow(const PacingWindowPayload& payload,
     const present_diagnostics::PacingProfile::Window& window, std::ostream& line);
 void formatApplicationWindow(const ApplicationWindowPayload& payload,

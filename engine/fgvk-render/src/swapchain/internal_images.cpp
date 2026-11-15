@@ -731,8 +731,6 @@ namespace fgvk::layer {
                 return error;
             return timeout == 0 ? VK_NOT_READY : VK_TIMEOUT;
         }
-        const auto ringDone = measured ? present_diagnostics::Clock::now() : present_diagnostics::Clock::time_point{};
-        const auto ringWait = measured ? ringDone - ringStarted : present_diagnostics::Clock::duration{};
 
         // The release timeline orders the acquired image after its last copy.
         // Safety of the wait value: an index returns to Free only through complete(),
@@ -789,7 +787,6 @@ namespace fgvk::layer {
             if (imported == VK_SUCCESS) {
                 signalledOnHost = true;
                 if (measured) {
-                    present_diagnostics::recordInternalAcquire(ringWait, {}, {}, true);
                     present_diagnostics::recordPacingAcquire(true, ringStarted,
                         present_diagnostics::Clock::now(), {}, tailValue, tailSeen);
                 }
@@ -810,7 +807,6 @@ namespace fgvk::layer {
             const std::lock_guard lock(impl->queue->mutex);
             const auto lockAcquired = measured ? present_diagnostics::Clock::now() : present_diagnostics::Clock::time_point{};
             const auto lockWait = measured ? lockAcquired - lockRequested : present_diagnostics::Clock::duration{};
-            present_diagnostics::Clock::duration submitWait{};
             VkResult submitted = VK_SUCCESS;
             const bool waitRelease = waitValue != 0;
             const bool signalSemaphore = semaphore != VK_NULL_HANDLE;
@@ -839,17 +835,13 @@ namespace fgvk::layer {
                 };
                 if (measured)
                     impl->noteAcquireProbe(*index, waitValue, 0);
-                const auto submitStarted = measured ? present_diagnostics::Clock::now() : present_diagnostics::Clock::time_point{};
                 submitted = impl->funcs.QueueSubmit(impl->queue->queue, 1, &submit, fence);
-                if (measured)
-                    submitWait = present_diagnostics::Clock::now() - submitStarted;
                 if (submitted != VK_SUCCESS) {
                     impl->failSticky(submitted);
                     static_cast<void>(impl->ring.release(*index));
                 }
             }
             if (measured) {
-                present_diagnostics::recordInternalAcquire(ringWait, lockWait, submitWait, false);
                 present_diagnostics::recordPacingAcquire(false, ringStarted,
                     present_diagnostics::Clock::now(), lockWait, 0, {});
             }

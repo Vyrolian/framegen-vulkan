@@ -38,8 +38,8 @@ int main() {
             profile.policy(true, 60);
             std::array<Clock::duration, 9> phases{};
             for (size_t phase = 1; phase < phases.size(); ++phase) {
-                const auto phaseStarted = fgvk::layer::present_detail::startPresentDiagnostic();
-                phases[phase] = fgvk::layer::present_detail::finishPresentDiagnostic(phaseStarted);
+                const auto phaseStarted = fgvk::layer::present_detail::startPhaseTimer();
+                phases[phase] = fgvk::layer::present_detail::finishPhaseTimer(phaseStarted);
                 phases[0] += phases[phase];
             }
             recordPacingProfilePhases(1, phases);
@@ -52,7 +52,6 @@ int main() {
             profile.wait(PacingProfile::ReadinessWait, 1ms);
             profile.wait(PacingProfile::OutputWait, 7ms);
             profile.pacedBatch(true, false);
-            recordApplicationFrameTiming(ApplicationFrameApi::AcquireKhr, 1, {}, now, now + 1ms, VK_SUCCESS, 1000000);
             recordApplicationFrameTiming(ApplicationFrameApi::Present, 1, {}, now + 2ms, now + 12ms, {}, {}, 10us);
             const auto publicationStarted = Clock::now();
             const auto window = profile.finishSource(now + 10ms);

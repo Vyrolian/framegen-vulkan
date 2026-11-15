@@ -142,7 +142,6 @@ namespace fgvk::layer {
         Swapchain(const vk::Vulkan& vk, backend::Instance* backend,
             ls::GameConf profile, SwapchainInfo info,
             bool fp16Requested,
-            uint64_t runtimeStateRevision,
             bool swapchainMaintenance1Enabled);
 
         /// present a frame
@@ -358,16 +357,7 @@ namespace fgvk::layer {
         };
 
         struct DiagnosticsState {
-            std::optional<std::chrono::steady_clock::time_point>
-                fixedWindowStarted;
-            size_t fixedRealFrames{0};
-            size_t fixedGeneratedFrames{0};
-            size_t fixedSkippedFrames{0};
             uint64_t contextId{0};
-            bool orderedAcquireClassificationSplitLogged{false};
-            bool orderedGeneratedAdmissionPolicyLogged{false};
-            std::optional<present_diagnostics::ApplicationPresentMode>
-                applicationPresentMode;
         };
 
         struct FrameGenerationResourceRequest {
@@ -587,8 +577,6 @@ namespace fgvk::layer {
             const ls::GameConf& resourceProfile);
 
         // Real-frame presentation and source history.
-        void recordPresentCadence(
-            std::chrono::steady_clock::time_point presentNow);
         [[nodiscard]] VkResult presentNativeFrame(
             const PresentInvocation& invocation);
         [[nodiscard]] VkResult presentDirectApplicationFrame(
@@ -622,20 +610,13 @@ namespace fgvk::layer {
         [[nodiscard]] bool recordGeneratedCopies(const vk::Vulkan& vk, RenderSlot& slot, size_t pass);
         [[nodiscard]] bool renderSlotsInFlight() const;
         [[nodiscard]] bool pollRenderSlotsIdle(const vk::Vulkan& vk);
-        void handleRenderFenceBudgetMiss(
-            const PresentationFramePlan& plan);
+        void handleRenderFenceBudgetMiss();
         void preacquireGeneratedImages(
             const PresentInvocation& invocation,
             PresentationFramePlan& plan,
             bool trackNonblockingAdmission,
             uint64_t acquireTimeout,
             bool reportAvailableOnFullAdmission = true);
-        void handleGeneratedImageAdmissionPressure(
-            const PresentationFramePlan& plan,
-            size_t admittedGeneratedFrames,
-            bool logPressure,
-            uint64_t acquireTimeoutNanoseconds,
-            const char* action);
         void reportGeneratedImageAdmissionAvailable(
             size_t requiredStableBatches = 1);
 

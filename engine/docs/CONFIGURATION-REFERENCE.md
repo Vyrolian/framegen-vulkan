@@ -103,9 +103,9 @@ These keys live in `${XDG_CONFIG_HOME:-$HOME/.config}/framegen-vulkan/launcher.c
 | `log_trace` | `0` | Exports `FGVK_PACING_PROFILE_TRACE=1`: every present, acquire and wait. Larger file. |
 | `log_wayland` | `0` | Exports `FGVK_PACING_PROFILE_WAYLAND=1`: compositor presentation feedback. |
 | `log_gpu_cost` | `0` | Exports `FGVK_PACING_PROFILE_GPU_SPLIT=1` and `FGVK_PACING_PROFILE=1`: frame-generation GPU time. Does not change pacing. |
-| `log_present` | `0` | Exports `FGVK_PRESENT_DIAGNOSTICS=1`: verbose renderer messages on stderr. |
+| `log_present` | Not written | Retired. `0` or `1` is still accepted and ignored. |
 
-A logging key exports its variable only when the caller has not already set that variable, so a value in the launch options always wins, including `=0`. The Logging section of the `fgvk` settings window writes the five `log_*` keys.
+A logging key exports its variable only when the caller has not already set that variable, so a value in the launch options always wins, including `=0`. The Logging section of the `fgvk` settings window writes the four `log_*` keys.
 
 ## Environment-only configuration
 

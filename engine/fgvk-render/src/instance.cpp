@@ -232,7 +232,7 @@ Root::Root() {
     // find active profile
     const auto identification = ls::identify();
     const auto& profile = findProfile(this->config.get(), identification);
-    if (present_diagnostics::enabled() || present_diagnostics::pacingProfileEnabled()) {
+    if (present_diagnostics::pacingProfileEnabled()) {
         const auto overlayLibraries = present_diagnostics::steamOverlayLibraries();
         std::ostringstream identity;
         identity << "framegen-vulkan: present diagnostics: "
@@ -258,7 +258,6 @@ Root::Root() {
                   << " steam_overlay_hook_loaded=" << overlayLibraries.hookLoaded
                   << " steam_overlay_vulkan_loaded=" << overlayLibraries.vulkanLoaded
                   << '\n';
-        if (present_diagnostics::enabled()) std::cerr << identity.str();
         present_diagnostics::writePacingProfileRecords(identity.str());
     }
     if (!profile.has_value()) {
@@ -344,7 +343,6 @@ ConfigurationUpdateResult Root::update(const bool forceConfigurationPoll) {
 
     auto runtimeProfile = requestedProfile;
     bool profileProcessRestartRequired = false;
-    bool gpuSelectionPending = false;
     bool frameGenerationProvisioningPending = false;
     bool ultraPerformancePending =
         activeUltraPerformance != requestedUltraPerformance;
@@ -356,7 +354,6 @@ ConfigurationUpdateResult Root::update(const bool forceConfigurationPoll) {
             this->swapchainImageCountCompatibilityConfiguredAtStartup
         );
         *runtimeProfile = std::move(projection.runtimeProfile);
-        gpuSelectionPending = projection.gpuSelectionPending;
         frameGenerationProvisioningPending =
             projection.frameGenerationProvisioningPending;
         ultraPerformancePending = projection.ultraPerformancePending;
@@ -403,24 +400,6 @@ ConfigurationUpdateResult Root::update(const bool forceConfigurationPoll) {
     }
 
     this->runtimeStateRevision++;
-    if (profileProcessRestartRequired && present_diagnostics::enabled()) {
-        for (const auto& [swapchain, context] : this->swapchains) {
-            static_cast<void>(swapchain);
-            std::cerr << "framegen-vulkan: present diagnostics: "
-                         "operation=runtime-transition-pending"
-                      << " context=" << context.diagnosticsId()
-                      << " state_revision=" << this->runtimeStateRevision
-                      << " reason=process-static-profile"
-                      << " gpu_selection_pending=" << gpuSelectionPending
-                      << " frame_generation_provisioning_pending="
-                      << frameGenerationProvisioningPending
-                      << " ultra_performance_pending="
-                      << ultraPerformancePending
-                      << " swapchain_image_count_compatibility_pending="
-                      << swapchainImageCountCompatibilityPending
-                      << " action=wait-for-process-restart\n";
-        }
-    }
     if (runtimeProfile)
         this->active_profile = std::move(*runtimeProfile);
     else
@@ -783,59 +762,10 @@ void Root::createSwapchainContext(const vk::Vulkan& vk,
         : profile;
     if (!frameGenerationAvailableOnDevice)
         contextProfile.frame_generation_enabled = false;
-    const bool inserted = this->swapchains.emplace(swapchain,
+    this->swapchains.emplace(swapchain,
         Swapchain(vk, frameGenerationBackend, std::move(contextProfile), info,
             this->fp16AtStartup,
-            this->runtimeStateRevision,
-            swapchainMaintenance1Enabled)).second;
-    const auto insertedContext = this->swapchains.find(swapchain);
-    const uint64_t diagnosticsContextId =
-        insertedContext != this->swapchains.end()
-        ? insertedContext->second.diagnosticsId()
-        : 0;
-    const VkExtent2D frameGenerationResourceExtent =
-        insertedContext != this->swapchains.end()
-        ? insertedContext->second.frameGenerationResourceExtent()
-        : info.extent;
-
-    if (present_diagnostics::enabled()) {
-        std::cerr << "framegen-vulkan: present diagnostics: operation=swapchain-context-create"
-                  << " context=" << diagnosticsContextId
-                  << " pid=" << ::getpid()
-                  << " role=" << layerRoleName
-                  << " swapchain=" << swapchain
-                  << " width=" << info.extent.width
-                  << " height=" << info.extent.height
-                  << " application_width=" << info.applicationExtent.width
-                  << " application_height=" << info.applicationExtent.height
-                  << " frame_generation_width="
-                  << frameGenerationResourceExtent.width
-                  << " frame_generation_height="
-                  << frameGenerationResourceExtent.height
-                  << " requested_min_images="
-                  << info.requestedMinImageCount
-                  << " provisioned_min_images="
-                  << info.provisionedMinImageCount
-                  << " swapchain_image_count_compatibility="
-                  << info.swapchainImageCountCompatibility
-                  << " images=" << info.images.size()
-                  << " format=" << static_cast<int>(info.format)
-                  << " color_space=" << static_cast<int>(info.colorSpace)
-                  << " incoming_present_mode="
-                  << static_cast<int>(info.incomingPresentMode)
-                  << " present_mode=" << static_cast<int>(info.presentMode)
-                  << " ordered_transport="
-                  << (info.privateOrderedTransport ? 1 : 0)
-                  << " replacement=" << (info.replacement ? 1 : 0)
-                  << " active_contexts=" << this->swapchains.size()
-                  << " inserted=" << inserted
-                  << " present_retirement="
-                  << (insertedContext != this->swapchains.end() &&
-                        insertedContext->second.presentRetirementEnabled()
-                        ? "maintenance1-fence" : "natural-only")
-                  << " live_profile_recreation=guarded-maintenance1-one-shot"
-                  << '\n';
-    }
+            swapchainMaintenance1Enabled));
 }
 
 void Root::removeSwapchainContext(VkSwapchainKHR swapchain) {
@@ -845,17 +775,6 @@ void Root::removeSwapchainContext(VkSwapchainKHR swapchain) {
 std::optional<Swapchain> Root::takeSwapchainContext(
         const VkSwapchainKHR swapchain) {
     auto context = this->swapchains.extract(swapchain);
-    const uint64_t diagnosticsContextId = context.empty()
-        ? 0 : context.mapped().diagnosticsId();
-    const bool removed = !context.empty();
-    if (present_diagnostics::enabled()) {
-        std::cerr << "framegen-vulkan: present diagnostics: operation=swapchain-context-destroy"
-                  << " context=" << diagnosticsContextId
-                  << " role=" << layerRoleName
-                  << " swapchain=" << swapchain
-                  << " active_contexts=" << this->swapchains.size()
-                  << " removed=" << removed << '\n';
-    }
     if (context.empty())
         return std::nullopt;
     return std::optional<Swapchain>{std::move(context.mapped())};

@@ -19,21 +19,17 @@
 namespace fgvk::layer::present_detail {
     using DiagnosticsClock = present_diagnostics::Clock;
     using DiagnosticsContextScope = present_diagnostics::ContextScope;
-    using present_diagnostics::logHistoryWarmup;
-    using present_diagnostics::logPresentFallback;
 
-    inline bool presentDiagnosticsEnabled() {
-        return present_diagnostics::enabled();
-    }
-
-    inline DiagnosticsClock::time_point startPresentDiagnostic() {
-        return presentDiagnosticsEnabled() || present_diagnostics::pacingProfileEnabled()
+    // Phase timers read the clock only with the pacing profile. Without it they return zero
+    // durations, so the presentation path reads no extra clock.
+    inline DiagnosticsClock::time_point startPhaseTimer() {
+        return present_diagnostics::pacingProfileEnabled()
             ? DiagnosticsClock::now() : DiagnosticsClock::time_point{};
     }
 
-    inline DiagnosticsClock::duration finishPresentDiagnostic(
+    inline DiagnosticsClock::duration finishPhaseTimer(
             const DiagnosticsClock::time_point started) {
-        if (!presentDiagnosticsEnabled() && !present_diagnostics::pacingProfileEnabled())
+        if (!present_diagnostics::pacingProfileEnabled())
             return {};
         return DiagnosticsClock::now() - started;
     }
@@ -48,74 +44,18 @@ namespace fgvk::layer::present_detail {
         DiagnosticsClock::duration originalPresent{};
     };
 
-    inline void logSlowPresentBreakdown(const uint64_t contextId,
-            const size_t frameIndex, const size_t sequenceIndex,
+    // Hands one present's phase durations to the pacing profile. Nothing is recorded without it.
+    inline void recordPresentPhases(const uint64_t contextId,
             const DiagnosticsClock::duration totalDuration,
             const PresentPhaseDurations& phases) {
-        if (present_diagnostics::pacingProfileEnabled()) {
-            const auto attributed = phases.renderFence + phases.schedule + phases.sourceCopy +
-                phases.acquire + phases.generatedSubmit + phases.generatedPresent + phases.originalPresent;
-            present_diagnostics::recordPacingProfilePhases(contextId, {
-                totalDuration, phases.renderFence, phases.schedule, phases.sourceCopy,
-                phases.acquire, phases.generatedSubmit, phases.generatedPresent,
-                phases.originalPresent, std::max(DiagnosticsClock::duration{}, totalDuration - attributed)});
-        }
-        if (!presentDiagnosticsEnabled())
+        if (!present_diagnostics::pacingProfileEnabled())
             return;
-
-        const auto milliseconds = [](const auto duration) {
-            return std::chrono::duration<double, std::milli>(
-                duration
-            ).count();
-        };
-        const double totalMs = milliseconds(totalDuration);
-
-        const auto attributedDuration =
-            phases.renderFence + phases.schedule + phases.sourceCopy +
-            phases.acquire + phases.generatedSubmit +
-            phases.generatedPresent + phases.originalPresent;
-        const double unattributedMs = std::max(
-            0.0, totalMs - milliseconds(attributedDuration)
-        );
-        present_diagnostics::recordPresentPhaseTiming(contextId, frameIndex,
-            sequenceIndex, DiagnosticsClock::now(), {
-                totalMs, milliseconds(phases.renderFence), milliseconds(phases.schedule),
-                milliseconds(phases.sourceCopy), milliseconds(phases.acquire),
-                milliseconds(phases.generatedSubmit), milliseconds(phases.generatedPresent),
-                milliseconds(phases.originalPresent), unattributedMs});
-        if (totalMs < present_diagnostics::thresholdMilliseconds())
-            return;
-        std::cerr << "framegen-vulkan: present diagnostics: "
-                     "operation=present-breakdown"
-                  << " context=" << contextId
-                  << " total_ms=" << totalMs
-                  << " render_fence_ms="
-                  << milliseconds(phases.renderFence)
-                  << " schedule_ms=" << milliseconds(phases.schedule)
-                  << " source_copy_ms=" << milliseconds(phases.sourceCopy)
-                  << " acquire_ms=" << milliseconds(phases.acquire)
-                  << " generated_submit_ms="
-                  << milliseconds(phases.generatedSubmit)
-                  << " generated_present_ms="
-                  << milliseconds(phases.generatedPresent)
-                  << " original_present_ms="
-                  << milliseconds(phases.originalPresent)
-                  << " unattributed_ms=" << unattributedMs
-                  << " frame=" << frameIndex
-                  << " sequence=" << sequenceIndex
-                  << '\n';
-    }
-
-    inline void logSlowPresentOperation(const std::string_view operation,
-            const size_t frameIndex, const size_t sequenceIndex,
-            const DiagnosticsClock::time_point started,
-            const std::optional<VkResult> result = std::nullopt,
-            const std::optional<size_t> passIndex = std::nullopt,
-            const std::optional<uint32_t> imageIndex = std::nullopt) {
-        present_diagnostics::logSlowOperation(
-            operation, frameIndex, sequenceIndex, started,
-            result, passIndex, imageIndex
-        );
+        const auto attributed = phases.renderFence + phases.schedule + phases.sourceCopy +
+            phases.acquire + phases.generatedSubmit + phases.generatedPresent + phases.originalPresent;
+        present_diagnostics::recordPacingProfilePhases(contextId, {
+            totalDuration, phases.renderFence, phases.schedule, phases.sourceCopy,
+            phases.acquire, phases.generatedSubmit, phases.generatedPresent,
+            phases.originalPresent, std::max(DiagnosticsClock::duration{}, totalDuration - attributed)});
     }
 
     inline VkImageMemoryBarrier barrierHelper(const VkImage handle,
