@@ -72,6 +72,30 @@ void refreshFromWaylandNs() {
         "a 16.7 Hz wp_presentation refresh was accepted");
 }
 
+void waylandOutputRate() {
+    // A non-zero presented refresh is the rate, so the output's mode is not used.
+    expect(UncappedAutoCap::waylandOutputMilliHz(8'000'000, 165'000, 165'000) == 0,
+        "a fixed presented refresh still used the output mode rate");
+    // Under VRR the output the feedback named wins over the only bound output.
+    expect(UncappedAutoCap::waylandOutputMilliHz(0, 60'000, 165'000) == 60'000,
+        "the output named by sync_output did not win over the only output");
+    // Without a named output, the only bound output's mode rate is used.
+    expect(UncappedAutoCap::waylandOutputMilliHz(0, 0, 165'000) == 165'000,
+        "the only bound output's rate was not used without sync_output");
+    expect(UncappedAutoCap::waylandOutputMilliHz(0, 0, 0) == 0,
+        "no output rate was not reported as unknown");
+    expect(near(UncappedAutoCap::refreshHzFromWaylandMilliHz(239'958), 239.958, 1e-9),
+        "a 239 958 mHz output mode is not 239.958 Hz");
+    expect(UncappedAutoCap::refreshHzFromWaylandMilliHz(165'000) == 165.0,
+        "a 165 000 mHz output mode is not 165 Hz");
+    expect(UncappedAutoCap::refreshHzFromWaylandMilliHz(0) == 0.0,
+        "an unknown output mode was not reported as unknown");
+    expect(UncappedAutoCap::refreshHzFromWaylandMilliHz(16'000) == 0.0,
+        "a 16 Hz output mode was accepted");
+    expect(UncappedAutoCap::refreshHzFromWaylandMilliHz(1'000'001) == 0.0,
+        "a 1000.001 Hz output mode was accepted");
+}
+
 void waylandFeedbackCadence() {
     // Rate unknown: every 8th present asks for feedback.
     expect(UncappedAutoCap::waylandFeedbackDue(0, false), "an unknown rate did not ask at present 0");
@@ -91,6 +115,7 @@ int main() {
     refreshRangeCheck();
     refreshQueryCadence();
     refreshFromWaylandNs();
+    waylandOutputRate();
     waylandFeedbackCadence();
     std::cout << "uncapped auto cap tests passed\n";
     return 0;

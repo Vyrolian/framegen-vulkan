@@ -34,6 +34,12 @@ wl_proxy* make(const wl_interface* interface, wl_event_queue* queue) {
     objects.push_back(proxy);
     return proxy;
 }
+// The one wl_output the fixture advertises; sync_output names it before each presented event.
+wl_proxy* outputProxy() {
+    for (auto* proxy : objects)
+        if (std::string_view(proxy->interface->name) == "wl_output") return proxy;
+    return nullptr;
+}
 }
 extern "C" {
 extern const wl_interface wl_registry_interface{"wl_registry", 1, 0, nullptr, 0, nullptr};
@@ -83,15 +89,18 @@ wl_proxy* wl_proxy_marshal_array_constructor_versioned(wl_proxy* parent, uint32_
     if ((kind == "wl_registry" && opcode != 1) || (kind == "wl_callback" && opcode != 0)) std::abort();
     if (kind == "wp_presentation" && (opcode != 0 || args[0].u != 42 ||
             std::strcmp(args[1].s, "wp_presentation") || args[2].u != 1 || args[3].o)) std::abort();
+    if (kind == "wl_output" && (opcode != 0 || args[0].u != 43 ||
+            std::strcmp(args[1].s, "wl_output") || args[2].u != 1 || args[3].o)) std::abort();
     if (kind == "wp_presentation_feedback") {
         if (opcode != 1 || args[0].o != &surface || args[1].o || interface->event_count != 3 ||
                 std::strcmp(interface->events[1].signature, "uuuuuuu")) std::abort();
         ++feedbacks;
     }
     auto* proxy=make(interface, parent->queue);
-    if (kind == "wl_registry" && mode != 1) events.push_back({proxy, 0, 0});
+    if (kind == "wl_registry" && mode != 1) { events.push_back({proxy, 0, 0}); events.push_back({proxy, 5, 0}); }
     if (kind == "wl_callback") events.push_back({proxy, 1, 0});
     if (kind == "wp_presentation" && mode != 2) events.push_back({proxy, 2, 0});
+    if (kind == "wl_output") events.push_back({proxy, 6, 0});
     return proxy;
 }
 int wl_display_dispatch_queue_pending(wl_display* value, wl_event_queue* queue) {
@@ -107,9 +116,25 @@ int wl_display_dispatch_queue_pending(wl_display* value, wl_event_queue* queue) 
             using Fn=void (*)(void*, wl_proxy*, uint32_t);
             reinterpret_cast<Fn>(p->listener[0])(p->data,p,1); // CLOCK_MONOTONIC
         } else if (event.kind == 3) {
+            // Modes 6 and 7 are variable refresh (presented refresh 0); mode 7 sends no sync_output, so the
+            // observer falls back to the only bound output.
+            const uint32_t refresh = mode >= 6 ? 0u : 8'000'000u;
+            if (mode != 7) {
+                if (auto* output=outputProxy()) {
+                    using Sync=void (*)(void*, wl_proxy*, wl_proxy*);
+                    reinterpret_cast<Sync>(p->listener[0])(p->data,p,output);
+                }
+            }
             using Fn=void (*)(void*, wl_proxy*, uint32_t,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t,uint32_t);
             reinterpret_cast<Fn>(p->listener[1])(p->data,p,0,10,
-                static_cast<uint32_t>(event.sequence*8'000'000),8'000'000,0,static_cast<uint32_t>(event.sequence),7);
+                static_cast<uint32_t>(event.sequence*8'000'000),refresh,0,static_cast<uint32_t>(event.sequence),7);
+        } else if (event.kind == 5) {
+            using Fn=void (*)(void*, wl_proxy*, uint32_t, const char*, uint32_t);
+            reinterpret_cast<Fn>(p->listener[0])(p->data,p,43,"wl_output",4);
+        } else if (event.kind == 6) {
+            // The current mode at 165 Hz, in mHz.
+            using Fn=void (*)(void*, wl_proxy*, uint32_t, int32_t, int32_t, int32_t);
+            reinterpret_cast<Fn>(p->listener[1])(p->data,p,1,2560,1440,165'000);
         } else {
             using Fn=void (*)(void*, wl_proxy*);
             reinterpret_cast<Fn>(p->listener[2])(p->data,p);

@@ -32,6 +32,19 @@ public:
         return refreshNs ? refreshHzInRange(1e9 / static_cast<double>(refreshNs)) : 0.0;
     }
 
+    // A wl_output current mode reports its refresh in mHz (165000 for 165 Hz); 0 is unknown.
+    [[nodiscard]] static double refreshHzFromWaylandMilliHz(uint32_t milliHz) {
+        return milliHz ? refreshHzInRange(milliHz / 1000.0) : 0.0;
+    }
+
+    // Under variable refresh wp_presentation reports refresh 0, so the output's current-mode rate (the VRR
+    // maximum) is the ceiling: the rate of the output the feedback named, else the only bound output's.
+    // A non-zero presented refresh wins, which gives 0. Zero means unknown.
+    [[nodiscard]] static uint32_t waylandOutputMilliHz(uint32_t refreshNs, uint32_t syncedMilliHz,
+            uint32_t onlyOutputMilliHz) {
+        return refreshNs != 0 ? 0 : syncedMilliHz ? syncedMilliHz : onlyOutputMilliHz;
+    }
+
     // Whether a native Wayland present asks for presentation feedback. Until a refresh is known every
     // 8th present does; once known, every 240th does.
     [[nodiscard]] static bool waylandFeedbackDue(uint64_t presents, bool known) {

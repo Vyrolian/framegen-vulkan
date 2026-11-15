@@ -521,6 +521,15 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
                 refreshSource = "wp-presentation";
             }
         }
+        // X7: under variable refresh wp_presentation reports 0, so the current-mode rate of the output the
+        // feedback named (or the only bound output) is the ceiling; it is 0 while the refresh is known.
+        if (refreshHz <= 0 && this->info.waylandPresentation) {
+            refreshHz = UncappedAutoCap::refreshHzFromWaylandMilliHz(this->info.waylandPresentation->outputMilliHz());
+            if (refreshHz > 0) {
+                branch = "wayland-output";
+                refreshSource = "wl-output";
+            }
+        }
         if (refreshHz <= 0)
             refreshSource = "none";
         const bool feedbackConfirmed = this->presentFeedback.confirmed();

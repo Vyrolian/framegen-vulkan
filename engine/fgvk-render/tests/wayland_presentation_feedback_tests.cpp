@@ -73,11 +73,37 @@ int main() {
             expect(WaylandPresentationFeedback::observe(observer.get(),lower,VK_NULL_HANDLE,info,7,7,false)==VK_SUCCESS);
             // Present 0's feedback is dispatched by present 1, so the refresh is known from present 1 on.
             expect(observer->refreshNs()==(i==0 ? 0u : 8'000'000u));
+            // X7: a non-zero refresh keeps the output's mode rate unused, although the output is bound.
+            expect(observer->outputMilliHz()==0);
         }
         expect(lowerCalls==calls+480);
         expect(fgvk_test_wayland_feedbacks()==2); // presents 0 and 240 only
         observer->stop();
         expect(observer->refreshNs()==8'000'000u); // stop keeps the last value
+        expect(fgvk_test_wayland_objects()==0);
+        observer.reset();
+        expect(fgvk_test_wayland_objects()==0);
+    }
+    // X7: under variable refresh (presented refresh 0) the output's current mode, 165000 mHz, is the rate.
+    // Mode 6 names the output in sync_output; mode 7 sends none and uses the only bound output. With one
+    // output both give 165000, so this does not test which one wins; uncapped_auto_cap_tests does.
+    for (int mode : {6, 7}) {
+        fgvk_test_wayland_mode(mode);
+        auto observer=WaylandPresentationFeedback::create(fgvk_test_wayland_display(),fgvk_test_wayland_surface(),false);
+        expect(static_cast<bool>(observer));
+        expect(observer->outputMilliHz()==0);
+        lowerResult=VK_SUCCESS;
+        const int calls=lowerCalls;
+        for (int i=0;i<480;++i) {
+            expect(WaylandPresentationFeedback::observe(observer.get(),lower,VK_NULL_HANDLE,info,7,7,false)==VK_SUCCESS);
+            // Present 0's feedback is dispatched by present 1, so the output rate is known from present 1 on.
+            expect(observer->refreshNs()==0);
+            expect(observer->outputMilliHz()==(i==0 ? 0u : 165'000u));
+        }
+        expect(lowerCalls==calls+480);
+        expect(fgvk_test_wayland_feedbacks()==2); // presents 0 and 240 only, as with a known refresh
+        observer->stop();
+        expect(observer->outputMilliHz()==165'000u); // stop keeps the last value
         expect(fgvk_test_wayland_objects()==0);
         observer.reset();
         expect(fgvk_test_wayland_objects()==0);

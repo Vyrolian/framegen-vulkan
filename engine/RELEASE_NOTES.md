@@ -18,6 +18,7 @@
 - With the game's Reflex on (its last `vkSetLatencySleepModeNV` has `lowLatencyMode`), `low_latency` leaves the release delay, its release-token holds and the native acquire fallback off, so Reflex holds the game. The just-in-time batch start stays on. The pacing window line reports `low_latency_hold=reflex` for those windows, and `low_latency_extra_ms=0`.
 - With `low_latency` on and a cap, the game's next frame is also held until the GPU is about to finish the previous batch, like Reflex, when the GPU is the limit. The release is predicted from the backend's batch ends; without split timestamps a stepping hold on a non-blocking fence query is used. The pacing window line reports `gpu_release_ms=`, `gpu_prev_end_ms=` and `gpu_release=off|pred|fence`. The latency effect is not yet measured in a game run.
 - Native Wayland surfaces whose application reports no present timing (for example Minecraft in IMMEDIATE) take the monitor refresh from `wp_presentation` feedback, so the uncapped automatic cap (refresh divided by the multiplier) applies to them as well; the layer requests feedback only every 8th present until a rate is known, then every 240th.
+- Native Wayland under VRR: the automatic cap uses the output's mode rate when `wp_presentation` reports refresh 0.
 
 ## What's new in MAKO Renderer v4.6.0
 

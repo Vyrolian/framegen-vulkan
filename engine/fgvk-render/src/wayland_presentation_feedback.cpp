@@ -80,6 +80,7 @@ struct WaylandPresentationFeedback::Impl {
         Impl* owner{};
         wl_proxy* proxy{};
         Sample sample;
+        uint32_t syncedMilliHz{}; // X7: the mode rate of the output sync_output named, if it is ours.
     };
     std::array<Pending, 256> pending{};
     // Samples are queued as they happen. A sample the queue refuses is counted here and reported
@@ -89,7 +90,29 @@ struct WaylandPresentationFeedback::Impl {
     // X6: the output refresh from the last presented event (0 unknown or variable). Written under
     // mutex by presented(), read lock-free by the present path's refresh query.
     std::atomic<uint32_t> refreshNs{0};
+    // X7: the wl_output globals bound at version 1 on the private queue, up to eight. Each element is its
+    // listener's data, so it stays at one address while its proxy lives.
+    struct Output {
+        uint32_t global{};
+        wl_proxy* proxy{};
+        uint32_t milliHz{}; // The current mode's refresh in mHz; 0 until a current mode arrives.
+    };
+    std::array<Output, 8> outputs{};
+    // X7: the rate of the output the surface was last presented on while the refresh is 0. Written under
+    // mutex by presented(), read lock-free by the present path's refresh query.
+    std::atomic<uint32_t> outputMilliHz{0};
     uint64_t presents{};
+
+    // The mode rate of the only bound output; 0 when no output or several outputs are bound.
+    uint32_t onlyOutputMilliHz() const noexcept {
+        const Output* only{};
+        for (const auto& slot : outputs) {
+            if (!slot.proxy) continue;
+            if (only) return 0;
+            only = &slot;
+        }
+        return only ? only->milliHz : 0;
+    }
 
     void record(const Sample& sample) noexcept {
         if (!diagnostics) return;
@@ -98,7 +121,12 @@ struct WaylandPresentationFeedback::Impl {
     }
     static void globalAdded(void* data, wl_proxy*, uint32_t name, const char* interface, uint32_t version) noexcept {
         auto& self = *static_cast<Impl*>(data);
-        if (self.presentation || !version || std::strcmp(interface, "wp_presentation") != 0) return;
+        if (!version) return;
+        if (std::strcmp(interface, "wl_output") == 0) {
+            self.bindOutput(name);
+            return;
+        }
+        if (self.presentation || std::strcmp(interface, "wp_presentation") != 0) return;
         wl_argument args[4]{};
         args[0].u = name;
         args[1].s = self.presentationInterface.name;
@@ -115,6 +143,13 @@ struct WaylandPresentationFeedback::Impl {
     }
     static void globalRemoved(void* data, wl_proxy*, uint32_t name) noexcept {
         auto& self = *static_cast<Impl*>(data);
+        for (auto& slot : self.outputs) {
+            if (!slot.proxy || slot.global != name) continue;
+            self.destroy(slot.proxy);
+            slot.proxy = nullptr;
+            slot.global = 0;
+            slot.milliHz = 0;
+        }
         if (name == self.global && self.presentation) {
             self.marshal(self.presentation, 0, nullptr);
             self.destroy(self.presentation);
@@ -134,12 +169,28 @@ struct WaylandPresentationFeedback::Impl {
     static void syncOutput(void* data, wl_proxy*, wl_proxy* output) noexcept {
         auto& item = *static_cast<Pending*>(data);
         item.sample.output = item.owner->proxyId(output);
+        for (const auto& slot : item.owner->outputs)
+            if (slot.proxy && slot.proxy == output) item.syncedMilliHz = slot.milliHz;
     }
+    // X7: wl_output events. Only the current mode's refresh is kept; geometry, done, scale, name and
+    // description are never used, but each has an entry because the listener array covers every event.
+    static void outputGeometry(void*, wl_proxy*, int32_t, int32_t, int32_t, int32_t, int32_t,
+            const char*, const char*, int32_t) noexcept {}
+    static void outputMode(void* data, wl_proxy*, uint32_t flags, int32_t, int32_t, int32_t refresh) noexcept {
+        auto& output = *static_cast<Output*>(data);
+        if ((flags & 0x1) && refresh > 0) output.milliHz = static_cast<uint32_t>(refresh); // 0x1: current mode
+    }
+    static void outputDone(void*, wl_proxy*) noexcept {}
+    static void outputScale(void*, wl_proxy*, int32_t) noexcept {}
+    static void outputName(void*, wl_proxy*, const char*) noexcept {}
+    static void outputDescription(void*, wl_proxy*, const char*) noexcept {}
     static void presented(void* data, wl_proxy*, uint32_t hi, uint32_t lo, uint32_t nsec,
             uint32_t refresh, uint32_t seqHi, uint32_t seqLo, uint32_t flags) noexcept {
         auto& item = *static_cast<Pending*>(data);
         // Every presented event, diagnostics or not; 0 (unknown or variable refresh) clears the rate.
         item.owner->refreshNs.store(refresh, std::memory_order_release);
+        item.owner->outputMilliHz.store(UncappedAutoCap::waylandOutputMilliHz(refresh, item.syncedMilliHz,
+            item.owner->onlyOutputMilliHz()), std::memory_order_release);
         auto sample = item.sample;
         sample.event = Event::Presented;
         sample.received = hostNow();
@@ -204,14 +255,37 @@ struct WaylandPresentationFeedback::Impl {
         // The application's existing display reader queues our events.
     }
 
+    // X7: binds one wl_output global at version 1 into a free slot on the private queue, where the
+    // registry lives. Globals beyond the eight slots are ignored.
+    void bindOutput(uint32_t name) {
+        for (auto& slot : outputs) {
+            if (slot.proxy) continue;
+            wl_argument args[4]{};
+            args[0].u = name;
+            args[1].s = outputInterface->name;
+            args[2].u = 1;
+            wl_proxy* proxy = construct(registry, 0, args, outputInterface, 1);
+            if (!proxy) return;
+            static void (*listener[])(void){reinterpret_cast<void (*)(void)>(&outputGeometry),
+                reinterpret_cast<void (*)(void)>(&outputMode), reinterpret_cast<void (*)(void)>(&outputDone),
+                reinterpret_cast<void (*)(void)>(&outputScale), reinterpret_cast<void (*)(void)>(&outputName),
+                reinterpret_cast<void (*)(void)>(&outputDescription)};
+            if (listen(proxy, listener, &slot) != 0) { destroy(proxy); return; }
+            slot = Output{name, proxy, 0};
+            return;
+        }
+    }
+
     uint64_t before(uint64_t context, uint64_t source, uint32_t image, bool generated) {
         if (stopped) return 0;
         if (dispatchPending(display, queue) < 0) { cleanup(); return 0; }
         requestedId = 0;
-        // Without diagnostics only the refresh source asks, on the UncappedAutoCap cadence.
+        // Without diagnostics only the refresh source asks, on the UncappedAutoCap cadence. A rate is known
+        // from the refresh (X6) or from the output's mode while the refresh is 0 (X7).
         const uint64_t presentIndex = presents++;
-        if (!diagnostics && !UncappedAutoCap::waylandFeedbackDue(presentIndex,
-                refreshNs.load(std::memory_order_relaxed) != 0))
+        const bool known = refreshNs.load(std::memory_order_relaxed) != 0 ||
+            outputMilliHz.load(std::memory_order_relaxed) != 0;
+        if (!diagnostics && !UncappedAutoCap::waylandFeedbackDue(presentIndex, known))
             return 0;
         Sample sample{.event = Event::Request, .id = ++nextId, .context = context,
             .source = source, .image = image, .generated = generated, .requested = hostNow(), .clock = clockId};
@@ -227,6 +301,7 @@ struct WaylandPresentationFeedback::Impl {
                 }
                 item.owner = this;
                 item.sample = sample;
+                item.syncedMilliHz = 0;
                 wl_argument args[2]{};
                 args[0].o = surface;
                 item.proxy = construct(presentation, 1, args, &feedbackInterface, 1);
@@ -266,6 +341,11 @@ struct WaylandPresentationFeedback::Impl {
         }
         if (presentation) { marshal(presentation, 0, nullptr); destroy(presentation); presentation = nullptr; }
         if (discovery) { destroy(discovery); discovery = nullptr; }
+        for (auto& slot : outputs) {
+            if (!slot.proxy) continue;
+            destroy(slot.proxy);
+            slot.proxy = nullptr;
+        }
         if (registry) { destroy(registry); registry = nullptr; }
         if (queue) { destroyQueue(queue); queue = nullptr; }
     }
@@ -280,6 +360,10 @@ WaylandPresentationFeedback::~WaylandPresentationFeedback() = default;
 
 uint32_t WaylandPresentationFeedback::refreshNs() const noexcept {
     return impl->refreshNs.load(std::memory_order_acquire);
+}
+
+uint32_t WaylandPresentationFeedback::outputMilliHz() const noexcept {
+    return impl->outputMilliHz.load(std::memory_order_acquire);
 }
 
 std::shared_ptr<WaylandPresentationFeedback> WaylandPresentationFeedback::create(

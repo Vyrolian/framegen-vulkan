@@ -21,6 +21,9 @@ public:
     void stop() noexcept;
     // The output refresh in nanoseconds from the last presented feedback; 0 when unknown or variable. Lock-free.
     [[nodiscard]] uint32_t refreshNs() const noexcept;
+    // The current-mode rate of the output the surface was last presented on, in mHz; set only while the
+    // presented refresh is 0 (VRR); 0 otherwise. Lock-free.
+    [[nodiscard]] uint32_t outputMilliHz() const noexcept;
     // feedbackId, when given, receives the feedback this present requested (0 if none).
     static VkResult observe(void* owner, PFN_vkQueuePresentKHR lower, VkQueue queue,
         const VkPresentInfoKHR& info, uint64_t context, uint64_t source, bool generated,
