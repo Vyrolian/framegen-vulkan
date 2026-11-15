@@ -4,6 +4,7 @@
 // parent normalises only process and thread identities and compares the rest byte for byte.
 // FGVK_PACING_RECORD_GOLDEN_WRITE=<path> regenerates the golden instead of comparing with it.
 #include "present_diagnostics.hpp"
+#include "swapchain/low_latency.hpp"
 
 #include <cstdint>
 #include <cstdlib>
@@ -37,8 +38,14 @@ void profileScenario() {
     PacingProfile profile;
     profile.beginSource(start);
     profile.settings(true, true, 2, 60);
-    // low_latency on, a 3 ms release delay, and the vkd3d, dxvk and acquire kinds used.
-    profile.lowLatency(true, 3ms, 1u | 4u | 8u, true);
+    // low_latency on, a 3 ms release delay, and the vkd3d, dxvk and acquire kinds used, with Reflex
+    // stepping the release delay aside in part of the window (reflexKindBit).
+    profile.lowLatency(true, 3ms, 1u | 4u | 8u | fgvk::layer::reflexKindBit, true);
+    // L5: predicted releases armed with 2 and 4 ms holds, and two resolved previous-batch-end leads.
+    profile.gpuRelease(fgvk::layer::GpuReleaseMode::Predicted, 2ms);
+    profile.gpuRelease(fgvk::layer::GpuReleaseMode::Predicted, 4ms);
+    profile.gpuPrevEnd(1ms);
+    profile.gpuPrevEnd(-3ms);
     profile.policy(false, 60, true);
     profile.backendScheduled(0);
     profile.wait(PacingProfile::SourceCapWait, 3ms);

@@ -48,3 +48,11 @@ bool Fence::wait(const vk::Vulkan& vk, uint64_t timeout) const {
 
     return res == VK_SUCCESS;
 }
+
+bool Fence::signalled(const vk::Vulkan& vk) const {
+    auto res = vk.df().GetFenceStatus(vk.dev(), *this->fence);
+    if (res != VK_SUCCESS && res != VK_NOT_READY)
+        throw ls::vulkan_error(res, "vkGetFenceStatus() failed");
+
+    return res == VK_SUCCESS;
+}

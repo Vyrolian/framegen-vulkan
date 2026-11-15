@@ -16,6 +16,15 @@
 
 namespace fgvk::layer {
 
+// The GPU hold of one release token (L5, low_latency.hpp). `at` is the predicted release of the
+// game's next frame (absolute). `after` is a stepping hold, measured from the first wait (or
+// acquire) that finds the token satisfied, then fixed. Neither moves a release point earlier than
+// its deadline.
+struct GpuHold {
+    std::optional<std::chrono::steady_clock::time_point> at{};
+    std::chrono::steady_clock::duration after{};
+};
+
 // Moves a source-cap deadline from the application's vkQueuePresentKHR to the
 // point where the application releases its producer.
 //
@@ -44,6 +53,10 @@ namespace fgvk::layer {
 // because a VKD3D-Proton submission timeline also serves the game's own fence and
 // queue-idle waits. An application that waits on no token at all releases through its
 // next acquire instead (ReleaseGateOwner::acquireRelease).
+//
+// A token may carry a GPU hold (GpuHold, L5 in low_latency.hpp). Its release point is then the
+// latest of its deadline, the predicted release `at` of the game's next frame, and the satisfying
+// wait's return plus `after`. The point is bounded by maxDelay like the deadline alone.
 class ReleaseGate {
 public:
     using Clock = std::chrono::steady_clock;
@@ -67,6 +80,12 @@ public:
         std::atomic<uint32_t> consumedKinds{0};
         // Release point of the latest capped present, as Clock::rep; zero when none.
         std::atomic<Clock::rep> acquireRelease{0};
+        // GPU hold of that present's acquire fallback: the absolute part and the stepping part.
+        std::atomic<Clock::rep> acquireGpuAt{0};
+        std::atomic<Clock::rep> acquireGpuAfter{0};
+        // When the latest consumed release point returned to the application, as Clock::rep (L5
+        // observation); zero once taken. The next present takes it as its frame's release time.
+        std::atomic<Clock::rep> returnedAt{0};
 
         // Two consecutive consumed tokens with a bounded backlog show that
         // the application releases its producer through this wait.
@@ -86,10 +105,13 @@ public:
     static constexpr Clock::duration maxAge = std::chrono::seconds{1};
 
     struct Release {
+        // The release point: the deadline, moved later by the token's GPU hold.
         Clock::time_point deadline{};
         // False when the wait's remaining timeout ends before the deadline:
         // the token stays registered and the caller reports VK_TIMEOUT.
         bool consumed{};
+        // The owner of the token that set the point, when consumed (see noteReturned).
+        std::shared_ptr<Owner> owner{};
     };
 
     static ReleaseGate& global() {
@@ -98,11 +120,20 @@ public:
     }
 
     // Presenting thread only. The next submit on this thread consumes it.
-    static void arm(std::shared_ptr<Owner> owner, VkQueue queue, Clock::time_point deadline) {
+    static void arm(std::shared_ptr<Owner> owner, VkQueue queue, Clock::time_point deadline,
+            GpuHold gpu = {}) {
         auto& slot = pending();
         slot.owner = std::move(owner);
         slot.queue = queue;
         slot.deadline = deadline;
+        slot.gpu = gpu;
+    }
+
+    // The hook returned a consumed release point to the application at `now`, after its sleep.
+    // The owner keeps that time for its next present (Owner::returnedAt).
+    static void noteReturned(const Release& release, Clock::time_point now) noexcept {
+        if (release.consumed && release.owner)
+            release.owner->returnedAt.store(now.time_since_epoch().count(), std::memory_order_relaxed);
     }
     static void disarm() noexcept { pending().owner.reset(); }
     [[nodiscard]] static bool armed() noexcept { return static_cast<bool>(pending().owner); }
@@ -126,22 +157,22 @@ public:
         const auto& signal = submit.pSignalSemaphoreInfos[0];
         if (!signal.semaphore || signal.value == 0) return;
         record(Kind::Semaphore, reinterpret_cast<uint64_t>(signal.semaphore), signal.value,
-            slot.deadline, std::move(slot.owner), now);
+            slot.deadline, slot.gpu, std::move(slot.owner), now);
     }
 
     // A present with a non-zero application present ID: the token is that ID on
     // the swapchain. The caller records it when the present returns, so the
     // application's own wait for the ID is the release wait.
     void recordPresentId(std::shared_ptr<Owner> owner, VkSwapchainKHR swapchain, uint64_t presentId,
-            Clock::time_point deadline, Clock::time_point now = Clock::now()) {
-        record(Kind::PresentId, reinterpret_cast<uint64_t>(swapchain), presentId, deadline,
+            Clock::time_point deadline, GpuHold gpu = {}, Clock::time_point now = Clock::now()) {
+        record(Kind::PresentId, reinterpret_cast<uint64_t>(swapchain), presentId, deadline, gpu,
             std::move(owner), now);
     }
 
     // The timeline value of a present's last submit: the application's wait for it ends the frame.
     void recordLastSubmit(std::shared_ptr<Owner> owner, VkSemaphore semaphore, uint64_t value,
-            Clock::time_point deadline, Clock::time_point now = Clock::now()) {
-        record(Kind::LastSubmit, reinterpret_cast<uint64_t>(semaphore), value, deadline,
+            Clock::time_point deadline, GpuHold gpu = {}, Clock::time_point now = Clock::now()) {
+        record(Kind::LastSubmit, reinterpret_cast<uint64_t>(semaphore), value, deadline, gpu,
             std::move(owner), now);
     }
 
@@ -219,6 +250,7 @@ private:
         uint64_t key{};
         uint64_t value{};
         Clock::time_point deadline{}, registered{};
+        GpuHold gpu{};
         std::weak_ptr<Owner> owner;
         Kind kind{Kind::Semaphore};
     };
@@ -226,7 +258,22 @@ private:
         std::shared_ptr<Owner> owner;
         VkQueue queue{};
         Clock::time_point deadline{};
+        GpuHold gpu{};
     };
+    // The release point of a satisfied token at `now`: its deadline, moved later by its GPU hold.
+    // A stepping hold is anchored at the first wait that finds the token satisfied: it becomes an
+    // absolute point, so a caller retrying with short timeouts meets a fixed point, not one that
+    // moves with every call.
+    static Clock::time_point releasePoint(Entry& entry, Clock::time_point now) noexcept {
+        if (entry.gpu.after > Clock::duration::zero()) {
+            const auto anchored = now + entry.gpu.after;
+            entry.gpu.at = entry.gpu.at ? std::max(*entry.gpu.at, anchored) : anchored;
+            entry.gpu.after = Clock::duration::zero();
+        }
+        auto point = entry.deadline;
+        if (entry.gpu.at) point = std::max(point, *entry.gpu.at);
+        return std::min(point, now + maxDelay);
+    }
     static Pending& pending() noexcept {
         static thread_local Pending slot;
         return slot;
@@ -283,15 +330,19 @@ private:
             Satisfied&& satisfied) {
         const std::lock_guard lock(mutex);
         std::optional<Clock::time_point> latest;
-        for (const auto& entry : entries) {
+        std::shared_ptr<Owner> latestOwner;
+        for (auto& entry : entries) {
             if (!satisfied(entry) || now - entry.registered > maxAge) continue;
             const auto owner = entry.owner.lock();
             if (!owner || !owner->alive.load(std::memory_order_relaxed)) continue;
-            const auto deadline = std::min(entry.deadline, now + maxDelay);
-            latest = latest ? std::max(*latest, deadline) : deadline;
+            const auto point = releasePoint(entry, now);
+            if (!latest || point > *latest) {
+                latest = point;
+                latestOwner = owner;
+            }
         }
         if (latest && *latest > limit)
-            return Release{*latest, false};
+            return Release{*latest, false, nullptr};
         bool any = false;
         std::erase_if(entries, [&](const Entry& entry) {
             if (!satisfied(entry)) return false;
@@ -307,10 +358,10 @@ private:
         });
         count.store(entries.size(), std::memory_order_release);
         if (!any) return std::nullopt;
-        return latest ? std::optional{Release{*latest, true}} : std::nullopt;
+        return latest ? std::optional{Release{*latest, true, std::move(latestOwner)}} : std::nullopt;
     }
 
-    void record(Kind kind, uint64_t key, uint64_t value, Clock::time_point deadline,
+    void record(Kind kind, uint64_t key, uint64_t value, Clock::time_point deadline, GpuHold gpu,
             std::shared_ptr<Owner> owner, Clock::time_point now) {
         if (!owner) return;
         const std::lock_guard lock(mutex);
@@ -338,7 +389,7 @@ private:
         }
         if (entries.size() >= capacity) eraseEntry(entries.begin());
         try {
-            entries.push_back({key, value, deadline, now, owner, kind});
+            entries.push_back({key, value, deadline, now, gpu, owner, kind});
             owner->outstanding.fetch_add(1, std::memory_order_relaxed);
         } catch (...) {}
         count.store(entries.size(), std::memory_order_release);
@@ -368,33 +419,65 @@ public:
     ~ReleaseGateOwner() { retire(); }
 
     [[nodiscard]] bool active() const noexcept { return owner && owner->active(); }
-    void arm(VkQueue queue, ReleaseGate::Clock::time_point deadline) const {
-        if (owner) ReleaseGate::arm(owner, queue, deadline);
+    // gpu is the token's GPU hold (L5); the default keeps the release at its deadline.
+    void arm(VkQueue queue, ReleaseGate::Clock::time_point deadline, GpuHold gpu = {}) const {
+        if (owner) ReleaseGate::arm(owner, queue, deadline, gpu);
     }
     void recordPresentId(VkSwapchainKHR swapchain, uint64_t presentId,
-            ReleaseGate::Clock::time_point deadline) const {
-        if (owner) ReleaseGate::global().recordPresentId(owner, swapchain, presentId, deadline);
+            ReleaseGate::Clock::time_point deadline, GpuHold gpu = {}) const {
+        if (owner) ReleaseGate::global().recordPresentId(owner, swapchain, presentId, deadline, gpu);
     }
     // A present's last submit (ReleaseGate::SubmitMark). Skipped once this application has
     // released through a semaphore or present ID token (see the header comment).
     void recordLastSubmit(VkSemaphore semaphore, uint64_t value,
-            ReleaseGate::Clock::time_point deadline) const {
+            ReleaseGate::Clock::time_point deadline, GpuHold gpu = {}) const {
         constexpr uint32_t gatedBy = ReleaseGate::kindBit(ReleaseGate::Kind::Semaphore) |
             ReleaseGate::kindBit(ReleaseGate::Kind::PresentId);
         if (owner && !(owner->consumedKinds.load(std::memory_order_relaxed) & gatedBy))
-            ReleaseGate::global().recordLastSubmit(owner, semaphore, value, deadline);
+            ReleaseGate::global().recordLastSubmit(owner, semaphore, value, deadline, gpu);
     }
-    // Native acquire fallback: the release point of the latest capped present.
-    void setAcquireRelease(std::optional<ReleaseGate::Clock::time_point> release) const {
-        if (owner) owner->acquireRelease.store(
+    // Native acquire fallback: the release point of the latest capped present and its GPU hold.
+    void setAcquireRelease(std::optional<ReleaseGate::Clock::time_point> release,
+            GpuHold gpu = {}) const {
+        if (!owner) return;
+        owner->acquireRelease.store(
             release ? release->time_since_epoch().count() : 0, std::memory_order_relaxed);
+        owner->acquireGpuAt.store(
+            gpu.at ? gpu.at->time_since_epoch().count() : 0, std::memory_order_relaxed);
+        owner->acquireGpuAfter.store(gpu.after.count(), std::memory_order_relaxed);
     }
     // The point the next acquire waits for, while no token kind has been consumed: an
-    // application that releases through tokens starts its frames at their deadlines.
-    [[nodiscard]] std::optional<ReleaseGate::Clock::time_point> acquireRelease() const {
+    // application that releases through tokens starts its frames at their deadlines. The GPU hold
+    // applies as in the gate: the predicted release, or the hold after `now` (the acquire's start).
+    [[nodiscard]] std::optional<ReleaseGate::Clock::time_point> acquireRelease(
+            ReleaseGate::Clock::time_point now = ReleaseGate::Clock::now()) const {
         if (!owner || (owner->consumedKinds.load(std::memory_order_relaxed) & ReleaseGate::tokenKinds()))
             return std::nullopt;
         const auto rep = owner->acquireRelease.load(std::memory_order_relaxed);
+        if (rep == 0) return std::nullopt;
+        auto release = ReleaseGate::Clock::time_point{ReleaseGate::Clock::duration{rep}};
+        // A stepping hold is anchored at the first acquire after the present (as in the gate):
+        // later acquires and retries meet the same absolute point.
+        const auto after = ReleaseGate::Clock::duration{
+            owner->acquireGpuAfter.exchange(0, std::memory_order_relaxed)};
+        if (after > ReleaseGate::Clock::duration::zero()) {
+            const auto anchored = (now + after).time_since_epoch().count();
+            auto current = owner->acquireGpuAt.load(std::memory_order_relaxed);
+            while (current < anchored &&
+                !owner->acquireGpuAt.compare_exchange_weak(current, anchored, std::memory_order_relaxed)) {}
+        }
+        if (const auto gpuAt = owner->acquireGpuAt.load(std::memory_order_relaxed))
+            release = std::max(release, ReleaseGate::Clock::time_point{ReleaseGate::Clock::duration{gpuAt}});
+        return release;
+    }
+    // The acquire fallback returned to the application at `now`, after its hold.
+    void noteAcquireReleased(ReleaseGate::Clock::time_point now) const {
+        if (owner) owner->returnedAt.store(now.time_since_epoch().count(), std::memory_order_relaxed);
+    }
+    // The time the latest consumed release point returned to the application, taken once.
+    [[nodiscard]] std::optional<ReleaseGate::Clock::time_point> takeReturnedAt() const {
+        if (!owner) return std::nullopt;
+        const auto rep = owner->returnedAt.exchange(0, std::memory_order_relaxed);
         if (rep == 0) return std::nullopt;
         return ReleaseGate::Clock::time_point{ReleaseGate::Clock::duration{rep}};
     }

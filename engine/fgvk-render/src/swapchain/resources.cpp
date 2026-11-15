@@ -191,18 +191,20 @@ bool Swapchain::recordGeneratedCopies(const vk::Vulkan& vk, RenderSlot& slot, si
 }
 
 void Swapchain::initializeGpuPacingProfile(backend::Instance& backend,
-        backend::Context& context) noexcept {
-    if (!this->pacingProfile) return;
+        backend::Context& context, const bool lowLatency) noexcept {
     // Split boundaries are independent of the drained GPU profile: the backend
-    // enables only its non-draining state and the context's own fence reads.
-    if (present_diagnostics::pacingGpuSplitProfileEnabled()) {
+    // enables only its non-draining state and the context's own fence reads. They
+    // run for the diagnostics log, and for the GPU release of low_latency (L5) with
+    // or without it. Retaining every completed sample is the log's alone.
+    const bool diagnostics = this->pacingProfile && present_diagnostics::pacingGpuSplitProfileEnabled();
+    if (diagnostics || lowLatency) {
         try {
-            backend.enableSplitProfile(context);
+            backend.enableSplitProfile(context, diagnostics);
         } catch (const std::exception& error) {
             present_diagnostics::reportPacingGpuSplitUnavailable("queries", error.what());
         }
     }
-    if (!present_diagnostics::pacingGpuProfileEnabled()) return;
+    if (!this->pacingProfile || !present_diagnostics::pacingGpuProfileEnabled()) return;
     try {
         backend.enableFrameProfiling(context, true);
     } catch (const std::exception& error) {
@@ -260,7 +262,8 @@ Swapchain::buildFrameGenerationResources(const vk::Vulkan& vk,
             backend->closeContext(context);
         }
     );
-    this->initializeGpuPacingProfile(backendInstance, resources.context.get());
+    this->initializeGpuPacingProfile(backendInstance, resources.context.get(),
+        resourceProfile.low_latency);
     backend::makeLeaking();
     return resources;
 }
@@ -290,6 +293,9 @@ void Swapchain::commitFrameGenerationResources(
 
     this->frameState.backendTimelineIndex = 1;
     this->frameState.backendFrameIndex = 0;
+    // The predictor's batch indices and the previous batch end belong to the replaced context.
+    this->resetGpuRelease();
+    this->gpuPreviousArrival.reset();
     if (this->pacingProfile) this->pacingProfile->resetBackend();
     for (auto& slot : this->renderSlots) {
         slot.inFlight = false;

@@ -1176,6 +1176,7 @@ namespace {
         const auto release = gate.released(*info, now, limit);
         if (!release) return result;
         std::this_thread::sleep_until(release->consumed ? release->deadline : limit);
+        if (release->consumed) ReleaseGate::noteReturned(*release, Clock::now());
         return release->consumed ? VK_SUCCESS : VK_TIMEOUT;
     }
     constexpr char waitSemaphoresName[] = "vkWaitSemaphores";
@@ -1197,6 +1198,7 @@ namespace {
         const auto release = gate.releasedPresent(swapchain, presentId, now, limit);
         if (!release) return result;
         std::this_thread::sleep_until(release->consumed ? release->deadline : limit);
+        if (release->consumed) ReleaseGate::noteReturned(*release, Clock::now());
         return release->consumed ? result : VK_TIMEOUT;
     }
 
@@ -2412,15 +2414,17 @@ namespace {
         auto* found = layer_info->root.findSwapchainContext(swapchain);
         if (!found) return std::nullopt;
         auto& context = *found;
-        const auto release = context.acquireRelease();
-        if (!release) return std::nullopt;
         using Clock = ReleaseGate::Clock;
-        const auto hold = acquireHold(Clock::now(), *release, timeout);
+        const auto now = Clock::now();
+        const auto release = context.acquireRelease(now);
+        if (!release) return std::nullopt;
+        const auto hold = acquireHold(now, *release, timeout);
         if (hold.wait > Clock::duration::zero()) {
             context.noteAcquireHold();
             std::this_thread::sleep_for(hold.wait);
         }
         if (hold.expired) return VK_TIMEOUT;
+        context.noteAcquireReleased(Clock::now());
         if (timeout != UINT64_MAX) timeout -= static_cast<uint64_t>(hold.wait.count());
         return std::nullopt;
     }

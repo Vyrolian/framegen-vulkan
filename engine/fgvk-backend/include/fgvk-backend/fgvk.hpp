@@ -57,6 +57,12 @@ namespace fgvk::backend {
         int64_t batchEndNs{};         // Source-release end.
     };
 
+    /// The newest completed batch of a split-profiled context, read when its fence signalled.
+    struct CompletedBatchEnd {
+        uint64_t backendFrameIndex{}; // Same zero-based batch index as SplitFrameProfile.
+        int64_t batchEndNs{};         // Source-release end, CLOCK_MONOTONIC nanoseconds.
+    };
+
     ///
     /// Primitive exception class that deliveres a detailed error message
     ///
@@ -190,7 +196,10 @@ namespace fgvk::backend {
         /// its first schedule. It adds no wait, drain, or schedule change: each
         /// batch is read only after its existing fence has signalled. Calibration
         /// or query failure logs one reason and leaves the context unchanged.
-        void enableSplitProfile(Context& context);
+        /// retainCompleted keeps each completed generated batch for
+        /// takeCompletedSplitProfiles (the diagnostics log); off keeps only the
+        /// latest batch end for latestBatchEnd.
+        void enableSplitProfile(Context& context, bool retainCompleted);
 
         /// Consume completed split samples oldest first. The queue is bounded to
         /// eight entries and drops its oldest sample. Performs no Vulkan operation.
@@ -198,6 +207,16 @@ namespace fgvk::backend {
 
         /// Whether split boundaries are active on this context.
         [[nodiscard]] bool splitProfileEnabled(const Context& context) const;
+
+        /// The newest batch whose fence was observed signalled, or nothing without
+        /// split boundaries. Read from the same observation as the split samples;
+        /// performs no Vulkan operation.
+        [[nodiscard]] std::optional<CompletedBatchEnd> latestBatchEnd(const Context& context) const;
+
+        /// Whether the most recently scheduled batch still runs on the GPU, from one
+        /// non-blocking fence status query. Nothing before the context's first batch.
+        /// Observes no completion, so it changes no state.
+        [[nodiscard]] std::optional<bool> previousBatchPending(const Context& context) const;
 
         ///
         /// Schedule generated frames at explicit interpolation timestamps.

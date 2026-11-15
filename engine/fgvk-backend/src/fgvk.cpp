@@ -92,7 +92,11 @@ namespace fgvk::backend {
         ProfileClock::time_point calibratedAt{};
         // Set after a read failure; recorded commands remain valid but are no longer sampled.
         bool failed{};
+        // Keep every completed generated batch for the diagnostics log (see enableSplitProfile).
+        bool retainCompleted{};
         std::deque<SplitFrameProfile> completed;
+        // The newest completed batch, whatever its kind; the pacing predictor reads it.
+        std::optional<CompletedBatchEnd> latest;
     };
 
     error::error(const std::string& msg, const std::exception& inner)
@@ -159,9 +163,13 @@ namespace fgvk::backend {
         [[nodiscard]] std::optional<FrameProfile> takeCompletedFrameProfile();
         [[nodiscard]] FrameProfile readFrameProfile() const;
 
-        void enableSplitProfile();
+        void enableSplitProfile(bool retainCompleted);
         [[nodiscard]] std::vector<SplitFrameProfile> takeCompletedSplitProfiles();
         [[nodiscard]] bool splitProfileEnabled() const { return this->split && !this->split->failed; }
+        [[nodiscard]] std::optional<CompletedBatchEnd> latestBatchEnd() const {
+            return this->split && !this->split->failed ? this->split->latest : std::nullopt;
+        }
+        [[nodiscard]] std::optional<bool> previousBatchPending() const;
 
         /// schedule a variable number of frames at explicit timestamps
         void scheduleFrames(std::span<const float> timestamps);
@@ -862,8 +870,8 @@ FrameProfile Instance::readFrameProfile(const Context& context) const { // NOLIN
     return context.readFrameProfile();
 }
 
-void Instance::enableSplitProfile(Context& context) { // NOLINT (static)
-    context.enableSplitProfile();
+void Instance::enableSplitProfile(Context& context, bool retainCompleted) { // NOLINT (static)
+    context.enableSplitProfile(retainCompleted);
 }
 
 std::vector<SplitFrameProfile> Instance::takeCompletedSplitProfiles(Context& context) { // NOLINT (static)
@@ -874,7 +882,15 @@ bool Instance::splitProfileEnabled(const Context& context) const { // NOLINT (st
     return context.splitProfileEnabled();
 }
 
-void Context::enableSplitProfile() {
+std::optional<CompletedBatchEnd> Instance::latestBatchEnd(const Context& context) const { // NOLINT (static)
+    return context.latestBatchEnd();
+}
+
+std::optional<bool> Instance::previousBatchPending(const Context& context) const { // NOLINT (static)
+    return context.previousBatchPending();
+}
+
+void Context::enableSplitProfile(const bool retainCompleted) {
     if (this->fidx != 0 || this->hasScheduledWork() || this->split)
         throw backend::error("Split profiling requires a fresh unscheduled context");
     const auto& vulkan = this->ctx.vk.get();
@@ -885,6 +901,7 @@ void Context::enableSplitProfile() {
     }
     try {
         auto state = std::make_unique<SplitProfilingState>();
+        state->retainCompleted = retainCompleted;
         for (auto& pool : state->pools)
             pool.emplace(vulkan, 4);
         const auto& first = *state->pools.front();
@@ -937,18 +954,22 @@ void Context::collectSplitProfiles(const std::array<bool, inFlightDepth>& signal
         if (!signalled.at(slot) || !batch.valid)
             continue;
         batch.valid = false;
-        if (!batch.generated)
-            continue;
         try {
-            const auto ticks = state.pools.at(batch.phase)->tryTimestamps(4);
-            if (!ticks)
+            std::array<uint64_t, 4> ticks{};
+            if (!state.pools.at(batch.phase)->tryReadTimestamps(ticks))
+                continue;
+            const auto batchEndNs = state.clock.monotonicNanoseconds(ticks[3]);
+            // Slots are read in slot order, not batch order: keep the newest batch. Zero means uncalibrated.
+            if (batchEndNs > 0 && (!state.latest || batch.frame > state.latest->backendFrameIndex))
+                state.latest = CompletedBatchEnd{.backendFrameIndex = batch.frame, .batchEndNs = batchEndNs};
+            if (!batch.generated || !state.retainCompleted)
                 continue;
             state.completed.push_back(SplitFrameProfile{
                 .backendFrameIndex = batch.frame,
-                .fgStartNs = state.clock.monotonicNanoseconds(ticks->at(0)),
-                .prepassEndNs = state.clock.monotonicNanoseconds(ticks->at(1)),
-                .generatedEndNs = state.clock.monotonicNanoseconds(ticks->at(2)),
-                .batchEndNs = state.clock.monotonicNanoseconds(ticks->at(3)),
+                .fgStartNs = state.clock.monotonicNanoseconds(ticks[0]),
+                .prepassEndNs = state.clock.monotonicNanoseconds(ticks[1]),
+                .generatedEndNs = state.clock.monotonicNanoseconds(ticks[2]),
+                .batchEndNs = batchEndNs,
             });
             if (state.completed.size() > splitQueueCapacity)
                 state.completed.pop_front();
@@ -1377,6 +1398,15 @@ bool Context::waitForIdle(const uint64_t timeoutNs) const {
         [this](const size_t slot, uint64_t& remainingNs) {
             return waitWithBudget(this->cmdbufFences.at(slot), this->ctx.vk, remainingNs);
         });
+}
+
+std::optional<bool> Context::previousBatchPending() const {
+    // Every scheduled batch increments fidx, so the last one owns the slot before it.
+    if (this->fidx == 0) return std::nullopt;
+    const size_t slot = (this->fidx - 1) % inFlightDepth;
+    // A slot prepareWork already observed complete is no longer scheduled.
+    if (!this->fenceScheduled.at(slot)) return false;
+    return !this->cmdbufFences.at(slot).signalled(this->ctx.vk);
 }
 
 void Instance::collectRetiredContexts() {

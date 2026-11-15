@@ -710,6 +710,16 @@ void formatPacingWindowBody(const PacingWindowPayload& payload, const PacingProf
             any = true;
         }
         if (!any) line << "none";
+        // gpu_release_ms: the mean hold armed on the window's capped presents (the predicted release
+        // minus the game's wait return, or the stepping hold), zero with none. gpu_prev_end_ms: the mean
+        // of the resolved previous-batch-end leads (negative: the frame came after the GPU freed its
+        // batch). gpu_release: off, pred or fence, the latest present's mode (low_latency.hpp).
+        const std::string_view gpuMode = window.gpuReleaseMode == GpuReleaseMode::Predicted ? "pred"
+            : window.gpuReleaseMode == GpuReleaseMode::Fence ? "fence" : "off";
+        line << " gpu_release_ms=" << window.gpuReleaseHold.mean()
+             << " gpu_prev_end_ms=" << (window.gpuPrevEndCount
+                    ? window.gpuPrevEndSumMs / static_cast<double>(window.gpuPrevEndCount) : 0.0)
+             << " gpu_release=" << gpuMode;
         // just_in_time: whether released batches start at their own readiness in this window.
         // batch_phase_hold_ms: the mean of their starts after readiness (BatchPhaseLock), zero with none.
         line << " just_in_time=" << (window.justInTime ? 1 : 0)

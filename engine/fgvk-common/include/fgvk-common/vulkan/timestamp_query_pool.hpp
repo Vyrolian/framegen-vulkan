@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -153,6 +154,23 @@ namespace vk {
             if (result != VK_SUCCESS)
                 throw ls::vulkan_error(result, "vkGetQueryPoolResults() failed");
             return timestamps;
+        }
+
+        /// Read the first values.size() queries into values without VK_QUERY_RESULT_WAIT_BIT.
+        /// Returns false, leaving values unspecified, while any of them is not yet available.
+        /// Allocates nothing, so per-batch reads stay off the heap.
+        [[nodiscard]] bool tryReadTimestamps(std::span<uint64_t> values) const {
+            if (values.empty() || values.size() > this->count)
+                throw ls::error("timestamp read exceeds query capacity");
+            const auto result = this->resultsFunction(
+                this->device, this->pool, 0, static_cast<uint32_t>(values.size()),
+                values.size_bytes(), values.data(), sizeof(uint64_t), VK_QUERY_RESULT_64_BIT
+            );
+            if (result == VK_NOT_READY)
+                return false;
+            if (result != VK_SUCCESS)
+                throw ls::vulkan_error(result, "vkGetQueryPoolResults() failed");
+            return true;
         }
 
         /// Read queries [first, first + queryCount) without VK_QUERY_RESULT_WAIT_BIT.

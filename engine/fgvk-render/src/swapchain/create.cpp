@@ -236,7 +236,7 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance* backend,
                 }
             );
 
-            this->initializeGpuPacingProfile(*backend, this->ctx.get());
+            this->initializeGpuPacingProfile(*backend, this->ctx.get(), this->profile.low_latency);
 
             // The backend's private VkDevice must outlive this layer on loader
             // combinations where destroying it during layer unload is unsafe.

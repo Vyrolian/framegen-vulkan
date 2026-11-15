@@ -92,6 +92,75 @@ void Swapchain::PresentInvocation::waitForOutput(
     this->started += finishPresentDiagnostic(waitStarted);
 }
 
+std::optional<bool> Swapchain::previousBatchBusy() const {
+    if (!this->instance || this->destinationImages.empty()) return std::nullopt;
+    try {
+        return this->instance->previousBatchPending(this->ctx.get());
+    } catch (const std::exception&) {
+        // A failed status query is no observation: the hold keeps its value for this present.
+        return std::nullopt;
+    }
+}
+
+void Swapchain::resetGpuRelease() noexcept {
+    this->gpuPredictor.reset();
+    this->gpuStepping.reset();
+    this->gpuArmed.reset();
+}
+
+// GPU release of the capped present that arrived at `arrival` (L5, low_latency.hpp). The frame's
+// release token returned to the application at some time after the previous present (its wait
+// hook, release_gate.hpp noteReturned). That return is the frame's release time: it is observed with
+// this arrival, and the newest backend batch end is observed too. The release of the next frame is
+// then predicted, to be armed on this present's token. Without split timestamps the stepping hold
+// runs on a non-blocking fence query instead. Inactive presents reset both. Nothing waits here.
+Swapchain::GpuRelease Swapchain::stepGpuRelease(const bool active,
+        const std::chrono::steady_clock::time_point arrival,
+        const std::chrono::steady_clock::duration capInterval) {
+    using Clock = std::chrono::steady_clock;
+    const auto returned = this->releaseGate.takeReturnedAt();
+    const auto armed = std::exchange(this->gpuArmed, std::nullopt);
+    const auto previousArrival = std::exchange(this->gpuPreviousArrival, arrival);
+    const bool hasBackend = this->instance && !this->destinationImages.empty();
+    if (!active || !hasBackend || capInterval <= Clock::duration::zero()) {
+        this->resetGpuRelease();
+        if (this->pacingProfile) this->pacingProfile->gpuRelease(GpuReleaseMode::Off, std::nullopt);
+        return {};
+    }
+    // The return of this frame's token lies after the previous present and not after this arrival.
+    const bool timed = returned && previousArrival && *returned > *previousArrival && *returned <= arrival;
+    if (this->instance->splitProfileEnabled(this->ctx.get())) {
+        if (!this->gpuPredictor) this->gpuPredictor.emplace(capInterval);
+        auto& predictor = *this->gpuPredictor;
+        this->gpuStepping.reset();
+        // The batch index this present's source takes when it is scheduled.
+        const uint64_t batch = this->frameState.backendFrameIndex;
+        std::optional<Clock::duration> hold;
+        if (timed) {
+            if (armed) hold = std::max(*armed - *returned, Clock::duration::zero());
+            if (const auto lead = predictor.observeArrival(batch, *returned, arrival, capInterval);
+                    lead && this->pacingProfile)
+                this->pacingProfile->gpuPrevEnd(*lead);
+        }
+        if (const auto end = this->instance->latestBatchEnd(this->ctx.get())) {
+            const Clock::time_point endAt{Clock::duration{end->batchEndNs}};
+            if (const auto lead = predictor.observeBatchEnd(end->backendFrameIndex, endAt, capInterval);
+                    lead && this->pacingProfile)
+                this->pacingProfile->gpuPrevEnd(*lead);
+        }
+        // The next frame's source takes the batch after this one, if this present schedules one.
+        const auto release = predictor.release(batch + 1);
+        this->gpuArmed = release;
+        if (this->pacingProfile) this->pacingProfile->gpuRelease(GpuReleaseMode::Predicted, hold);
+        return {GpuReleaseMode::Predicted, GpuHold{release, Clock::duration::zero()}};
+    }
+    this->gpuPredictor.reset();
+    if (const auto busy = this->previousBatchBusy()) this->gpuStepping.observe(*busy, capInterval);
+    const auto hold = this->gpuStepping.hold();
+    if (this->pacingProfile) this->pacingProfile->gpuRelease(GpuReleaseMode::Fence, hold);
+    return {GpuReleaseMode::Fence, GpuHold{std::nullopt, hold}};
+}
+
 VkResult Swapchain::present(const vk::Vulkan& vk,
         const VkQueue queue, const VkSwapchainKHR swapchain,
         void* nextChain, const uint32_t imageIndex,
@@ -575,13 +644,18 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
     const auto releaseDelay = this->lowLatencyRelease.update(latency.releaseDelay,
         limiterDeadline - limiterArrival, capInterval);
     const auto releasePoint = limiterDeadline + releaseDelay;
+    // GPU release (L5, low_latency.hpp): while the release delay runs, the next frame's release
+    // point is also no earlier than the predicted GPU release, or a stepping hold without split
+    // timestamps. Otherwise every token keeps its deadline.
+    const auto gpuRelease = this->stepGpuRelease(latency.releaseDelay, limiterArrival, capInterval);
     // The native acquire fallback holds the application's next acquire until this point, one
     // cap interval before this present's release point (entrypoint.cpp).
     this->releaseGate.setAcquireRelease(latency.releaseDelay
-        ? std::optional{releasePoint - capInterval} : std::nullopt);
+        ? std::optional{releasePoint - capInterval} : std::nullopt, gpuRelease.hold);
     // Recorded before the sleeps below: a game wait for this submit may complete during them.
     if (latency.releaseDelay && lastSubmit)
-        this->releaseGate.recordLastSubmit(lastSubmit->semaphore, lastSubmit->value, releasePoint);
+        this->releaseGate.recordLastSubmit(lastSubmit->semaphore, lastSubmit->value, releasePoint,
+            gpuRelease.hold);
     if (this->pacingProfile) this->pacingProfile->lowLatency(latency.justInTime, releaseDelay,
         this->releaseGate.consumedKinds() | (latency.reflexHolds ? reflexKindBit : 0u),
         latency.justInTime);
@@ -657,14 +731,16 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         VkSwapchainKHR swapchain;
         std::optional<DiagnosticsClock::time_point> deadline;
         std::optional<uint64_t> presentId;
+        // The GPU hold of this token (L5); empty keeps the release at the deadline.
+        GpuHold gpu;
         ~ReleaseArm() {
             if (!deadline) return;
             try {
                 if (presentId) {
                     noteFirstPresentIdReleaseToken();
-                    gate.recordPresentId(swapchain, *presentId, *deadline);
+                    gate.recordPresentId(swapchain, *presentId, *deadline, gpu);
                 } else {
-                    gate.arm(queue, *deadline);
+                    gate.arm(queue, *deadline, gpu);
                 }
             } catch (...) {}
         }
@@ -672,7 +748,7 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         baseFpsCap > 0 ? std::optional{releasePoint}
             : detachedOutputTransport ? std::optional{limiterArrival}
             : std::nullopt,
-        applicationPresentId};
+        applicationPresentId, gpuRelease.hold};
     if (!releaseGated && !sourceDeadlinePreparation && limiterDeadline > limiterArrival) {
         const auto waitStarted = this->pacingProfile ? DiagnosticsClock::now() : DiagnosticsClock::time_point{};
         std::this_thread::sleep_until(limiterDeadline);

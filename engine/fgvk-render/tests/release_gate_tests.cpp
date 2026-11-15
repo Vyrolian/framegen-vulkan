@@ -285,6 +285,103 @@ void acquireReleaseHeldOnlyWithoutTokens() {
     plain.setAcquireRelease(std::nullopt);
     expect(!plain.acquireRelease(), "a cleared release point was still held");
 }
+
+// L5 GPU hold (low_latency.hpp): a token's release point is the latest of its deadline, its predicted
+// release and its stepping hold after the satisfying wait's return. The timeout rule is unchanged, and a
+// consumed release point returns to its owner once.
+void gpuHoldMovesTheReleasePoint() {
+    using Clock = ReleaseGate::Clock;
+    const auto now = Clock::now();
+    auto& gate = ReleaseGate::global();
+    expect(gate.empty(), "release tokens were left by an earlier test");
+    {
+        ReleaseGateOwner owner;
+        owner.arm(queue, now, GpuHold{now + 8ms, Clock::duration::zero()});
+        const SignalOnly signal(1);
+        gate.observeSubmit2(queue, 1, &signal.submit, VK_NULL_HANDLE, now);
+        const Wait wait(1);
+        const auto release = gate.released(wait.info, now, unbounded);
+        expect(release && release->consumed && release->deadline == now + 8ms && gate.empty(),
+            "a predicted release did not move the token's release point");
+        ReleaseGate::noteReturned(*release, now + 9ms);
+        expect(owner.takeReturnedAt() == std::optional{now + 9ms}, "the return time was not recorded");
+        expect(!owner.takeReturnedAt(), "the return time was taken twice");
+    }
+    {
+        // A predicted release past the caller's timeout keeps the token and reports the wait unconsumed.
+        ReleaseGateOwner owner;
+        owner.arm(queue, now, GpuHold{now + 8ms, Clock::duration::zero()});
+        const SignalOnly signal(2);
+        gate.observeSubmit2(queue, 1, &signal.submit, VK_NULL_HANDLE, now);
+        const Wait wait(2);
+        const auto early = gate.released(wait.info, now, now + 5ms);
+        expect(early && !early->consumed && early->deadline == now + 8ms && !gate.empty(),
+            "a release past the caller's timeout was consumed");
+        ReleaseGate::noteReturned(*early, now + 5ms);
+        expect(!owner.takeReturnedAt(), "an unconsumed release recorded a return");
+        const auto later = gate.released(wait.info, now, unbounded);
+        expect(later && later->consumed && gate.empty(), "the token did not release once the timeout allowed it");
+    }
+    {
+        // A stepping hold runs from the satisfying wait's return, not from the present.
+        ReleaseGateOwner owner;
+        owner.arm(queue, now, GpuHold{std::nullopt, 4ms});
+        const SignalOnly signal(3);
+        gate.observeSubmit2(queue, 1, &signal.submit, VK_NULL_HANDLE, now);
+        const Wait wait(3);
+        const auto release = gate.released(wait.info, now + 1ms, unbounded);
+        expect(release && release->consumed && release->deadline == now + 5ms && gate.empty(),
+            "a stepping hold was not measured from the wait's return");
+    }
+    {
+        // A caller retrying with short timeouts meets one fixed point: the stepping hold is anchored
+        // at the first satisfying wait and does not move with each retry.
+        ReleaseGateOwner owner;
+        owner.arm(queue, now, GpuHold{std::nullopt, 4ms});
+        const SignalOnly signal(5);
+        gate.observeSubmit2(queue, 1, &signal.submit, VK_NULL_HANDLE, now);
+        const Wait wait(5);
+        const auto first = gate.released(wait.info, now + 1ms, now + 2ms);
+        expect(first && !first->consumed && first->deadline == now + 5ms && !gate.empty(),
+            "the first short wait did not anchor the stepping hold");
+        const auto retry = gate.released(wait.info, now + 3ms, now + 4ms);
+        expect(retry && !retry->consumed && retry->deadline == now + 5ms && !gate.empty(),
+            "a retry moved the stepping hold's release point");
+        const auto last = gate.released(wait.info, now + 5ms, now + 6ms);
+        expect(last && last->consumed && last->deadline == now + 5ms && gate.empty(),
+            "the anchored stepping hold did not release at its point");
+    }
+    {
+        // Without a hold the deadline is the release point, as before.
+        ReleaseGateOwner owner;
+        present(gate, owner, 4, now + 3ms, now);
+        const Wait wait(4);
+        const auto release = gate.released(wait.info, now, unbounded);
+        expect(release && release->deadline == now + 3ms && gate.empty(), "a token without a hold moved");
+    }
+}
+
+// The native acquire fallback's GPU hold: the predicted release, or the stepping hold after the acquire's start.
+void acquireReleaseCarriesTheGpuHold() {
+    using Clock = ReleaseGate::Clock;
+    const auto now = Clock::now();
+    ReleaseGateOwner owner;
+    owner.setAcquireRelease(now + 2ms, GpuHold{now + 12ms, Clock::duration::zero()});
+    expect(owner.acquireRelease(now) == std::optional{now + 12ms},
+        "the predicted release did not hold the native acquire");
+    owner.setAcquireRelease(now + 2ms, GpuHold{std::nullopt, 3ms});
+    expect(owner.acquireRelease(now + 1ms) == std::optional{now + 4ms},
+        "the stepping hold was not measured from the acquire's start");
+    expect(owner.acquireRelease(now + 3ms) == std::optional{now + 4ms},
+        "a later acquire moved the anchored stepping hold");
+    owner.setAcquireRelease(now + 9ms, GpuHold{std::nullopt, 3ms});
+    expect(owner.acquireRelease(now + 1ms) == std::optional{now + 9ms},
+        "the stepping hold lowered the release point");
+    owner.noteAcquireReleased(now + 9ms);
+    expect(owner.takeReturnedAt() == std::optional{now + 9ms}, "the acquire return was not recorded");
+    owner.setAcquireRelease(std::nullopt);
+    expect(!owner.acquireRelease(now), "a cleared acquire release was still held");
+}
 }
 
 int main() {
@@ -414,5 +511,7 @@ int main() {
     lastSubmitTokenStopsOnceTokensAreUsed();
     submitMarkKeepsLastTimelineSignalPerQueue();
     acquireReleaseHeldOnlyWithoutTokens();
+    gpuHoldMovesTheReleasePoint();
+    acquireReleaseCarriesTheGpuHold();
     std::cout << "release gate tests passed\n";
 }

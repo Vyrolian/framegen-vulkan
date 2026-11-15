@@ -204,13 +204,19 @@ namespace fgvk::layer {
             return this->diagnosticsState.contextId;
         }
         /// Native acquire fallback (low_latency): the release point the next acquire waits for,
-        /// or nothing while the application releases through tokens (release_gate.hpp).
-        [[nodiscard]] std::optional<ReleaseGate::Clock::time_point> acquireRelease() const {
-            return this->releaseGate.acquireRelease();
+        /// or nothing while the application releases through tokens (release_gate.hpp). `now` is
+        /// the acquire's start, the origin of a stepping GPU hold (L5).
+        [[nodiscard]] std::optional<ReleaseGate::Clock::time_point> acquireRelease(
+                ReleaseGate::Clock::time_point now) const {
+            return this->releaseGate.acquireRelease(now);
         }
         /// The acquire fallback held an acquire; the application is recorded as a native waiter.
         void noteAcquireHold() const {
             this->releaseGate.noteAcquireHold();
+        }
+        /// The acquire fallback returned to the application at `now` (L5 observation).
+        void noteAcquireReleased(ReleaseGate::Clock::time_point now) const {
+            this->releaseGate.noteAcquireReleased(now);
         }
         [[nodiscard]] VkExtent2D frameGenerationResourceExtent() const {
             return this->info.extent;
@@ -491,6 +497,14 @@ namespace fgvk::layer {
         ReleaseGateOwner releaseGate;
         // Delay of every release point of this context (low_latency; low_latency.hpp).
         LowLatencyRelease lowLatencyRelease;
+        // GPU release of this context (L5, low_latency.hpp). The predictor exists while the release
+        // delay runs with split timestamps; the stepping hold is the fallback without them. The armed
+        // release is the predicted release of the next frame; the previous arrival bounds the release
+        // time that the next token return may take (present.cpp stepGpuRelease).
+        std::optional<GpuReleasePredictor> gpuPredictor;
+        GpuSteppingHold gpuStepping;
+        std::optional<ReleaseGate::Clock::time_point> gpuArmed;
+        std::optional<ReleaseGate::Clock::time_point> gpuPreviousArrival;
         // Reflex request of this swapchain, shared with the Reflex wrapper through
         // ReflexFrameLimitRegistry; fetched at the first present.
         std::shared_ptr<ReflexFrameLimit> reflexLimit;
@@ -545,7 +559,20 @@ namespace fgvk::layer {
         [[nodiscard]] static std::optional<uint64_t>
             generatedImageAcquireTimeoutNs();
         void ensureFrameGenerationExecutionResources(const vk::Vulkan& vk);
-        void initializeGpuPacingProfile(backend::Instance& backend, backend::Context& context) noexcept;
+        void initializeGpuPacingProfile(backend::Instance& backend, backend::Context& context,
+            bool lowLatency) noexcept;
+        // L5 GPU release of one capped present (present.cpp): the hold its release token carries and
+        // the mode it runs in. `active` is the release delay of this present (low_latency.hpp).
+        struct GpuRelease {
+            GpuReleaseMode mode{GpuReleaseMode::Off};
+            GpuHold hold{};
+        };
+        [[nodiscard]] GpuRelease stepGpuRelease(bool active,
+            std::chrono::steady_clock::time_point arrival,
+            std::chrono::steady_clock::duration capInterval);
+        // The backend's previous batch still runs on the GPU, from one non-blocking fence query.
+        [[nodiscard]] std::optional<bool> previousBatchBusy() const;
+        void resetGpuRelease() noexcept;
         [[nodiscard]] FrameGenerationResources buildFrameGenerationResources(
             const vk::Vulkan& vk, const SwapchainColorPipeline& pipeline,
             const ls::GameConf& resourceProfile);

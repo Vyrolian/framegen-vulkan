@@ -15,6 +15,7 @@
 - Pacing correction moves each generated output onto its own ideal point between its reals, and real frames are never moved; `FGVK_REAL_OFFSET_US` accepts only `auto`, and any other value turns the correction off.
 - With `low_latency` on (the default), each released output batch starts about 2 ms after its frames are ready, phase-locked to the batch cadence, instead of after the previous batch's planned output phase; the pacing window line reports it as `just_in_time=` and `batch_phase_hold_ms=`.
 - With the game's Reflex on (its last `vkSetLatencySleepModeNV` has `lowLatencyMode`), `low_latency` leaves the release delay, its release-token holds and the native acquire fallback off, so Reflex holds the game. The just-in-time batch start stays on. The pacing window line reports `low_latency_hold=reflex` for those windows, and `low_latency_extra_ms=0`.
+- With `low_latency` on and a cap, the game's next frame is also held until the GPU is about to finish the previous batch, like Reflex, when the GPU is the limit. The release is predicted from the backend's batch ends; without split timestamps a stepping hold on a non-blocking fence query is used. The pacing window line reports `gpu_release_ms=`, `gpu_prev_end_ms=` and `gpu_release=off|pred|fence`. The latency effect is not yet measured in a game run.
 
 ## What's new in MAKO Renderer v4.6.0
 

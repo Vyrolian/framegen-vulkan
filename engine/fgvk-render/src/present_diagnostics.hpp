@@ -3,6 +3,7 @@
 #pragma once
 
 #include "bridge_present_timing.hpp"
+#include "swapchain/low_latency.hpp"
 
 #include <chrono>
 #include <algorithm>
@@ -290,6 +291,13 @@ namespace fgvk::layer::present_diagnostics {
             bool justInTime{};
             // L3: each just-in-time batch's start minus its readiness.
             Samples batchPhaseHold;
+            // L5: the GPU release mode of the window's latest capped present, the hold its release
+            // token carried when a predicted release was armed (or the stepping hold), and the sum
+            // and count of resolved previous-batch-end leads (previous end minus arrival, ms).
+            GpuReleaseMode gpuReleaseMode{GpuReleaseMode::Off};
+            Samples gpuReleaseHold;
+            double gpuPrevEndSumMs{};
+            size_t gpuPrevEndCount{};
         };
         static constexpr std::array<std::string_view, PresentModeSlotCount> presentModeSlotNames{
             "none", "immediate", "mailbox", "fifo", "fifo_relaxed", "fifo_latest_ready", "other"};
@@ -414,6 +422,16 @@ namespace fgvk::layer::present_diagnostics {
         void completedWorkerBatch(bool readinessMiss) {
             ++window.workerBatches;
             window.workerReadinessMisses += readinessMiss;
+        }
+        // L5, one call per present: its GPU release mode, and the hold of its token when one was armed.
+        void gpuRelease(GpuReleaseMode mode, std::optional<Clock::duration> hold) {
+            window.gpuReleaseMode = mode;
+            if (hold) window.gpuReleaseHold.add(*hold);
+        }
+        // L5: one resolved previous-batch-end lead (the batch end minus the frame's arrival).
+        void gpuPrevEnd(Clock::duration lead) {
+            window.gpuPrevEndSumMs += std::chrono::duration<double, std::milli>(lead).count();
+            ++window.gpuPrevEndCount;
         }
         // L3: one just-in-time batch that became ready, and how far its phase-locked start came after that.
         void justInTimeBatch(Clock::duration hold) { window.batchPhaseHold.add(hold); }

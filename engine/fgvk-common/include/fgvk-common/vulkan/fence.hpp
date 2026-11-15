@@ -30,6 +30,12 @@ namespace vk {
         /// @throws ls::vulkan_error on failure
         [[nodiscard]] bool wait(const vk::Vulkan& vk, uint64_t timeout = UINT64_MAX) const;
 
+        /// query the fence without waiting
+        /// @param vk the vulkan instance
+        /// @returns true if the fence is signalled, false if it is not yet
+        /// @throws ls::vulkan_error on failure
+        [[nodiscard]] bool signalled(const vk::Vulkan& vk) const;
+
         /// get the fence handle
         /// @return the fence handle
         [[nodiscard]] VkFence handle() const { return *this->fence; }
