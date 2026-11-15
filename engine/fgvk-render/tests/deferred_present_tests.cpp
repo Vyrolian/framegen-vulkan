@@ -3243,9 +3243,16 @@ void generatedChainOutputOffsetsMoveEachOutput() {
         "offset batch failed");
     expect(done->calls[0].scheduled >= first - 1ms && done->calls[0].scheduled < first,
         "the first generated output did not take its own offset");
-    expect(done->calls[1].scheduled >= first + 11ms && done->calls[1].scheduled < first + 12ms,
+    // Each later slot follows the previous output's start in unmoved time, so a late wake
+    // under load moves the slot, not the check.
+    const auto secondSlot = std::max(first + 10ms,
+        done->calls[0].started - done->calls[0].offset + 10ms);
+    expect(done->calls[1].scheduled >= secondSlot + 1ms && done->calls[1].scheduled < secondSlot + 2ms,
         "the second generated output did not take its own offset alone");
-    expect(done->calls[2].scheduled >= first + 20ms && done->calls[2].scheduled < first + 21ms,
+    const auto realSlot = std::max(first + 20ms,
+        done->calls[1].started - done->calls[1].offset + 10ms);
+    expect(done->calls[2].offset == DeferredPresent::Clock::duration::zero() &&
+        done->calls[2].scheduled >= realSlot && done->calls[2].scheduled < realSlot + 1ms,
         "the real output was moved");
     expect(done->calls[0].offset == -1ms && done->calls[1].offset == 1ms && done->calls[2].offset == 0ns,
         "the recorded corrections are not the effective moves");
