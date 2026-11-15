@@ -2,6 +2,7 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -11,58 +12,43 @@
 
 namespace fgvk::layer {
 
-// S7: FGVK_REAL_OFFSET_US=<-1000..1000> moves the real output that follows a generated
-// output on released internal-image batches by that many microseconds (negative =
-// earlier). The next batch's first-output floor ignores the move, so only reals shift.
-// It centres the generated output between its reals when the two kinds wait unequally
-// for the private queue's GPU turn. 0 or unset = unchanged timing. Read once per process.
+// W2: a generated output on the worker copy path moves its own deadline by its commanded
+// offset (negative = earlier, from the automatic controller). Never closer to the previous
+// output's start than a quarter output interval, and never later because of that bound than
+// the unmoved deadline.
 template <typename TimePoint, typename Duration>
-[[nodiscard]] constexpr TimePoint realDeadlineWithOffset(const TimePoint deadline,
-        const TimePoint generatedStarted, const Duration interval, const Duration offset) noexcept {
-    // Never closer to the generated present than a quarter output interval, and
-    // never later because of that bound than the unmoved deadline.
+[[nodiscard]] constexpr TimePoint deadlineWithOffset(const TimePoint deadline,
+        const TimePoint previousStarted, const Duration interval, const Duration offset) noexcept {
     return offset == Duration{} ? deadline
-        : std::max(deadline + offset, std::min(deadline, generatedStarted + interval / 4));
+        : std::max(deadline + offset, std::min(deadline, previousStarted + interval / 4));
 }
-// S8d: the part of a real's move that took effect. A join expedite or a late wake can
-// start the real before its moved deadline; a later move counts only up to the actual
-// start, an earlier one (negative) cannot be undone by starting even earlier.
+// W2: the part of a generated output's move that took effect. A later move counts only up to
+// the final scheduled deadline: a join expedite or a late wake can start the output before its
+// moved slot, and the wake itself is ignored. An earlier move (negative) counts only as far as
+// the final deadline went, so a raise that undoes it counts as the part that remains.
 template <typename TimePoint, typename Duration>
-[[nodiscard]] constexpr Duration realOffsetEffective(const Duration applied, const TimePoint unmoved,
+[[nodiscard]] constexpr Duration outputOffsetEffective(const Duration applied, const TimePoint unmoved,
         const TimePoint scheduled, const TimePoint started) noexcept {
-    return applied > Duration{}
-        ? std::clamp(Duration{std::min(started, scheduled) - unmoved}, Duration{}, applied) : applied;
+    if (applied > Duration{})
+        return std::clamp(Duration{std::min(started, scheduled) - unmoved}, Duration{}, applied);
+    if (applied < Duration{})
+        return std::clamp(Duration{scheduled - unmoved}, applied, Duration{});
+    return Duration{};
 }
-// S8d: the sign of the commanded offset when the real did not get it (by more than 50 us),
+// W2: the sign of the commanded offset when the output did not get it (by more than 50 us),
 // else 0. The automatic controller does not integrate further in that direction.
 template <typename Duration>
-[[nodiscard]] constexpr int realOffsetLimited(const Duration commanded, const Duration effective) noexcept {
+[[nodiscard]] constexpr int outputOffsetLimited(const Duration commanded, const Duration effective) noexcept {
     constexpr Duration tolerance = std::chrono::microseconds{50};
     if (commanded > Duration{}) return effective < commanded - tolerance ? 1 : 0;
     if (commanded < Duration{}) return effective > commanded + tolerance ? -1 : 0;
     return 0;
 }
-[[nodiscard]] inline std::chrono::steady_clock::duration realOffset() noexcept {
-    static const auto offset = [] {
-        const char* text = std::getenv("FGVK_REAL_OFFSET_US");
-        char* end = nullptr;
-        const long value = text ? std::strtol(text, &end, 10) : 0;
-        if (!text || end == text || value == 0)
-            return std::chrono::steady_clock::duration{};
-        const long clamped = std::clamp(value, -1000L, 1000L);
-        std::fprintf(stderr, "framegen-vulkan: real offset: offset_us=%ld\n", clamped);
-        return std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-            std::chrono::microseconds{clamped});
-    }();
-    return offset;
-}
 
-// S8b: the automatic real offset derives the S7 offset at run time from the GPU present
-// marker: the start of the private queue's next GPU work after each lower present, which is
-// when that present reaches the screen up to a constant. On by the `[global]
+// FGVK_REAL_OFFSET_US=auto turns the automatic output correction on, and any other value (a
+// number, 0) turns it off; there is no fixed offset. Unset, it follows the `[global]
 // pacing_correction` key (default true), which the layer stores here at startup, before any
-// device exists; without that (tests, tools) it is off. FGVK_REAL_OFFSET_US overrides:
-// `auto` turns it on, any other value (a number, 0) turns it off and keeps S7's fixed value.
+// device exists; without that (tests, tools) it is off.
 inline std::atomic<bool> realOffsetAutoConfigured{false};
 [[nodiscard]] inline bool realOffsetAuto() noexcept {
     static const int fromEnvironment = [] {
@@ -77,71 +63,78 @@ inline std::atomic<bool> realOffsetAutoConfigured{false};
         std::fprintf(stderr, "framegen-vulkan: real offset: auto\n");
     return on;
 }
-// S8b diagnostics only: the last worker's current auto offset and accepted samples.
+// Diagnostics only: the last worker's equivalent real offset, accepted samples and held positions.
 inline std::atomic<int64_t> realOffsetAutoNs{0};
 inline std::atomic<uint64_t> realOffsetAutoSamples{0};
 inline std::atomic<uint64_t> realOffsetAutoHeld{0};
 
-/// S8b: integrates the mean distance of a source's generated outputs from the midpoint of
-/// its two reals, measured on the private queue's GPU clock, into the real offset. A positive
-/// error (generated late) moves the reals later. For N - 1 evenly placed generated outputs the
-/// mean expected position is the midpoint for every N, so one offset serves every multiplier.
-/// Only the mean is corrected: the per-frame GPU-turn wait is decided after the present call.
-/// Worker thread only. S8d: while the last real could not take the offset (`limited`, its
-/// sign), samples pushing further that way are held: counted in `held`, not integrated, not accepted.
-struct RealOffsetController {
+/// W2: one correction per generated output. Position k is the k-th generated output of a batch
+/// (k < maxPositions). Its ideal point is the (k + 1)-th of expectedGenerated + 1 even points
+/// between the two reals of its source, measured on the private queue's GPU clock: a late output
+/// (positive error) gets a negative offset and moves earlier. Each position is an independent
+/// integrator with the same gain, clamp and reject. The reals are never moved. While a position
+/// could not take its offset (`limited`, its sign), samples pushing further that way are held:
+/// counted in `held`, not integrated. Worker thread only.
+struct OutputOffsetController {
     using Duration = std::chrono::nanoseconds;
+    static constexpr size_t maxPositions = 4;
     static constexpr Duration limit = std::chrono::microseconds{1000};
     static constexpr Duration errorClamp = std::chrono::milliseconds{1};
     static constexpr Duration errorReject = std::chrono::milliseconds{3};
     static constexpr Duration minStep = std::chrono::milliseconds{8};
     static constexpr Duration maxStep = std::chrono::milliseconds{25};
     static constexpr int64_t gain = 64;
-    Duration offset{};
+    std::array<Duration, maxPositions> offset{};
+    std::array<int, maxPositions> limited{};
     Duration lastError{};
     uint64_t accepted{};
     uint64_t held{};
-    int limited{};
     // Generated outputs per source of the current batch (multiplier - 1), set by the worker.
     // A source with a different count gives no sample.
     uint32_t expectedGenerated{1};
     bool haveReal{};
     uint64_t realSource{}, generatedSource{};
     uint32_t generatedCount{};
-    Duration realAt{}, generatedSum{}, generatedFirst{}, generatedLast{};
+    Duration realAt{};
+    std::array<Duration, maxPositions> generatedAt{};
 
     /// One finished marker, in present order. Returns true when it completed an accepted sample.
     constexpr bool observe(const bool generated, const uint64_t source, const Duration at) noexcept {
         if (generated) {
             if (generatedCount == 0 || generatedSource != source) {
                 generatedSource = source;
-                generatedCount = 1;
-                generatedSum = at;
-                generatedFirst = generatedLast = at;
-            } else {
-                ++generatedCount;
-                generatedSum += at;
-                generatedLast = at;
+                generatedCount = 0;
             }
+            // A marker past maxPositions is counted but not stored, and such a source gives no sample.
+            if (generatedCount < maxPositions) generatedAt[generatedCount] = at;
+            ++generatedCount;
             return false;
         }
         bool used = false;
         if (haveReal && generatedCount != 0 && generatedCount == expectedGenerated &&
-                generatedSource == source && realSource + 1 == source &&
-                realAt < generatedFirst && generatedLast < at) {
+                generatedCount <= maxPositions && generatedSource == source &&
+                realSource + 1 == source && realAt < generatedAt[0] &&
+                generatedAt[generatedCount - 1] < at) {
             const auto step = at - realAt;
             if (step >= minStep && step <= maxStep) {
-                const auto error = generatedSum / generatedCount - (realAt + step / 2);
-                if (error <= errorReject && error >= -errorReject) {
-                    lastError = error;
-                    if ((limited > 0 && error > Duration{}) || (limited < 0 && error < Duration{})) {
+                bool integrated{};
+                for (uint32_t k = 0; k < generatedCount; ++k) {
+                    const auto ideal = realAt + step * static_cast<int64_t>(k + 1) /
+                        static_cast<int64_t>(generatedCount + 1);
+                    const auto error = generatedAt[k] - ideal;
+                    if (error > errorReject || error < -errorReject) continue;
+                    if (k == 0) lastError = error;
+                    if ((limited[k] < 0 && error > Duration{}) || (limited[k] > 0 && error < Duration{})) {
                         ++held;
                     } else {
-                        offset = std::clamp(offset + std::clamp(error, -errorClamp, errorClamp) / gain,
+                        offset[k] = std::clamp(offset[k] - std::clamp(error, -errorClamp, errorClamp) / gain,
                             -limit, limit);
-                        ++accepted;
-                        used = true;
+                        integrated = true;
                     }
+                }
+                if (integrated) {
+                    ++accepted;
+                    used = true;
                 }
             }
         }
@@ -151,7 +144,23 @@ struct RealOffsetController {
         generatedCount = 0;
         return used;
     }
-    /// Drops the pending markers; the offset and `limited` are kept.
+    /// The worker's generated count for the batch. A different count changes what each position
+    /// measures, so the offsets and holds start again; the same count keeps them.
+    constexpr void setExpected(const uint32_t count) noexcept {
+        if (count == expectedGenerated) return;
+        expectedGenerated = count;
+        offset = {};
+        limited = {};
+    }
+    /// The real offset that moves the mean of the generated outputs by the same amount: the
+    /// summary's `real_offset_us`. Exact at 2x.
+    [[nodiscard]] constexpr Duration equivalentRealOffset() const noexcept {
+        if (expectedGenerated == 0) return Duration{};
+        Duration sum{};
+        for (uint32_t k = 0; k < expectedGenerated && k < maxPositions; ++k) sum += offset[k];
+        return -sum / static_cast<int64_t>(expectedGenerated);
+    }
+    /// Drops the pending markers; the offsets and `limited` are kept.
     constexpr void forget() noexcept { haveReal = false; generatedCount = 0; }
 };
 

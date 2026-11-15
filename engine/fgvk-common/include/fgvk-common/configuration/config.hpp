@@ -20,8 +20,9 @@ namespace ls {
         std::optional<std::string> dll;
         /// request supported FP16 model arithmetic; false selects FP32
         bool allow_fp16{true};
-        /// centre generated outputs between their reals from measured GPU present times
-        /// (FGVK_REAL_OFFSET_US overrides); read once when the layer starts
+        /// place each generated output on its own ideal point between its reals, from measured GPU
+        /// present times; real outputs are never moved (FGVK_REAL_OFFSET_US=auto turns it on, any
+        /// other value off); read once when the layer starts
         bool pacing_correction{true};
     };
 

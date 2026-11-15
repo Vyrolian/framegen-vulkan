@@ -80,7 +80,7 @@ Older files can still contain `adaptive`, `adaptive_max_multiplier`, `adaptive_a
 | `flow_scale` | 25–100% motion-estimation resolution; lower saves GPU work at a quality cost. Ultra Performance fixes it at 70%. |
 | `performance_mode = true` | Uses the lighter Frame Generation model, which reduces GPU work with potentially more artifacts. |
 | `allow_fp16` (restart, `[global]`) | FP16 for supported Frame Generation models; `false` uses FP32. |
-| `pacing_correction` (restart, `[global]`) | On by default. Measures when each output gets the GPU after its present and moves real frames so the generated frames between two reals sit, on average, midway between them, at every multiplier. `false` keeps the uncorrected timing. |
+| `pacing_correction` (restart, `[global]`) | On by default. Measures when each output gets the GPU after its present and moves each generated frame onto its own ideal point between its two reals, at every multiplier. Real frames are never moved. `FGVK_REAL_OFFSET_US=auto` turns it on; any other value turns it off. `false` keeps the uncorrected timing. |
 | `dll` (restart) | Lossless.dll path override; leave unset for automatic detection. |
 | `gpu` (restart) | Optional GPU name, vendor/device ID, or PCI bus ID. Multi-GPU Frame Generation is unsupported. |
 

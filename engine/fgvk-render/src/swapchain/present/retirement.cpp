@@ -53,7 +53,8 @@ VkResult Swapchain::completeDeferredPresent(const uint64_t timeoutNs, const bool
                     ++this->diagnosticsState.fixedGeneratedFrames;
             }
         if (completion.result == VK_SUCCESS && completion.count && !completion.readinessMiss)
-            this->realFramePacer.completeOutputBatch(completion.calls[completion.count - 1].started,
+            this->realFramePacer.completeOutputBatch(
+                completion.calls[completion.count - 1].started - completion.calls[completion.count - 1].offset,
                 completion.readinessShift);
         else if (completion.readinessMiss)
             this->realFramePacer.resetOutputs();
@@ -122,6 +123,7 @@ VkResult Swapchain::completeDeferredPresent(const uint64_t timeoutNs, const bool
                     .backendFrame = call.backendFrame, .phase = call.phase, .presentId = call.presentId,
                     .readyAt = i == 0 ? completion.readyAt : DiagnosticsClock::time_point{},
                     .slack = i == 0 ? completion.slack : DiagnosticsClock::duration{},
+                    .offset = call.offset,
                 });
                 present_diagnostics::logPacingOutput(this->diagnosticsState.contextId, call.swapchain, sample);
             }

@@ -12,6 +12,7 @@
 - The `FGVK_INTERNAL_SWAPCHAIN`, `FGVK_INTERNAL_PREPARE`, `FGVK_PACING_PROFILE_COPY`, `FGVK_PACING_PROFILE_CONTENT` and `FGVK_PACING_PROFILE_CONTENT_SOURCES` variables are no longer read; the native copy timestamp profile and frame content capture are removed.
 - Frame generation runs only on swapchains with internal application images. A swapchain created with frame generation off presents real frames only; switching it on live asks the game for one swapchain recreation, and a swapchain that cannot use internal images logs `frame generation unavailable for this swapchain: reason=…`.
 - Frame generation outputs at 3x–5x are paced by the presentation worker like 2x; pacing correction applies at every multiplier.
+- Pacing correction moves each generated output onto its own ideal point between its reals, and real frames are never moved; `FGVK_REAL_OFFSET_US` accepts only `auto`, and any other value turns the correction off.
 
 ## What's new in MAKO Renderer v4.6.0
 

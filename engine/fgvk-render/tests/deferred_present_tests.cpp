@@ -2170,9 +2170,13 @@ struct DeferredPresentTestAccess {
         }
         worker.changed.notify_all();
     }
-    // Sets the automatic real offset before a batch is admitted; the worker reads it only after admission.
-    static void setRealOffset(DeferredPresent& worker, std::chrono::nanoseconds offset) {
-        worker.realOffsetController.offset = offset;
+    // Sets the automatic output corrections before a batch is admitted; the worker reads them only after
+    // admission. The expected count is set first, so the worker's own setExpected keeps the offsets.
+    static void setOutputOffsets(DeferredPresent& worker, uint32_t expected,
+            std::array<std::chrono::nanoseconds, 4> offsets) {
+        const std::lock_guard lock(worker.mutex);
+        worker.outputOffsetController.setExpected(expected);
+        worker.outputOffsetController.offset = offsets;
     }
 };
 }
@@ -3204,10 +3208,11 @@ void generatedPreparedOrderAndBudget() {
             "prepared generated work was submitted more than once");
     }
 }
-// W1: in a three-output batch the automatic real offset moves only the real output. The second
-// generated output keeps its spacing after the first (its move is under 1 ms), and the real starts
-// at least a full offset (1 ms) after it, plus the real's own spacing of 10 ms.
-void generatedChainRealOffsetMovesOnlyTheReal() {
+// W2: in a three-output batch each generated output takes its own correction and the real is never
+// moved. The first generated output moves 1 ms earlier from its own slot. The second moves 1 ms later
+// from its own slot, so the first's move does not push it. The real keeps its slot, so the second's
+// move does not push it.
+void generatedChainOutputOffsetsMoveEachOutput() {
     auto pool = std::make_shared<PreparedPool>();
     preparedPool = pool.get();
     copySubmits.clear();
@@ -3215,7 +3220,7 @@ void generatedChainRealOffsetMovesOnlyTheReal() {
     auto queue = std::make_shared<DeferredPresentQueue>();
     queue->queue = handle<VkQueue>(7);
     DeferredPresent worker(queue, preparedPresent);
-    DeferredPresentTestAccess::setRealOffset(worker, std::chrono::microseconds{1000});
+    DeferredPresentTestAccess::setOutputOffsets(worker, 2, {-1000us, 1000us, 0ns, 0ns});
     const auto swapchain = handle<VkSwapchainKHR>(11);
     const auto wait = handle<VkSemaphore>(12);
     const uint32_t image = 4;
@@ -3236,10 +3241,14 @@ void generatedChainRealOffsetMovesOnlyTheReal() {
     expect(done && done->count == 3 && done->result == VK_SUCCESS &&
         !done->calls[0].skipped && !done->calls[1].skipped && !done->calls[2].skipped,
         "offset batch failed");
-    expect(done->calls[1].scheduled - (first + 10ms) < 1ms,
-        "the second generated output was moved by the real offset");
-    expect(done->calls[2].scheduled - done->calls[1].scheduled >= 11ms,
-        "the real output did not take the real offset");
+    expect(done->calls[0].scheduled >= first - 1ms && done->calls[0].scheduled < first,
+        "the first generated output did not take its own offset");
+    expect(done->calls[1].scheduled >= first + 11ms && done->calls[1].scheduled < first + 12ms,
+        "the second generated output did not take its own offset alone");
+    expect(done->calls[2].scheduled >= first + 20ms && done->calls[2].scheduled < first + 21ms,
+        "the real output was moved");
+    expect(done->calls[0].offset == -1ms && done->calls[1].offset == 1ms && done->calls[2].offset == 0ns,
+        "the recorded corrections are not the effective moves");
 }
 // A failed early acquire must not consume staged work. The existing deadline
 // acquire then submits exactly once. The direct and non-overlap gates do not try early.
@@ -3312,21 +3321,21 @@ void generatedPreparedStop() {
         !done->calls[0].skipped && pool.held == 0 && pool.order.size() == 1 && copySubmits.size() == 1,
         "stop stranded a prepared image or failed to finish");
 }
-// S7: the real offset moves a tail real by the offset, keeps a quarter interval after the
-// generated present, and changes nothing when it is zero.
-namespace real_offset_checks {
+// W2: a generated output's own correction keeps a quarter interval after the previous output's start,
+// and changes nothing when it is zero.
+namespace output_offset_checks {
 using Ns = std::chrono::nanoseconds;
 using Tp = std::chrono::time_point<std::chrono::steady_clock, Ns>;
 constexpr Tp at(const int64_t us) { return Tp{std::chrono::microseconds{us}}; }
 constexpr Ns us(const int64_t value) { return std::chrono::microseconds{value}; }
-static_assert(realDeadlineWithOffset(at(6500), at(0), us(6500), us(0)) == at(6500));
-static_assert(realDeadlineWithOffset(at(6500), at(0), us(6500), us(-550)) == at(5950));
-static_assert(realDeadlineWithOffset(at(6500), at(0), us(6500), us(400)) == at(6900));
+static_assert(deadlineWithOffset(at(6500), at(0), us(6500), us(0)) == at(6500));
+static_assert(deadlineWithOffset(at(6500), at(0), us(6500), us(-550)) == at(5950));
+static_assert(deadlineWithOffset(at(6500), at(0), us(6500), us(400)) == at(6900));
 // Short interval: the quarter-interval bound holds.
-static_assert(realDeadlineWithOffset(at(2000), at(0), us(2000), us(-1000)) == at(1000));
-static_assert(realDeadlineWithOffset(at(1000), at(0), us(2000), us(-1000)) == at(500));
+static_assert(deadlineWithOffset(at(2000), at(0), us(2000), us(-1000)) == at(1000));
+static_assert(deadlineWithOffset(at(1000), at(0), us(2000), us(-1000)) == at(500));
 // A deadline already inside the bound is not pushed later by a negative offset.
-static_assert(realDeadlineWithOffset(at(300), at(0), us(2000), us(-1000)) == at(300));
+static_assert(deadlineWithOffset(at(300), at(0), us(2000), us(-1000)) == at(300));
 }
 
 // Errors must consume the staging/continuation contract once without retrying
@@ -3357,36 +3366,62 @@ void generatedPreparationErrors() {
 }
 
 namespace {
-// S8b: markers of real k-1, generated k, real k at a 13 ms source period. The generated
-// output lands `bias` after the midpoint of the unmoved reals; each real lands at its slot
-// plus the controller's current offset (its response). Noise moves reals in pairs and the
-// generated output alternately, so the midpoint itself moves.
-constexpr bool realOffsetSimulation(std::chrono::nanoseconds bias, bool noisy = false) {
+// W2: markers of real k-1, generated k, real k at a 13 ms source period. The reals stay on their
+// slots. The generated output lands `bias` after the midpoint of its reals, plus its own correction
+// (its response). Noise moves the reals in pairs and the generated output alternately, so the
+// midpoint itself moves. The correction converges to -bias: the output moves earlier by the bias.
+constexpr bool outputOffsetSimulation(std::chrono::nanoseconds bias, bool noisy = false) {
     using namespace std::chrono_literals;
-    RealOffsetController controller;
+    OutputOffsetController controller;
     constexpr std::chrono::nanoseconds period = 13ms; // nanoseconds: half of it is exact
     const auto realAt = [&](int k) {
-        return period * k + controller.offset + (noisy ? ((k / 2) % 2 ? 500us : -500us) : 0us);
+        return period * k + (noisy ? ((k / 2) % 2 ? 500us : -500us) : 0us);
     };
     (void)controller.observe(false, 0, realAt(0));
     for (int k = 1; k <= 400; ++k) {
-        const auto generated = period * k - period / 2 + bias + (noisy ? (k % 2 ? 300us : -300us) : 0us);
+        const auto generated = period * k - period / 2 + bias + controller.offset[0] +
+            (noisy ? (k % 2 ? 300us : -300us) : 0us);
         (void)controller.observe(true, static_cast<uint64_t>(k), generated);
         if (!controller.observe(false, static_cast<uint64_t>(k), realAt(k))) return false;
-        if (controller.offset > RealOffsetController::limit || controller.offset < -RealOffsetController::limit)
+        if (controller.offset[0] > OutputOffsetController::limit ||
+                controller.offset[0] < -OutputOffsetController::limit)
             return false;
     }
-    const auto miss = controller.offset - bias;
+    const auto miss = controller.offset[0] + bias;
     return controller.accepted == 400 && miss <= 50us && miss >= -50us;
 }
-static_assert(realOffsetSimulation(500us));
-static_assert(realOffsetSimulation(-500us));
-static_assert(realOffsetSimulation(0us));
-static_assert(realOffsetSimulation(400us, true));
-static_assert(realOffsetSimulation(-600us, true));
+static_assert(outputOffsetSimulation(500us));
+static_assert(outputOffsetSimulation(-500us));
+static_assert(outputOffsetSimulation(0us));
+static_assert(outputOffsetSimulation(400us, true));
+static_assert(outputOffsetSimulation(-600us, true));
+// W2: at 4x each generated position has its own bias. Each converges to its own bias, within 10 us,
+// and the mean of the biases alone would not give that (it would leave every position off by its
+// own deviation from the mean).
+constexpr bool fourXOutputOffsetSimulation(std::array<std::chrono::nanoseconds, 3> bias) {
+    using namespace std::chrono_literals;
+    OutputOffsetController c;
+    c.setExpected(3);
+    constexpr std::chrono::nanoseconds period = 12ms; // three generated positions at 3, 6 and 9 ms
+    (void)c.observe(false, 0, std::chrono::nanoseconds{});
+    for (int k = 1; k <= 400; ++k) {
+        const auto previous = period * (k - 1);
+        for (uint32_t j = 0; j < 3; ++j)
+            (void)c.observe(true, static_cast<uint64_t>(k),
+                previous + period * (j + 1) / 4 + bias[j] + c.offset[j]);
+        if (!c.observe(false, static_cast<uint64_t>(k), period * k)) return false;
+    }
+    for (uint32_t j = 0; j < 3; ++j) {
+        const auto miss = c.offset[j] + bias[j];
+        if (miss > 10us || miss < -10us) return false;
+    }
+    return c.accepted == 400 && c.held == 0;
+}
+static_assert(fourXOutputOffsetSimulation({-120us, -160us, 170us}));
+static_assert(fourXOutputOffsetSimulation({500us, -500us, 0us}));
 static_assert([] {
     using namespace std::chrono_literals;
-    using C = RealOffsetController;
+    using C = OutputOffsetController;
     C c;
     // A sample needs real k-1, generated k, real k in that order (midpoint = real k-1 + 6.5 ms).
     (void)c.observe(false, 1, 13ms);
@@ -3405,38 +3440,44 @@ static_assert([] {
     if (c.observe(false, 10, 111ms)) return false;                   // error -3.5 ms
     (void)c.observe(true, 11, 112ms);
     if (c.observe(false, 11, 111ms)) return false;                   // real not after generated
-    if (c.offset != 0ns || c.accepted != 0) return false;
+    if (c.offset[0] != 0ns || c.accepted != 0) return false;
     (void)c.observe(true, 12, 111ms + 6500us + 3ms);
     if (!c.observe(false, 12, 124ms)) return false;                  // error +3 ms, clamped to 1 ms
-    if (c.offset != C::Duration{1ms} / C::gain || c.lastError != 3ms) return false;
+    if (c.offset[0] != -(C::Duration{1ms} / C::gain) || c.lastError != 3ms) return false;  // late: earlier
     c.forget();
     (void)c.observe(true, 13, 130ms);
     if (c.observe(false, 13, 137ms)) return false;                   // history dropped
-    if (c.offset != C::Duration{1ms} / C::gain) return false;                     // offset kept
+    if (c.offset[0] != -(C::Duration{1ms} / C::gain)) return false;                       // offset kept
     for (int k = 14; k < 400; ++k) {                                 // +1 ms each: saturates
         const auto previous = 137ms + 13ms * (k - 14);
         (void)c.observe(true, static_cast<uint64_t>(k), previous + 6500us + 1ms);
         if (!c.observe(false, static_cast<uint64_t>(k), previous + 13ms)) return false;
     }
-    return c.offset == C::limit;
+    return c.offset[0] == -C::limit;
 }());
-// S8d: a real the join expedite started before its moved deadline took only part of the move.
-namespace real_offset_checks {
-static_assert(realOffsetEffective(us(1000), at(4300), at(5300), at(4600)) == us(300));
-static_assert(realOffsetEffective(us(1000), at(4300), at(5300), at(4000)) == us(0));     // before unmoved
-static_assert(realOffsetEffective(us(1000), at(4300), at(5300), at(5400)) == us(1000));  // late wake
-static_assert(realOffsetEffective(us(-500), at(4300), at(3800), at(3000)) == us(-500));  // earlier: kept
-static_assert(realOffsetEffective(us(0), at(4300), at(4300), at(4000)) == us(0));
-static_assert(realOffsetLimited(us(1000), us(300)) == 1);
-static_assert(realOffsetLimited(us(1000), us(960)) == 0);
-static_assert(realOffsetLimited(us(-600), us(-200)) == -1);
-static_assert(realOffsetLimited(us(-600), us(-600)) == 0);
-static_assert(realOffsetLimited(us(0), us(0)) == 0);
+// W2: a generated output's move counts for the part that took effect. A later move counts up to its
+// final scheduled deadline, and an earlier move only as far as that deadline went: a raise that undoes
+// part of it leaves the rest, and a raise past the unmoved slot leaves none.
+namespace output_offset_checks {
+static_assert(outputOffsetEffective(us(1000), at(4300), at(5300), at(4600)) == us(300));
+static_assert(outputOffsetEffective(us(1000), at(4300), at(5300), at(4000)) == us(0));     // before unmoved
+static_assert(outputOffsetEffective(us(1000), at(4300), at(5300), at(5400)) == us(1000));  // late wake
+static_assert(outputOffsetEffective(us(-500), at(4300), at(3800), at(3000)) == us(-500));  // earlier: kept
+static_assert(outputOffsetEffective(us(0), at(4300), at(4300), at(4000)) == us(0));
+static_assert(outputOffsetEffective(us(-1000), at(4300), at(3300), at(3300)) == us(-1000)); // at the moved slot
+static_assert(outputOffsetEffective(us(-1000), at(4300), at(3800), at(3800)) == us(-500));  // raised half way
+static_assert(outputOffsetEffective(us(-1000), at(4300), at(4400), at(4400)) == us(0));     // raised past unmoved
+static_assert(outputOffsetEffective(us(-1000), at(4300), at(3300), at(3500)) == us(-1000)); // late wake ignored
+static_assert(outputOffsetLimited(us(1000), us(300)) == 1);
+static_assert(outputOffsetLimited(us(1000), us(960)) == 0);
+static_assert(outputOffsetLimited(us(-600), us(-200)) == -1);
+static_assert(outputOffsetLimited(us(-600), us(-600)) == 0);
+static_assert(outputOffsetLimited(us(0), us(0)) == 0);
 }
-// S8d: while limited one way, samples pushing that way are held; the other way integrates.
+// W2: while a position is limited one way, samples pushing that way are held; the other way integrates.
 static_assert([] {
     using namespace std::chrono_literals;
-    using C = RealOffsetController;
+    using C = OutputOffsetController;
     C c;
     const auto sample = [&](int k, std::chrono::nanoseconds error) {
         const auto previous = 13ms * k;
@@ -3444,27 +3485,26 @@ static_assert([] {
         (void)c.observe(true, static_cast<uint64_t>(k + 1), previous + 6500us + error);
         return c.observe(false, static_cast<uint64_t>(k + 1), previous + 13ms);
     };
-    if (!sample(1, 640us) || c.offset != C::Duration{10us}) return false;
-    c.limited = 1;
+    if (!sample(1, 640us) || c.offset[0] != C::Duration{-10us}) return false; // late: moves earlier
+    c.limited[0] = -1;                                               // could not move earlier
     for (int k = 3; k < 300; k += 2)
-        if (sample(k, 640us)) return false;                          // held, never accepted
-    if (c.offset != C::Duration{10us} || c.held != 149 || c.accepted != 1) return false;
-    if (!sample(301, -640us) || c.offset != 0ns) return false;       // opposite sign integrates
-    c.limited = -1;
-    if (sample(303, -640us) || !sample(305, 640us)) return false;
+        if (sample(k, 640us)) return false;                          // pushes earlier: held, never accepted
+    if (c.offset[0] != C::Duration{-10us} || c.held != 149 || c.accepted != 1) return false;
+    if (!sample(301, -640us) || c.offset[0] != 0ns) return false;    // pushes later: integrates
+    c.limited[0] = 1;                                                // could not move later
+    if (sample(303, -640us) || !sample(305, 640us)) return false;    // pushes later: held; earlier: integrates
     c.forget();
-    if (c.limited != -1) return false;                               // forget keeps it
-    c.limited = 0;
-    return sample(307, 640us) && c.offset == C::Duration{20us} && c.held == 150;
+    if (c.limited[0] != 1) return false;                             // forget keeps it
+    c.limited[0] = 0;
+    return sample(307, 640us) && c.offset[0] == C::Duration{-20us} && c.held == 150;
 }());
-// W1: N - 1 generated outputs per source, evenly placed between two reals 12 ms apart. Their mean
-// is the midpoint for every N, so `late` moves the mean by exactly `late`. `dropLast` omits the
-// last generated output of each source.
-constexpr RealOffsetController evenlySpacedReals(uint32_t expected, std::chrono::nanoseconds late,
+// W1: N - 1 generated outputs per source, evenly placed between two reals 12 ms apart. Each is at its
+// ideal point, moved by `late`. `dropLast` omits the last generated output of each source.
+constexpr OutputOffsetController evenlySpacedOutputs(uint32_t expected, std::chrono::nanoseconds late,
         bool dropLast = false) {
     using namespace std::chrono_literals;
-    RealOffsetController c;
-    c.expectedGenerated = expected;
+    OutputOffsetController c;
+    c.setExpected(expected);
     constexpr std::chrono::nanoseconds period = 12ms;
     const auto step = period / static_cast<int64_t>(expected + 1);
     (void)c.observe(false, 0, std::chrono::nanoseconds{});
@@ -3477,17 +3517,24 @@ constexpr RealOffsetController evenlySpacedReals(uint32_t expected, std::chrono:
     }
     return c;
 }
+constexpr bool allPositionsZero(const std::array<std::chrono::nanoseconds, 4>& offsets, uint32_t count) {
+    for (uint32_t k = 0; k < count; ++k)
+        if (offsets[k] != std::chrono::nanoseconds{}) return false;
+    return true;
+}
 static_assert([] {
     using namespace std::chrono_literals;
-    using C = RealOffsetController;
+    using C = OutputOffsetController;
     for (const uint32_t expected : {2u, 4u}) {
-        const auto even = evenlySpacedReals(expected, 0ns);
-        if (even.accepted != 20 || even.offset != 0ns || even.lastError != 0ns) return false;
-        const auto late = evenlySpacedReals(expected, 2ms);
-        if (late.accepted != 20 || late.lastError != 2ms || late.offset != 20 * (C::Duration{1ms} / C::gain))
-            return false;
-        const auto fewer = evenlySpacedReals(expected, 2ms, true);
-        if (fewer.accepted != 0 || fewer.offset != 0ns) return false;   // one marker short: no sample
+        const auto even = evenlySpacedOutputs(expected, 0ns);
+        if (even.accepted != 20 || !allPositionsZero(even.offset, expected) || even.lastError != 0ns) return false;
+        // Every position is late by 2 ms: each takes the clamped 1 ms error once per source.
+        const auto late = evenlySpacedOutputs(expected, 2ms);
+        if (late.accepted != 20 || late.lastError != 2ms) return false;
+        for (uint32_t k = 0; k < expected; ++k)
+            if (late.offset[k] != -20 * (C::Duration{1ms} / C::gain)) return false;
+        const auto fewer = evenlySpacedOutputs(expected, 2ms, true);
+        if (fewer.accepted != 0 || !allPositionsZero(fewer.offset, expected)) return false; // one short: no sample
     }
     // expectedGenerated 1 is today's rule: a second generated marker of the same source gives no sample.
     C c;
@@ -3497,32 +3544,78 @@ static_assert([] {
     if (c.observe(false, 1, 12ms) || c.accepted != 0) return false;
     return true;
 }());
-// S8d: the cap-bound windup. The real cannot start later than `reach` after its unmoved slot
-// (the next source present joins), so the error stays at `bias - reach` once the offset passes
-// `reach`. With the hold the offset stops at the reach; without it, it runs to the limit.
-constexpr std::chrono::nanoseconds realOffsetWindup(bool hold) {
+// W2: a hold stops only the position it limits. Three generated outputs in a 12 ms step, each 640 us
+// late: position 1 is held, positions 0 and 2 integrate.
+static_assert([] {
     using namespace std::chrono_literals;
-    RealOffsetController c;
+    using C = OutputOffsetController;
+    C c;
+    c.setExpected(3);
+    c.limited[1] = -1;                                               // position 1 could not move earlier
+    (void)c.observe(false, 0, 0ms);
+    for (uint32_t j = 0; j < 3; ++j)
+        (void)c.observe(true, 1, 3ms * (j + 1) + 640us);
+    if (!c.observe(false, 1, 12ms)) return false;
+    return c.offset[0] == -10us && c.offset[1] == 0ns && c.offset[2] == -10us &&
+        c.held == 1 && c.accepted == 1 && c.lastError == 640us;
+}());
+// W2: setExpected with a new count starts every position again; the same count keeps them.
+static_assert([] {
+    using namespace std::chrono_literals;
+    using C = OutputOffsetController;
+    C c;
+    c.setExpected(2);
+    c.offset[0] = 10us;
+    c.offset[1] = -20us;
+    c.limited[1] = 1;
+    c.setExpected(2);
+    if (c.offset[0] != 10us || c.offset[1] != -20us || c.limited[1] != 1) return false;
+    c.setExpected(3);
+    return c.expectedGenerated == 3 && allPositionsZero(c.offset, 4) && c.limited[1] == 0;
+}());
+// W2: a fifth generated marker gives no sample, and four do (every position at its ideal point).
+static_assert([] {
+    using namespace std::chrono_literals;
+    using C = OutputOffsetController;
+    C c;
+    c.setExpected(4);
+    (void)c.observe(false, 0, 0ms);
+    for (uint32_t j = 0; j < 4; ++j)
+        (void)c.observe(true, 1, 12000us * (j + 1) / 5);   // 2.4, 4.8, 7.2, 9.6 ms: exact in microseconds
+    if (!c.observe(false, 1, 12ms) || c.accepted != 1 || !allPositionsZero(c.offset, 4)) return false;
+    C five;
+    five.setExpected(4);
+    (void)five.observe(false, 0, 0ms);
+    for (uint32_t j = 0; j < 5; ++j)
+        (void)five.observe(true, 1, 2ms * (j + 1));
+    return !five.observe(false, 1, 12ms) && five.accepted == 0 && allPositionsZero(five.offset, 4);
+}());
+// W2: the cap-bound windup. A generated output cannot move earlier than `reach` before its unmoved slot
+// (the previous output's start plus a quarter interval), so the error stays at `bias - reach` once the
+// offset passes `-reach`. With the hold the offset stops past the reach; without it, it runs to the limit.
+constexpr std::chrono::nanoseconds outputOffsetWindup(bool hold) {
+    using namespace std::chrono_literals;
+    OutputOffsetController c;
     constexpr std::chrono::nanoseconds period = 8600us, bias = 650us, reach = 200us;
     for (int k = 1; k <= 600; ++k) {
-        const auto effective = std::min(c.offset, reach);
+        const auto effective = std::max(c.offset[0], -reach);
         const auto previous = period * k;
-        (void)c.observe(false, static_cast<uint64_t>(k), previous + effective);
-        (void)c.observe(true, static_cast<uint64_t>(k + 1), previous + period / 2 + bias);
-        (void)c.observe(false, static_cast<uint64_t>(k + 1), previous + period + effective);
-        if (hold) c.limited = realOffsetLimited(c.offset, effective);
+        (void)c.observe(false, static_cast<uint64_t>(k), previous);
+        (void)c.observe(true, static_cast<uint64_t>(k + 1), previous + period / 2 + bias + effective);
+        (void)c.observe(false, static_cast<uint64_t>(k + 1), previous + period);
+        if (hold) c.limited[0] = outputOffsetLimited(c.offset[0], effective);
         c.forget();
     }
-    return c.offset;
+    return c.offset[0];
 }
-static_assert(realOffsetWindup(false) == RealOffsetController::limit);
-static_assert(realOffsetWindup(true) <= std::chrono::microseconds{270});
-static_assert(realOffsetWindup(true) >= std::chrono::microseconds{200});
+static_assert(outputOffsetWindup(false) == -OutputOffsetController::limit);
+static_assert(outputOffsetWindup(true) >= -std::chrono::microseconds{270});
+static_assert(outputOffsetWindup(true) <= -std::chrono::microseconds{200});
 }
 
 int main([[maybe_unused]] int argc, [[maybe_unused]] char** argv) {
     generatedPreparedOrderAndBudget(); generatedPreparationFallbackAndGates();
-    generatedChainRealOffsetMovesOnlyTheReal();
+    generatedChainOutputOffsetsMoveEachOutput();
     generatedPreparedRetirement(); generatedPreparedStop(); generatedPreparationErrors();
     queueRequest();
     privateSubmitWithoutTailIsUnchanged(); privateSubmitAppendsTail();

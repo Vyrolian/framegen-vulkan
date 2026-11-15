@@ -193,6 +193,8 @@ namespace fgvk::layer::present_diagnostics {
             // before the shift.
             Clock::time_point readyAt{};
             Clock::duration slack{};
+            // W2: the effective pacing correction of a generated output; zero otherwise.
+            Clock::duration offset{};
         };
         struct OutputSample {
             size_t ordinal{}, source{};

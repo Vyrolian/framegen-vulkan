@@ -285,6 +285,9 @@ public:
         VkResult result{VK_SUCCESS};
         Clock::time_point started{}, finished{};
         Clock::time_point scheduled{};
+        // W2: the effective pacing correction of a generated output (its scheduled time minus its
+        // unmoved deadline). Zero for reals, for skipped outputs and when the correction is off.
+        Clock::duration offset{};
         uint32_t imageIndex{};
         VkSwapchainKHR swapchain{};
         bool generated{}, copyChecked{};
@@ -453,7 +456,6 @@ public:
             device(device), queue(std::move(queue)), present(present),
             worker() {
         // Initialize and report the setting before the worker can use it.
-        static_cast<void>(realOffset());
         static_cast<void>(realOffsetAuto());
         worker = std::thread([this] { run(); });
     }
@@ -996,11 +998,11 @@ private:
     mutable std::mutex mutex;
     std::condition_variable changed;
     bool stopping{};
-    // S8b, FGVK_REAL_OFFSET_US=auto: worker thread only; the cursor is used under queue->mutex.
-    RealOffsetController realOffsetController;
+    // W2, FGVK_REAL_OFFSET_US=auto: worker thread only; the cursor is used under queue->mutex.
+    OutputOffsetController outputOffsetController;
     uint64_t markerCursor{};
     // Caller holds queue->mutex, right after a worker present was marked.
-    void observeRealOffsetLocked(const uint64_t context) noexcept {
+    void observeOutputOffsetLocked(const uint64_t context) noexcept {
         if (!realOffsetAuto()) return;
         std::array<PresentMarkerSample, 16> samples;
         for (;;) {
@@ -1008,21 +1010,18 @@ private:
             for (size_t i = 0; i < count; ++i) {
                 const auto& sample = samples[i];
                 if (sample.context != context) continue;
-                const auto heldBefore = realOffsetController.held;
-                if (realOffsetController.observe(sample.generated, sample.source,
+                const auto heldBefore = outputOffsetController.held;
+                if (outputOffsetController.observe(sample.generated, sample.source,
                         std::chrono::nanoseconds{sample.gpuNs})) {
-                    realOffsetAutoNs.store(realOffsetController.offset.count(), std::memory_order_relaxed);
+                    realOffsetAutoNs.store(outputOffsetController.equivalentRealOffset().count(),
+                        std::memory_order_relaxed);
                     realOffsetAutoSamples.fetch_add(1, std::memory_order_relaxed);
                 }
-                if (realOffsetController.held != heldBefore)
-                    realOffsetAutoHeld.fetch_add(realOffsetController.held - heldBefore, std::memory_order_relaxed);
+                if (outputOffsetController.held != heldBefore)
+                    realOffsetAutoHeld.fetch_add(outputOffsetController.held - heldBefore, std::memory_order_relaxed);
             }
             if (count < samples.size()) return;
         }
-    }
-    [[nodiscard]] Clock::duration currentRealOffset() const noexcept {
-        return realOffsetAuto()
-            ? std::chrono::duration_cast<Clock::duration>(realOffsetController.offset) : realOffset();
     }
     std::thread worker;
 
@@ -1292,7 +1291,7 @@ private:
         queue->endCall();
         result.finished = Clock::now();
         queue->markPresentLocked(ready.context, ready.source, result.feedback, job.generated);
-        observeRealOffsetLocked(ready.context);
+        observeOutputOffsetLocked(ready.context);
         // D7d: the lower present is noted with its source, only when history is set.
         if (queue->history)
             queue->noteLower(lowerOpPresentReal, job.swapchain, lowerIndex, result.result, ready.source,
@@ -1405,24 +1404,25 @@ private:
             const bool first = index == 0;
             if (first && (lastBatchFinished != Clock::time_point{} &&
                     Clock::now() - lastBatchFinished > std::chrono::milliseconds{250})) {
-                realOffsetController.forget();
+                outputOffsetController.forget();
             }
             const auto ready = batch.readiness;
             const size_t limit = batch.limit;
-            realOffsetController.expectedGenerated = limit > 1 ? static_cast<uint32_t>(limit - 1) : 1;
+            outputOffsetController.setExpected(limit > 1 ? static_cast<uint32_t>(limit - 1) : 1);
             const bool copyTail = index > 0 && batch.jobs[index - 1].copyActive &&
                 !batch.aggregate.calls[index - 1].skipped;
             auto deadline = first ? current.deadline :
                 nextOutputDeadline(current.deadline + batchShift,
                     batch.jobs[index - 1].deadline + batchShift,
-                    batch.aggregate.calls[index - 1].started);
+                    batch.aggregate.calls[index - 1].started - batch.aggregate.calls[index - 1].offset);
             if (first && havePrevious && ready.overlap && ready.outputInterval > Clock::duration::zero() &&
                     Clock::now() - previousFinished < ready.outputInterval)
                 deadline = std::max(deadline, previousScheduled + ready.outputInterval -
                     ready.outputInterval / 16);
-            Clock::duration appliedRealOffset{}, commandedRealOffset{};
-            Clock::time_point unmovedRealDeadline{};
-            bool realOffsetTail{};
+            // The previous output's start in unmoved time: its own correction is taken back.
+            const auto unmovedGeneratedStart = copyTail
+                ? batch.aggregate.calls[index - 1].started - batch.aggregate.calls[index - 1].offset
+                : Clock::time_point{};
             if (copyTail) {
                 // The real after a generated output keeps full spacing, but a release limit
                 // may pull it in: no later than latestOutput, and at least a quarter output
@@ -1430,36 +1430,47 @@ private:
                 // up to a quarter output interval before the batch limit. FIFO still shows
                 // each image at least one refresh.
                 deadline = std::max(deadline,
-                    batch.aggregate.calls[index - 1].started + ready.outputInterval);
-                const auto generatedStarted = batch.aggregate.calls[index - 1].started;
+                    batch.aggregate.calls[index - 1].started - batch.aggregate.calls[index - 1].offset +
+                        ready.outputInterval);
                 const auto limitTail = [&](const Clock::time_point at) {
                     return ready.latestOutput == Clock::time_point::max() ? at
-                        : std::min(at, std::max(ready.latestOutput, generatedStarted + ready.outputInterval / 4));
+                        : std::min(at, std::max(ready.latestOutput, unmovedGeneratedStart + ready.outputInterval / 4));
                 };
-                // S7: the optional real offset, never closer than a quarter interval. S8d: the
-                // applied move is measured after the release limit, and again after the present.
-                // The offset moves only the real output of a batch, at every multiplier.
-                if (ready.overlap && batch.jobs[index - 1].copy.internalImages && !current.generated) {
-                    commandedRealOffset = currentRealOffset();
-                    unmovedRealDeadline = limitTail(deadline);
-                    deadline = limitTail(realDeadlineWithOffset(deadline,
-                        generatedStarted, ready.outputInterval, commandedRealOffset));
-                    appliedRealOffset = deadline - unmovedRealDeadline;
-                    realOffsetTail = true;
-                } else {
-                    deadline = limitTail(deadline);
-                }
+                deadline = limitTail(deadline);
             } else {
                 deadline = std::min(deadline, ready.latestOutput);
             }
+            // W2: every rule above is unmoved time. A generated output on the worker copy path takes
+            // its own correction last: bounded by the previous output's actual start (the first output
+            // of a stream has no bound), then by the release limit (after a generated output, with its
+            // quarter-interval floor). A real output is never moved.
+            const auto unmovedDeadline = deadline;
+            Clock::duration commandedOffset{}, appliedOffset{};
+            const bool offsetOutput = current.generated && current.copyActive && current.copy.internalImages &&
+                ready.overlap && realOffsetAuto() && index < OutputOffsetController::maxPositions;
+            if (offsetOutput) {
+                commandedOffset = outputOffsetController.offset[index];
+                const bool hasPrevious = index > 0 || havePrevious;
+                const auto previousActual = index > 0 ? batch.aggregate.calls[index - 1].started : previousStarted;
+                const auto moved = hasPrevious
+                    ? deadlineWithOffset(unmovedDeadline, previousActual, ready.outputInterval, commandedOffset)
+                    : unmovedDeadline + commandedOffset;
+                const auto cap = copyTail
+                    ? std::max(ready.latestOutput, unmovedGeneratedStart + ready.outputInterval / 4)
+                    : ready.latestOutput;
+                deadline = std::min(moved, cap);
+                appliedOffset = deadline - unmovedDeadline;
+            }
             lock.unlock();
+            // The batch's unmoved deadline after its readiness (today's deadline with no correction).
+            auto unmovedReady = unmovedDeadline;
             if (first) {
                 workerWait = {};
                 readinessShift = {};
                 readyAt = {};
                 slack = {};
                 if (!ready.overlap) {
-                    realOffsetController.forget();
+                    outputOffsetController.forget();
                 }
                 batchShift = {};
                 readinessMiss = false;
@@ -1503,12 +1514,13 @@ private:
                     readinessMiss = readinessResult != VK_SUCCESS;
                     if (!readinessMiss) {
                         readyAt = Clock::now();
-                        slack = deadline - readyAt;
-                        readinessShift = std::max(Clock::duration{}, readyAt - deadline);
-                        deadline += readinessShift;
+                        slack = unmovedReady - readyAt;
+                        readinessShift = std::max(Clock::duration{}, readyAt - unmovedReady);
+                        unmovedReady += readinessShift;
+                        deadline = std::max(deadline, readyAt);
                     }
                 }
-                batchShift = deadline - current.deadline;
+                batchShift = unmovedReady - current.deadline;
             }
             // F9b: an internal real gets one lower-image attempt before its wait. The
             // present still waits for the deadline. Stopping is read under mutex, as
@@ -1543,7 +1555,8 @@ private:
                     // F7 rule 4: a join during this tail pulls it in to at least a quarter
                     // output interval after its generated start. The bound is recomputed on
                     // every wake and never exceeds the normal deadline.
-                    const auto generatedStarted = batch.aggregate.calls[index - 1].started;
+                    // W2: in unmoved time, like the copyTail floor and limitTail.
+                    const auto generatedStarted = unmovedGeneratedStart;
                     lock.lock();
                     for (;;) {
                         const auto until = std::min(deadline, std::max(batch.expediteAt,
@@ -1660,7 +1673,7 @@ private:
                 if (job.copyActive && !generatedPrepared && !prep.settled) {
                     uint32_t image{};
                     VkResult acquireResult = VK_NOT_READY;
-                    auto giveUpAt = deadline + job.copy.giveUp;
+                    auto giveUpAt = unmovedReady + job.copy.giveUp;
                     // Generated outputs may start up to a quarter output interval before the
                     // batch limit. FIFO still shows each image at least one refresh.
                     if (ready.latestOutput != Clock::time_point::max())
@@ -1766,7 +1779,7 @@ private:
                         queue->endCall();
                         result.finished = Clock::now();
                         queue->markPresentLocked(ready.context, ready.source, result.feedback, job.generated);
-                        observeRealOffsetLocked(ready.context);
+                        observeOutputOffsetLocked(ready.context);
                         // D7d: the generated lower present, noted only with history.
                         if (queue->history)
                             queue->noteLower(lowerOpPresentGenerated, job.swapchain, job.image, result.result,
@@ -1787,6 +1800,11 @@ private:
                         result.result = skipResult;
                     }
                 }
+            }
+            // W2: a generated output that presented keeps the effective part of its own correction.
+            if (offsetOutput && !result.skipped) {
+                result.offset = outputOffsetEffective(appliedOffset, unmovedDeadline, result.scheduled, result.started);
+                outputOffsetController.limited[index] = outputOffsetLimited(commandedOffset, result.offset);
             }
             // A prepared output follows F9b: its lower present is always issued,
             // including during stop/retirement; no second release mechanism is needed.
@@ -1821,14 +1839,8 @@ private:
                 previousStarted = result.started;
                 previousFinished = result.finished;
                 // An early (expedited) output anchors the next batch at its actual start; late wakes keep the schedule.
-                // S7: a real moved by the offset anchors the next batch where it would have been.
-                // S8d: only the part of the move that took effect is taken back.
-                const auto effectiveRealOffset = realOffsetTail
-                    ? realOffsetEffective(appliedRealOffset, unmovedRealDeadline, result.scheduled, result.started)
-                    : appliedRealOffset;
-                previousScheduled = std::min(result.scheduled, result.started) - effectiveRealOffset;
-                if (realOffsetTail)
-                    realOffsetController.limited = realOffsetLimited(commandedRealOffset, effectiveRealOffset);
+                // W2: the anchor is in unmoved time, so a generated output's own correction is taken back.
+                previousScheduled = std::min(result.scheduled, result.started) - result.offset;
                 havePrevious = true;
             }
             retireFinishedHeadsLocked();

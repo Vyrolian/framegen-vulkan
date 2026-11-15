@@ -325,7 +325,8 @@ void appendPacingOutput(std::ostream& line, const uint64_t context, const VkSwap
          << " phase=" << observed.phase
          << " present_id=" << observed.presentId
          << " ready_ns=" << ns(observed.readyAt)
-         << " slack_ns=" << std::chrono::duration_cast<std::chrono::nanoseconds>(observed.slack).count();
+         << " slack_ns=" << std::chrono::duration_cast<std::chrono::nanoseconds>(observed.slack).count()
+         << " offset_ns=" << std::chrono::duration_cast<std::chrono::nanoseconds>(observed.offset).count();
     line << '\n';
 }
 
@@ -736,7 +737,7 @@ void formatPacingWindowBody(const PacingWindowPayload& payload, const PacingProf
              << fgvk::layer::realOffsetAutoSamples.load(std::memory_order_relaxed)
              << " real_offset_held=" << fgvk::layer::realOffsetAutoHeld.load(std::memory_order_relaxed);
     } else {
-        line << " real_offset_us=" << std::chrono::duration_cast<std::chrono::microseconds>(fgvk::layer::realOffset()).count();
+        line << " real_offset_us=0";
     }
     line << '\n';
     for (size_t i = 0; i < window.outputTraceCount; ++i) {
