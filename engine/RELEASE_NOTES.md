@@ -7,6 +7,8 @@
 - GPU Headroom is removed. Old `conf.toml` files still load; `gpu_headroom_percent` is accepted and ignored, the `FGVK_GPU_HEADROOM_PERCENT` override is no longer read, and framegen-vulkan no longer writes the key.
 - The development measurement and benchmark tools are removed: the present measurer, the `fgvk-cli` `benchmark`, `debug`, `quality-regression` and `synchronization-validation-canary` commands, and the latency, framegen-comparison and Gym bridge scripts. `validate`, `inspect-dll` and `mark` are unchanged.
 - The `runtime-state` JSON record that the Renderer wrote for each context, and the `fgvk-diagnostics` report helper, are removed; the layer no longer writes `runtime-state/` records.
+- Adaptive frame generation is removed. Every profile runs the Fixed `multiplier`, and Smooth Cadence keeps its Fixed behaviour. Old `conf.toml` files still load: `adaptive`, `adaptive_max_multiplier`, `adaptive_auto_base_fps_cap`, `adaptive_fractional_real_frame_priority`, `adaptive_target_refresh_rate`, `target_fps`, `dynamic_cadence_recovery`, and `dynamic_cadence_probe_interval_seconds` are accepted and ignored, a profile with `adaptive = true` runs Fixed with its `multiplier`, and framegen-vulkan no longer writes them or reads their `FGVK_*` overrides.
+- Generated-frame capacity follows the Fixed multiplier. Profiles with `multiplier = 2` and `adaptive_max_multiplier = 3` now reserve one generated output and one lower swapchain image fewer. Raising the multiplier live goes through the existing private rebuild or recreation request.
 
 ## What's new in MAKO Renderer v4.6.0
 

@@ -17,26 +17,16 @@
 
 namespace fgvk::layer {
 
+    /// Frames of temporal history that must be rebuilt before generated
+    /// output resumes after a warm-up request.
+    inline constexpr size_t historyWarmupFrameCount = 3;
+
     /// Ordinary readiness checks preserve progress. A new interruption must
     /// discard partial pre-interruption history and start a complete warm-up.
     [[nodiscard]] constexpr size_t historyWarmupFramesAfterRequest(
             const size_t remaining, const size_t required,
             const bool restart) noexcept {
         return restart || remaining == 0 ? required : remaining;
-    }
-
-    /// Event recovery measures the resumed application's cadence from the
-    /// application-present boundary, excluding framegen-vulkan's private work. Ordinary
-    /// transport recovery retains the 3.3 completion boundary so a generated-
-    /// image timeout cannot turn its own recovery work into new gameplay
-    /// cadence evidence. Fixed + Dynamic Cadence Recovery and Adaptive share
-    /// this scheduler boundary.
-    [[nodiscard]] constexpr std::chrono::steady_clock::time_point
-    historyWarmupCadenceBoundary(
-            const std::chrono::steady_clock::time_point frameStarted,
-            const std::chrono::steady_clock::time_point recoveryCompleted,
-            const bool explicitTransitionActive) noexcept {
-        return explicitTransitionActive ? frameStarted : recoveryCompleted;
     }
 
     /// framegen-vulkan's current presentation transport owns one swapchain per lower
@@ -89,22 +79,6 @@ namespace fgvk::layer {
                 requestedMinImages, returnedImages, maximumGeneratedFrames);
     }
 
-    /// Headroom preflight can reject an active multiplier experiment, but a
-    /// zero-wait miss is not evidence against an already validated load.
-    /// Preserve that load so the next real frame can retry admission without
-    /// a stabilization interval and multiplier backoff. Bounded VRR timeouts
-    /// use the separate pressure preflight above.
-    [[nodiscard]] inline bool adaptiveOrderedDeliveryMissRequiresFallback(
-            const bool adaptive,
-            const bool orderedTransport,
-            const size_t requestedGeneratedFrames,
-            const size_t admittedGeneratedFrames,
-            const bool multiplierEvaluationActive) noexcept {
-        return adaptive && orderedTransport && multiplierEvaluationActive &&
-            requestedGeneratedFrames > 0 &&
-            admittedGeneratedFrames < requestedGeneratedFrames;
-    }
-
     /// Without a relief image, FIFO may need to release an earlier present
     /// before the next output can be acquired. Allow that progress, but never
     /// introduce an unbounded wait on this path, even for standalone launches.
@@ -125,28 +99,6 @@ namespace fgvk::layer {
             maximumBatchBudget);
     }
 
-    /// Return a tighter Adaptive ceiling only when native-first ordered
-    /// admission proved, during a higher-multiplier evaluation, that part but
-    /// not all of a multi-output batch was available. A miss outside the probe
-    /// may be transient and keeps the existing retry owner; Fixed is an
-    /// explicit policy and never enters this path.
-    [[nodiscard]] inline std::optional<size_t>
-    adaptiveOrderedWsiLimitAfterPartialAdmission(
-            const bool adaptive,
-            const bool orderedTransport,
-            const bool higherMultiplierEvaluationActive,
-            const size_t requestedGeneratedFrames,
-            const size_t admittedGeneratedFrames,
-            const std::optional<size_t> currentLimit) noexcept {
-        if (!adaptive || !orderedTransport ||
-                !higherMultiplierEvaluationActive ||
-                admittedGeneratedFrames == 0 ||
-                admittedGeneratedFrames >= requestedGeneratedFrames ||
-                (currentLimit && admittedGeneratedFrames >= *currentLimit)) {
-            return std::nullopt;
-        }
-        return admittedGeneratedFrames;
-    }
 
     /// Ordered SDR owns one configured acquire-wait budget per application
     /// present, not one full wait for every generated image. Returning zero
@@ -180,7 +132,7 @@ namespace fgvk::layer {
     }
 
     /// Recovery can probe only when the current policy requests generated work.
-    /// A display-budget or Adaptive real-only frame is not a failed acquisition
+    /// A display-budget real-only frame is not a failed acquisition
     /// and must leave the pending probe available for the next eligible frame.
     [[nodiscard]] constexpr bool orderedAcquireProbeEligible(
             const bool probeRequested, const bool historyWarmupActive,
@@ -1475,282 +1427,6 @@ namespace fgvk::layer {
         double outputFramesPerSecond{0.0};
         std::optional<TimePoint> lastOutputAt;
         size_t readyOutputCount{}, readyOutputRequalification{};
-    };
-
-    /// When Steady Adaptive has already proven that it needs at least 3x, a
-    /// target/2 cap can leave the source cadence between integer generation
-    /// ratios (for example 45 -> 120 FPS). Qualify the exact target/N rung for
-    /// one second before lowering the cap. A qualified rung tolerates small
-    /// cadence dips and requires sustained loss before releasing the cap;
-    /// scheduler and transport guards still restore normal pacing immediately.
-    /// Validated scheduler limits remain the authority, so this policy cannot
-    /// activate a multiplier that has not passed delivery and throughput checks.
-    class SmoothCadenceBaseCap {
-    public:
-        using Clock = std::chrono::steady_clock;
-        using TimePoint = Clock::time_point;
-
-        struct Decision {
-            std::optional<double> framesPerSecond;
-            size_t multiplier{0};
-            bool changed{false};
-        };
-
-        struct SchedulerState {
-            size_t validatedGenerationLimit{0};
-            std::optional<size_t> stableCadenceLimit;
-            double smoothedBaseFps{0.0};
-            bool rampEvaluationActive{false};
-            std::optional<size_t> efficiencyProbeGenerationLimit;
-            bool rearmRequired{false};
-            bool discontinuityRecoveryActive{false};
-        };
-
-        [[nodiscard]] Decision update(const TimePoint now,
-                const bool eligible, const uint32_t targetFps,
-                const SchedulerState scheduler) {
-            const auto previousMultiplier = this->effectiveMultiplier();
-            const auto previousProbeMultiplier = this->probeMultiplier;
-            if (!eligible || targetFps == 0 ||
-                    scheduler.discontinuityRecoveryActive ||
-                    scheduler.rearmRequired || scheduler.rampEvaluationActive) {
-                this->reset();
-                return this->decision(previousMultiplier);
-            }
-
-            // A lower-generation efficiency probe must run against the normal
-            // target/(tested generation limit + 1) cadence rather than the
-            // qualified target/N rung it is evaluating. Preserve that rung
-            // while the temporary probe cadence is active so rejection can
-            // restore it immediately.
-            if (scheduler.efficiencyProbeGenerationLimit) {
-                this->resetCandidate();
-                this->releaseSince.reset();
-                this->probeMultiplier =
-                    *scheduler.efficiencyProbeGenerationLimit + 1;
-                this->activeTargetFps = static_cast<double>(targetFps);
-                return this->decision(previousMultiplier);
-            }
-            this->probeMultiplier.reset();
-
-            // Validated capacity can exceed the constant plan currently in
-            // use. A 3x cap applied to an accepted 2x plan would turn 120 FPS
-            // into 40 real + 40 generated FPS and trigger false rescue.
-            const size_t desiredMultiplier = std::min(
-                scheduler.validatedGenerationLimit,
-                scheduler.stableCadenceLimit.value_or(
-                    scheduler.validatedGenerationLimit)) + 1;
-            if (this->activeMultiplier &&
-                    *this->activeMultiplier > desiredMultiplier) {
-                // Do not retain a stricter cap while a lower active cadence
-                // qualifies. Its previous cap would starve the new plan.
-                this->activeMultiplier.reset();
-                this->resetCandidate();
-                this->releaseSince.reset();
-            }
-            if (previousProbeMultiplier &&
-                    desiredMultiplier == *previousProbeMultiplier) {
-                // The scheduler accepted the tested lower load. Its temporary
-                // cadence is already active, so retain it without another
-                // qualification or pacing transition. Exact 2x falls through
-                // to the normal target/2 automatic cap.
-                this->resetCandidate();
-                this->releaseSince.reset();
-                if (desiredMultiplier >= 3) {
-                    this->activeMultiplier = desiredMultiplier;
-                    this->activeTargetFps =
-                        static_cast<double>(targetFps);
-                    return this->decision(previousMultiplier);
-                }
-                this->activeMultiplier.reset();
-                return {
-                    .changed = false,
-                };
-            }
-            if (desiredMultiplier < 3 || scheduler.smoothedBaseFps <= 0.0) {
-                this->reset();
-                return this->decision(previousMultiplier);
-            }
-
-            const double desiredCap = static_cast<double>(targetFps) /
-                static_cast<double>(desiredMultiplier);
-            const double previousRung = static_cast<double>(targetFps) /
-                static_cast<double>(desiredMultiplier - 1);
-            const bool cadenceNeedsRung =
-                scheduler.smoothedBaseFps < previousRung * 0.98;
-            if (this->activeMultiplier == desiredMultiplier) {
-                this->activeTargetFps = static_cast<double>(targetFps);
-                // Entry needs 95% of the target/N cadence. Retention uses
-                // 90% plus a short hold, so jitter at the entry boundary does
-                // not alternate caps and reset the real-frame pacer.
-                const bool retainRung = cadenceNeedsRung &&
-                    scheduler.smoothedBaseFps >= desiredCap * 0.90;
-                if (retainRung) {
-                    this->releaseSince.reset();
-                } else {
-                    if (!this->releaseSince)
-                        this->releaseSince = now;
-                    if (now - *this->releaseSince >=
-                            releaseQualificationDuration())
-                        this->reset();
-                }
-                return this->decision(previousMultiplier);
-            }
-            this->releaseSince.reset();
-            const bool rungSustainable =
-                scheduler.smoothedBaseFps >= desiredCap * 0.95;
-            if (!cadenceNeedsRung || !rungSustainable) {
-                this->resetCandidate();
-                this->activeMultiplier.reset();
-                return this->decision(previousMultiplier);
-            }
-
-            if (this->candidateMultiplier != desiredMultiplier) {
-                this->candidateMultiplier = desiredMultiplier;
-                this->candidateSince = now;
-                return this->decision(previousMultiplier);
-            }
-            if (!this->candidateSince ||
-                    now - *this->candidateSince < qualificationDuration()) {
-                return this->decision(previousMultiplier);
-            }
-
-            this->activeMultiplier = desiredMultiplier;
-            this->activeTargetFps = static_cast<double>(targetFps);
-            this->resetCandidate();
-            return this->decision(previousMultiplier);
-        }
-
-        void reset() {
-            this->activeMultiplier.reset();
-            this->probeMultiplier.reset();
-            this->releaseSince.reset();
-            this->resetCandidate();
-        }
-
-        [[nodiscard]] static constexpr std::chrono::seconds
-        qualificationDuration() {
-            return std::chrono::seconds{1};
-        }
-
-        [[nodiscard]] static constexpr std::chrono::milliseconds
-        releaseQualificationDuration() {
-            return std::chrono::milliseconds{250};
-        }
-
-        [[nodiscard]] std::optional<size_t> activeGenerationLimit() const {
-            const auto multiplier = this->effectiveMultiplier();
-            return multiplier && *multiplier > 1
-                ? std::optional<size_t>{*multiplier - 1} : std::nullopt;
-        }
-
-    private:
-        [[nodiscard]] std::optional<size_t> effectiveMultiplier() const {
-            return this->probeMultiplier
-                ? this->probeMultiplier : this->activeMultiplier;
-        }
-
-        [[nodiscard]] Decision decision(
-                const std::optional<size_t> previousMultiplier) const {
-            const auto currentMultiplier = this->effectiveMultiplier();
-            if (!currentMultiplier) {
-                return {
-                    .changed = previousMultiplier.has_value(),
-                };
-            }
-            return {
-                .framesPerSecond = this->activeTargetFps /
-                    static_cast<double>(*currentMultiplier),
-                .multiplier = *currentMultiplier,
-                .changed = previousMultiplier != currentMultiplier,
-            };
-        }
-
-        void resetCandidate() {
-            this->candidateMultiplier.reset();
-            this->candidateSince.reset();
-        }
-
-        std::optional<size_t> activeMultiplier;
-        std::optional<size_t> probeMultiplier;
-        std::optional<size_t> candidateMultiplier;
-        std::optional<TimePoint> candidateSince;
-        std::optional<TimePoint> releaseSince;
-        double activeTargetFps{0.0};
-    };
-
-    /// Guards each Adaptive integer-rung handoff from the real-frame pacer to
-    /// ordered FIFO. A lost qualification restores any cap and backs off that
-    /// rung without delaying a separately validated higher rung. A planned
-    /// higher-rung VRR efficiency probe pauses without a failure cooldown.
-    class SmoothCadencePacerHandoff {
-    public:
-        using Clock = std::chrono::steady_clock;
-        using TimePoint = Clock::time_point;
-
-        struct Decision {
-            bool active{false};
-            bool changed{false};
-            std::optional<size_t> generationLimit;
-            std::optional<size_t> previousGenerationLimit;
-        };
-
-        [[nodiscard]] Decision update(const TimePoint now,
-                const std::optional<size_t> eligibleGenerationLimit,
-                const bool plannedProbePause = false) {
-            const auto previous = this->activeLimit;
-            if (this->activeLimit != eligibleGenerationLimit) {
-                if (!(plannedProbePause && !eligibleGenerationLimit) &&
-                        this->activeLimit &&
-                        *this->activeLimit >= 1 &&
-                        *this->activeLimit <= this->retryAt.size()) {
-                    this->retryAt[*this->activeLimit - 1] = now + retryDelay();
-                }
-                this->activeLimit.reset();
-            }
-            if (!this->activeLimit && eligibleGenerationLimit &&
-                    *eligibleGenerationLimit >= 1 &&
-                    *eligibleGenerationLimit <= this->retryAt.size()) {
-                auto& retry = this->retryAt[*eligibleGenerationLimit - 1];
-                if (!retry || now >= *retry) {
-                    this->activeLimit = eligibleGenerationLimit;
-                    retry.reset();
-                }
-            }
-            return {
-                .active = this->activeLimit.has_value(),
-                .changed = previous != this->activeLimit,
-                .generationLimit = this->activeLimit,
-                .previousGenerationLimit = previous,
-            };
-        }
-
-        void pauseForExternalInterruption() {
-            // Losing focus is not a failed FIFO pacing experiment. Preserve
-            // any genuine earlier failure's backoff without creating one.
-            this->activeLimit.reset();
-        }
-
-        void reset() {
-            this->activeLimit.reset();
-            this->retryAt.fill(std::nullopt);
-        }
-
-        [[nodiscard]] bool active() const {
-            return this->activeLimit.has_value();
-        }
-
-        [[nodiscard]] std::optional<size_t> activeGenerationLimit() const {
-            return this->activeLimit;
-        }
-
-        [[nodiscard]] static constexpr std::chrono::seconds retryDelay() {
-            return std::chrono::seconds{60};
-        }
-
-    private:
-        std::optional<size_t> activeLimit;
-        std::array<std::optional<TimePoint>, 4> retryAt{};
     };
 
     /// Normally suppress synthetic frames that exceed confirmed refresh.

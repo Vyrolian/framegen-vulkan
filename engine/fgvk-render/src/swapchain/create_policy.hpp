@@ -157,9 +157,8 @@ namespace fgvk::layer {
                     ));
                     if (maxImages && createInfo.minImageCount > maxImages)
                         createInfo.minImageCount = maxImages;
-                    if (!profile.adaptive)
-                        createInfo.minImageCount = lowerImageCountWithLayerFloor(
-                            createInfo.minImageCount, surfaceMinImages, maxImages);
+                    createInfo.minImageCount = lowerImageCountWithLayerFloor(
+                        createInfo.minImageCount, surfaceMinImages, maxImages);
                 }
                 if (orderedFrameGenerationTransport) {
                     createInfo.presentMode = VK_PRESENT_MODE_FIFO_KHR;

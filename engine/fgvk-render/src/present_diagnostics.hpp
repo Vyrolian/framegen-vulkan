@@ -2,7 +2,6 @@
 
 #pragma once
 
-#include "adaptive_scheduler.hpp"
 #include "bridge_present_timing.hpp"
 
 #include <chrono>
@@ -938,7 +937,5 @@ namespace fgvk::layer::present_diagnostics {
     void logHistoryWarmup(size_t frameIndex, size_t sequenceIndex,
         size_t remainingFrames, bool recovery,
         std::optional<uint32_t> acquiredImage);
-
-    [[nodiscard]] AdaptiveSchedulerDiagnostics& adaptiveScheduler();
 
 }

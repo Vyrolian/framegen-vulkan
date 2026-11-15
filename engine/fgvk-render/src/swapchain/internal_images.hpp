@@ -38,7 +38,6 @@ namespace fgvk::layer {
         bool nativeSwapchain{false};
         bool contextCreated{false};
         bool frameGenerationEnabled{false};
-        bool adaptive{false};
         bool deferredPresentQueue{false};
         // FGVK_PACING_PROFILE_COPY=1 or frame-content capture is configured:
         // both replace the copy path with diagnostic work that assumes lower images.
@@ -85,7 +84,6 @@ namespace fgvk::layer {
         if (input.nativeSwapchain) return "native-swapchain";
         if (!input.contextCreated) return "context-not-created";
         if (!input.frameGenerationEnabled) return "frame-generation-disabled";
-        if (input.adaptive) return "adaptive";
         if (!input.deferredPresentQueue) return "no-deferred-present-queue";
         if (input.diagnosticCopyPath) return "diagnostic-copy-path";
         // A variable surface (Wayland: no fixed currentExtent) is not refused.

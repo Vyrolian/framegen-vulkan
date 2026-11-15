@@ -304,8 +304,8 @@ Root::Root() {
     this->active_profile = profile->second;
     // Frame Generation provisioning is a process-start choice because LSFG
     // needs application-device interop. The separate execution switch remains
-    // live: 0x performs no generation work while 2x-5x or Adaptive can reuse
-    // already provisioned backend and private resources in place.
+    // live: 0x performs no generation work while 2x-5x can reuse already
+    // provisioned backend and private resources in place.
     this->frameGenerationInteropProvisionedAtStartup =
         this->active_profile->frame_generation_provisioned;
     this->swapchainImageCountCompatibilityConfiguredAtStartup =

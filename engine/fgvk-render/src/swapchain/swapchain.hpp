@@ -13,7 +13,6 @@
 #include "fgvk-common/vulkan/timeline_semaphore.hpp"
 #include "fgvk-common/vulkan/timestamp_query_pool.hpp"
 #include "fgvk-common/vulkan/vulkan.hpp"
-#include "adaptive_scheduler.hpp"
 #include "color_pipeline.hpp"
 #include "generated_frame_delivery.hpp"
 #include "profile_update.hpp"
@@ -117,8 +116,7 @@ namespace fgvk::layer {
         // The upper WSI either supplied a live oldSwapchain handle or framegen-vulkan
         // completed retirement of the exact retained lower handle before a
         // null-old destroy-before-create replacement. This is a known
-        // owner-driven replacement rather than a cold process start, so
-        // Adaptive may use its bounded recovery guard.
+        // owner-driven replacement rather than a cold process start.
         bool replacement{false};
     };
 
@@ -229,7 +227,7 @@ namespace fgvk::layer {
             VkResult lowerPresentResult);
 
         /// Escalate persistent generated-image starvation after a confirmed
-        /// menu return. This is shared by Fixed and Adaptive policies.
+        /// menu return.
         [[nodiscard]] bool requestOrderedAcquireRecreationAfterPresent(
             VkResult lowerPresentResult, bool surfaceRequestAvailable);
 
@@ -258,8 +256,8 @@ namespace fgvk::layer {
             // The limiter's arrival for this source. Diagnostics only: a worker batch
             // records it on its first output when the pacing profile is enabled.
             std::chrono::steady_clock::time_point limiterArrival{};
-            // Fractional may spend the existing cap wait preparing generated
-            // outputs. Every real-frame/fallback path retains this deadline.
+            // Generated-output preparation may spend the existing cap wait.
+            // Every real-frame/fallback path retains this deadline.
             std::optional<std::chrono::steady_clock::time_point>
                 originalPresentDeadline;
             std::optional<RealFramePacer::OutputBatch> pacedOutputs;
@@ -291,9 +289,7 @@ namespace fgvk::layer {
             size_t admittedGeneratedFrameCount{0};
             bool historyWarmupActive{false};
             bool generatedImagesPreacquired{false};
-            // Recovery probes are transport-owned synthetic delivery. Keep
-            // them out of Adaptive ramp and Smooth Cadence qualification even
-            // when an isolated guard clears before delivery is reported.
+            // Recovery probes are transport-owned synthetic delivery.
             bool orderedAcquireRecoveryProbe{false};
             bool boundedOrderedAcquireProbe{false};
             std::optional<uint64_t> configuredAcquireTimeout;
@@ -451,11 +447,6 @@ namespace fgvk::layer {
             preparedFrameGenerationResources;
         ls::GameConf requestedProfile;
         LiveProfileResourceRecreation liveProfileResourceRecreation;
-        std::optional<AdaptiveScheduler> adaptiveScheduler;
-        // A partial native-first acquisition proves that this exact ordered
-        // WSI context cannot reliably deliver its larger automatic batch.
-        // Retain the observed lower ceiling until game-owned recreation.
-        std::optional<size_t> adaptiveOrderedWsiGeneratedCapacityLimit;
         size_t configuredFixedGeneratedFrames{0};
         // Set after a safety timeout; later generated acquires poll with
         // timeout 0 until one succeeds, so a hidden window costs at most one
@@ -513,8 +504,6 @@ namespace fgvk::layer {
         std::optional<std::chrono::steady_clock::time_point> deferredPresentDeadline;
         // Set only for the duration of a present() that was given an internal image.
         InternalPresentImage* internalPresent{nullptr};
-        SmoothCadenceBaseCap smoothCadenceBaseCap;
-        SmoothCadencePacerHandoff smoothCadencePacerHandoff;
 
         SwapchainColorPipeline colorPipeline;
         bool fp16Requested{true};
@@ -532,11 +521,7 @@ namespace fgvk::layer {
             const ls::GameConf& resourceProfile);
         void commitFrameGenerationResources(
             FrameGenerationResources resources,
-            const ls::GameConf& resourceProfile,
-            std::string_view reason);
-        [[nodiscard]] bool resetGenerationScheduler(
-            std::chrono::steady_clock::time_point now,
-            std::string_view reason);
+            const ls::GameConf& resourceProfile);
 
         // Real-frame presentation and source history.
         void recordPresentCadence(
@@ -562,8 +547,6 @@ namespace fgvk::layer {
         [[nodiscard]] PresentationFramePlan prepareFramePlan(
             std::chrono::steady_clock::time_point presentNow,
             bool orderedAcquireRecoveryProbe);
-        void reportAdaptiveDelivery(const PresentationFramePlan& plan,
-            size_t acceptedForPresentation);
         [[nodiscard]] bool prepareRenderFence(const vk::Vulkan& vk);
         // Diagnostic split timestamps. Recording only adds two queries to the existing copy.
         [[nodiscard]] bool recordRenderSplitBegin(const vk::Vulkan& vk, VkCommandBuffer command, RenderSlot& slot);
@@ -582,15 +565,12 @@ namespace fgvk::layer {
             const PresentInvocation& invocation,
             PresentationFramePlan& plan,
             bool trackNonblockingAdmission,
-            bool classifyAdaptiveLoadFailure,
             uint64_t acquireTimeout,
             bool reportAvailableOnFullAdmission = true);
         void handleGeneratedImageAdmissionPressure(
             const PresentationFramePlan& plan,
             size_t admittedGeneratedFrames,
             bool logPressure,
-            bool retainPartialAdmissionCapacity,
-            bool classifyAdaptiveLoadFailure,
             uint64_t acquireTimeoutNanoseconds,
             const char* action);
         void reportGeneratedImageAdmissionAvailable(

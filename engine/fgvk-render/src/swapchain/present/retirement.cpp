@@ -4,7 +4,6 @@
 #include "swapchain/present/internal.hpp"
 #include "swapchain/retirement.hpp"
 #include "swapchain/create_policy.hpp"
-#include "adaptive_scheduler.hpp"
 #include "fgvk-common/helpers/errors.hpp"
 #include "fgvk-common/vulkan/command_buffer.hpp"
 #include "fgvk-common/vulkan/image.hpp"
@@ -45,15 +44,14 @@ VkResult Swapchain::completeDeferredPresent(const uint64_t timeoutNs, const bool
         this->realFramePacer.recordAcquireWait(DiagnosticsClock::now() - started);
     if (!first) return timeoutNs == 0 ? VK_NOT_READY : VK_TIMEOUT;
     const auto report = [this](const DeferredPresent::Completion& completion) {
-        if (!this->adaptiveScheduler)
-            for (size_t i = 0; i < completion.count; ++i)
-                // An internal real output is a worker copy too, but it is not a generated frame.
-                if (completion.calls[i].workerCopy && completion.calls[i].generated) {
-                    if (completion.calls[i].skipped)
-                        ++this->diagnosticsState.fixedSkippedFrames;
-                    else
-                        ++this->diagnosticsState.fixedGeneratedFrames;
-                }
+        for (size_t i = 0; i < completion.count; ++i)
+            // An internal real output is a worker copy too, but it is not a generated frame.
+            if (completion.calls[i].workerCopy && completion.calls[i].generated) {
+                if (completion.calls[i].skipped)
+                    ++this->diagnosticsState.fixedSkippedFrames;
+                else
+                    ++this->diagnosticsState.fixedGeneratedFrames;
+            }
         if (completion.result == VK_SUCCESS && completion.count && !completion.readinessMiss)
             this->realFramePacer.completeOutputBatch(completion.calls[completion.count - 1].started,
                 completion.readinessShift);
@@ -277,7 +275,6 @@ VkResult Swapchain::queuePresentWithRetirementFence(
         .numFramesPerBatch = static_cast<uint32_t>(this->bridgeOutputBatchSize),
     };
     if (this->info.presentMetering && observation.generated &&
-            !this->profile.adaptive &&
             this->configuredFixedGeneratedFrames == 1 && this->bridgeOutputBatchSize == 2)
         presentInfo.pNext = &metering;
 #endif
@@ -306,10 +303,7 @@ VkResult Swapchain::queuePresentWithRetirementFence(
         const double refresh = this->presentTiming.refreshRate(0);
         const auto ceiling = OrderedPresentTimeline::validRate(refresh)
             ? std::optional{static_cast<uint32_t>(std::round(refresh))} : std::nullopt;
-        const auto policy = gamescopeBridgeOutputPolicy(this->profile, ceiling,
-            this->adaptiveScheduler &&
-                    fractionalNativePresentationEligible(this->profile)
-                ? this->adaptiveScheduler->snapshot() : AdaptiveSchedulerSnapshot{});
+        const auto policy = gamescopeBridgeOutputPolicy(this->profile, ceiling);
         this->wsiPresentTimeline.observeSourceBatch(DiagnosticsClock::now(), this->frameState.realFrameIndex);
         const auto slot = this->wsiPresentTimeline.schedule(DiagnosticsClock::now(),
             this->presentTiming.outputRate(policy.outputFps), refresh,

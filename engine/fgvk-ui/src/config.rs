@@ -27,16 +27,12 @@ const MISSING_PROFILES: &str = "The file has no profile tables.";
 pub const DEFAULT_FPS_LIMIT: i64 = 60;
 
 pub const MULTIPLIER_RANGE: RangeInclusive<i64> = 2..=5;
-pub const ADAPTIVE_MAX_MULTIPLIER_RANGE: RangeInclusive<i64> = 2..=5;
-pub const TARGET_FPS_RANGE: RangeInclusive<i64> = 10..=1000;
 pub const FPS_LIMIT_RANGE: RangeInclusive<i64> = 1..=1000;
 pub const BASE_FPS_CAP_RANGE: RangeInclusive<i64> = 0..=1000;
 pub const FLOW_SCALE_RANGE: RangeInclusive<f64> = 0.25..=1.0;
 
 /// Values shown for keys the file leaves out. They match the Renderer defaults.
 const DEFAULT_MULTIPLIER: i64 = 2;
-const DEFAULT_TARGET_FPS: i64 = 120;
-const DEFAULT_ADAPTIVE_MAX_MULTIPLIER: i64 = 3;
 const DEFAULT_FLOW_SCALE: f64 = 0.8;
 const DEFAULT_ALLOW_FP16: bool = true;
 const DEFAULT_PACING_CORRECTION: bool = true;
@@ -70,33 +66,26 @@ pub enum Mode {
     Off,
     /// Fixed total output multiplier.
     Fixed(i64),
-    Adaptive,
 }
 
 impl Mode {
-    /// Derives the position in the order disabled, adaptive, then multiplier.
-    pub fn from_settings(enabled: bool, adaptive: bool, multiplier: i64) -> Self {
+    /// Derives the position from the enable switch and the multiplier. A retired
+    /// `adaptive` key in the file is ignored, so `adaptive = true` reads as Fixed.
+    pub fn from_settings(enabled: bool, multiplier: i64) -> Self {
         if !enabled {
             Self::Off
-        } else if adaptive {
-            Self::Adaptive
         } else {
             Self::Fixed(multiplier)
         }
     }
 
-    /// Writes the keys for this position. `Off` leaves `multiplier` and `adaptive` alone.
+    /// Writes the keys for this position. `Off` leaves `multiplier` alone.
     fn write(self, table: &mut dyn TableLike) {
         match self {
             Self::Off => set_value(table, "frame_generation_enabled", Value::from(false)),
             Self::Fixed(multiplier) => {
                 set_value(table, "frame_generation_enabled", Value::from(true));
-                set_value(table, "adaptive", Value::from(false));
                 set_value(table, "multiplier", Value::from(multiplier));
-            }
-            Self::Adaptive => {
-                set_value(table, "frame_generation_enabled", Value::from(true));
-                set_value(table, "adaptive", Value::from(true));
             }
         }
     }
@@ -116,8 +105,6 @@ pub struct Profile {
     pub key: ProfileKey,
     pub active_in: Vec<String>,
     pub mode: Mode,
-    pub target_fps: i64,
-    pub adaptive_max_multiplier: i64,
     pub flow_scale: f64,
     pub base_fps_cap: i64,
     pub performance_mode: bool,
@@ -287,24 +274,6 @@ impl Config {
         self.edit_profile(key, |table| mode.write(table))
     }
 
-    pub fn set_target_fps(&mut self, key: &ProfileKey, value: i64) -> Result<(), String> {
-        check_i64("Target FPS", value, &TARGET_FPS_RANGE)?;
-        self.edit_profile(key, |table| {
-            set_value(table, "target_fps", Value::from(value))
-        })
-    }
-
-    pub fn set_adaptive_max_multiplier(
-        &mut self,
-        key: &ProfileKey,
-        value: i64,
-    ) -> Result<(), String> {
-        check_i64("Max multiplier", value, &ADAPTIVE_MAX_MULTIPLIER_RANGE)?;
-        self.edit_profile(key, |table| {
-            set_value(table, "adaptive_max_multiplier", Value::from(value));
-        })
-    }
-
     /// Stores the flow scale rounded to hundredths, so the file holds `0.85` rather than a float artifact.
     pub fn set_flow_scale(&mut self, key: &ProfileKey, value: f64) -> Result<(), String> {
         let value = (value * 100.0).round() / 100.0;
@@ -460,7 +429,6 @@ fn new_profile(name: &str) -> Table {
     table.insert("active_in", value(Array::new()));
     table.insert("frame_generation_enabled", value(true));
     table.insert("multiplier", value(DEFAULT_MULTIPLIER));
-    table.insert("adaptive", value(false));
     table.insert("flow_scale", value(DEFAULT_FLOW_SCALE));
     table.insert("base_fps_cap", value(0_i64));
     table
@@ -483,27 +451,13 @@ fn read_profile(index: usize, table: &Table) -> Profile {
         .get("frame_generation_enabled")
         .and_then(Item::as_bool)
         .unwrap_or(true);
-    let adaptive = table
-        .get("adaptive")
-        .and_then(Item::as_bool)
-        .unwrap_or(false);
     Profile {
         key: ProfileKey {
             index,
             name: profile_name(table).to_owned(),
         },
         active_in: read_active_in(table.get("active_in")),
-        mode: Mode::from_settings(
-            enabled,
-            adaptive,
-            int_or(table, "multiplier", DEFAULT_MULTIPLIER),
-        ),
-        target_fps: int_or(table, "target_fps", DEFAULT_TARGET_FPS),
-        adaptive_max_multiplier: int_or(
-            table,
-            "adaptive_max_multiplier",
-            DEFAULT_ADAPTIVE_MAX_MULTIPLIER,
-        ),
+        mode: Mode::from_settings(enabled, int_or(table, "multiplier", DEFAULT_MULTIPLIER)),
         flow_scale: float_or(table, "flow_scale", DEFAULT_FLOW_SCALE),
         base_fps_cap: int_or(table, "base_fps_cap", 0),
         performance_mode: table
@@ -768,7 +722,7 @@ mod tests {
     use std::process;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    const BASE: &str = "version = 2\n\n[global]\nallow_fp16 = true\n\n[[profile]]\nname = \"Alpha\"\nactive_in = [\"Game.exe\"]\nframe_generation_enabled = true\nmultiplier = 3\nadaptive = false\nflow_scale = 0.85\n";
+    const BASE: &str = "version = 2\n\n[global]\nallow_fp16 = true\n\n[[profile]]\nname = \"Alpha\"\nactive_in = [\"Game.exe\"]\nframe_generation_enabled = true\nmultiplier = 3\nflow_scale = 0.85\n";
 
     fn parse(text: &str) -> DocumentMut {
         text.parse().expect("test document parses")
@@ -795,17 +749,16 @@ mod tests {
         dir
     }
 
-    const POSITIONS: [Mode; 6] = [
+    const POSITIONS: [Mode; 5] = [
         Mode::Off,
         Mode::Fixed(2),
         Mode::Fixed(3),
         Mode::Fixed(4),
         Mode::Fixed(5),
-        Mode::Adaptive,
     ];
 
     #[test]
-    fn mode_round_trips_all_six_positions() {
+    fn mode_round_trips_all_five_positions() {
         for mode in POSITIONS {
             let mut doc = parse(BASE);
             let profile = profile_mut(&mut doc, &key(0, "Alpha")).expect("profile");
@@ -821,24 +774,33 @@ mod tests {
         let profile = profile_mut(&mut doc, &key(0, "Alpha")).expect("profile");
         Mode::Fixed(4).write(profile);
         assert_eq!(profile["frame_generation_enabled"].as_bool(), Some(true));
-        assert_eq!(profile["adaptive"].as_bool(), Some(false));
-        assert_eq!(profile["multiplier"].as_integer(), Some(4));
-
-        Mode::Adaptive.write(profile);
-        assert_eq!(profile["adaptive"].as_bool(), Some(true));
         assert_eq!(profile["multiplier"].as_integer(), Some(4));
 
         Mode::Off.write(profile);
         assert_eq!(profile["frame_generation_enabled"].as_bool(), Some(false));
-        assert_eq!(profile["adaptive"].as_bool(), Some(true));
         assert_eq!(profile["multiplier"].as_integer(), Some(4));
     }
 
     #[test]
-    fn disabled_wins_over_adaptive_when_deriving_the_position() {
-        assert_eq!(Mode::from_settings(false, true, 3), Mode::Off);
-        assert_eq!(Mode::from_settings(true, true, 3), Mode::Adaptive);
-        assert_eq!(Mode::from_settings(true, false, 5), Mode::Fixed(5));
+    fn disabled_wins_when_deriving_the_position() {
+        assert_eq!(Mode::from_settings(false, 3), Mode::Off);
+        assert_eq!(Mode::from_settings(true, 5), Mode::Fixed(5));
+    }
+
+    #[test]
+    fn retired_adaptive_key_reads_as_fixed_and_survives_edits() {
+        let text = "version = 2\n\n[[profile]]\nname = \"Legacy\"\nframe_generation_enabled = true\nmultiplier = 4\nadaptive = true\nadaptive_max_multiplier = 5\ntarget_fps = 144\n";
+        let mut doc = parse(text);
+        let profile = profiles(&doc).remove(0);
+        assert_eq!(profile.mode, Mode::Fixed(4));
+
+        let profile = profile_mut(&mut doc, &key(0, "Legacy")).expect("profile");
+        Mode::Fixed(3).write(profile);
+        let out = doc.to_string();
+        assert!(out.contains("multiplier = 3"), "{out}");
+        assert!(out.contains("adaptive = true"), "{out}");
+        assert!(out.contains("adaptive_max_multiplier = 5"), "{out}");
+        assert!(out.contains("target_fps = 144"), "{out}");
     }
 
     #[test]
@@ -846,8 +808,6 @@ mod tests {
         let doc = parse("version = 2\n\n[[profile]]\nname = \"Bare\"\n");
         let profile = profiles(&doc).remove(0);
         assert_eq!(profile.mode, Mode::Fixed(2));
-        assert_eq!(profile.target_fps, 120);
-        assert_eq!(profile.adaptive_max_multiplier, 3);
         assert!((profile.flow_scale - 0.8).abs() < f64::EPSILON);
         assert_eq!(profile.base_fps_cap, 0);
     }
@@ -916,7 +876,7 @@ mod tests {
 
     #[test]
     fn edits_keep_comments_unknown_keys_and_order() {
-        let text = "# top comment\nversion = 2\nfuture_root = \"keep\"\n\n[global]\n# dll note\nallow_fp16 = true\n\n[[profile]]\n# profile note\nname = \"Alpha\"\nunknown_profile_key = 42\nmultiplier = 3 # trailing note\nactive_in = [\"Game.exe\"]\n";
+        let text = "# top comment\nversion = 2\nfuture_root = \"keep\"\n\n[global]\n# dll note\nallow_fp16 = true\n\n[[profile]]\n# profile note\nname = \"Alpha\"\nunknown_profile_key = 42\nmultiplier = 3 # trailing note\nadaptive = true\nactive_in = [\"Game.exe\"]\n";
         let mut doc = parse(text);
         let profile = profile_mut(&mut doc, &key(0, "Alpha")).expect("profile");
         Mode::Fixed(4).write(profile);
@@ -931,6 +891,7 @@ mod tests {
         assert!(out.contains("# profile note"));
         assert!(out.contains("unknown_profile_key = 42"));
         assert!(out.contains("multiplier = 4 # trailing note"), "{out}");
+        assert!(out.contains("adaptive = true"), "{out}");
         assert!(out.contains("active_in = [\"Game.exe\", \"New.exe\"]"));
         assert!(out.find("name = \"Alpha\"") < out.find("multiplier = 4"));
         assert!(out.contains("dll = \"C:/games/Lossless.dll\""));
@@ -1141,7 +1102,6 @@ mod tests {
             "active_in",
             "frame_generation_enabled",
             "multiplier",
-            "adaptive",
             "flow_scale",
             "base_fps_cap",
         ];
@@ -1271,7 +1231,7 @@ mod tests {
 
         let mut config = Config::open(Ok(path.clone()));
         assert!(matches!(config.view(), ConfigView::Invalid(_)));
-        assert!(config.set_mode(&key(0, "oops"), Mode::Adaptive).is_err());
+        assert!(config.set_mode(&key(0, "oops"), Mode::Fixed(3)).is_err());
         assert!(
             config.create_default().is_err(),
             "create refuses to replace a file"

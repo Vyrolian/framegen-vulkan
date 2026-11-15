@@ -279,7 +279,6 @@ namespace {
             .nativeSwapchain = false,
             .contextCreated = true,
             .frameGenerationEnabled = true,
-            .adaptive = false,
             .deferredPresentQueue = true,
             .diagnosticCopyPath = false,
             .applicationExtent = {.width = 1920, .height = 1080},
@@ -311,7 +310,6 @@ namespace {
             {"native-swapchain", [](auto& in) { in.nativeSwapchain = true; }},
             {"context-not-created", [](auto& in) { in.contextCreated = false; }},
             {"frame-generation-disabled", [](auto& in) { in.frameGenerationEnabled = false; }},
-            {"adaptive", [](auto& in) { in.adaptive = true; }},
             {"no-deferred-present-queue", [](auto& in) { in.deferredPresentQueue = false; }},
             {"diagnostic-copy-path", [](auto& in) { in.diagnosticCopyPath = true; }},
             {"extent-mismatch", [](auto& in) { in.applicationExtent.width = 1280; }},
@@ -337,7 +335,6 @@ namespace {
     void testFirstFailingReasonWins() {
         auto input = eligibleInput();
         input.environmentEnabled = false;
-        input.adaptive = true;
         input.imageFormatSupported = false;
         expect(std::string_view(internalImagesIneligibleReason(input)) == "environment-disabled",
             "the gate did not report the first failing condition");

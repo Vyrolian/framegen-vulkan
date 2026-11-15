@@ -6,7 +6,7 @@ Personal fork of a Vulkan frame-generation layer (lsfg-vk v2 descendant), now na
 
 | Path | Owns |
 | --- | --- |
-| `engine/fgvk-render/` | Vulkan layer: interception, Adaptive scheduling, swapchain/presentation (`src/swapchain/`, one `Swapchain` owner), recovery |
+| `engine/fgvk-render/` | Vulkan layer: interception, Fixed-multiplier scheduling, swapchain/presentation (`src/swapchain/`, one `Swapchain` owner), recovery |
 | `engine/fgvk-backend/` | Lossless Scaling resource extraction and compute pipeline |
 | `engine/fgvk-common/` | Config, Vulkan wrappers, shared helpers |
 | `engine/fgvk-cli/` | Validation and DLL inspection tools |

@@ -107,7 +107,7 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance* backend,
     this->presentFeedback.configure(this->info.applicationPresentFeedback);
     this->diagnosticsState.contextId = allocateDiagnosticsContextId();
     if (vk.frameGenerationInteropEnabled() &&
-            !this->profile.adaptive && this->profile.multiplier == 2 &&
+            this->profile.multiplier == 2 &&
             !this->colorPipeline.hdr)
         this->frameContentCapture = FrameContentCapture::create(this->diagnosticsState.contextId);
     if (present_diagnostics::pacingProfileEnabled()) {
@@ -117,10 +117,6 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance* backend,
         } catch (...) {} // Optional observations cannot prevent swapchain creation.
     }
     this->requestedProfile = this->profile;
-    this->profile.target_fps = adaptiveTargetFpsForDisplay(
-        this->profile.target_fps, this->profile.adaptive,
-        this->profile.adaptive_target_refresh_rate, std::nullopt
-    );
     const DiagnosticsContextScope diagnosticsContext(
         this->diagnosticsState.contextId
     );
@@ -148,15 +144,9 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance* backend,
         }
     }
 
-    const auto initialGenerationPolicy = generationSchedulerPolicy(
-        this->profile
-    );
     const bool initialFrameGenerationEnabled = effectiveFrameGenerationEnabled(
         this->profile
     );
-    const bool initialDynamicCadenceRecoveryActive =
-        this->privateOrderedTransport && initialGenerationPolicy &&
-        initialGenerationPolicy->dynamicCadenceRecovery;
     const bool initialFrameGenerationResourcesAvailable =
         backend != nullptr && this->colorPipeline.generationSupported;
     if (present_diagnostics::enabled()) {
@@ -168,26 +158,12 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance* backend,
                   << this->profile.frame_generation_enabled
                   << " effective_frame_generation_enabled="
                   << initialFrameGenerationEnabled
-                  << " adaptive=" << this->profile.adaptive
-                  << " target_fps=" << this->profile.target_fps
                   << " multiplier=" << this->profile.multiplier
                   << " base_fps_cap=" << this->profile.base_fps_cap
-                  << " adaptive_auto_base_fps_cap="
-                  << this->profile.adaptive_auto_base_fps_cap
-                  << " adaptive_fractional_real_frame_priority="
-                  << ls::adaptiveFractionalRealFramePriorityName(
-                      this->profile.adaptive_fractional_real_frame_priority
-                  )
                   << " effective_base_fps_cap="
                   << effectiveBaseFpsCap(this->profile)
-                  << " adaptive_max_multiplier="
-                  << this->profile.adaptive_max_multiplier
                   << " stable_cadence="
                   << this->profile.adaptive_stable_cadence
-                  << " dynamic_cadence_recovery="
-                  << this->profile.dynamic_cadence_recovery
-                  << " effective_dynamic_cadence_recovery="
-                  << initialDynamicCadenceRecoveryActive
                   << " effective_flow_scale="
                   << ls::effectiveFlowScale(this->profile)
                   << " lighter_model="
@@ -321,10 +297,6 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance* backend,
                       << " ms; timeout results and successful wall-time "
                          "deadline overruns enter transport recovery\n";
         }
-        const bool schedulerEnabled = this->resetGenerationScheduler(
-            DiagnosticsClock::now(),
-            this->info.replacement ? "swapchain-recreation" : "startup"
-        );
         const bool frameGenerationActive = effectiveFrameGenerationEnabled(
             this->profile
         ) && this->colorPipeline.generationSupported;
@@ -332,26 +304,6 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance* backend,
             this->info.replacement, frameGenerationActive,
             DiagnosticsClock::now()
         );
-        if (schedulerEnabled) {
-            const auto policy = generationSchedulerPolicy(
-                this->profile
-            ).value();
-            std::cerr << "framegen-vulkan: target-driven frame generation enabled; mode="
-                      << (this->profile.adaptive
-                            ? "adaptive" : "fixed-refresh-compatibility")
-                      << ", target=" << policy.targetFps
-                      << " fps, maximum multiplier="
-                      << policy.maximumMultiplier
-                      << "x, stable cadence="
-                      << (policy.stableCadence ? "enabled" : "disabled")
-                      << ", dynamic cadence recovery="
-                      << (policy.dynamicCadenceRecovery
-                            ? "enabled" : "disabled")
-                      << ", cadence probe interval="
-                      << policy.dynamicCadenceProbeIntervalSeconds
-                      << " s"
-                      << '\n';
-        }
     } catch (const std::exception& e) {
         // Swapchain creation belongs to the game. A failure in framegen-vulkan's optional
         // interpolation resources must not turn a valid game swapchain into a
@@ -364,7 +316,6 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance* backend,
         this->renderSlots.clear();
         this->renderSlotIndex = 0;
         this->postCopySemaphores.clear();
-        this->adaptiveScheduler.reset();
         this->colorPipeline.generationSupported = false;
         this->colorPipeline.name = "initialization-fallback";
         this->colorPipeline.reason =

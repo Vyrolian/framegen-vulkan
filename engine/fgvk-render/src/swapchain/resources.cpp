@@ -298,8 +298,7 @@ Swapchain::buildFrameGenerationResources(const vk::Vulkan& vk,
 
 void Swapchain::commitFrameGenerationResources(
         FrameGenerationResources resources,
-        const ls::GameConf& resourceProfile,
-        const std::string_view reason) {
+        const ls::GameConf& resourceProfile) {
     // Old backend work and application-device copies are proven idle by the
     // caller. The context is declared last in this aggregate and therefore
     // closes before its imported images and shared timeline are destroyed.
@@ -319,10 +318,7 @@ void Swapchain::commitFrameGenerationResources(
     this->destinationImages = std::move(resources.destinationImages);
     this->syncSemaphore = std::move(resources.syncSemaphore);
     this->ctx = std::move(resources.context);
-    applyFrameGenerationResourceProfile(
-        this->profile, resourceProfile,
-        this->requestedProfile, std::nullopt
-    );
+    applyFrameGenerationResourceProfile(this->profile, resourceProfile);
 
     this->frameState.backendTimelineIndex = 1;
     this->frameState.backendFrameIndex = 0;
@@ -348,8 +344,6 @@ void Swapchain::commitFrameGenerationResources(
     this->recoveryState.orderedAcquireRecovery.reset();
     this->fixedRefreshBudget.reset();
     this->realFramePacer.reset();
-    this->smoothCadenceBaseCap.reset();
-    this->smoothCadencePacerHandoff.reset();
     this->configuredFixedGeneratedFrames = fixedGeneratedFrameCount(
         this->profile.multiplier, this->destinationImages.size()
     );
@@ -358,11 +352,7 @@ void Swapchain::commitFrameGenerationResources(
     this->diagnosticsState.fixedGeneratedFrames = 0;
     this->diagnosticsState.fixedSkippedFrames = 0;
 
-    if (!this->resetGenerationScheduler(
-            DiagnosticsClock::now(), reason)) {
-        this->recoveryState.historyWarmupRemaining =
-            AdaptiveScheduler::historyWarmupFrameCount();
-    }
+    this->recoveryState.historyWarmupRemaining = historyWarmupFrameCount;
     this->ensureHistoryWarmup();
 }
 
@@ -450,8 +440,7 @@ bool Swapchain::applyPendingFrameGenerationResources(
     auto replacement = std::move(*this->preparedFrameGenerationResources);
     this->preparedFrameGenerationResources.reset();
     this->commitFrameGenerationResources(
-        std::move(replacement), committedProfile,
-        "private-resource-transition"
+        std::move(replacement), committedProfile
     );
     const auto committedRevision =
         this->frameGenerationTransition.committed();
@@ -480,7 +469,7 @@ bool Swapchain::applyPendingFrameGenerationResources(
                   << " generated_frame_capacity="
                   << this->destinationImages.size()
                   << " history_warmup_frames="
-                  << AdaptiveScheduler::historyWarmupFrameCount()
+                  << historyWarmupFrameCount
                   << '\n';
     }
     return true;

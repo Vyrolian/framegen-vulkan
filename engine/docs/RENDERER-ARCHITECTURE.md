@@ -1,6 +1,6 @@
 # framegen-vulkan code map
 
-This map identifies code owners and call boundaries. The behavior contracts remain in [Adaptive validation](ADAPTIVE-VALIDATION.md), [Runtime transitions](RUNTIME-TRANSITIONS.md), [WSI isolation](WSI-ISOLATION.md), and [Memory management](MEMORY-MANAGEMENT.md).
+This map identifies code owners and call boundaries. The behavior contracts remain in [Fixed validation](ADAPTIVE-VALIDATION.md), [Runtime transitions](RUNTIME-TRANSITIONS.md), [WSI isolation](WSI-ISOLATION.md), and [Memory management](MEMORY-MANAGEMENT.md).
 
 ## Ownership from launch to present
 
@@ -11,7 +11,7 @@ This map identifies code owners and call boundaries. The behavior contracts rema
 | Sustained runtime health | `fgvk-render/src/runtime_health.*`, registered by `instance.cpp` under the existing presentation-diagnostics flag | Samples bounded proc/sysfs fields and canonical atomic memory counters on a worker; no frame requests, Vulkan calls, or recovery transitions. |
 | Pacing capture | `fgvk-render/src/present_diagnostics.*`, observed by the existing entrypoint and swapchain presentation owners | Opt-in fixed-size source/output/wait/phase windows, bounded individual-output traces, actual application completion waits and correlated worst intervals, independent of broad diagnostics. Writes bounded, private framegen-vulkan-only captures; no game-output capture or worker. CPU-only mode adds no GPU queries; separate `FGVK_PACING_PROFILE_GPU=1` reuses backend-owned timestamps and the existing completion fence for consume-once GPU spans. `scripts/analyze-pacing-profile.py` explains the retained CPU boundaries without inventing JVM/GPU/display attribution. |
 | Native Wayland feedback capture | `fgvk-render/src/wayland_presentation_feedback.*`, with surface lifetime in `entrypoint.cpp` and immutable synchronous/worker observations in the lower-present owner | Separate opt-in `FGVK_PACING_PROFILE_WAYLAND=1` records compositor presentation/discard outcomes on the borrowed native surface. Owns bounded proxies and a private queue; consumes only already-queued events, with no display reader, game callbacks, commits or timing-policy changes. The report preserves clocks and ambiguous commit association. |
-| Fixed and Adaptive decisions | `fgvk-render/src/adaptive_scheduler.*`, `presentation_policy.hpp`, and `generated_frame_plan.hpp` | Chooses generated work, output timestamps, and pacing ownership before Vulkan submission. |
+| Fixed decisions | `fgvk-render/src/presentation_policy.hpp` and `generated_frame_plan.hpp` | Chooses generated work, output timestamps, and pacing ownership before Vulkan submission. |
 | Swapchain state and transitions | `fgvk-render/src/swapchain/` | Owns the applied profile, private resources, recovery state, and game-owned swapchain boundary. |
 | Model execution | `fgvk-backend/` | Owns LSFG resources and compute work behind the Renderer context. |
 
@@ -24,7 +24,7 @@ Full trace additionally observes instance/device/surface/swapchain setup in `pre
 | File | Responsibility |
 | --- | --- |
 | `fgvk-render/src/swapchain/present.cpp` | Orchestrates one application present, including live feedback, pacing selection, and routing to real or generated delivery. |
-| `fgvk-render/src/swapchain/present/admission.cpp` | Prepares the Fixed or Adaptive frame plan, checks pipeline readiness, and handles generated-image admission and recovery. |
+| `fgvk-render/src/swapchain/present/admission.cpp` | Prepares the Fixed frame plan, checks pipeline readiness, and handles generated-image admission and recovery. |
 | `fgvk-render/src/swapchain/present/generated_frames.cpp` | Submits and presents generated frames while preserving the requested, admitted, scheduled, and delivered counts. |
 | `fgvk-render/src/swapchain/present/real_frames.cpp` | Presents native and history-only real frames and records source-copy work. |
 | `fgvk-render/src/swapchain/deferred_present.hpp`, `private_present_queue.hpp` | Own bounded native Fixed output-batch handoff and value snapshots, private queue reservation, one native presentation-queue owner for synchronous/retained outputs, worker-owned backend readiness within one source period (bounded at 50 ms), completion and joining, and bounded device/swapchain delivery records that hold application present waits until their real ID reaches the driver. The worker never owns or updates Swapchain state. |
@@ -37,8 +37,6 @@ Keep new policy decisions in their existing policy or scheduler owner, and let `
 
 ## Deliberate large-file boundaries
 
-`adaptive_scheduler.cpp` keeps cadence observation, workload probes, promotion, and output planning in one scheduler state owner. Its stage methods are forced inline into `planFrame()` in optimized builds. Splitting them across translation units would need the same hot-path property or measured CPU evidence. The scheduler returns a plan; it does not acquire images or own compositor feedback.
-
 `entrypoint.cpp` holds the Vulkan loader entrypoints and the per-layer registries for instances, devices, surfaces, queues, swapchains, and retirement. Both compiled layer roles use that dispatch boundary. A future split must first give those registries an explicit lifetime owner and preserve lower-layer forwarding, surface provenance, and retirement under the existing WSI contracts. Splitting the file by function length while sharing anonymous global state would obscure those invariants.
 
 ## Internal application images (F5)
@@ -47,7 +45,7 @@ For an eligible Frame Generation swapchain, the application renders into layer-o
 
 Released Fixed batches with internal application images also try one timeout-zero lower acquire and submit their generated staging copy before sleeping for the output slot. A missed early acquire keeps the existing at-deadline polling path. The worker prepares only its current output and issues its lower present before processing another output, including at higher multipliers; no additional staging images are allocated. A prepared output follows the real-output drain rule through retirement or stopping. `FGVK_INTERNAL_PREPARE=0` disables early preparation for both real and generated worker copies. The pacing summary distinguishes `generated_prepared` from `generated_at_deadline`.
 
-`swapchain/internal_images.hpp` holds the gate and the free-image ring with no Vulkan calls. `swapchain/internal_images.cpp` owns the private images, their dedicated device-local allocations, the copy command buffers, the release timeline and the lower-acquire fences. The gate requires a non-adaptive Frame Generation profile with a deferred-present queue, matching extent and format, one array layer, only the present-ID, present-wait and present-timing create flags, and optimal-tiled blit support. `FGVK_INTERNAL_SWAPCHAIN=0` disables the feature for the process. Each swapchain created with a layer context logs one `framegen-vulkan: internal swapchain images:` line with its decision, and a refused swapchain names the first failing condition. A variable surface (Wayland, no fixed current extent) is accepted when the lower swapchain has the application's extent.
+`swapchain/internal_images.hpp` holds the gate and the free-image ring with no Vulkan calls. `swapchain/internal_images.cpp` owns the private images, their dedicated device-local allocations, the copy command buffers, the release timeline and the lower-acquire fences. The gate requires a Frame Generation profile with a deferred-present queue, matching extent and format, one array layer, only the present-ID, present-wait and present-timing create flags, and optimal-tiled blit support. `FGVK_INTERNAL_SWAPCHAIN=0` disables the feature for the process. Each swapchain created with a layer context logs one `framegen-vulkan: internal swapchain images:` line with its decision, and a refused swapchain names the first failing condition. A variable surface (Wayland, no fixed current extent) is accepted when the lower swapchain has the application's extent.
 
 The private image count is `min(8, max(minImageCount, 3) + 2)`, where `minImageCount` is the application's minimum image count. The two extra images let the worker hold up to three pending real images in its depth-3 batch ring while the application keeps acquiring. Each image adds one device-local allocation of the application's format and extent, so added VRAM is that count times one image. Emulated acquire waits on the private ring for a finite timeout and returns `VK_NOT_READY` for a zero timeout. A private image is pending from present until its copy has been submitted. An out-of-date, surface-lost or full-screen-exclusive-loss result from the lower path is sticky, so the application must recreate the swapchain.
 

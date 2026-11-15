@@ -1,6 +1,6 @@
 # Runtime configuration transitions
 
-This guide defines how a saved profile becomes running Renderer state. The [configuration reference](CONFIGURATION-REFERENCE.md) defines fields, [Adaptive validation](ADAPTIVE-VALIDATION.md) owns scheduling, [WSI isolation](WSI-ISOLATION.md) owns process-start discovery. [Memory management](MEMORY-MANAGEMENT.md) explains allocation ownership, replacement peaks, and accounting.
+This guide defines how a saved profile becomes running Renderer state. The [configuration reference](CONFIGURATION-REFERENCE.md) defines fields, [Fixed validation](ADAPTIVE-VALIDATION.md) owns pacing, [WSI isolation](WSI-ISOLATION.md) owns process-start discovery. [Memory management](MEMORY-MANAGEMENT.md) explains allocation ownership, replacement peaks, and accounting.
 
 ## Lifetime boundaries
 
@@ -13,7 +13,7 @@ Saving a clone under a new name changes the runtime profile identity without res
 | Process start | Frame Generation provisioning, Game Swapchain Images compatibility, layer membership and order, Zink, audio compatibility, and the shared FP16 precision choice | Start a new game process |
 | Process-wide backend | DLL, GPU, and Ultra Performance policy | Construct a new backend, normally by restarting the process |
 | Private FG context | Flow Scale, lighter model, and generated-output capacity | Prepare, drain framegen-vulkan-owned work, and atomically replace |
-| Live policy | Frame Generation `0x`/active execution state, Fixed/Adaptive policy, target, caps, and cadence controls | Next successful reload and application present |
+| Live policy | Frame Generation `0x`/active execution state, Fixed policy, caps, and cadence controls | Next successful reload and application present |
 | Dormant value | A setting for an inactive mode or unavailable private resource | Save now; apply when its owning mode or resource becomes active |
 
 The process-wide backend is created lazily when the first active swapchain needs it. FP16 is captured at process start even when the backend is still dormant, so a later FG backend cannot disagree with it after a config reload. Once built, pending DLL, GPU, and Ultra changes are compared with the actual construction baseline, not merely the previous file.
@@ -45,8 +45,6 @@ The transition engine keeps three facts distinct:
 
 `ProfileUpdatePlan::appliedProfile` is a merge. It starts from the requested profile, restores values that cannot cross the current boundary, then classifies the remaining effective differences. A pending restart or recreation must not block an independent live update.
 
-`adaptive_target_refresh_rate` has no compositor refresh source now that Gamescope support is removed, so the applied Adaptive target equals the requested `target_fps`. A changed effective target resets scheduling even when Smooth Cadence is off, without allocating resources or writing configuration. Fixed mode leaves the option dormant.
-
 For example, a write that changes Base FPS Cap and Flow Scale applies the cap while preparing a private FG replacement. The old Flow Scale remains applied until handoff. Selecting `0x` later still applies immediately, and reverting Flow Scale before handoff cancels the replacement.
 
 ## Transition matrix
@@ -55,11 +53,10 @@ For example, a write that changes Base FPS Cap and Flow Scale applies the cap wh
 | --- | --- | --- |
 | Frame Generation provisioning | Restart | Adds or removes LSFG application-device interop, backend ownership, and private resources. |
 | Frame Generation `0x` | Live | Releases the effective base cap, resets relevant scheduler and recovery state, and takes the real-frame path without LSFG work. |
-| Frame Generation `2x`–`5x` or Adaptive | Live when startup provisioning succeeded; otherwise restart | Reuses retained interop and private resources, then warms temporal history where required. |
-| Fixed/Adaptive mode or multiplier | Live within current capacity; otherwise private FG replacement or recreation | Dormant mode values are saved without resetting the active mode. |
-| Adaptive target, display-refresh matching, ceiling, Smooth Cadence, Fractional Real Frame Priority, and Dynamic Cadence Recovery | Live within capacity | Rebuilds only the scheduler and real-frame pacing state whose assumptions changed. Automatic adds no priority cap; qualified native presentation follows the [Fractional policy](ADAPTIVE-VALIDATION.md#fractional-real-frame-priority). |
-| Dynamic Cadence probe interval | Live | Reschedules an inactive probe without discarding validated cadence or an active confirmation. |
-| Base FPS Cap, Adaptive auto-cap, and explicit Fractional priority cap | Live while generation is active; dormant while Off | Resets the real-frame pacer and affected scheduler policy. Fractional/Steady switches reset scheduler policy even when their numeric caps match, so pacing uses the new mode. Explicit Fractional priority owns the effective cap only in Fractional Adaptive. |
+| Frame Generation `2x`–`5x` | Live when startup provisioning succeeded; otherwise restart | Reuses retained interop and private resources, then warms temporal history where required. |
+| Fixed multiplier | Live within current capacity; otherwise private FG replacement or recreation | Dormant mode values are saved without resetting the active mode. |
+| Smooth Cadence | Live within capacity | Rebuilds only the real-frame pacing state whose assumptions changed. |
+| Base FPS Cap | Live while generation is active; dormant while Off | Resets the real-frame pacer. |
 | Game Swapchain Images compatibility | Restart | Existing contexts retain the process-start WSI image-count policy. |
 | Flow Scale and Lighter FG Model | Private FG replacement | Coalesces for 500 ms, prepares a complete candidate, drains framegen-vulkan-owned work, switches atomically, and warms history. |
 | Generated-output capacity | Private FG replacement when the current WSI pool fits; otherwise recreation | Keeps the old active policy until enough resources and WSI headroom exist. A compatible maintenance1 context may request one. |
@@ -68,7 +65,7 @@ For example, a write that changes Base FPS Cap and Flow Scale applies the cap wh
 | Steam overlay removal, WSI compatibility, external layer, Zink, and ALSA | Restart | These affect discovery or application initialization. |
 | Active profile match | Live for compatible fields | Losing the match disables generation immediately; static differences remain pending. |
 
-Normal profiles reserve capacity for the larger configured Fixed or Adaptive ceiling. Ultra Performance reserves only its startup-active policy. A later capacity increase can still use private replacement when the lower WSI pool has `application minimum + generated capacity` images; otherwise it remains pending for recreation.
+Normal profiles reserve capacity for the configured Fixed multiplier. Ultra Performance reserves only its startup-active policy. A later capacity increase can still use private replacement when the lower WSI pool has `application minimum + generated capacity` images; otherwise it remains pending for recreation.
 
 ## Private replacement contract
 
@@ -87,7 +84,7 @@ Private transitions never destroy the application swapchain or replace its WSI-f
 
 A compatible maintenance1 context may request recreation for private-resource growth that cannot fit the current WSI pool. Recovery requests use the same successful, retirement-protected lower-present boundary; framegen-vulkan never destroys the active game-owned swapchain itself. Repeated cadence stalls or low FPS alone do not authorize performance-driven recreation.
 
-The surface owner accepts recovery authority only from explicit live generation-policy transitions and generated-image acquire outcomes measured against the configured transport budget. A live mode, multiplier, cap, target, Smooth Cadence, or Dynamic Cadence Recovery change starts fresh history and arms one recreation permission. Policy edits written before that change is applied are last-value-wins: they do not repeatedly rebuild the scheduler or arm parallel permissions, and the final scheduler policy is constructed once. The transition supplies the single transport permission. The first generated-image acquire batch completed within its configured budget consumes that permission without action; `VK_TIMEOUT`, `VK_NOT_READY`, budget exhaustion, or a cumulative acquire-deadline overrun may instead consume it by requesting one retirement-protected recreation. There is no seconds-long event window, failure-count qualifier, output-FPS comparison, or surface cooldown. Replacement contexts initialize from the current transition sequence, preventing the same old event from rearming a recreation loop. Ordinary gameplay FPS, cadence loss, post-processing cost, target deficit, and slow successful lower presents cannot obtain transport-recovery authority or request recreation; exact Fixed never launches a cadence-collapse probe. Backend/fence and acquire safety remain independent. [Adaptive validation](ADAPTIVE-VALIDATION.md) owns the direct-outcome state machines and negative cases.
+The surface owner accepts recovery authority only from explicit live generation-policy transitions and generated-image acquire outcomes measured against the configured transport budget. A live mode, multiplier, cap, or Smooth Cadence change starts fresh history and arms one recreation permission. Policy edits written before that change is applied are last-value-wins: they do not repeatedly rebuild the policy or arm parallel permissions. The transition supplies the single transport permission. The first generated-image acquire batch completed within its configured budget consumes that permission without action; `VK_TIMEOUT`, `VK_NOT_READY`, budget exhaustion, or a cumulative acquire-deadline overrun may instead consume it by requesting one retirement-protected recreation. There is no seconds-long event window, failure-count qualifier, output-FPS comparison, or surface cooldown. Replacement contexts initialize from the current transition sequence, preventing the same old event from rearming a recreation loop. Ordinary gameplay FPS, cadence loss, post-processing cost, and slow successful lower presents cannot obtain transport-recovery authority or request recreation; Fixed never launches a cadence-collapse probe. Backend/fence and acquire safety remain independent. [Fixed validation](ADAPTIVE-VALIDATION.md) owns the direct-outcome state machines and negative cases.
 
 Presentation retirement is provisioned for Frame Generation. It follows owned resources and transport. Supported maintenance1 devices supply per-image fences; unsupported devices retain natural recreation and cannot use guarded retries. Natural and requested recreation remove the old context from live updates immediately. Lower WSI destruction waits for same-surface replacement progress, a 50 ms compositor grace, and retirement fences. When an application or upper layer passes a null `oldSwapchain` after destroying its predecessor, framegen-vulkan completes the exact retained same-device, same-surface retirement before forwarding replacement creation; the compositor grace and retirement fences remain mandatory. Non-null `oldSwapchain` contexts retain their application-owned lifetime. Surface destruction is the terminal same-surface boundary.
 
@@ -102,7 +99,7 @@ Release-gated overlapped batches (`Readiness::overlap`, the uncapped VKD3D path)
 Reset only state whose assumptions changed:
 
 - enable/disable clears affected pacing, admission, acquire recovery, and history state;
-- mode, target, ceiling, Smooth Cadence, or recovery-policy changes rebuild scheduler policy and affected real-frame pacing;
+- mode, multiplier, cap, or Smooth Cadence changes rebuild the affected real-frame pacing;
 - configured cap changes reset the real-frame pacer and scheduler observations; a bounded scheduler rescue changes only its effective automatic cap and output clock, with rollback owned by the same rescue;
 - probe-interval-only changes update only the timer;
 - applied 3x–5x integer pacing may verify its real-frame cost against a recent trial baseline or obtain a fresh adjacent lower-load sample through the existing efficiency probe after a delayed handoff; a measured rejection restores the adjacent lower workload and output clock without history warm-up, resource replacement, or transport recovery, while interrupted evidence is discarded;

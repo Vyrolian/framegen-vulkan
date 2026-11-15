@@ -21,64 +21,6 @@
 using namespace fgvk;
 using namespace fgvk::layer;
 
-namespace {
-    using DiagnosticsClock = present_diagnostics::Clock;
-}
-
-bool Swapchain::resetGenerationScheduler(
-        const DiagnosticsClock::time_point now,
-        const std::string_view reason) {
-    const auto policy = generationSchedulerPolicy(
-        this->profile
-    );
-    if (!policy || this->destinationImages.empty()) {
-        this->adaptiveScheduler.reset();
-        return false;
-    }
-
-    const size_t schedulerGeneratedFrameCapacity =
-        this->profile.adaptive &&
-            this->adaptiveOrderedWsiGeneratedCapacityLimit
-        ? std::min(
-            this->destinationImages.size(),
-            *this->adaptiveOrderedWsiGeneratedCapacityLimit
-        )
-        : this->destinationImages.size();
-
-    this->adaptiveScheduler.emplace(
-        AdaptiveSchedulerConfig{
-            .targetFps = policy->targetFps,
-            .maximumMultiplier = policy->maximumMultiplier,
-            .generatedFrameCapacity = schedulerGeneratedFrameCapacity,
-            .stableCadence = policy->stableCadence,
-            .automaticBaseFpsCap =
-                this->profile.adaptive_auto_base_fps_cap,
-            .nearTargetNativePreference =
-                policy->nearTargetNativePreference,
-            .qualifyTargetNativeCadence = policy->qualifyTargetNativeCadence,
-            .validateIntegerPacing = this->profile.adaptive &&
-                policy->stableCadence && adaptiveTargetMatchesRefresh(
-                    policy->targetFps, std::nullopt) &&
-                (this->profile.adaptive_auto_base_fps_cap ||
-                 effectiveBaseFpsCap(this->profile)
-                    <= 0.0),
-            .dynamicCadenceRecovery = policy->dynamicCadenceRecovery,
-            .dynamicCadenceProbeInterval =
-                ls::dynamicCadenceProbeIntervalDuration(
-                    policy->dynamicCadenceProbeIntervalSeconds
-                ),
-            .displayRefreshFps = std::nullopt,
-            .recoveryPolicy = this->privateOrderedTransport
-                ? AdaptiveRecoveryPolicy::OrderedSdr
-                : AdaptiveRecoveryPolicy::Conservative,
-        },
-        &present_diagnostics::adaptiveScheduler()
-    );
-    this->adaptiveScheduler->beginStabilization(now, reason);
-    this->recoveryState.historyWarmupRemaining = 0;
-    return true;
-}
-
 ProfileUpdateDecision Swapchain::updateProfile(
         const ls::GameConf& nextProfile,
         const uint64_t runtimeStateRevision,
@@ -105,8 +47,7 @@ ProfileUpdateDecision Swapchain::updateProfile(
     auto plan = planProfileUpdate(
         this->profile, nextProfile, this->destinationImages.size(),
         resourcesAvailable,
-        privateFrameGenerationRebuildAvailable,
-        std::nullopt
+        privateFrameGenerationRebuildAvailable
     );
     auto decision = plan.decision;
     if (decision.frameGenerationPrivateRebuild) {
@@ -232,7 +173,6 @@ ProfileUpdateDecision Swapchain::updateProfile(
         return decision;
     }
 
-    const bool hadGenerationScheduler = this->adaptiveScheduler.has_value();
     const bool generationWasEnabled = effectiveFrameGenerationEnabled(
         this->profile
     );
@@ -241,27 +181,11 @@ ProfileUpdateDecision Swapchain::updateProfile(
     );
     const bool enabling = !generationWasEnabled && generationWillBeEnabled;
     const bool disabling = generationWasEnabled && !generationWillBeEnabled;
-    const bool currentFractionalPriorityActive =
-        fractionalRealFramePriorityActive(this->profile);
-    const bool nextFractionalPriorityActive =
-        fractionalRealFramePriorityActive(plan.appliedProfile);
-    const bool fractionalPriorityStyleChanged =
-        currentFractionalPriorityActive != nextFractionalPriorityActive ||
-        (currentFractionalPriorityActive && nextFractionalPriorityActive &&
-         this->profile.adaptive_fractional_real_frame_priority !=
-            plan.appliedProfile.adaptive_fractional_real_frame_priority);
-    const bool cadenceStyleChanged = generationWasEnabled &&
-        generationWillBeEnabled && this->profile.adaptive &&
-        plan.appliedProfile.adaptive &&
-        (this->profile.adaptive_auto_base_fps_cap !=
-            plan.appliedProfile.adaptive_auto_base_fps_cap ||
-         fractionalPriorityStyleChanged);
-    const auto profileUpdateNow = DiagnosticsClock::now();
     this->profile = std::move(plan.appliedProfile);
     this->configuredFixedGeneratedFrames = fixedGeneratedFrameCount(
         this->profile.multiplier, this->destinationImages.size()
     );
-    if (decision.generationModeChanged || decision.fixedMultiplierChanged ||
+    if (decision.fixedMultiplierChanged ||
             decision.baseFpsCapChanged || enabling || disabling) {
         this->fixedRefreshBudget.reset();
         this->diagnosticsState.fixedWindowStarted.reset();
@@ -270,14 +194,12 @@ ProfileUpdateDecision Swapchain::updateProfile(
         this->diagnosticsState.fixedSkippedFrames = 0;
     }
     if (decision.baseFpsCapChanged || decision.generationPolicyChanged ||
-            decision.generationModeChanged || enabling || disabling) {
+            enabling || disabling) {
         this->realFramePacer.reset();
-        this->smoothCadenceBaseCap.reset();
-        this->smoothCadencePacerHandoff.reset();
     }
 
     if (profileUpdateInvalidatesTransientGenerationRecovery(decision)) {
-        // A new Fixed/Adaptive policy must not inherit a retry or delivery-
+        // A new Fixed policy must not inherit a retry or delivery-
         // pressure sample produced by the previous requested workload.
         this->recoveryState.generatedImageAdmission.reset();
         this->recoveryState.orderedAcquireRecovery.reset();
@@ -286,26 +208,20 @@ ProfileUpdateDecision Swapchain::updateProfile(
     if (disabling) {
         this->recoveryState.historyWarmupRemaining = 0;
         this->recoveryState.orderedAcquireRecovery.reset();
-        if (this->adaptiveScheduler)
-            this->adaptiveScheduler->cancelHistoryWarmup();
     }
 
     if (enabling) {
         this->recoveryState.generatedImageAdmission.reset();
         this->recoveryState.orderedAcquireRecovery.reset();
         this->recoveryState.historyWarmupRemaining =
-            generationSchedulerPolicy(this->profile)
-            ? 0
-            : AdaptiveScheduler::historyWarmupFrameCount();
+            historyWarmupFrameCount;
     }
 
     const bool transportLoadTransition = this->privateOrderedTransport &&
         effectiveFrameGenerationEnabled(
             this->profile
         ) && (decision.generationPolicyChanged ||
-              decision.generationModeChanged ||
-              decision.fixedMultiplierChanged || cadenceStyleChanged ||
-              enabling);
+              decision.fixedMultiplierChanged || enabling);
     if (transportLoadTransition) {
         this->recoveryState.orderedAcquireRecovery
             .armTransitionRecreation();
@@ -318,40 +234,6 @@ ProfileUpdateDecision Swapchain::updateProfile(
         }
     }
 
-    const bool schedulerPolicyAvailable = generationSchedulerPolicy(
-        this->profile
-    ).has_value();
-    const bool fixedSchedulerPolicyChanged = !this->profile.adaptive &&
-        decision.fixedMultiplierChanged;
-    const bool resetSchedulerPolicy = schedulerPolicyAvailable &&
-            (decision.generationPolicyChanged ||
-             decision.generationModeChanged ||
-             fixedSchedulerPolicyChanged ||
-             decision.baseFpsCapChanged || enabling);
-    if (resetSchedulerPolicy) {
-        static_cast<void>(this->resetGenerationScheduler(
-            profileUpdateNow, "configuration-update"
-        ));
-    } else if (hadGenerationScheduler && !schedulerPolicyAvailable) {
-        this->adaptiveScheduler.reset();
-        this->recoveryState.historyWarmupRemaining =
-            AdaptiveScheduler::historyWarmupFrameCount();
-    } else if (decision.dynamicCadenceProbeIntervalChanged &&
-            this->adaptiveScheduler) {
-        this->adaptiveScheduler->updateDynamicCadenceProbeInterval(
-            profileUpdateNow,
-            ls::dynamicCadenceProbeIntervalDuration(
-                this->profile.dynamic_cadence_probe_interval_seconds
-            )
-        );
-    }
-
-    const auto updatedGenerationPolicy = generationSchedulerPolicy(
-        this->profile
-    );
-    const bool updatedDynamicCadenceRecoveryActive =
-        this->privateOrderedTransport && updatedGenerationPolicy &&
-        updatedGenerationPolicy->dynamicCadenceRecovery;
     if (present_diagnostics::enabled()) {
         std::cerr << "framegen-vulkan: present diagnostics: operation=runtime-state-applied"
                   << " context=" << this->diagnosticsState.contextId
@@ -364,28 +246,12 @@ ProfileUpdateDecision Swapchain::updateProfile(
                   << effectiveFrameGenerationEnabled(
                         this->profile
                      )
-                  << " adaptive=" << this->profile.adaptive
-                  << " target_fps=" << this->profile.target_fps
                   << " multiplier=" << this->profile.multiplier
                   << " base_fps_cap=" << this->profile.base_fps_cap
-                  << " adaptive_auto_base_fps_cap="
-                  << this->profile.adaptive_auto_base_fps_cap
-                  << " adaptive_fractional_real_frame_priority="
-                  << ls::adaptiveFractionalRealFramePriorityName(
-                      this->profile.adaptive_fractional_real_frame_priority
-                  )
                   << " effective_base_fps_cap="
                   << effectiveBaseFpsCap(this->profile)
-                  << " adaptive_max_multiplier="
-                  << this->profile.adaptive_max_multiplier
                   << " stable_cadence="
                   << this->profile.adaptive_stable_cadence
-                  << " dynamic_cadence_recovery="
-                  << this->profile.dynamic_cadence_recovery
-                  << " dynamic_cadence_probe_interval_seconds="
-                  << this->profile.dynamic_cadence_probe_interval_seconds
-                  << " effective_dynamic_cadence_recovery="
-                  << updatedDynamicCadenceRecoveryActive
                   << " effective_flow_scale="
                   << ls::effectiveFlowScale(this->profile)
                   << " lighter_model="
@@ -468,10 +334,6 @@ void Swapchain::disableFrameGeneration() {
 
     this->profile.frame_generation_enabled = false;
     this->realFramePacer.reset();
-    this->smoothCadenceBaseCap.reset();
-    this->smoothCadencePacerHandoff.reset();
     this->recoveryState.historyWarmupRemaining = 0;
     this->recoveryState.orderedAcquireRecovery.reset();
-    if (this->adaptiveScheduler)
-        this->adaptiveScheduler->cancelHistoryWarmup();
 }

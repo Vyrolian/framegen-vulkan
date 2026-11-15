@@ -4,7 +4,6 @@
 #include "frame_content_capture.hpp"
 #include "swapchain/present/internal.hpp"
 #include "swapchain/retirement.hpp"
-#include "adaptive_scheduler.hpp"
 #include "fgvk-common/helpers/errors.hpp"
 #include "fgvk-common/vulkan/command_buffer.hpp"
 #include "fgvk-common/vulkan/image.hpp"
@@ -82,17 +81,6 @@ VkResult Swapchain::presentGeneratedFrames(
                 observedAt, timedOut, acquireDeadlineExceeded,
                 plan.boundedOrderedAcquireProbe
             );
-        if (transitionRecoveryActive && (timedOut || budgetExhausted) &&
-                this->adaptiveScheduler) {
-            static_cast<void>(this->adaptiveScheduler
-                ->rejectActiveRampForTransportMiss(observedAt));
-        }
-        if (observation.recovered && transitionRecoveryActive &&
-                this->adaptiveScheduler) {
-            this->adaptiveScheduler->beginTransportRecovery(
-                observedAt, true
-            );
-        }
         if (observation.quarantined) {
             this->fixedRefreshBudget.reset();
             if (presentDiagnosticsEnabled()) {
@@ -381,22 +369,15 @@ VkResult Swapchain::presentGeneratedFrames(
         }
 
         if (result == VK_TIMEOUT || result == VK_NOT_READY) {
-            // Record this normal batch's delivery loss before changing its
-            // transport state. Otherwise intermittent timeouts separated by
-            // healthy batches disappear from Adaptive's multiplier evaluation
-            // even though generated outputs were lost.
-            this->reportAdaptiveDelivery(plan, i);
             reportOrderedAcquire(
                 !acquireBudgetExhausted, acquireBudgetExhausted, i
             );
             // Backend work is already scheduled on this ordered path, so drain
-            // its final timeline value. Fixed-refresh Adaptive retains the 3.3
-            // ordered recovery contract. Fixed and explicit recovery probes
+            // its final timeline value. Fixed and explicit recovery probes
             // retain their direct transport contracts.
             const size_t skippedFrames =
                 plan.scheduledGeneratedFrames.size() - i;
-            if (!this->adaptiveScheduler)
-                this->diagnosticsState.fixedSkippedFrames += skippedFrames;
+            this->diagnosticsState.fixedSkippedFrames += skippedFrames;
             const uint64_t finalGeneratedTimelineValue =
                 this->frameState.backendTimelineIndex + skippedFrames - 1;
             auto& fallbackSemaphore = this->postCopySemaphores.at(
@@ -656,11 +637,8 @@ VkResult Swapchain::presentGeneratedFrames(
                     originalResult, "vkQueuePresentKHR() failed"
                 );
             }
-            if (this->adaptiveScheduler)
-                this->reportAdaptiveDelivery(plan, i);
-            else
-                this->diagnosticsState.fixedSkippedFrames +=
-                    plan.scheduledGeneratedFrames.size() - i;
+            this->diagnosticsState.fixedSkippedFrames +=
+                plan.scheduledGeneratedFrames.size() - i;
             this->frameState.sequenceIndex++;
             this->frameState.backendTimelineIndex++;
             this->frameState.realFrameIndex++;
@@ -668,8 +646,7 @@ VkResult Swapchain::presentGeneratedFrames(
         }
         if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR)
             throw ls::vulkan_error(result, "vkQueuePresentKHR() failed");
-        if (!this->adaptiveScheduler)
-            this->diagnosticsState.fixedGeneratedFrames++;
+        this->diagnosticsState.fixedGeneratedFrames++;
 
         this->frameState.sequenceIndex++;
         this->frameState.backendTimelineIndex++;
@@ -695,9 +672,6 @@ VkResult Swapchain::presentGeneratedFrames(
     );
     reportOrderedAcquire(
         false, false, plan.scheduledGeneratedFrames.size()
-    );
-    this->reportAdaptiveDelivery(
-        plan, plan.scheduledGeneratedFrames.size()
     );
     logSlowPresentBreakdown(
         this->diagnosticsState.contextId, this->frameState.realFrameIndex,

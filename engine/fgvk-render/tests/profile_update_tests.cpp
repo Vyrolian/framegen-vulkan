@@ -18,22 +18,14 @@ namespace {
         std::exit(1);
     }
 
-    ls::GameConf adaptiveProfile() {
+    ls::GameConf fixedProfile() {
         return {
-            .name = "Adaptive",
+            .name = "Fixed",
             .active_in = {"game"},
             .multiplier = 2,
             .frame_generation_enabled = true,
             .base_fps_cap = 0,
-            .adaptive = true,
-            .adaptive_auto_base_fps_cap = false,
-            .adaptive_fractional_real_frame_priority =
-                ls::AdaptiveFractionalRealFramePriority::Auto,
-            .target_fps = 90,
-            .adaptive_max_multiplier = 3,
             .adaptive_stable_cadence = false,
-            .dynamic_cadence_recovery = false,
-            .dynamic_cadence_probe_interval_seconds = 2.0F,
             .flow_scale = 1.0F,
             .performance_mode = false,
             .pacing = ls::Pacing::None,
@@ -42,163 +34,16 @@ namespace {
 }
 
 int main() {
-    const auto resolveDisplayTarget = [](const ls::GameConf& applied,
-            const ls::GameConf& requested, std::optional<uint32_t> refresh) {
-        return planProfileUpdate(applied, requested, 3, true, false, refresh);
-    };
-    auto savedTarget = adaptiveProfile();
-    expect(resolveDisplayTarget(savedTarget, savedTarget, 60)
-                .appliedProfile.target_fps == 90,
-        "Refresh targeting must default off and preserve existing targets");
-    auto automaticTarget = savedTarget;
-    automaticTarget.adaptive_target_refresh_rate = true;
-    auto displayApplied = savedTarget;
-    for (const auto refresh : {90U, 60U, 100U, 144U, 360U, 5U, 2000U}) {
-        const auto plan = resolveDisplayTarget(displayApplied, automaticTarget, refresh);
-        const auto target = std::clamp(refresh,
-            ls::GameConfLimits::minimumTargetFps,
-            ls::GameConfLimits::maximumTargetFps);
-        expect(plan.appliedProfile.target_fps == target &&
-                plan.appliedProfile.adaptive_target_refresh_rate &&
-                !plan.decision.swapchainRecreationDeferred &&
-                !plan.decision.processRestartDeferred,
-            "Display transitions must apply a bounded target without rebuilding resources");
-        expect(plan.decision.generationPolicyChanged ==
-                (displayApplied.target_fps != target),
-            "Display transitions must reset Fractional scheduling only when the target changes");
-        displayApplied = plan.appliedProfile;
-        expect(generationSchedulerPolicy(displayApplied)->targetFps == target,
-            "Scheduler policy must consume the applied display target");
-        auto steady = displayApplied;
-        steady.adaptive_auto_base_fps_cap = true;
-        expect(effectiveBaseFpsCap(steady) == std::max(adaptiveMinimumBaseFps, target / 2.0),
-            "Steady's automatic cap must track the applied display target");
-        auto fractional = displayApplied;
-        fractional.adaptive_fractional_real_frame_priority =
-            ls::AdaptiveFractionalRealFramePriority::High;
-        expect(effectiveBaseFpsCap(fractional) == target * 3.0 / 4.0,
-            "Fractional real-frame priority must track the applied display target");
-    }
-    for (const auto missing : {std::optional<uint32_t>{}, std::optional<uint32_t>{0}}) {
-        const auto plan = resolveDisplayTarget(displayApplied, automaticTarget, missing);
-        expect(plan.appliedProfile.target_fps == 90 &&
-                plan.decision.generationPolicyChanged,
-            "Missing or zero refresh must restore the saved fallback live");
-    }
-    automaticTarget.target_fps = 120;
-    const auto changedFallback = resolveDisplayTarget(displayApplied, automaticTarget, 100);
-    expect(changedFallback.appliedProfile.target_fps == 100 &&
-            automaticTarget.target_fps == 120,
-        "Display targeting must never overwrite the requested manual fallback");
-    const auto repeated = resolveDisplayTarget(changedFallback.appliedProfile, automaticTarget, 100);
-    expect(repeated.decision.action == ProfileUpdateAction::NoRuntimeChange,
-        "Repeated profile reads must retain the resolved target without resetting policy");
-    automaticTarget.adaptive_target_refresh_rate = false;
-    expect(resolveDisplayTarget(changedFallback.appliedProfile, automaticTarget, 100)
-                .appliedProfile.target_fps == 120,
-        "Disabling display targeting must restore the saved manual target");
-    automaticTarget.adaptive_target_refresh_rate = true;
-    automaticTarget.adaptive = false;
-    expect(resolveDisplayTarget(savedTarget, automaticTarget, 60)
-                .appliedProfile.target_fps == 120,
-        "Fixed mode must ignore the dormant Adaptive refresh choice");
-
-    auto fixedBeforeGrowth = automaticTarget;
-    auto adaptiveAfterGrowth = fixedBeforeGrowth;
-    adaptiveAfterGrowth.adaptive = true;
-    adaptiveAfterGrowth.adaptive_max_multiplier = 5;
-    const auto pendingGrowth = planProfileUpdate(fixedBeforeGrowth, adaptiveAfterGrowth, 2, true, true, 60);
-    expect(pendingGrowth.decision.frameGenerationPrivateRebuild &&
-            !pendingGrowth.appliedProfile.adaptive &&
-            pendingGrowth.appliedProfile.target_fps == 120,
-        "Private growth must retain Fixed policy until resources commit");
-    for (const auto refresh : {std::optional<uint32_t>{60},
-            std::optional<uint32_t>{144}, std::optional<uint32_t>{0},
-            std::optional<uint32_t>{}}) {
-        auto committed = pendingGrowth.appliedProfile;
-        applyFrameGenerationResourceProfile(
-            committed, adaptiveAfterGrowth, adaptiveAfterGrowth, refresh
-        );
-        const auto target = refresh && *refresh ? *refresh : 120U;
-        expect(committed.adaptive && committed.target_fps == target &&
-                generationSchedulerPolicy(committed)->targetFps == target,
-            "Private commit must resolve the new Adaptive policy from current refresh");
-        committed.adaptive_auto_base_fps_cap = true;
-        expect(effectiveBaseFpsCap(committed) == target / 2.0,
-            "Private commit must align Steady caps with the resolved target");
-    }
-    auto latestTarget = adaptiveAfterGrowth;
-    latestTarget.target_fps = 165;
-    latestTarget.adaptive_target_refresh_rate = false;
-    auto liveWhilePreparing = pendingGrowth.appliedProfile;
-    liveWhilePreparing.adaptive_target_refresh_rate = false;
-    liveWhilePreparing.base_fps_cap = 40;
-    applyFrameGenerationResourceProfile(
-        liveWhilePreparing, adaptiveAfterGrowth, latestTarget, 60
-    );
-    expect(liveWhilePreparing.target_fps == 165 &&
-            !liveWhilePreparing.adaptive_target_refresh_rate &&
-            liveWhilePreparing.base_fps_cap == 40,
-        "Resource commit must preserve newer live edits and use the latest fallback");
-    latestTarget.adaptive_target_refresh_rate = true;
-    liveWhilePreparing.adaptive_target_refresh_rate = true;
-    applyFrameGenerationResourceProfile(
-        liveWhilePreparing, fixedBeforeGrowth, latestTarget, 60
-    );
-    expect(!liveWhilePreparing.adaptive && liveWhilePreparing.target_fps == 165,
-        "A private commit back to Fixed must restore the latest saved fallback");
-
-    auto fractionalPacing = adaptiveProfile();
-    fractionalPacing.frame_generation_provisioned = true;
-    for (const bool smooth : {false, true}) {
-        fractionalPacing.adaptive_stable_cadence = smooth;
-        expect(baseCapPacesOutputs(fractionalPacing, 60.0, true),
-            "Fractional source-cap slack must be usable with either Smooth Cadence setting");
-        fractionalPacing.adaptive = false;
-        expect(!baseCapPacesOutputs(fractionalPacing, 60.0, true),
-            "uncapped Fixed must retain its original source pacing");
-        fractionalPacing.adaptive = true;
-        fractionalPacing.adaptive_auto_base_fps_cap = true;
-        expect(!baseCapPacesOutputs(fractionalPacing, 45.0, true) &&
-                !baseCapPacesOutputs(fractionalPacing, 45.0, true, 90) &&
-                !baseCapPacesOutputs(fractionalPacing, 45.0, true, 60),
-            "automatic caps must preserve target-matched FIFO and unknown-refresh pacing");
-        expect(baseCapPacesOutputs(fractionalPacing, 45.0, true, 120),
-            "below-refresh automatic caps must space their existing generated outputs");
-        expect(baseCapPacesOutputs(fractionalPacing, 45.0, true, 90, true),
-            "compositor-owned timing must prepare inside a target-matched automatic cap");
-        expect(!baseCapPacesOutputs(fractionalPacing, 45.0, false, 90, true) &&
-                !baseCapPacesOutputs(fractionalPacing, 45.0, true, {}, true) &&
-                !baseCapPacesOutputs(fractionalPacing, 45.0, true, 60, true),
-            "timed preparation bypassed transport, refresh or output-ceiling guards");
-        fractionalPacing.adaptive_auto_base_fps_cap = false;
-    }
-    expect(!baseCapPacesOutputs(fractionalPacing, 60.0, false) &&
-            !baseCapPacesOutputs(fractionalPacing, 0.0, true) &&
-            !baseCapPacesOutputs(fractionalPacing, 90.0, true) &&
-            !baseCapPacesOutputs(fractionalPacing, 120.0, true),
-        "Fractional output pacing must not invent a source cap or override another transport");
-    fractionalPacing.frame_generation_enabled = false;
-    expect(!baseCapPacesOutputs(fractionalPacing, 60.0, true),
-        "disabled generation must not defer its source cap");
-    fractionalPacing.frame_generation_enabled = true;
-    fractionalPacing.frame_generation_provisioned = false;
-    expect(!baseCapPacesOutputs(fractionalPacing, 60.0, true),
-        "unprovisioned generation must not defer its source cap");
-    auto cappedFixedPacing = adaptiveProfile();
+    auto cappedFixedPacing = fixedProfile();
     cappedFixedPacing.frame_generation_provisioned = true;
-    cappedFixedPacing.adaptive = false;
     for (const bool smooth : {false, true}) {
         cappedFixedPacing.adaptive_stable_cadence = smooth;
         for (const int multiplier : {2, 3, 4, 5}) {
             cappedFixedPacing.multiplier = multiplier;
             cappedFixedPacing.base_fps_cap = 120 / multiplier;
-            for (const int target : {30, 120, 240}) {
-                cappedFixedPacing.target_fps = target;
-                expect(baseCapPacesOutputs(cappedFixedPacing,
-                        cappedFixedPacing.base_fps_cap, true, 120),
-                    "capped Fixed output pacing must not depend on the Adaptive target");
-            }
+            expect(baseCapPacesOutputs(cappedFixedPacing,
+                    cappedFixedPacing.base_fps_cap, true, 120),
+                "capped Fixed output pacing must follow the saved cap and refresh");
         }
     }
     cappedFixedPacing.multiplier = 2;
@@ -220,15 +65,6 @@ int main() {
                 !fixedReadyOutputPacingEligible(direct, true, true, false, true) &&
                 !fixedReadyOutputPacingEligible(direct, true, false, true, true),
             "detached spacing replaced an ineligible transport, explicit timing or recovery");
-        direct.adaptive_stable_cadence = true;
-        direct.adaptive = true;
-        expect(!fixedReadyOutputPacingEligible(direct, true, false, false), "Fixed pacing replaced Adaptive");
-        expect(!fixedReadyOutputPacingEligible(direct, true, false, false, true), "detached pacing replaced Adaptive");
-        direct.adaptive = false;
-        direct.dynamic_cadence_recovery = true;
-        expect(!fixedReadyOutputPacingEligible(direct, true, false, false), "Fixed pacing replaced cadence recovery");
-        expect(!fixedReadyOutputPacingEligible(direct, true, false, false, true), "detached pacing replaced cadence recovery");
-        direct.dynamic_cadence_recovery = false;
         direct.frame_generation_enabled = false;
         expect(!fixedReadyOutputPacingEligible(direct, true, false, false), "generation Off added output waits");
         expect(!fixedReadyOutputPacingEligible(direct, true, false, false, true), "generation Off added detached pacing");
@@ -260,7 +96,7 @@ int main() {
                 std::optional<RealFramePacer::OutputBatch> batch;
                 bool capOwned = false;
                 if (deadline > arrival && baseCapPacesOutputs(
-                        native, cap, true, {}, false, true)) {
+                        native, cap, true, {}, true)) {
                     batch = pacer.scheduleOutputs(arrival + 100us, deadline,
                         2.0 * cap, 2, false, true);
                     capOwned = batch.has_value();
@@ -284,43 +120,33 @@ int main() {
         if (cap == 60)
             expect(capBatchSeen && readyAfterCap, "binding cap failed to take over and release output ownership");
     }
-    expect(baseCapPacesOutputs(cappedFixedPacing, 30., true, {}, false, true) &&
-            baseCapPacesOutputs(cappedFixedPacing, 30., true, 50, false, true),
+    expect(baseCapPacesOutputs(cappedFixedPacing, 30., true, {}, true) &&
+            baseCapPacesOutputs(cappedFixedPacing, 30., true, 50, true),
         "VSync-off Fixed output spacing must not depend on a refresh ceiling");
     for (const bool smooth : {false, true}) {
         auto native = cappedFixedPacing;
         native.adaptive_stable_cadence = smooth;
-        expect(baseCapPacesOutputs(native, 30., true, {}, false, false, true),
+        expect(baseCapPacesOutputs(native, 30., true, {}, false, true),
             "Native FIFO must prepare within the cap with Smooth Cadence on or off");
         for (const uint32_t multiplier : {2U, 3U, 4U, 5U}) {
             native.multiplier = multiplier;
-            expect(baseCapPacesOutputs(native, 30., true, {}, false, false, true, true),
+            expect(baseCapPacesOutputs(native, 30., true, {}, false, true, true),
                 "caller real-frame targets must not turn an active native Fixed cap into generated/real bursts");
         }
         native.base_fps_cap = 0;
-        expect(!baseCapPacesOutputs(native, 30., true, {}, false, false, true, true),
+        expect(!baseCapPacesOutputs(native, 30., true, {}, false, true, true),
             "caller timing must not invent an unconfigured source cap");
         native.base_fps_cap = cappedFixedPacing.base_fps_cap;
-        native.dynamic_cadence_recovery = true;
-        expect(!baseCapPacesOutputs(native, 30., true, {}, false, false, true, true),
-            "caller-timed Fixed recovery must retain its own clock");
-        native.dynamic_cadence_recovery = false;
-        expect(!baseCapPacesOutputs(native, 30., false, {}, false, false, true) &&
-                !baseCapPacesOutputs(native, 0., true, {}, false, false, true),
+        expect(!baseCapPacesOutputs(native, 30., false, {}, false, true) &&
+                !baseCapPacesOutputs(native, 0., true, {}, false, true),
             "Native FIFO cap preparation must preserve timing ownership and require a cap");
     }
-    expect(!baseCapPacesOutputs(cappedFixedPacing, 30., false, {}, false, true) &&
-            !baseCapPacesOutputs(cappedFixedPacing, 0., true, {}, false, true),
+    expect(!baseCapPacesOutputs(cappedFixedPacing, 30., false, {}, true) &&
+            !baseCapPacesOutputs(cappedFixedPacing, 0., true, {}, true),
         "VSync-off pacing must preserve application timing and require a source cap");
-    auto directAdaptive = adaptiveProfile();
-    directAdaptive.frame_generation_provisioned = true;
-    directAdaptive.adaptive_auto_base_fps_cap = true;
-    expect(baseCapPacesOutputs(directAdaptive, 45., true, {}, false, true),
-        "VSync-off Adaptive automatic caps must space outputs without compositor feedback");
-    expect(!baseCapPacesOutputs(cappedFixedPacing, 30., true, {}, false, true, false, true) &&
-            !baseCapPacesOutputs(cappedFixedPacing, 30., true, 120, true, false, false, true) &&
-            !baseCapPacesOutputs(directAdaptive, 45., true, 120, false, false, true, true),
-        "caller timing must retain non-FIFO, compositor and Adaptive output ownership");
+    expect(!baseCapPacesOutputs(cappedFixedPacing, 30., true, {}, false, false, true) &&
+            !baseCapPacesOutputs(cappedFixedPacing, 30., true, 120, false, false, true),
+        "caller timing must retain non-FIFO and compositor output ownership");
     expect(baseCapPacesOutputs(cappedFixedPacing, 30., true, 120),
         "below-refresh Fixed must use its existing source-cap slack");
     expect(!baseCapPacesOutputs(cappedFixedPacing, 30., false, 120) &&
@@ -339,143 +165,78 @@ int main() {
             "unsupported Fixed batches must not acquire output pacing");
     }
     cappedFixedPacing.multiplier = 2;
-    cappedFixedPacing.dynamic_cadence_recovery = true;
-    expect(!baseCapPacesOutputs(cappedFixedPacing, 30., true, 120),
-        "Fixed recovery must retain its own timing boundary");
-    cappedFixedPacing.dynamic_cadence_recovery = false;
     cappedFixedPacing.frame_generation_enabled = false;
     expect(!baseCapPacesOutputs(cappedFixedPacing, 30., true, 120),
         "disabled Fixed generation must not acquire output pacing");
     cappedFixedPacing.frame_generation_enabled = true;
+
     auto bridgeProfile = ls::GameConf{};
     bridgeProfile.frame_generation_provisioned = true;
     bridgeProfile.frame_generation_enabled = true;
-    bridgeProfile.adaptive = true;
-    bridgeProfile.target_fps = 90;
-    expect(gamescopeBridgeOutputPolicy(bridgeProfile, 120).outputFps == 90 &&
-            gamescopeBridgeOutputPolicy(bridgeProfile, 60).outputFps == 60 &&
+    bridgeProfile.multiplier = 2;
+    bridgeProfile.base_fps_cap = 0;
+    expect(gamescopeBridgeOutputPolicy(bridgeProfile, 120).outputFps == 120 &&
             gamescopeBridgeOutputPolicy(bridgeProfile, 120).generatedTimeline,
-        "bridge must respect Adaptive target and display ceiling");
-    bridgeProfile.adaptive_auto_base_fps_cap = false;
-    bridgeProfile.adaptive_fractional_real_frame_priority =
-        ls::AdaptiveFractionalRealFramePriority::Auto;
-    bridgeProfile.base_fps_cap = 0;
-    AdaptiveSchedulerSnapshot nativeScheduler{
-        .phase = AdaptiveSchedulerPhase::NearTargetNative,
-        .nearTargetNativePreference = true,
-    };
-    const auto nativeOutput = gamescopeBridgeOutputPolicy(
-        bridgeProfile, 120, nativeScheduler);
-    expect(nativeOutput.outputFps == 120 && !nativeOutput.generatedTimeline &&
-            gamescopeBridgeOutputPolicy(bridgeProfile, 60, nativeScheduler).outputFps == 60,
-        "qualified native Automatic must release target and generated lead within refresh");
-    for (const auto phase : {AdaptiveSchedulerPhase::Uninitialized,
-            AdaptiveSchedulerPhase::HistoryWarmup, AdaptiveSchedulerPhase::Stabilizing,
-            AdaptiveSchedulerPhase::DiscontinuityRecovery,
-            AdaptiveSchedulerPhase::RescueMeasurement, AdaptiveSchedulerPhase::RearmCooldown,
-            AdaptiveSchedulerPhase::RampEvaluation, AdaptiveSchedulerPhase::StableCadence,
-            AdaptiveSchedulerPhase::Active, AdaptiveSchedulerPhase::NativeCadenceProbe}) {
-        auto temporaryNative = nativeScheduler;
-        temporaryNative.phase = phase;
-        const auto output = gamescopeBridgeOutputPolicy(bridgeProfile, 120, temporaryNative);
-        expect(output.outputFps == 90 && output.generatedTimeline,
-            "unqualified or temporary native turns must retain generated timing");
-    }
-    for (const auto priority : {ls::AdaptiveFractionalRealFramePriority::Low,
-            ls::AdaptiveFractionalRealFramePriority::Medium,
-            ls::AdaptiveFractionalRealFramePriority::High,
-            ls::AdaptiveFractionalRealFramePriority::VeryHigh}) {
-        bridgeProfile.adaptive_fractional_real_frame_priority = priority;
-        const auto output = gamescopeBridgeOutputPolicy(bridgeProfile, 120, nativeScheduler);
-        expect(output.outputFps == 90 && output.generatedTimeline,
-            "native preference must not override explicit Fractional priorities");
-    }
-    bridgeProfile.adaptive_fractional_real_frame_priority =
-        ls::AdaptiveFractionalRealFramePriority::Auto;
-    for (const uint32_t cap : {90U, 100U, 144U}) {
-        bridgeProfile.base_fps_cap = cap;
-        const auto output = gamescopeBridgeOutputPolicy(bridgeProfile, 120, nativeScheduler);
-        expect(output.outputFps == 120 && !output.generatedTimeline &&
-                effectiveBaseFpsCap(bridgeProfile, nativeScheduler) == cap,
-            "target-capable manual caps must release native output timing without releasing the cap");
-        const auto unqualified = gamescopeBridgeOutputPolicy(bridgeProfile, 120);
-        expect(unqualified.outputFps == 90 && unqualified.generatedTimeline,
-            "a high manual cap must still require qualified native cadence");
-    }
-    for (const uint32_t cap : {45U, 89U}) {
-        bridgeProfile.base_fps_cap = cap;
-        const auto output = gamescopeBridgeOutputPolicy(bridgeProfile, 120, nativeScheduler);
-        expect(output.outputFps == 90 && output.generatedTimeline,
-            "a cap changed below target must restore generated timing despite an old native snapshot");
-    }
-    bridgeProfile.base_fps_cap = 0;
-    bridgeProfile.adaptive_auto_base_fps_cap = true;
-    expect(gamescopeBridgeOutputPolicy(bridgeProfile, 120, nativeScheduler).outputFps == 90,
-        "Steady Adaptive must retain its existing output policy");
-    bridgeProfile.adaptive = false;
-    bridgeProfile.multiplier = 3;
+        "uncapped Fixed bridge must follow the display refresh on the generated timeline");
     bridgeProfile.base_fps_cap = 30;
-    expect(gamescopeBridgeOutputPolicy(bridgeProfile, 120, nativeScheduler).outputFps == 90,
+    expect(gamescopeBridgeOutputPolicy(bridgeProfile, 120).outputFps == 60 &&
+            gamescopeBridgeOutputPolicy(bridgeProfile, 120).generatedTimeline,
+        "a Fixed 2x cap must bound the bridge output to cap times multiplier");
+    expect(gamescopeBridgeOutputPolicy(bridgeProfile, 60).outputFps == 60,
+        "a Fixed bridge output must not exceed the display refresh");
+    bridgeProfile.multiplier = 3;
+    expect(gamescopeBridgeOutputPolicy(bridgeProfile, 120).outputFps == 90,
         "bridge must retain exact Fixed below-refresh output");
+    bridgeProfile.multiplier = 2;
     bridgeProfile.base_fps_cap = 0;
     expect(gamescopeBridgeOutputPolicy(bridgeProfile, 144).outputFps == 144,
-        "uncapped Fixed must follow refresh without borrowing Adaptive target");
+        "uncapped Fixed must follow refresh");
     bridgeProfile.frame_generation_enabled = false;
-    bridgeProfile.adaptive = true;
-    bridgeProfile.target_fps = 30;
     expect(gamescopeBridgeOutputPolicy(bridgeProfile, 120).outputFps == 120 &&
             !gamescopeBridgeOutputPolicy(bridgeProfile, 120).generatedTimeline,
         "live disabled generation must release its output ceiling");
     bridgeProfile.frame_generation_enabled = true;
-    // The existing source-cap transition must rebuild native eligibility in
-    // both directions; no separate live-update or cap owner is needed.
-    auto belowTargetCap = adaptiveProfile();
+
+    // The existing source-cap transition must apply in both directions while
+    // generation is effective, and a dormant cap edit must not act.
+    auto belowTargetCap = fixedProfile();
     belowTargetCap.frame_generation_provisioned = true;
-    belowTargetCap.target_fps = 60;
     belowTargetCap.base_fps_cap = 30;
     auto aboveTargetCap = belowTargetCap;
     aboveTargetCap.base_fps_cap = 90;
-    for (const bool allowNative : {false, true}) {
+    for (const bool raise : {false, true}) {
         const auto changedCap = planProfileUpdate(
-            allowNative ? belowTargetCap : aboveTargetCap,
-            allowNative ? aboveTargetCap : belowTargetCap, 4, true);
+            raise ? belowTargetCap : aboveTargetCap,
+            raise ? aboveTargetCap : belowTargetCap, 4, true);
         expect(changedCap.decision.baseFpsCapChanged &&
-                generationSchedulerPolicy(changedCap.appliedProfile)->
-                    qualifyTargetNativeCadence == allowNative,
-            "live cap changes must rebuild the scheduler with the new native eligibility");
+                changedCap.decision.action == ProfileUpdateAction::ApplyLive,
+            "live cap changes must reset the Fixed presentation timing");
     }
     belowTargetCap.frame_generation_enabled = false;
     aboveTargetCap.frame_generation_enabled = false;
-    const auto dormantNativeOwnership = planProfileUpdate(
+    const auto dormantCapOwnership = planProfileUpdate(
         belowTargetCap, aboveTargetCap, 4, true);
-    expect(dormantNativeOwnership.decision.action == ProfileUpdateAction::NoRuntimeChange,
-        "disabled generation must leave native qualification edits dormant");
+    expect(dormantCapOwnership.decision.action == ProfileUpdateAction::NoRuntimeChange,
+        "disabled generation must leave cap edits dormant");
 
     expect(!profileUpdateInvalidatesTransientGenerationRecovery({}) &&
             profileUpdateInvalidatesTransientGenerationRecovery({
                 .generationPolicyChanged = true,
             }) &&
             profileUpdateInvalidatesTransientGenerationRecovery({
-                .generationModeChanged = true,
-            }) &&
-            profileUpdateInvalidatesTransientGenerationRecovery({
                 .fixedMultiplierChanged = true,
             }) &&
             profileUpdateInvalidatesTransientGenerationRecovery({
                 .baseFpsCapChanged = true,
-            }) &&
-            !profileUpdateInvalidatesTransientGenerationRecovery({
-                .dynamicCadenceProbeIntervalChanged = true,
             }),
         "Only workload-shaping live policy changes must invalidate transient recovery");
 
-    const auto current = adaptiveProfile();
+    const auto current = fixedProfile();
     auto staticRequest = current;
     staticRequest.gpu = "1002:744c";
     staticRequest.ultra_performance = true;
     staticRequest.flow_scale = ls::GameConfDefaults::ultraPerformanceFlowScale;
     staticRequest.performance_mode = true;
-    staticRequest.target_fps = 120;
     staticRequest.frame_generation_provisioned = false;
     staticRequest.swapchain_image_count_compatibility = true;
     const auto staticProjection = projectProcessStaticProfileForLiveUpdate(current, staticRequest, current.frame_generation_provisioned, current.swapchain_image_count_compatibility);
@@ -494,8 +255,7 @@ int main() {
                 current.performance_mode &&
             staticProjection.runtimeProfile
                 .swapchain_image_count_compatibility ==
-                    current.swapchain_image_count_compatibility &&
-            staticProjection.runtimeProfile.target_fps == 120,
+                    current.swapchain_image_count_compatibility,
         "Process-static projection must retain construction fields and apply live policy");
     auto scalingOnlyCurrent = current;
     scalingOnlyCurrent.frame_generation_enabled = false;
@@ -533,211 +293,22 @@ int main() {
                 std::nullopt, requestedBackendProfile),
         "An applied or not-yet-constructed profile was marked pending");
 
-
-    const auto adaptiveSchedulerPolicy = generationSchedulerPolicy(current);
-    expect(adaptiveSchedulerPolicy &&
-            adaptiveSchedulerPolicy->targetFps == current.target_fps &&
-            adaptiveSchedulerPolicy->maximumMultiplier ==
-                current.adaptive_max_multiplier &&
-            adaptiveSchedulerPolicy->nearTargetNativePreference,
-        "Adaptive must retain its configured target when refresh is available");
-
-    auto fractionalSmooth = current;
-    fractionalSmooth.adaptive_auto_base_fps_cap = false;
-    fractionalSmooth.adaptive_stable_cadence = true;
-    const auto fractionalSmoothPolicy = generationSchedulerPolicy(fractionalSmooth);
-    expect(fractionalSmoothPolicy && fractionalSmoothPolicy->stableCadence,
-        "Fractional Adaptive must pass Smooth Cadence into its scheduler");
-
-    auto steadyPacing = current;
-    steadyPacing.target_fps = 120;
-    steadyPacing.adaptive_auto_base_fps_cap = true;
-    steadyPacing.adaptive_stable_cadence = true;
-    AdaptiveSchedulerSnapshot acceptedTwoX{
-        .phase = AdaptiveSchedulerPhase::StableCadence,
-        .generationLimit = 1,
-        .validatedGenerationLimit = 1,
-        .stableCadenceLimit = 1,
-        .stableCadenceEvaluationActive = false,
-        .smoothedBaseFps = 60.0,
-    };
-    expect(smoothCadencePacerHandoffGenerationLimit(
-            steadyPacing, true, false, 120, acceptedTwoX) == 1,
-        "accepted target-matched Steady 2x did not hand pacing to ordered FIFO");
-    expect(!smoothCadencePacerHandoffGenerationLimit(
-            steadyPacing, true, false, 90, acceptedTwoX),
-        "target-mismatched refresh incorrectly bypassed the Steady base cap");
-    acceptedTwoX.stableCadenceEvaluationActive = true;
-    expect(!smoothCadencePacerHandoffGenerationLimit(
-            steadyPacing, true, false, 120, acceptedTwoX),
-        "unproven Smooth Cadence evaluation bypassed the Steady base cap");
-    acceptedTwoX.stableCadenceEvaluationActive = false;
-    expect(!smoothCadencePacerHandoffGenerationLimit(
-            steadyPacing, true, true, 120, acceptedTwoX),
-        "ordered-acquire recovery did not restore the Steady base cap");
-    expect(!smoothCadencePacerHandoffGenerationLimit(
-            steadyPacing, false, false, 120, acceptedTwoX),
-        "non-ordered transport received an ordered-FIFO pacing handoff");
-    acceptedTwoX.smoothedBaseFps = 62.0;
-    expect(!smoothCadencePacerHandoffGenerationLimit(
-            steadyPacing, true, false, 120, acceptedTwoX),
-        "Steady pacing handoff remained active outside its target window");
-    expect(smoothCadencePacerHandoffGenerationLimit(
-            steadyPacing, true, false, 120, acceptedTwoX, 1) == 1,
-        "fixed-refresh handoff ignored its retained scheduler qualification");
-    {
-        using namespace std::chrono_literals;
-        // Replay both initial turnover and later estimator jitter. Entry
-        // remains strict; accepted cadence belongs to the scheduler's
-        // sustained exit policy, not a second instantaneous threshold.
-        SmoothCadencePacerHandoff handoff;
-        const auto start = SmoothCadencePacerHandoff::TimePoint{10s};
-        auto snapshot = acceptedTwoX;
-        const auto step = [&](auto elapsed, double fps, bool pressure = false) {
-            snapshot.smoothedBaseFps = fps;
-            const auto now = start + elapsed;
-            return handoff.update(now, smoothCadencePacerHandoffGenerationLimit(
-                steadyPacing, true, pressure, 120, snapshot,
-                handoff.activeGenerationLimit()));
-        };
-        expect(!step(0ms, 68.5929).active,
-            "handoff retention admitted an unqualified initial cadence");
-        expect(step(1ms, 60).active && step(17ms, 68.5929).active &&
-                step(100ms, 62.36).active && step(251ms, 60).active &&
-                step(1001ms, 60).active,
-            "handoff queue turnover caused a spurious minute-long cooldown");
-        expect(step(1100ms, 58.3101).active && step(2100ms, 60).active,
-            "post-settling jitter invented a failed FIFO lifetime");
-        snapshot.phase = AdaptiveSchedulerPhase::Active;
-        snapshot.stableCadenceLimit.reset();
-        expect(!step(2200ms, 54).active,
-            "lost scheduler qualification did not release fixed-refresh FIFO");
-        snapshot.phase = AdaptiveSchedulerPhase::StableCadence;
-        snapshot.stableCadenceLimit = 1;
-        expect(!step(2300ms, 60).active,
-            "a genuine failed handoff bypassed its retry delay");
-        handoff.reset();
-        expect(step(0ms, 60).active && !step(10ms, 60, true).active,
-            "cadence retention delayed the acquire-recovery safety exit");
-        handoff.reset();
-        expect(step(0ms, 60).active, "handoff did not restart after reset");
-        snapshot.stableCadenceEvaluationActive = true;
-        expect(!step(10ms, 60).active,
-            "cadence retention bypassed an active scheduler probe");
-    }
-    acceptedTwoX.smoothedBaseFps = 60.0;
-    steadyPacing.adaptive_auto_base_fps_cap = false;
-    expect(!smoothCadencePacerHandoffGenerationLimit(
-            steadyPacing, true, false, 120, acceptedTwoX),
-        "Fractional Adaptive incorrectly bypassed a nonexistent Steady cap");
-    steadyPacing.adaptive_auto_base_fps_cap = true;
-    expect(smoothCadenceBaseCapEligible(
-            steadyPacing, true, false, 120),
-        "target-matched ordered Steady mode did not enable integer-cap qualification");
-    expect(!smoothCadenceBaseCapEligible(
-            steadyPacing, false, false, 120),
-        "non-ordered transport enabled the Steady integer-cap ladder");
-    expect(!smoothCadenceBaseCapEligible(
-            steadyPacing, true, true, 120),
-        "ordered-acquire recovery did not suspend the integer-cap ladder");
-    expect(!smoothCadenceBaseCapEligible(
-            steadyPacing, true, false, 90),
-        "target-mismatched refresh enabled the Steady integer-cap ladder");
-    steadyPacing.adaptive_stable_cadence = false;
-    expect(!smoothCadenceBaseCapEligible(
-            steadyPacing, true, false, 120),
-        "Fractional policy enabled the Steady integer-cap ladder");
-    steadyPacing.adaptive_stable_cadence = true;
-
-
     auto next = current;
-    next.target_fps = 120;
-    auto decision = classifyProfileUpdate(current, next, 3, true);
-    expect(decision.action == ProfileUpdateAction::ApplyLive,
-        "Adaptive target changes must apply without rebuilding GPU resources");
-    expect(decision.generationPolicyChanged &&
-            profileUpdateInvalidatesTransientGenerationRecovery(decision),
-        "Adaptive target changes must reset scheduler policy and old recovery");
-
-    next = current;
     next.adaptive_stable_cadence = true;
-    decision = classifyProfileUpdate(current, next, 3, true);
+    auto decision = classifyProfileUpdate(current, next, 3, true);
     expect(decision.action == ProfileUpdateAction::ApplyLive &&
             profileUpdateInvalidatesTransientGenerationRecovery(decision),
         "Smooth Cadence must start a fresh recovery episode");
 
     next = current;
-    next.dynamic_cadence_recovery = true;
+    next.multiplier = 3;
     decision = classifyProfileUpdate(current, next, 3, true);
     expect(decision.action == ProfileUpdateAction::ApplyLive &&
-            decision.generationPolicyChanged &&
+            decision.fixedMultiplierChanged &&
             profileUpdateInvalidatesTransientGenerationRecovery(decision),
-        "Adaptive Dynamic Cadence Recovery must start a fresh recovery episode");
-    expect(dynamicCadenceRecoveryEnabled(next),
-        "An uncapped Adaptive profile must allow dynamic cadence recovery");
-    next.base_fps_cap = 30;
-    expect(!dynamicCadenceRecoveryEnabled(next),
-        "A base FPS cap must suppress native-cadence probes");
-    next.base_fps_cap = 0;
-    next.adaptive_auto_base_fps_cap = true;
-    expect(!dynamicCadenceRecoveryEnabled(next),
-        "Adaptive auto-cap must suppress native-cadence probes");
-    next.adaptive_auto_base_fps_cap = false;
-    next.adaptive = false;
-    expect(dynamicCadenceRecoveryEnabled(next),
-        "Fixed mode must allow global cadence recovery");
-
-    auto fixedWithoutRecovery = current;
-    fixedWithoutRecovery.adaptive = false;
-    auto fixedWithRecovery = fixedWithoutRecovery;
-    fixedWithRecovery.dynamic_cadence_recovery = true;
-    decision = classifyProfileUpdate(
-        fixedWithoutRecovery, fixedWithRecovery, 3, true
-    );
-    expect(decision.action == ProfileUpdateAction::ApplyLive &&
-            decision.generationPolicyChanged &&
-            profileUpdateInvalidatesTransientGenerationRecovery(decision),
-        "Fixed Dynamic Cadence Recovery must start a fresh recovery episode");
-
-    auto fasterRecovery = next;
-    fasterRecovery.multiplier = 2;
-    fasterRecovery.dynamic_cadence_probe_interval_seconds = 0.25F;
-    next.multiplier = 2;
-    decision = classifyProfileUpdate(next, fasterRecovery, 3, true);
-    expect(decision.action == ProfileUpdateAction::ApplyLive &&
-            decision.dynamicCadenceProbeIntervalChanged &&
-            !decision.generationPolicyChanged,
-        "Probe-interval changes must apply live without resetting policy");
-
-    auto dormantRecoveryInterval = current;
-    dormantRecoveryInterval.dynamic_cadence_probe_interval_seconds = 3;
-    decision = classifyProfileUpdate(current, dormantRecoveryInterval, 3, true);
-    expect(decision.action == ProfileUpdateAction::NoRuntimeChange &&
-            !decision.dynamicCadenceProbeIntervalChanged,
-        "A dormant probe interval must remain saved without disturbing runtime");
-
-    next = current;
-    next.adaptive_max_multiplier = 4;
-    decision = classifyProfileUpdate(current, next, 3, true);
-    expect(decision.action == ProfileUpdateAction::ApplyLive,
-        "Adaptive 4x must use the capacity already reserved by Adaptive");
-    decision = classifyProfileUpdate(current, next, 2, true);
-    expect(decision.action == ProfileUpdateAction::DeferUntilSwapchainRecreation &&
-            decision.generatedFrameCapacityExceeded &&
-            liveProfileResourceRecreationAvailable(decision, true),
-        "Adaptive capacity growth must request recreation when images are unavailable");
-    expect(!liveProfileResourceRecreationAvailable(decision, false),
-        "Adaptive capacity growth must require retained frame-generation resources");
-
-    next = current;
-    next.adaptive_max_multiplier = 5;
-    decision = classifyProfileUpdate(current, next, 4, true);
-    expect(decision.action == ProfileUpdateAction::ApplyLive,
-        "Adaptive 5x must use four reserved generated-frame outputs");
-    decision = classifyProfileUpdate(current, next, 3, true);
-    expect(decision.action == ProfileUpdateAction::DeferUntilSwapchainRecreation &&
-            decision.generatedFrameCapacityExceeded,
-        "Adaptive 5x must recreate when its fourth generated output is unavailable");
+        "Fixed multiplier changes must apply live with a fresh recovery episode");
+    expect(generatedFrameCapacityForActivePolicy(next) == 2,
+        "Fixed 3x active capacity must be exactly two generated outputs");
 
     next = current;
     next.base_fps_cap = 60;
@@ -746,149 +317,6 @@ int main() {
         "Base FPS cap changes must not rebuild GPU resources");
     expect(decision.baseFpsCapChanged,
         "Base FPS cap changes must reset presentation timing");
-
-    for (const auto target : {90U, 120U, 144U}) {
-        for (const bool smooth : {false, true}) {
-            auto fractional = adaptiveProfile();
-            fractional.target_fps = target;
-            fractional.base_fps_cap = target / 2;
-            fractional.adaptive_stable_cadence = smooth;
-            auto steady = fractional;
-            steady.adaptive_auto_base_fps_cap = true;
-            expect(effectiveBaseFpsCap(fractional) == effectiveBaseFpsCap(steady),
-                "Live cadence-style regression must keep the numeric cap unchanged");
-            for (const bool toSteady : {true, false}) {
-                const auto& before = toSteady ? fractional : steady;
-                const auto& after = toSteady ? steady : fractional;
-                const auto plan = planProfileUpdate(before, after, 3, true);
-                expect(plan.decision.action == ProfileUpdateAction::ApplyLive &&
-                        plan.decision.generationPolicyChanged &&
-                        !plan.decision.baseFpsCapChanged &&
-                        !plan.decision.swapchainRecreationDeferred &&
-                        !plan.decision.processRestartDeferred &&
-                        profileUpdateInvalidatesTransientGenerationRecovery(
-                            plan.decision) &&
-                        plan.appliedProfile.adaptive_auto_base_fps_cap == toSteady,
-                    "Equal-cap Fractional/Steady switches must reset live scheduler policy and recovery");
-                expect(planProfileUpdate(plan.appliedProfile, after, 3, true)
-                        .decision.action == ProfileUpdateAction::NoRuntimeChange,
-                    "An applied cadence-style switch must not repeatedly reset policy");
-            }
-            fractional.frame_generation_enabled = false;
-            steady.frame_generation_enabled = false;
-            for (const bool toSteady : {true, false}) {
-                const auto& before = toSteady ? fractional : steady;
-                const auto& after = toSteady ? steady : fractional;
-                const auto dormant = planProfileUpdate(before, after, 3, true);
-                expect(dormant.decision.action == ProfileUpdateAction::NoRuntimeChange &&
-                        dormant.appliedProfile.adaptive_auto_base_fps_cap == toSteady,
-                    "Disabled generation must save the cadence style without resetting policy");
-            }
-            fractional.frame_generation_enabled = true;
-            steady.frame_generation_enabled = true;
-            fractional.adaptive = false;
-            steady.adaptive = false;
-            expect(planProfileUpdate(fractional, steady, 3, true)
-                    .decision.action == ProfileUpdateAction::NoRuntimeChange,
-                "Fixed must keep the saved Adaptive cadence style dormant");
-        }
-    }
-
-    next = current;
-    next.adaptive_auto_base_fps_cap = true;
-    decision = classifyProfileUpdate(current, next, 3, true);
-    expect(decision.action == ProfileUpdateAction::ApplyLive,
-        "Adaptive auto-cap changes must apply without rebuilding resources");
-    expect(decision.baseFpsCapChanged &&
-            profileUpdateInvalidatesTransientGenerationRecovery(decision),
-        "Adaptive Steady mode must reset presentation timing and old recovery");
-    expect(effectiveBaseFpsCap(next) == 45.0,
-        "Adaptive auto-cap did not derive half of the 90 FPS target");
-    const AdaptiveSchedulerSnapshot collapsedAutomaticCap{
-        .automaticBaseCapSuppressed = true,
-    };
-    expect(effectiveBaseFpsCap(next, collapsedAutomaticCap) == 0.0,
-        "A proven Ordered-SDR collapse did not release the automatic cap");
-
-    auto overlappingCaps = next;
-    overlappingCaps.base_fps_cap = 30;
-    expect(effectiveBaseFpsCap(overlappingCaps) == 45.0,
-        "Adaptive auto-cap must take priority over the saved manual cap");
-
-    auto resumedManualCap = overlappingCaps;
-    resumedManualCap.adaptive_auto_base_fps_cap = false;
-    expect(effectiveBaseFpsCap(resumedManualCap) == 30.0,
-        "Disabling Adaptive auto-cap must restore the saved manual cap");
-    expect(effectiveBaseFpsCap(
-                resumedManualCap, collapsedAutomaticCap) == 30.0,
-        "Scheduler headroom incorrectly released an explicit manual cap");
-    decision = classifyProfileUpdate(
-        overlappingCaps, resumedManualCap, 3, true
-    );
-    expect(decision.action == ProfileUpdateAction::ApplyLive &&
-            decision.baseFpsCapChanged,
-        "Restoring the manual cap must reset presentation timing live");
-
-    auto fractionalPriority = resumedManualCap;
-    fractionalPriority.target_fps = 120;
-    fractionalPriority.adaptive_fractional_real_frame_priority =
-        ls::AdaptiveFractionalRealFramePriority::Low;
-    expect(effectiveBaseFpsCap(fractionalPriority) == 72.0,
-        "Low Fractional priority did not select the stable 3:2 ratio");
-    fractionalPriority.adaptive_fractional_real_frame_priority =
-        ls::AdaptiveFractionalRealFramePriority::Medium;
-    expect(effectiveBaseFpsCap(fractionalPriority) == 80.0,
-        "Medium Fractional priority did not select the stable 2:1 ratio");
-    fractionalPriority.adaptive_fractional_real_frame_priority =
-        ls::AdaptiveFractionalRealFramePriority::High;
-    expect(effectiveBaseFpsCap(fractionalPriority) == 90.0,
-        "High Fractional priority did not select the stable 3:1 ratio");
-    fractionalPriority.adaptive_fractional_real_frame_priority =
-        ls::AdaptiveFractionalRealFramePriority::VeryHigh;
-    expect(effectiveBaseFpsCap(fractionalPriority) == 96.0,
-        "Very High Fractional priority did not select the stable 4:1 ratio");
-    expect(fractionalRealFramePriorityActive(fractionalPriority),
-        "An explicit Fractional priority was not recognized as cap owner");
-    decision = classifyProfileUpdate(
-        resumedManualCap, fractionalPriority, 3, true
-    );
-    expect(decision.action == ProfileUpdateAction::ApplyLive &&
-            decision.baseFpsCapChanged,
-        "Fractional priority changes must reset presentation timing live");
-
-    fractionalPriority.adaptive_fractional_real_frame_priority =
-        ls::AdaptiveFractionalRealFramePriority::Auto;
-    expect(!fractionalRealFramePriorityActive(fractionalPriority) &&
-            effectiveBaseFpsCap(fractionalPriority) == 30.0,
-        "Automatic Fractional priority changed today's manual-cap behavior");
-    fractionalPriority.adaptive = false;
-    fractionalPriority.adaptive_fractional_real_frame_priority =
-        ls::AdaptiveFractionalRealFramePriority::VeryHigh;
-    expect(!fractionalRealFramePriorityActive(fractionalPriority) &&
-            effectiveBaseFpsCap(fractionalPriority) == 30.0,
-        "Dormant Fractional priority overrode Fixed mode's manual cap");
-    auto fixedPriorityChange = fractionalPriority;
-    fixedPriorityChange.adaptive_fractional_real_frame_priority =
-        ls::AdaptiveFractionalRealFramePriority::Low;
-    decision = classifyProfileUpdate(
-        fractionalPriority, fixedPriorityChange, 3, true
-    );
-    expect(decision.action == ProfileUpdateAction::NoRuntimeChange,
-        "Dormant Fractional priority triggered a Fixed runtime transition");
-
-    auto oddTarget = next;
-    oddTarget.target_fps = 165;
-    expect(effectiveBaseFpsCap(oddTarget) == 82.5,
-        "Adaptive auto-cap lost a fractional half-target cadence");
-
-    auto fixedAutoCap = next;
-    fixedAutoCap.adaptive = false;
-    fixedAutoCap.base_fps_cap = 30;
-    expect(effectiveBaseFpsCap(fixedAutoCap) == 30.0,
-        "Adaptive auto-cap incorrectly overrode Fixed mode's manual cap");
-    expect(effectiveBaseFpsCap(
-                fixedAutoCap, collapsedAutomaticCap) == 30.0,
-        "Adaptive scheduler headroom incorrectly changed Fixed pacing");
 
     next = current;
     next.frame_generation_provisioned = false;
@@ -972,15 +400,15 @@ int main() {
         "A pending flow-scale change blocked an unrelated live cap");
 
     auto laterLiveChange = mixedDeferred;
-    laterLiveChange.target_fps = 144;
+    laterLiveChange.base_fps_cap = 144;
     mixedPlan = planProfileUpdate(
         mixedPlan.appliedProfile, laterLiveChange, 3, true
     );
     expect(mixedPlan.decision.action == ProfileUpdateAction::ApplyLive &&
             mixedPlan.decision.swapchainRecreationDeferred &&
             mixedPlan.appliedProfile.flow_scale == current.flow_scale &&
-            mixedPlan.appliedProfile.target_fps == 144,
-        "A retained recreation change blocked a later live target update");
+            mixedPlan.appliedProfile.base_fps_cap == 144,
+        "A retained recreation change blocked a later live cap update");
 
     auto mixedDisabled = mixedDeferred;
     mixedDisabled.frame_generation_enabled = false;
@@ -1045,13 +473,13 @@ int main() {
     runningUltra.flow_scale = ls::GameConfDefaults::ultraPerformanceFlowScale;
     runningUltra.performance_mode = true;
     auto updatedRunningUltra = runningUltra;
-    updatedRunningUltra.target_fps = 120;
+    updatedRunningUltra.base_fps_cap = 60;
     decision = classifyProfileUpdate(runningUltra, updatedRunningUltra, 2, true);
     expect(decision.action == ProfileUpdateAction::ApplyLive &&
-            decision.generationPolicyChanged &&
+            decision.baseFpsCapChanged &&
             !decision.processRestartDeferred,
-        "Compatible scheduler changes must remain live inside Ultra Performance");
-    updatedRunningUltra.adaptive_max_multiplier = 4;
+        "Compatible cap changes must remain live inside Ultra Performance");
+    updatedRunningUltra.multiplier = 4;
     decision = classifyProfileUpdate(runningUltra, updatedRunningUltra, 2, true);
     expect(decision.action == ProfileUpdateAction::ApplyLive &&
             decision.swapchainRecreationDeferred &&
@@ -1063,9 +491,7 @@ int main() {
     const auto resourceChangeStarted =
         LiveProfileResourceRecreation::Clock::time_point{};
     auto combinedFixedCurrent = current;
-    combinedFixedCurrent.adaptive = false;
     combinedFixedCurrent.multiplier = 2;
-    combinedFixedCurrent.adaptive_max_multiplier = 2;
 
     auto fixedCapacityOnlyRequest = combinedFixedCurrent;
     fixedCapacityOnlyRequest.multiplier = 3;
@@ -1103,7 +529,7 @@ int main() {
         "Flow Scale and model changes must prepare private resources without marking them active early");
 
     auto capacityRequest = current;
-    capacityRequest.adaptive_max_multiplier = 4;
+    capacityRequest.multiplier = 4;
     resourceRecreation.update(current, capacityRequest, 12,
         resourceChangeStarted + std::chrono::seconds(4));
     expect(resourceRecreation.armed() &&
@@ -1144,84 +570,67 @@ int main() {
         "Profile metadata must not disturb a running context");
 
     auto fixed = current;
-    fixed.adaptive = false;
     fixed.multiplier = 2;
 
-    auto fixedWithDormantFourX = fixed;
-    fixedWithDormantFourX.adaptive_max_multiplier = 4;
-    expect(classifyProfileUpdate(
-            current, fixedWithDormantFourX, 2, true).action ==
-            ProfileUpdateAction::ApplyLive,
-        "Adaptive-to-Fixed must ignore dormant Adaptive capacity growth");
-    expect(generatedFrameCapacityForActivePolicy(fixedWithDormantFourX) == 1,
-        "Fixed 2x active capacity must ignore the dormant Adaptive ceiling");
-
-    auto adaptiveFourX = fixedWithDormantFourX;
-    adaptiveFourX.adaptive = true;
-    expect(classifyProfileUpdate(
-            fixedWithDormantFourX, adaptiveFourX, 2, true).action ==
-            ProfileUpdateAction::DeferUntilSwapchainRecreation,
-        "Fixed-to-Adaptive 4x must recreate when active capacity is unavailable");
-    expect(classifyProfileUpdate(
-            fixedWithDormantFourX, adaptiveFourX, 3, true).action ==
-            ProfileUpdateAction::ApplyLive,
-        "Fixed-to-Adaptive 4x must apply when active capacity is available");
-    const auto privateCapacityPlan = planProfileUpdate(fixedWithDormantFourX, adaptiveFourX, 2, true, true);
+    auto fixedFourX = fixed;
+    fixedFourX.multiplier = 4;
+    expect(generatedFrameCapacityForActivePolicy(fixed) == 1,
+        "Fixed 2x active capacity must be one generated output");
+    expect(generatedFrameCapacityForActivePolicy(fixedFourX) == 3,
+        "Fixed 4x active capacity was not selected");
+    const auto privateCapacityPlan = planProfileUpdate(fixed, fixedFourX, 2, true, true);
     expect(privateCapacityPlan.decision.action ==
                 ProfileUpdateAction::ApplyLive &&
             privateCapacityPlan.decision.frameGenerationPrivateRebuild &&
             privateCapacityPlan.decision.generatedFrameCapacityExceeded &&
             !privateCapacityPlan.decision.swapchainRecreationDeferred &&
-            !privateCapacityPlan.appliedProfile.adaptive,
-        "Generated-capacity growth must use a private rebuild while the old policy remains active");
-    expect(generatedFrameCapacityForActivePolicy(adaptiveFourX) == 3,
-        "Adaptive 4x active capacity was not selected");
+            privateCapacityPlan.appliedProfile.multiplier == 2,
+        "Generated-capacity growth must use a private rebuild while the old multiplier remains active");
     const bool privateCapacityFitsThreeImageSwapchain =
-        generatedFrameCapacityForActivePolicy(adaptiveFourX) <=
+        generatedFrameCapacityForActivePolicy(fixedFourX) <=
             generatedFrameCapacitySupportedByExistingSwapchain(3, 3);
-    const auto wsiConstrainedCapacityPlan = planProfileUpdate(fixedWithDormantFourX, adaptiveFourX, 2, true, privateCapacityFitsThreeImageSwapchain);
+    const auto wsiConstrainedCapacityPlan = planProfileUpdate(fixed, fixedFourX, 2, true, privateCapacityFitsThreeImageSwapchain);
     expect(wsiConstrainedCapacityPlan.decision.action ==
                 ProfileUpdateAction::DeferUntilSwapchainRecreation &&
             !wsiConstrainedCapacityPlan.decision.frameGenerationPrivateRebuild &&
             wsiConstrainedCapacityPlan.decision.generatedFrameCapacityExceeded &&
             wsiConstrainedCapacityPlan.decision.swapchainRecreationDeferred &&
-            !wsiConstrainedCapacityPlan.appliedProfile.adaptive,
+            wsiConstrainedCapacityPlan.appliedProfile.multiplier == 2,
         "Live generated-capacity growth must defer when private resources would exceed existing WSI headroom");
-    auto adaptiveTwoX = adaptiveFourX;
-    adaptiveTwoX.adaptive_max_multiplier = 2;
-    auto adaptiveThreeX = adaptiveTwoX;
-    adaptiveThreeX.adaptive_max_multiplier = 3;
+
+    auto fixedThree = fixed;
+    fixedThree.multiplier = 3;
     const bool threeXCapacityFitsFiveImageSwapchain =
-        generatedFrameCapacityForActivePolicy(adaptiveThreeX) <=
+        generatedFrameCapacityForActivePolicy(fixedThree) <=
             generatedFrameCapacitySupportedByExistingSwapchain(3, 5);
-    const auto exactLiveGrowthRegressionPlan = planProfileUpdate(adaptiveTwoX, adaptiveThreeX, 1, true, threeXCapacityFitsFiveImageSwapchain);
+    const auto exactLiveGrowthRegressionPlan = planProfileUpdate(fixed, fixedThree, 1, true, threeXCapacityFitsFiveImageSwapchain);
     expect(exactLiveGrowthRegressionPlan.decision.action ==
                 ProfileUpdateAction::ApplyLive &&
             exactLiveGrowthRegressionPlan.decision.generatedFrameCapacityExceeded &&
             exactLiveGrowthRegressionPlan.decision.frameGenerationPrivateRebuild &&
             !exactLiveGrowthRegressionPlan.decision.swapchainRecreationDeferred &&
-            exactLiveGrowthRegressionPlan.appliedProfile.adaptive_max_multiplier == 2,
-        "A live 2x-to-3x request must fit a five-image pool with two generated outputs, rebuild privately, and retain the active policy until replacement completes");
+            exactLiveGrowthRegressionPlan.appliedProfile.multiplier == 2,
+        "A live 2x-to-3x request must fit a five-image pool with two generated outputs, rebuild privately, and retain the active multiplier until replacement completes");
 
-    auto adaptiveFiveX = adaptiveThreeX;
-    adaptiveFiveX.adaptive_max_multiplier = 5;
+    auto fixedFive = fixedThree;
+    fixedFive.multiplier = 5;
     const bool fiveXCapacityFitsFiveImageSwapchain =
-        generatedFrameCapacityForActivePolicy(adaptiveFiveX) <=
+        generatedFrameCapacityForActivePolicy(fixedFive) <=
             generatedFrameCapacitySupportedByExistingSwapchain(3, 5);
-    const auto trueWsiGrowthBoundaryPlan = planProfileUpdate(adaptiveThreeX, adaptiveFiveX, 2, true, fiveXCapacityFitsFiveImageSwapchain);
+    const auto trueWsiGrowthBoundaryPlan = planProfileUpdate(fixedThree, fixedFive, 2, true, fiveXCapacityFitsFiveImageSwapchain);
     expect(trueWsiGrowthBoundaryPlan.decision.action ==
                 ProfileUpdateAction::DeferUntilSwapchainRecreation &&
             trueWsiGrowthBoundaryPlan.decision.generatedFrameCapacityExceeded &&
             !trueWsiGrowthBoundaryPlan.decision.frameGenerationPrivateRebuild &&
-            trueWsiGrowthBoundaryPlan.appliedProfile.adaptive_max_multiplier == 3,
+            trueWsiGrowthBoundaryPlan.appliedProfile.multiplier == 3,
         "A live 3x-to-5x request must wait when four generated outputs exceed a five-image pool's two-image headroom");
 
-    auto generationDisabled = adaptiveFourX;
+    auto generationDisabled = fixedFourX;
     generationDisabled.frame_generation_enabled = false;
     expect(generatedFrameCapacityForActivePolicy(generationDisabled) == 0,
         "Frame Generation Off must not claim generated-image capacity");
     auto disabledCapacityEdit = generationDisabled;
-    disabledCapacityEdit.adaptive_max_multiplier = 5;
+    disabledCapacityEdit.multiplier = 5;
     const auto disabledCapacityPlan = planProfileUpdate(
         generationDisabled, disabledCapacityEdit, 0, false
     );
@@ -1229,55 +638,33 @@ int main() {
             !disabledCapacityPlan.decision.swapchainRecreationDeferred,
         "Frame Generation Off must not defer a dormant capacity edit");
 
-    auto adaptiveFourXWithLiveTarget = adaptiveFourX;
-    adaptiveFourXWithLiveTarget.target_fps = 120;
-    adaptiveFourXWithLiveTarget.base_fps_cap = 49;
+    auto fixedFourXWithLiveCap = fixedFourX;
+    fixedFourXWithLiveCap.base_fps_cap = 49;
     mixedPlan = planProfileUpdate(
-        fixedWithDormantFourX, adaptiveFourXWithLiveTarget, 2, true
+        fixed, fixedFourXWithLiveCap, 2, true
     );
     expect(mixedPlan.decision.action == ProfileUpdateAction::ApplyLive &&
             mixedPlan.decision.swapchainRecreationDeferred &&
-            !mixedPlan.appliedProfile.adaptive &&
-            mixedPlan.appliedProfile.target_fps == 120 &&
+            mixedPlan.appliedProfile.multiplier == 2 &&
             mixedPlan.appliedProfile.base_fps_cap == 49,
-        "Unavailable Adaptive capacity blocked an unrelated live cap");
+        "Unavailable Fixed capacity blocked an unrelated live cap");
 
-    auto unavailableFixedFourX = current;
-    unavailableFixedFourX.adaptive = false;
-    unavailableFixedFourX.multiplier = 4;
-    mixedPlan = planProfileUpdate(current, unavailableFixedFourX, 2, true);
+    mixedPlan = planProfileUpdate(current, fixedFourX, 2, true);
     expect(mixedPlan.decision.action ==
                 ProfileUpdateAction::DeferUntilSwapchainRecreation &&
             mixedPlan.decision.swapchainRecreationDeferred &&
-            mixedPlan.appliedProfile.adaptive &&
-            mixedPlan.appliedProfile.multiplier == 4,
-        "A dormant Fixed multiplier was misclassified as active while its mode switch waited");
+            mixedPlan.appliedProfile.multiplier == 2,
+        "A Fixed multiplier growth waited for recreation with the old multiplier still active");
 
-    next = current;
-    expect(classifyProfileUpdate(fixed, next, 1, true).action ==
-            ProfileUpdateAction::DeferUntilSwapchainRecreation,
-        "Fixed-to-Adaptive must recreate when the fixed context lacks Adaptive capacity");
-    const auto fixedToAdaptive = classifyProfileUpdate(
-        fixed, next, 2, true
-    );
-    expect(fixedToAdaptive.action == ProfileUpdateAction::ApplyLive &&
-            profileUpdateInvalidatesTransientGenerationRecovery(
-                fixedToAdaptive),
-        "Fixed-to-Adaptive must apply live with fresh recovery when shared capacity is available");
-
-    next = fixed;
-    next.multiplier = 3;
-    expect(classifyProfileUpdate(fixed, next, 1, true).action ==
+    expect(classifyProfileUpdate(fixed, fixedThree, 1, true).action ==
             ProfileUpdateAction::DeferUntilSwapchainRecreation,
         "Fixed multiplier growth must recreate when shared capacity is unavailable");
-    expect(classifyProfileUpdate(fixed, next, 2, true).action ==
+    expect(classifyProfileUpdate(fixed, fixedThree, 2, true).action ==
             ProfileUpdateAction::ApplyLive,
         "Fixed multiplier changes must apply live within shared capacity");
 
-    auto fixedThreeX = fixed;
-    fixedThreeX.multiplier = 3;
     const auto fixedThreeToTwo = planProfileUpdate(
-        fixedThreeX, fixed, 2, true
+        fixedThree, fixed, 2, true
     );
     expect(fixedThreeToTwo.decision.action == ProfileUpdateAction::ApplyLive &&
             fixedThreeToTwo.decision.fixedMultiplierChanged &&
@@ -1287,8 +674,8 @@ int main() {
             fixedThreeToTwo.appliedProfile.multiplier == 2,
         "Fixed 3x-to-2x must apply live with fresh recovery and no recreation");
 
-    expect(generatedFrameCapacityForProfile(fixed) == 2,
-        "Fixed 2x should reserve the configured Adaptive 3x capacity");
+    expect(generatedFrameCapacityForProfile(fixed) == 1,
+        "Fixed 2x should reserve exactly one generated output");
     auto unprovisioned = fixed;
     unprovisioned.frame_generation_provisioned = false;
     expect(generatedFrameCapacityForProfile(unprovisioned) == 0 &&
@@ -1299,9 +686,6 @@ int main() {
     fixedUltra.ultra_performance = true;
     expect(generatedFrameCapacityForProfile(fixedUltra) == 1,
         "Fixed 2x Ultra Performance must allocate only its active output");
-    fixedUltra.adaptive = true;
-    expect(generatedFrameCapacityForProfile(fixedUltra) == 2,
-        "Adaptive 3x Ultra Performance must allocate only its active ceiling");
     expect(fixedGeneratedFrameCount(2, 2) == 1,
         "Fixed 2x must schedule one frame even with two reserved outputs");
     expect(fixedGeneratedFrameCount(3, 2) == 2,

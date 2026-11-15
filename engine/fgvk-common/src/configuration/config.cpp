@@ -41,15 +41,7 @@ frame_generation_provisioned = true
 frame_generation_enabled = true
 swapchain_image_count_compatibility = false
 base_fps_cap = 0
-adaptive = false
-adaptive_auto_base_fps_cap = false
-adaptive_fractional_real_frame_priority = 'auto'
-target_fps = 120
-adaptive_target_refresh_rate = false
-adaptive_max_multiplier = 3
 adaptive_stable_cadence = true
-dynamic_cadence_recovery = false
-dynamic_cadence_probe_interval_seconds = 2
 ultra_performance = false
 flow_scale = 0.85
 performance_mode = true
@@ -85,17 +77,7 @@ ConfigFile::ConfigFile() {
         .swapchain_image_count_compatibility =
             GameConfDefaults::swapchainImageCountCompatibility,
         .base_fps_cap = GameConfDefaults::baseFpsCap,
-        .adaptive = GameConfDefaults::adaptive,
-        .adaptive_auto_base_fps_cap =
-            GameConfDefaults::adaptiveAutoBaseFpsCap,
-        .adaptive_fractional_real_frame_priority =
-            GameConfDefaults::adaptiveFractionalRealFramePriority,
-        .target_fps = GameConfDefaults::targetFps,
-        .adaptive_max_multiplier = GameConfDefaults::adaptiveMaxMultiplier,
         .adaptive_stable_cadence = GameConfDefaults::adaptiveStableCadence,
-        .dynamic_cadence_recovery = GameConfDefaults::dynamicCadenceRecovery,
-        .dynamic_cadence_probe_interval_seconds =
-            GameConfDefaults::dynamicCadenceProbeIntervalSeconds,
         .ultra_performance = GameConfDefaults::ultraPerformance,
         .flow_scale = 0.85F,
         .performance_mode = true,
@@ -146,16 +128,6 @@ namespace {
             return Pacing::None;
         throw ls::error("unknown pacing method: " + str);
     }
-    AdaptiveFractionalRealFramePriority
-    adaptiveFractionalRealFramePriorityFromString(const std::string& value) {
-        if (const auto priority =
-                adaptiveFractionalRealFramePriorityFromName(value)) {
-            return *priority;
-        }
-        throw ls::error(
-            "unknown Adaptive Fractional real-frame priority: " + value
-        );
-    }
     /// validate the shared file/environment game-profile contract
     void validateGameConf(const GameConf& conf) {
         if (conf.multiplier < GameConfLimits::minimumMultiplier ||
@@ -177,41 +149,6 @@ namespace {
                     GameConfLimits::maximumBaseFpsCap
                 )
             );
-        if (conf.target_fps < GameConfLimits::minimumTargetFps ||
-                conf.target_fps > GameConfLimits::maximumTargetFps) {
-            throw ls::error(
-                "target_fps must be between " + std::to_string(
-                    GameConfLimits::minimumTargetFps
-                ) + " and " + std::to_string(
-                    GameConfLimits::maximumTargetFps
-                )
-            );
-        }
-        if (conf.adaptive_max_multiplier <
-                GameConfLimits::minimumAdaptiveMaxMultiplier ||
-                conf.adaptive_max_multiplier >
-                    GameConfLimits::maximumAdaptiveMaxMultiplier) {
-            throw ls::error(
-                "adaptive_max_multiplier must be between " + std::to_string(
-                    GameConfLimits::minimumAdaptiveMaxMultiplier
-                ) + " and " + std::to_string(
-                    GameConfLimits::maximumAdaptiveMaxMultiplier
-                )
-            );
-        }
-        if (!(conf.dynamic_cadence_probe_interval_seconds >=
-                    GameConfLimits::minimumDynamicCadenceProbeIntervalSeconds &&
-                conf.dynamic_cadence_probe_interval_seconds <=
-                    GameConfLimits::maximumDynamicCadenceProbeIntervalSeconds)) {
-            throw ls::error(
-                "dynamic_cadence_probe_interval_seconds must be between " +
-                formatFloatingLimit(
-                    GameConfLimits::minimumDynamicCadenceProbeIntervalSeconds
-                ) + " and " + formatFloatingLimit(
-                    GameConfLimits::maximumDynamicCadenceProbeIntervalSeconds
-                )
-            );
-        }
         if (conf.flow_scale < GameConfLimits::minimumFlowScale ||
                 conf.flow_scale > GameConfLimits::maximumFlowScale) {
             throw ls::error(
@@ -254,38 +191,9 @@ namespace {
                     GameConfDefaults::swapchainImageCountCompatibility
                 ),
             .base_fps_cap = tbl["base_fps_cap"].value_or(GameConfDefaults::baseFpsCap),
-            .adaptive = tbl["adaptive"].value_or(GameConfDefaults::adaptive),
-            .adaptive_auto_base_fps_cap =
-                tbl["adaptive_auto_base_fps_cap"].value_or(
-                    GameConfDefaults::adaptiveAutoBaseFpsCap
-                ),
-            .adaptive_fractional_real_frame_priority =
-                adaptiveFractionalRealFramePriorityFromString(
-                    tbl["adaptive_fractional_real_frame_priority"]
-                        .value_or<std::string>(
-                            adaptiveFractionalRealFramePriorityName(
-                                GameConfDefaults::
-                                    adaptiveFractionalRealFramePriority
-                            )
-                        )
-                ),
-            .target_fps = tbl["target_fps"].value_or(GameConfDefaults::targetFps),
-            .adaptive_target_refresh_rate = tbl["adaptive_target_refresh_rate"].value_or(
-                GameConfDefaults::adaptiveTargetRefreshRate
-            ),
-            .adaptive_max_multiplier = tbl["adaptive_max_multiplier"].value_or(
-                GameConfDefaults::adaptiveMaxMultiplier
-            ),
             .adaptive_stable_cadence = tbl["adaptive_stable_cadence"].value_or(
                 GameConfDefaults::adaptiveStableCadence
             ),
-            .dynamic_cadence_recovery = tbl["dynamic_cadence_recovery"].value_or(
-                GameConfDefaults::dynamicCadenceRecovery
-            ),
-            .dynamic_cadence_probe_interval_seconds =
-                tbl["dynamic_cadence_probe_interval_seconds"].value_or(
-                    GameConfDefaults::dynamicCadenceProbeIntervalSeconds
-                ),
             .ultra_performance = tbl["ultra_performance"].value_or(
                 GameConfDefaults::ultraPerformance
             ),
@@ -298,12 +206,6 @@ namespace {
 
         if (conf.gpu && conf.gpu->empty()) conf.gpu.reset();
         validateGameConf(conf);
-        if (conf.dynamic_cadence_recovery) {
-            conf.adaptive_auto_base_fps_cap = false;
-            conf.adaptive_fractional_real_frame_priority =
-                AdaptiveFractionalRealFramePriority::Auto;
-            conf.base_fps_cap = 0;
-        }
         return conf;
     }
     toml::table gameConfTable(const GameConf& conf) {
@@ -333,25 +235,7 @@ namespace {
             conf.swapchain_image_count_compatibility
         );
         profile.insert("base_fps_cap", static_cast<int64_t>(conf.base_fps_cap));
-        profile.insert("adaptive", conf.adaptive);
-        profile.insert(
-            "adaptive_auto_base_fps_cap", conf.adaptive_auto_base_fps_cap
-        );
-        profile.insert(
-            "adaptive_fractional_real_frame_priority",
-            adaptiveFractionalRealFramePriorityName(
-                conf.adaptive_fractional_real_frame_priority
-            )
-        );
-        profile.insert("target_fps", static_cast<int64_t>(conf.target_fps));
-        profile.insert("adaptive_target_refresh_rate", conf.adaptive_target_refresh_rate);
-        profile.insert("adaptive_max_multiplier", static_cast<int64_t>(conf.adaptive_max_multiplier));
         profile.insert("adaptive_stable_cadence", conf.adaptive_stable_cadence);
-        profile.insert("dynamic_cadence_recovery", conf.dynamic_cadence_recovery);
-        profile.insert(
-            "dynamic_cadence_probe_interval_seconds",
-            conf.dynamic_cadence_probe_interval_seconds
-        );
         profile.insert("ultra_performance", conf.ultra_performance);
         profile.insert("flow_scale", conf.flow_scale);
         profile.insert("performance_mode", conf.performance_mode);
@@ -394,17 +278,7 @@ namespace {
             .swapchain_image_count_compatibility =
                 GameConfDefaults::swapchainImageCountCompatibility,
             .base_fps_cap = GameConfDefaults::baseFpsCap,
-            .adaptive = GameConfDefaults::adaptive,
-            .adaptive_auto_base_fps_cap =
-                GameConfDefaults::adaptiveAutoBaseFpsCap,
-            .adaptive_fractional_real_frame_priority =
-                GameConfDefaults::adaptiveFractionalRealFramePriority,
-            .target_fps = GameConfDefaults::targetFps,
-            .adaptive_max_multiplier = GameConfDefaults::adaptiveMaxMultiplier,
             .adaptive_stable_cadence = GameConfDefaults::adaptiveStableCadence,
-            .dynamic_cadence_recovery = GameConfDefaults::dynamicCadenceRecovery,
-            .dynamic_cadence_probe_interval_seconds =
-                GameConfDefaults::dynamicCadenceProbeIntervalSeconds,
             .ultra_performance = GameConfDefaults::ultraPerformance,
             .flow_scale = GameConfDefaults::flowScale,
             .performance_mode = GameConfDefaults::performanceMode,
@@ -433,47 +307,9 @@ namespace {
         const char* base_fps_cap = std::getenv("FGVK_BASE_FPS_CAP");
         if (base_fps_cap)
             conf.base_fps_cap = static_cast<uint32_t>(std::stoul(base_fps_cap));
-        const char* adaptive = std::getenv("FGVK_ADAPTIVE");
-        if (adaptive) conf.adaptive = std::string(adaptive) == "1";
-        const char* adaptive_auto_base_fps_cap =
-            std::getenv("FGVK_ADAPTIVE_AUTO_BASE_FPS_CAP");
-        if (adaptive_auto_base_fps_cap) {
-            conf.adaptive_auto_base_fps_cap =
-                std::string(adaptive_auto_base_fps_cap) != "0";
-        }
-        const char* adaptive_fractional_real_frame_priority =
-            std::getenv("FGVK_ADAPTIVE_FRACTIONAL_REAL_FRAME_PRIORITY");
-        if (adaptive_fractional_real_frame_priority) {
-            conf.adaptive_fractional_real_frame_priority =
-                adaptiveFractionalRealFramePriorityFromString(
-                    adaptive_fractional_real_frame_priority
-                );
-        }
-        const char* target_fps = std::getenv("FGVK_TARGET_FPS");
-        if (target_fps) conf.target_fps = static_cast<uint32_t>(std::stoul(target_fps));
-        const char* adaptive_target_refresh_rate =
-            std::getenv("FGVK_ADAPTIVE_TARGET_REFRESH_RATE");
-        if (adaptive_target_refresh_rate)
-            conf.adaptive_target_refresh_rate =
-                std::string(adaptive_target_refresh_rate) != "0";
-        const char* adaptive_max_multiplier = std::getenv("FGVK_ADAPTIVE_MAX_MULTIPLIER");
-        if (adaptive_max_multiplier)
-            conf.adaptive_max_multiplier = static_cast<size_t>(std::stoul(adaptive_max_multiplier));
         const char* adaptive_stable_cadence = std::getenv("FGVK_ADAPTIVE_STABLE_CADENCE");
         if (adaptive_stable_cadence)
             conf.adaptive_stable_cadence = std::string(adaptive_stable_cadence) != "0";
-        const char* dynamic_cadence_recovery =
-            std::getenv("FGVK_DYNAMIC_CADENCE_RECOVERY");
-        if (dynamic_cadence_recovery) {
-            conf.dynamic_cadence_recovery =
-                std::string(dynamic_cadence_recovery) != "0";
-        }
-        const char* dynamic_cadence_probe_interval_seconds =
-            std::getenv("FGVK_DYNAMIC_CADENCE_PROBE_INTERVAL_SECONDS");
-        if (dynamic_cadence_probe_interval_seconds) {
-            conf.dynamic_cadence_probe_interval_seconds =
-                std::stof(dynamic_cadence_probe_interval_seconds);
-        }
         const char* flow_scale = std::getenv("FGVK_FLOW_SCALE");
         if (flow_scale) conf.flow_scale = std::stof(flow_scale);
         const char* ultra_performance = std::getenv("FGVK_ULTRA_PERFORMANCE");
@@ -485,12 +321,6 @@ namespace {
         if (pacing) conf.pacing = parcingFromString(std::string(pacing));
 
         validateGameConf(conf);
-        if (conf.dynamic_cadence_recovery) {
-            conf.adaptive_auto_base_fps_cap = false;
-            conf.adaptive_fractional_real_frame_priority =
-                AdaptiveFractionalRealFramePriority::Auto;
-            conf.base_fps_cap = 0;
-        }
         return conf;
     }
 }

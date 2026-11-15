@@ -1684,7 +1684,6 @@ namespace {
                 .nativeSwapchain = false,
                 .contextCreated = true,
                 .frameGenerationEnabled = profile.frame_generation_enabled,
-                .adaptive = profile.adaptive,
                 .deferredPresentQueue = static_cast<bool>(swapchainInfo.deferredPresentQueue),
                 .diagnosticCopyPath = internalDiagnosticCopyPathConfigured(),
                 .applicationExtent = swapchainInfo.applicationExtent,

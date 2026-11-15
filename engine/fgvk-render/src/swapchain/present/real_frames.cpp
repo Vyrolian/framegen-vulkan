@@ -4,7 +4,6 @@
 #include "frame_content_capture.hpp"
 #include "swapchain/present/internal.hpp"
 #include "swapchain/retirement.hpp"
-#include "adaptive_scheduler.hpp"
 #include "fgvk-common/helpers/errors.hpp"
 #include "fgvk-common/vulkan/command_buffer.hpp"
 #include "fgvk-common/vulkan/image.hpp"
@@ -36,7 +35,7 @@ using namespace fgvk::layer;
 using namespace fgvk::layer::present_detail;
 
 void Swapchain::recordPresentCadence(const DiagnosticsClock::time_point presentNow) {
-    if (presentDiagnosticsEnabled() && !this->adaptiveScheduler) {
+    if (presentDiagnosticsEnabled()) {
         if (!this->diagnosticsState.fixedWindowStarted)
             this->diagnosticsState.fixedWindowStarted = presentNow;
         const double windowSeconds = std::chrono::duration<double>(
@@ -64,11 +63,6 @@ void Swapchain::recordPresentCadence(const DiagnosticsClock::time_point presentN
                     << this->diagnosticsState.fixedGeneratedFrames
                     << " generated_skipped="
                     << this->diagnosticsState.fixedSkippedFrames
-                    << " configured_adaptive_target_fps="
-                    << this->profile.target_fps
-                    << " target_applies=0"
-                    << " display_budget_hz=0"
-                    << " display_budget_applies=0"
                     << '\n';
             std::cerr << message.str();
             this->diagnosticsState.fixedWindowStarted = presentNow;
@@ -77,11 +71,6 @@ void Swapchain::recordPresentCadence(const DiagnosticsClock::time_point presentN
             this->diagnosticsState.fixedSkippedFrames = 0;
         }
         this->diagnosticsState.fixedRealFrames++;
-    } else if (this->adaptiveScheduler) {
-        this->diagnosticsState.fixedWindowStarted.reset();
-        this->diagnosticsState.fixedRealFrames = 0;
-        this->diagnosticsState.fixedGeneratedFrames = 0;
-        this->diagnosticsState.fixedSkippedFrames = 0;
     }
 }
 
@@ -365,8 +354,6 @@ VkResult Swapchain::presentHistoryOnly(
                   << error.what() << '\n';
         this->recoveryState.backendPending = true;
         this->recoveryState.historyWarmupRemaining = 0;
-        if (this->adaptiveScheduler)
-            this->adaptiveScheduler->cancelHistoryWarmup();
 
         const auto fallbackResult = this->presentOriginalImage(
             invocation, fallbackSemaphore.handle(), invocation.nextChain,
@@ -406,30 +393,7 @@ VkResult Swapchain::presentHistoryOnly(
             sourceTimelineValue, "nonblocking-admission", "history-only"
         );
     }
-    this->reportAdaptiveDelivery(
-        plan, plan.admittedGeneratedFrameCount
-    );
-
-    if (this->adaptiveScheduler &&
-            this->adaptiveScheduler->historyWarmupActive()) {
-        logHistoryWarmup(
-            this->frameState.realFrameIndex, this->frameState.sequenceIndex,
-            this->adaptiveScheduler->historyWarmupRemaining(),
-            this->adaptiveScheduler->historyWarmupIsRecovery(),
-            std::nullopt
-        );
-        const auto recoveryCompleted = std::max(DiagnosticsClock::now(),
-            invocation.originalPresentDeadline.value_or(
-                DiagnosticsClock::time_point{}));
-        const bool transitionRecoveryActive = this->recoveryState
-            .orderedAcquireRecovery.transitionRecoveryActive();
-        this->adaptiveScheduler->consumeHistoryWarmupFrame(
-            historyWarmupCadenceBoundary(
-                invocation.cadenceStarted, recoveryCompleted,
-                transitionRecoveryActive
-            )
-        );
-    } else if (this->recoveryState.historyWarmupRemaining > 0) {
+    if (this->recoveryState.historyWarmupRemaining > 0) {
         logHistoryWarmup(
             this->frameState.realFrameIndex, this->frameState.sequenceIndex,
             this->recoveryState.historyWarmupRemaining,

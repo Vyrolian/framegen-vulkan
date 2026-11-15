@@ -31,70 +31,6 @@ namespace ls {
         None
     };
 
-    /// Optional Fractional Adaptive source cap selected from cadence-friendly
-    /// real/generated ratios. Auto preserves the ordinary Fractional policy.
-    enum class AdaptiveFractionalRealFramePriority : uint8_t {
-        Auto,
-        Low,
-        Medium,
-        High,
-        VeryHigh,
-    };
-
-    [[nodiscard]] constexpr const char*
-    adaptiveFractionalRealFramePriorityName(
-            const AdaptiveFractionalRealFramePriority priority) noexcept {
-        switch (priority) {
-            case AdaptiveFractionalRealFramePriority::Auto:
-                return "auto";
-            case AdaptiveFractionalRealFramePriority::Low:
-                return "low";
-            case AdaptiveFractionalRealFramePriority::Medium:
-                return "medium";
-            case AdaptiveFractionalRealFramePriority::High:
-                return "high";
-            case AdaptiveFractionalRealFramePriority::VeryHigh:
-                return "very-high";
-        }
-        return "auto";
-    }
-
-    [[nodiscard]] constexpr std::optional<
-        AdaptiveFractionalRealFramePriority>
-    adaptiveFractionalRealFramePriorityFromName(
-            const std::string_view value) noexcept {
-        if (value == "auto")
-            return AdaptiveFractionalRealFramePriority::Auto;
-        if (value == "low")
-            return AdaptiveFractionalRealFramePriority::Low;
-        if (value == "medium")
-            return AdaptiveFractionalRealFramePriority::Medium;
-        if (value == "high")
-            return AdaptiveFractionalRealFramePriority::High;
-        if (value == "very-high")
-            return AdaptiveFractionalRealFramePriority::VeryHigh;
-        return std::nullopt;
-    }
-
-    [[nodiscard]] constexpr double adaptiveFractionalRealFramePriorityCap(
-            const AdaptiveFractionalRealFramePriority priority,
-            const uint32_t targetFps) noexcept {
-        const double target = static_cast<double>(targetFps);
-        switch (priority) {
-            case AdaptiveFractionalRealFramePriority::Auto:
-                return 0.0;
-            case AdaptiveFractionalRealFramePriority::Low:
-                return target * 3.0 / 5.0;
-            case AdaptiveFractionalRealFramePriority::Medium:
-                return target * 2.0 / 3.0;
-            case AdaptiveFractionalRealFramePriority::High:
-                return target * 3.0 / 4.0;
-            case AdaptiveFractionalRealFramePriority::VeryHigh:
-                return target * 4.0 / 5.0;
-        }
-        return 0.0;
-    }
-
     /// Renderer defaults used when a game profile omits fields
     struct GameConfDefaults {
         static constexpr size_t multiplier = 2;
@@ -102,17 +38,7 @@ namespace ls {
         static constexpr bool frameGenerationEnabled = true;
         static constexpr bool swapchainImageCountCompatibility = false;
         static constexpr uint32_t baseFpsCap = 0;
-        static constexpr bool adaptive = false;
-        static constexpr bool adaptiveAutoBaseFpsCap = false;
-        static constexpr AdaptiveFractionalRealFramePriority
-            adaptiveFractionalRealFramePriority =
-                AdaptiveFractionalRealFramePriority::Auto;
-        static constexpr uint32_t targetFps = 120;
-        static constexpr bool adaptiveTargetRefreshRate = false;
-        static constexpr size_t adaptiveMaxMultiplier = 3;
         static constexpr bool adaptiveStableCadence = true;
-        static constexpr bool dynamicCadenceRecovery = false;
-        static constexpr float dynamicCadenceProbeIntervalSeconds = 2.0F;
         static constexpr bool ultraPerformance = false;
         static constexpr float ultraPerformanceFlowScale = 0.7F;
         static constexpr float flowScale = 0.8F;
@@ -126,17 +52,6 @@ namespace ls {
         static constexpr size_t maximumMultiplier = 5;
         static constexpr uint32_t minimumBaseFpsCap = 0;
         static constexpr uint32_t maximumBaseFpsCap = 1000;
-        static constexpr uint32_t minimumTargetFps = 10;
-        static constexpr uint32_t maximumTargetFps = 1000;
-        static constexpr size_t minimumAdaptiveMaxMultiplier = 2;
-        static constexpr size_t maximumAdaptiveMaxMultiplier = 5;
-        static constexpr float minimumDynamicCadenceProbeIntervalSeconds = 0.1F;
-        static constexpr float maximumDynamicCadenceProbeIntervalSeconds = 3.0F;
-        static constexpr std::array<float, 9>
-            dynamicCadenceProbeIntervalPresetsSeconds{
-                0.1F, 0.2F, 0.25F, 0.5F, 0.75F,
-                1.0F, 1.5F, 2.0F, 3.0F,
-            };
         static constexpr float minimumFlowScale = 0.25F;
         static constexpr float maximumFlowScale = 1.0F;
     };
@@ -163,29 +78,7 @@ namespace ls {
         };
         /// maximum application-present rate before frame generation; zero disables it
         uint32_t base_fps_cap{GameConfDefaults::baseFpsCap};
-        /// dynamically vary the generated-frame count toward a target framerate
-        bool adaptive{GameConfDefaults::adaptive};
-        /// cap Adaptive's real-frame input to half its target for even 2x cadence
-        bool adaptive_auto_base_fps_cap{GameConfDefaults::adaptiveAutoBaseFpsCap};
-        /// optional cadence-friendly real-frame share for Fractional Adaptive
-        AdaptiveFractionalRealFramePriority
-            adaptive_fractional_real_frame_priority{
-                GameConfDefaults::adaptiveFractionalRealFramePriority
-            };
-        /// desired displayed framerate when adaptive mode is enabled
-        uint32_t target_fps{GameConfDefaults::targetFps};
-        /// Follow confirmed display refresh in Adaptive; target_fps stays the fallback.
-        bool adaptive_target_refresh_rate{GameConfDefaults::adaptiveTargetRefreshRate};
-        /// maximum total multiplier Adaptive may use
-        size_t adaptive_max_multiplier{GameConfDefaults::adaptiveMaxMultiplier};
-        /// prefer a validated even display-divisor cadence when safe
         bool adaptive_stable_cadence{GameConfDefaults::adaptiveStableCadence};
-        /// periodically expose native cadence to detect upward rate changes
-        bool dynamic_cadence_recovery{GameConfDefaults::dynamicCadenceRecovery};
-        /// seconds between optional native-cadence probes
-        float dynamic_cadence_probe_interval_seconds{
-            GameConfDefaults::dynamicCadenceProbeIntervalSeconds
-        };
         /// trade live profile reloads for the lowest supported resource cost
         bool ultra_performance{GameConfDefaults::ultraPerformance};
         /// non-inverted flow scale
@@ -208,14 +101,6 @@ namespace ls {
     [[nodiscard]] constexpr bool effectivePerformanceMode(
             const GameConf& profile) noexcept {
         return profile.ultra_performance || profile.performance_mode;
-    }
-
-    /// Scheduler duration represented by the public fractional-seconds value.
-    [[nodiscard]] constexpr std::chrono::milliseconds
-    dynamicCadenceProbeIntervalDuration(const float seconds) noexcept {
-        return std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::duration<float>(seconds)
-        );
     }
 
     /// parsed configuration file

@@ -42,7 +42,7 @@ The window has these controls:
 | --- | --- |
 | Profile | Chooses the profile to edit. New, Rename and Delete manage profiles; each profile needs a unique name. |
 | Games | Lists the `active_in` entries. Type an executable name and press Add, or choose Pick running… to add a program that is running now. The × button removes an entry. |
-| Frame generation | `Off`, a fixed `2x` to `5x` multiplier, or `Adaptive`. Adaptive shows the target FPS (10 to 1000) and the maximum multiplier (2x to 5x). |
+| Frame generation | `Off` or a fixed `2x` to `5x` multiplier. |
 | Quality (flow scale) | `flow_scale` from 25% to 100%. Higher values track motion more precisely and cost more GPU time. |
 | FPS limit | Optional real-FPS cap, stored as `base_fps_cap`. Turn it off to remove the manual cap. |
 | Performance mode | `performance_mode` for the selected profile. |
@@ -67,16 +67,10 @@ Enable `frame_generation_provisioned` before launching to allow Frame Generation
 | Setting | What it does |
 | --- | --- |
 | `multiplier` | Fixed output multiplier, 2–5. Start at 2. |
-| `adaptive = true` | Varies generation toward `target_fps` (10–1000), up to `adaptive_max_multiplier` (2–5). |
-| `adaptive_target_refresh_rate` | Matches the Adaptive target to a confirmed display refresh rate. The native path has no such value yet, so `target_fps` applies. |
-| `adaptive_auto_base_fps_cap` | Steady Base Cap: initially caps real FPS at half the target for even cadence; may reduce responsiveness. |
-| `adaptive_fractional_real_frame_priority` | Real-frame priority for Fractional Adaptive, from low to very high. Automatic adds no priority cap. |
 | `adaptive_stable_cadence` | Favours consistent delivery; compare on and off for responsiveness. |
-| `base_fps_cap` | Limits real FPS. Off adds no manual cap; Steady or explicit Fractional caps take precedence. |
+| `base_fps_cap` | Limits real FPS. Off adds no manual cap. |
 
-With Fractional Adaptive and automatic real-frame priority, sustained native FPS can exceed `target_fps` without generation when `base_fps_cap` is off or at least the target. For example, a 60 FPS target on a 90 Hz display allows native 75 FPS gameplay with the cap off or set to 90; a manual cap still limits faster sources.
-
-For games that switch between 30 FPS cutscenes and 60 FPS gameplay on a 60 Hz display, try Fractional Adaptive with a 2x ceiling, a 60 FPS target, and `dynamic_cadence_recovery = true`. Recovery clears base caps and selects automatic real-frame priority; keep those settings to let gameplay reach its native rate. Its checks can briefly lower output FPS or hitch.
+Older files can still contain `adaptive`, `adaptive_max_multiplier`, `adaptive_auto_base_fps_cap`, `adaptive_fractional_real_frame_priority`, `adaptive_target_refresh_rate`, `target_fps`, `dynamic_cadence_recovery`, and `dynamic_cadence_probe_interval_seconds`. These keys are accepted and ignored: a profile with `adaptive = true` runs Fixed with its `multiplier`, and framegen-vulkan does not write them.
 
 ## Performance and device selection
 
@@ -94,8 +88,6 @@ For games that switch between 30 FPS cutscenes and 60 FPS gameplay on a 60 Hz di
 
 | Setting | What it does |
 | --- | --- |
-| `dynamic_cadence_recovery` | Off by default. Rechecks games that change native FPS by briefly reducing generated work; these checks can lower output FPS or cause hitches under sustained GPU load. Clears base caps and resets real-frame priority. |
-| `dynamic_cadence_probe_interval_seconds` | 0.1–3 seconds between recovery checks; default 2. Shorter intervals react sooner but can hitch more often. |
 | `swapchain_image_count_compatibility` (restart) | May help games that fail to start, with less generated-frame headroom. |
 
 Keep the defaults unless a game needs a change.

@@ -24,7 +24,6 @@ set(LAYER_SOURCES
     "src/swapchain/profile.cpp"
     "src/swapchain/resources.cpp")
 
-set(ADAPTIVE_SOURCE "src/adaptive_scheduler.cpp")
 set(COLOR_PIPELINE_SOURCE "src/color_pipeline.cpp")
 
 # Keep explicit target membership while detecting a newly added implementation
@@ -32,7 +31,6 @@ set(COLOR_PIPELINE_SOURCE "src/color_pipeline.cpp")
 # targets, so adding a source under src/ fails even in an existing build tree.
 set(RENDERER_PRODUCTION_SOURCES
     ${LAYER_SOURCES}
-    ${ADAPTIVE_SOURCE}
     ${COLOR_PIPELINE_SOURCE})
 configure_file(
     "${CMAKE_CURRENT_SOURCE_DIR}/check-source-inventory.cmake.in"
@@ -43,16 +41,6 @@ add_custom_target(fgvk-renderer-source-inventory
         "${CMAKE_CURRENT_BINARY_DIR}/check-source-inventory.cmake"
     COMMENT "Checking framegen-vulkan source inventory"
     VERBATIM)
-
-add_library(fgvk-adaptive STATIC
-    ${ADAPTIVE_SOURCE})
-add_dependencies(fgvk-adaptive fgvk-renderer-source-inventory)
-target_include_directories(fgvk-adaptive
-    PUBLIC "src"
-    PUBLIC "../fgvk-common/include")
-set_target_properties(fgvk-adaptive PROPERTIES
-    CXX_VISIBILITY_PRESET hidden
-    VISIBILITY_INLINES_HIDDEN ON)
 
 if(FGVK_BUILD_VK_LAYER OR BUILD_TESTING)
     find_package(Threads REQUIRED)
@@ -122,7 +110,6 @@ if(FGVK_BUILD_VK_LAYER)
 
     function(fgvk_configure_renderer_layer target)
         target_link_libraries(${target}
-            PRIVATE fgvk-adaptive
             PRIVATE fgvk-color
             PRIVATE Threads::Threads
             PRIVATE ${CMAKE_DL_LIBS}
@@ -174,7 +161,8 @@ if(BUILD_TESTING)
         "tests/steam_overlay_libraries_tests.cpp" "src/present_diagnostics.cpp" ${PRESENT_RECORD_SOURCES})
     target_include_directories(fgvk-steam-overlay-diagnostics-tests PRIVATE "src")
     target_link_libraries(fgvk-steam-overlay-diagnostics-tests
-        PRIVATE fgvk-adaptive ${CMAKE_DL_LIBS})
+        PRIVATE ${CMAKE_DL_LIBS})
+    target_include_directories(fgvk-steam-overlay-diagnostics-tests PRIVATE "../fgvk-common/include")
     add_dependencies(fgvk-steam-overlay-diagnostics-tests fgvk-launch-preload-fixture)
     add_test(NAME steam-overlay-library-diagnostics
         COMMAND fgvk-steam-overlay-diagnostics-tests $<TARGET_FILE:fgvk-launch-preload-fixture>)
@@ -183,7 +171,8 @@ if(BUILD_TESTING)
     add_executable(fgvk-pacing-profile-tests
         "tests/pacing_profile_tests.cpp" "src/present_diagnostics.cpp" ${PRESENT_RECORD_SOURCES})
     target_include_directories(fgvk-pacing-profile-tests PRIVATE "src")
-    target_link_libraries(fgvk-pacing-profile-tests PRIVATE fgvk-adaptive ${CMAKE_DL_LIBS})
+    target_link_libraries(fgvk-pacing-profile-tests PRIVATE ${CMAKE_DL_LIBS})
+    target_include_directories(fgvk-pacing-profile-tests PRIVATE "../fgvk-common/include")
     add_test(NAME pacing-profile COMMAND fgvk-pacing-profile-tests)
     fgvk_register_portable_policy_test(fgvk-pacing-profile-tests pacing-profile)
 
@@ -204,7 +193,8 @@ if(BUILD_TESTING)
     add_executable(fgvk-native-copy-profile-tests
         "tests/native_copy_profile_tests.cpp" "src/present_diagnostics.cpp" ${PRESENT_RECORD_SOURCES})
     target_include_directories(fgvk-native-copy-profile-tests PRIVATE "src")
-    target_link_libraries(fgvk-native-copy-profile-tests PRIVATE fgvk-adaptive ${CMAKE_DL_LIBS})
+    target_link_libraries(fgvk-native-copy-profile-tests PRIVATE ${CMAKE_DL_LIBS})
+    target_include_directories(fgvk-native-copy-profile-tests PRIVATE "../fgvk-common/include")
     add_test(NAME native-copy-profile COMMAND fgvk-native-copy-profile-tests)
     fgvk_register_portable_policy_test(fgvk-native-copy-profile-tests native-copy-profile)
     add_test(NAME pacing-profile-report
@@ -218,7 +208,8 @@ if(BUILD_TESTING)
     add_executable(fgvk-pacing-record-golden-tests
         "tests/pacing_record_golden_tests.cpp" "src/present_diagnostics.cpp" ${PRESENT_RECORD_SOURCES})
     target_include_directories(fgvk-pacing-record-golden-tests PRIVATE "src")
-    target_link_libraries(fgvk-pacing-record-golden-tests PRIVATE fgvk-adaptive ${CMAKE_DL_LIBS})
+    target_link_libraries(fgvk-pacing-record-golden-tests PRIVATE ${CMAKE_DL_LIBS})
+    target_include_directories(fgvk-pacing-record-golden-tests PRIVATE "../fgvk-common/include")
     add_test(NAME pacing-record-golden COMMAND fgvk-pacing-record-golden-tests
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/pacing-record-golden.txt")
     fgvk_register_portable_policy_test(fgvk-pacing-record-golden-tests pacing-record-golden)
@@ -230,7 +221,8 @@ if(BUILD_TESTING)
     add_executable(fgvk-pacing-profile-benchmark
         "tests/pacing_profile_benchmark.cpp" "src/present_diagnostics.cpp" ${PRESENT_RECORD_SOURCES})
     target_include_directories(fgvk-pacing-profile-benchmark PRIVATE "src")
-    target_link_libraries(fgvk-pacing-profile-benchmark PRIVATE fgvk-adaptive ${CMAKE_DL_LIBS})
+    target_link_libraries(fgvk-pacing-profile-benchmark PRIVATE ${CMAKE_DL_LIBS})
+    target_include_directories(fgvk-pacing-profile-benchmark PRIVATE "../fgvk-common/include")
     target_link_libraries(fgvk-pacing-profile-benchmark PRIVATE Threads::Threads)
 
     add_executable(fgvk-runtime-health-tests
@@ -315,7 +307,8 @@ if(BUILD_TESTING)
     add_executable(fgvk-deferred-present-tests
         "tests/deferred_present_tests.cpp" "src/present_diagnostics.cpp" ${PRESENT_RECORD_SOURCES})
     target_include_directories(fgvk-deferred-present-tests PRIVATE "src")
-    target_link_libraries(fgvk-deferred-present-tests PRIVATE fgvk-adaptive ${CMAKE_DL_LIBS} Threads::Threads)
+    target_link_libraries(fgvk-deferred-present-tests PRIVATE ${CMAKE_DL_LIBS} Threads::Threads)
+    target_include_directories(fgvk-deferred-present-tests PRIVATE "../fgvk-common/include")
     add_test(NAME deferred-present COMMAND fgvk-deferred-present-tests)
     fgvk_register_portable_policy_test(fgvk-deferred-present-tests deferred-present)
 
@@ -370,30 +363,13 @@ if(BUILD_TESTING)
         add_executable(fgvk-wayland-presentation-tests
             "tests/wayland_presentation_feedback_tests.cpp" "src/wayland_presentation_feedback.cpp" "src/present_diagnostics.cpp" ${PRESENT_RECORD_SOURCES})
         target_include_directories(fgvk-wayland-presentation-tests PRIVATE src)
-        target_link_libraries(fgvk-wayland-presentation-tests PRIVATE fgvk-wayland-presentation-fixture fgvk-adaptive Threads::Threads ${CMAKE_DL_LIBS})
+        target_link_libraries(fgvk-wayland-presentation-tests PRIVATE fgvk-wayland-presentation-fixture Threads::Threads ${CMAKE_DL_LIBS})
+        target_include_directories(fgvk-wayland-presentation-tests PRIVATE "../fgvk-common/include")
         add_test(NAME wayland-presentation-feedback COMMAND ${CMAKE_COMMAND} -E env
             "LD_LIBRARY_PATH=$<TARGET_FILE_DIR:fgvk-wayland-presentation-fixture>" $<TARGET_FILE:fgvk-wayland-presentation-tests>)
         fgvk_register_portable_policy_test(fgvk-wayland-presentation-tests wayland-presentation-feedback)
 
     endif()
-
-    add_executable(fgvk-adaptive-tests
-        "tests/adaptive_scheduler_tests.cpp")
-    target_link_libraries(fgvk-adaptive-tests
-        PRIVATE fgvk-adaptive)
-    add_test(NAME adaptive-scheduler
-        COMMAND fgvk-adaptive-tests)
-    fgvk_register_portable_policy_test(
-        fgvk-adaptive-tests adaptive-scheduler)
-
-    add_executable(fgvk-adaptive-matrix
-        "tests/adaptive_scheduler_matrix.cpp")
-    target_link_libraries(fgvk-adaptive-matrix
-        PRIVATE fgvk-adaptive)
-    add_test(NAME adaptive-scheduler-matrix
-        COMMAND fgvk-adaptive-matrix)
-    fgvk_register_portable_policy_test(
-        fgvk-adaptive-matrix adaptive-scheduler-matrix)
 
     add_executable(fgvk-pnext-chain-tests
         "tests/pnext_chain_tests.cpp")
@@ -411,11 +387,6 @@ if(BUILD_TESTING)
         add_test(NAME color-pipeline
             COMMAND fgvk-color-tests)
     endif()
-
-    add_executable(fgvk-adaptive-benchmark
-        "tests/adaptive_scheduler_benchmark.cpp")
-    target_link_libraries(fgvk-adaptive-benchmark
-        PRIVATE fgvk-adaptive)
 
 endif()
 

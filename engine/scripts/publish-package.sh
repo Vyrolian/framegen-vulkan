@@ -201,13 +201,12 @@ $manual_release_notes
 > [!TIP]
 > **Try the game’s V-Sync setting both on and off.** Neither setting is universally best: the result depends on the game, its FPS cap, VRR, and the compositor. Keep whichever option feels smoother and more responsive for that game.
 
-Every game, renderer, and display setup behaves differently. Compare Fixed Frame Generation and Adaptive Frame Generation one setting at a time. If Frame Generation does not work, test Fullscreen, Borderless Fullscreen, and Windowed; none is universally best. Changing display mode can change GPU cost. Restart after changing a setting labelled **(Restart)**. Flow Scale and Lighter FG Model normally apply live and may cause one brief hitch while framegen-vulkan replaces their private resources.
+Every game, renderer, and display setup behaves differently. Compare Frame Generation settings one setting at a time. If Frame Generation does not work, test Fullscreen, Borderless Fullscreen, and Windowed; none is universally best. Changing display mode can change GPU cost. Restart after changing a setting labelled **(Restart)**. Flow Scale and Lighter FG Model normally apply live and may cause one brief hitch while framegen-vulkan replaces their private resources.
 
-- **Adaptive target behaviour:** Adaptive varies the generated-frame count toward an average target. It cannot reduce a native frame rate already above that target, and the result still depends on the selected multiplier plus available GPU and compositor capacity.
 - **Quality and latency tuning:** Higher multipliers and lower real-frame rates can increase ghosting and input latency. Smooth Cadence may improve motion consistency while reducing responsiveness, so compare the available choices per game.
 
 > [!IMPORTANT]
-> framegen-vulkan does not contain or distribute Lossless Scaling, \`Lossless.dll\`, or extracted proprietary model payloads. Fixed or Adaptive Frame Generation reads selected resources at runtime from a lawful, user-supplied Lossless Scaling installation. framegen-vulkan does not alter the user's DLL file, and translated resources remain process-local. Users are responsible for complying with the terms applicable to their copy.
+> framegen-vulkan does not contain or distribute Lossless Scaling, \`Lossless.dll\`, or extracted proprietary model payloads. Frame Generation reads selected resources at runtime from a lawful, user-supplied Lossless Scaling installation. framegen-vulkan does not alter the user's DLL file, and translated resources remain process-local. Users are responsible for complying with the terms applicable to their copy.
 
 ## Installation
 

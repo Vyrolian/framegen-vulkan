@@ -55,19 +55,7 @@ namespace {
             left.swapchain_image_count_compatibility ==
                 right.swapchain_image_count_compatibility &&
             left.base_fps_cap == right.base_fps_cap &&
-            left.adaptive == right.adaptive &&
-            left.adaptive_auto_base_fps_cap ==
-                right.adaptive_auto_base_fps_cap &&
-            left.adaptive_fractional_real_frame_priority ==
-                right.adaptive_fractional_real_frame_priority &&
-            left.target_fps == right.target_fps &&
-            left.adaptive_target_refresh_rate ==
-                right.adaptive_target_refresh_rate &&
-            left.adaptive_max_multiplier == right.adaptive_max_multiplier &&
             left.adaptive_stable_cadence == right.adaptive_stable_cadence &&
-            left.dynamic_cadence_recovery == right.dynamic_cadence_recovery &&
-            left.dynamic_cadence_probe_interval_seconds ==
-                right.dynamic_cadence_probe_interval_seconds &&
             left.ultra_performance == right.ultra_performance &&
             left.flow_scale == right.flow_scale &&
             left.performance_mode == right.performance_mode &&
@@ -133,7 +121,7 @@ namespace {
 [[profile]]
 name = "game"
 active_in = "Game.exe"
-target_fps = 90
+multiplier = 3
 [profile.handheld]
 target_fps = 60
 [profile.docked]
@@ -141,12 +129,12 @@ target_fps = 144
 )");
         const ls::ConfigFile retired(path);
         expect(retired.profiles().size() == 1 &&
-                retired.profiles().front().target_fps == 90,
+                retired.profiles().front().multiplier == 3,
             "Retired AC/battery tables must be accepted and ignored");
         ls::Identification identity;
         identity.override = "game";
         const auto selected = ls::findProfile(retired, identity);
-        expect(selected && selected->second.target_fps == 90 &&
+        expect(selected && selected->second.multiplier == 3 &&
                 selected->second.name == "game" &&
                 selected->second.active_in.front() == "Game.exe",
             "Retired AC/battery tables must not change profile matching");
@@ -220,6 +208,55 @@ performance_mode = false
 )";
 }
 
+    // Retired Adaptive and cadence keys: an old file with every key present
+    // loads, the Fixed multiplier and the surviving settings keep their values,
+    // and a rewrite drops the retired keys.
+    void testRetiredAdaptiveKeys(const std::filesystem::path& directory) {
+        const auto path = directory / "retired-adaptive-keys.toml";
+        writeText(path, R"(version = 2
+[[profile]]
+name = "game"
+active_in = "Game.exe"
+multiplier = 3
+base_fps_cap = 60
+adaptive_stable_cadence = false
+flow_scale = 0.85
+adaptive = true
+adaptive_max_multiplier = 5
+adaptive_auto_base_fps_cap = true
+adaptive_fractional_real_frame_priority = "very-high"
+target_fps = 144
+adaptive_target_refresh_rate = true
+dynamic_cadence_recovery = true
+dynamic_cadence_probe_interval_seconds = 0.5
+)");
+        const ls::ConfigFile retired(path);
+        expect(retired.profiles().size() == 1 &&
+                retired.profiles().front().name == "game",
+            "Retired Adaptive keys must not reject the file");
+        const auto& profile = retired.profiles().front();
+        expect(profile.multiplier == 3 && profile.base_fps_cap == 60 &&
+                !profile.adaptive_stable_cadence &&
+                profile.flow_scale == 0.85F,
+            "Retired Adaptive keys must leave the Fixed multiplier and surviving settings unchanged");
+        retired.write(path);
+        const auto rewritten = readText(path);
+        for (const std::string_view retiredKey : {
+                "adaptive = ", "adaptive_max_multiplier",
+                "adaptive_auto_base_fps_cap",
+                "adaptive_fractional_real_frame_priority", "target_fps",
+                "adaptive_target_refresh_rate", "dynamic_cadence_recovery",
+                "dynamic_cadence_probe_interval_seconds"}) {
+            expect(rewritten.find(retiredKey) == std::string::npos,
+                "Rewriting a configuration must drop every retired Adaptive key");
+        }
+        expect(rewritten.find("multiplier = 3") != std::string::npos &&
+                rewritten.find("base_fps_cap = 60") != std::string::npos &&
+                rewritten.find("adaptive_stable_cadence = false") != std::string::npos &&
+                rewritten.find("flow_scale = ") != std::string::npos,
+            "Rewriting a configuration must keep the Fixed multiplier, base cap, Smooth Cadence and flow scale");
+    }
+
 int main() {
     const ls::GameConf defaults;
     expect(defaults.multiplier == ls::GameConfDefaults::multiplier &&
@@ -230,21 +267,8 @@ int main() {
             defaults.swapchain_image_count_compatibility ==
                 ls::GameConfDefaults::swapchainImageCountCompatibility &&
             defaults.base_fps_cap == ls::GameConfDefaults::baseFpsCap &&
-            defaults.adaptive == ls::GameConfDefaults::adaptive &&
-            defaults.adaptive_auto_base_fps_cap ==
-                ls::GameConfDefaults::adaptiveAutoBaseFpsCap &&
-            defaults.adaptive_fractional_real_frame_priority ==
-                ls::GameConfDefaults::adaptiveFractionalRealFramePriority &&
-            defaults.target_fps == ls::GameConfDefaults::targetFps &&
-            !defaults.adaptive_target_refresh_rate &&
-            defaults.adaptive_max_multiplier ==
-                ls::GameConfDefaults::adaptiveMaxMultiplier &&
             defaults.adaptive_stable_cadence ==
                 ls::GameConfDefaults::adaptiveStableCadence &&
-            defaults.dynamic_cadence_recovery ==
-                ls::GameConfDefaults::dynamicCadenceRecovery &&
-            defaults.dynamic_cadence_probe_interval_seconds ==
-                ls::GameConfDefaults::dynamicCadenceProbeIntervalSeconds &&
             defaults.ultra_performance ==
                 ls::GameConfDefaults::ultraPerformance &&
             defaults.flow_scale == ls::GameConfDefaults::flowScale &&
@@ -263,6 +287,7 @@ int main() {
 
     unsetenv("FGVK_ENV");
     testRetiredHeadroomKey(directory);
+    testRetiredAdaptiveKeys(directory);
     testOptionalLosslessDll(directory);
     testRetiredPowerTables(directory);
     testLegacyRootSelectionIsIgnored(directory);
@@ -351,14 +376,8 @@ int main() {
     expect(config.update(), "A subsequent complete configuration must be accepted");
     expect(config.get().profiles().size() == 1,
         "The accepted configuration must replace the previous profile set");
-    expect(config.get().profiles().front().target_fps == 144,
-        "The accepted configuration must expose its new policy");
-    expect(config.get().profiles().front().adaptive_target_refresh_rate,
-        "The accepted configuration must expose automatic refresh targeting");
-    expect(config.get().profiles().front().dynamic_cadence_recovery,
-        "The accepted configuration must expose dynamic cadence recovery");
-    expect(config.get().profiles().front().dynamic_cadence_probe_interval_seconds == 0.1F,
-        "The accepted configuration must expose the cadence probe interval");
+    expect(config.get().profiles().front().base_fps_cap == 60,
+        "Retired cadence keys must leave the saved base FPS cap unchanged");
     expect(!config.get().profiles().front().frame_generation_provisioned &&
             config.get().profiles().front()
                 .swapchain_image_count_compatibility,
@@ -370,12 +389,6 @@ int main() {
                 ls::GameConfDefaults::ultraPerformanceFlowScale &&
             ls::effectivePerformanceMode(config.get().profiles().front()),
         "Ultra Performance must preserve saved settings while overriding backend construction");
-    expect(config.get().profiles().front().base_fps_cap == 0 &&
-            !config.get().profiles().front().adaptive_auto_base_fps_cap &&
-            config.get().profiles().front()
-                    .adaptive_fractional_real_frame_priority ==
-                ls::AdaptiveFractionalRealFramePriority::Auto,
-        "Dynamic cadence recovery must disable every base FPS cap");
     expect(config.get().profiles().front().multiplier == 2,
         "Unknown legacy options must be inert without disturbing known defaults");
 
@@ -471,52 +484,6 @@ multiplier = 6
     }
     expect(invalidFixedMultiplierRejected,
         "Fixed multipliers above the supported 5x maximum must be rejected");
-
-    const auto priorityPath = directory / "fractional-priority.toml";
-    writeText(priorityPath, R"(version = 2
-[[profile]]
-adaptive = true
-adaptive_auto_base_fps_cap = false
-adaptive_fractional_real_frame_priority = "very-high"
-)");
-    const ls::ConfigFile priorityConfiguration(priorityPath);
-    expect(priorityConfiguration.profiles().front()
-                .adaptive_fractional_real_frame_priority ==
-            ls::AdaptiveFractionalRealFramePriority::VeryHigh,
-        "Fractional real-frame priority did not preserve its stable token");
-
-    const auto invalidPriorityPath = directory / "invalid-fractional-priority.toml";
-    writeText(invalidPriorityPath, R"(version = 2
-[[profile]]
-adaptive_fractional_real_frame_priority = "maximum"
-)");
-    bool invalidPriorityRejected = false;
-    try {
-        static_cast<void>(ls::ConfigFile(invalidPriorityPath));
-    } catch (const std::exception&) {
-        invalidPriorityRejected = true;
-    }
-    expect(invalidPriorityRejected,
-        "Unknown Fractional real-frame priorities must be rejected");
-
-
-    for (const std::string_view invalidInterval : {"0.09", "4"}) {
-        const auto invalidIntervalPath = directory /
-            ("invalid-probe-interval-" + std::string(invalidInterval) +
-             ".toml");
-        writeText(invalidIntervalPath,
-            "version = 2\n[[profile]]\n"
-            "dynamic_cadence_probe_interval_seconds = " +
-            std::string(invalidInterval) + "\n");
-        bool invalidIntervalRejected = false;
-        try {
-            static_cast<void>(ls::ConfigFile(invalidIntervalPath));
-        } catch (const std::exception&) {
-            invalidIntervalRejected = true;
-        }
-        expect(invalidIntervalRejected,
-            "Cadence probe intervals outside 0.1-3 seconds must be rejected");
-    }
 
     // Retired scaling keys stay accepted and ignored: an old file loads, a
     // rewrite drops them, and out-of-range values cannot reject the file.
@@ -705,7 +672,6 @@ flow_scale = 0.95
     }
 
     setenv("FGVK_ENV", "1", 1);
-    setenv("FGVK_ADAPTIVE", "0", 1);
     unsetenv("FGVK_NO_FP16");
     expect(ls::WatchedConfig{}.get().global().allow_fp16,
         "Environment-only configuration must allow FP16 by default");
@@ -717,43 +683,20 @@ flow_scale = 0.95
         "FGVK_NO_FP16=0 must allow FP16");
     unsetenv("FGVK_NO_FP16");
     setenv("FGVK_BASE_FPS_CAP", "30", 1);
-    setenv("FGVK_ADAPTIVE_AUTO_BASE_FPS_CAP", "1", 1);
-    setenv("FGVK_ADAPTIVE_FRACTIONAL_REAL_FRAME_PRIORITY", "high", 1);
-    setenv("FGVK_ADAPTIVE_TARGET_REFRESH_RATE", "1", 1);
-    setenv("FGVK_DYNAMIC_CADENCE_RECOVERY", "1", 1);
-    setenv("FGVK_DYNAMIC_CADENCE_PROBE_INTERVAL_SECONDS", "0.5", 1);
     setenv("FGVK_FRAME_GENERATION_PROVISIONED", "0", 1);
     setenv("FGVK_ULTRA_PERFORMANCE", "1", 1);
     setenv("FGVK_SWAPCHAIN_IMAGE_COUNT_COMPATIBILITY", "1", 1);
     const ls::WatchedConfig environmentConfig;
-    expect(environmentConfig.get().profiles().front().adaptive_target_refresh_rate,
-        "Environment profiles must accept automatic refresh targeting");
-    setenv("FGVK_ADAPTIVE_TARGET_REFRESH_RATE", "0", 1);
-    expect(!ls::WatchedConfig{}.get().profiles().front().adaptive_target_refresh_rate,
-        "Environment profiles must accept explicitly disabled refresh targeting");
-    expect(environmentConfig.get().profiles().front().dynamic_cadence_recovery &&
-            environmentConfig.get().profiles().front()
-                .dynamic_cadence_probe_interval_seconds == 0.5F &&
-            !environmentConfig.get().profiles().front()
+    expect(!environmentConfig.get().profiles().front()
                 .frame_generation_provisioned &&
-            environmentConfig.get().profiles().front().base_fps_cap == 0 &&
-            !environmentConfig.get().profiles().front().adaptive_auto_base_fps_cap &&
-            environmentConfig.get().profiles().front()
-                    .adaptive_fractional_real_frame_priority ==
-                ls::AdaptiveFractionalRealFramePriority::Auto &&
+            environmentConfig.get().profiles().front().base_fps_cap == 30 &&
             environmentConfig.get().profiles().front().ultra_performance &&
             environmentConfig.get().profiles().front()
                 .swapchain_image_count_compatibility,
-        "Environment configuration must expose cadence and swapchain policy");
-    unsetenv("FGVK_DYNAMIC_CADENCE_RECOVERY");
-    unsetenv("FGVK_DYNAMIC_CADENCE_PROBE_INTERVAL_SECONDS");
+        "Environment configuration must expose the cap and swapchain policy");
     unsetenv("FGVK_FRAME_GENERATION_PROVISIONED");
     unsetenv("FGVK_ULTRA_PERFORMANCE");
     unsetenv("FGVK_SWAPCHAIN_IMAGE_COUNT_COMPATIBILITY");
-    unsetenv("FGVK_ADAPTIVE");
-    unsetenv("FGVK_ADAPTIVE_AUTO_BASE_FPS_CAP");
-    unsetenv("FGVK_ADAPTIVE_FRACTIONAL_REAL_FRAME_PRIORITY");
-    unsetenv("FGVK_ADAPTIVE_TARGET_REFRESH_RATE");
     unsetenv("FGVK_BASE_FPS_CAP");
     unsetenv("FGVK_ENV");
 

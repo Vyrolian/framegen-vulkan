@@ -28,15 +28,13 @@ const GAMES_BOX_WIDTH: f32 = 380.0;
 /// Space between an entry's name and its Remove button.
 const REMOVE_GAP: f32 = 2.0;
 const NO_GAMES: &str = "No games yet. Add an executable name or pick a running program.";
-const MODES: [Mode; 6] = [
+const MODES: [Mode; 5] = [
     Mode::Off,
     Mode::Fixed(2),
     Mode::Fixed(3),
     Mode::Fixed(4),
     Mode::Fixed(5),
-    Mode::Adaptive,
 ];
-const MAX_MULTIPLIERS: [i64; 4] = [2, 3, 4, 5];
 /// The Logging section, in launcher order: the switch, its checkbox label and the hint under it.
 const LOGGING: [(Switch, &str, &str); 5] = [
     (Switch::Pacing, "Pacing log", "Light timing summaries."),
@@ -92,7 +90,6 @@ pub struct App {
     fps_slider: Option<i64>,
     /// Number-box text exists only while the box has focus.
     fps_text: Option<String>,
-    target_text: Option<String>,
     quality: Option<f64>,
     dll_text: Option<String>,
     new_game: String,
@@ -126,7 +123,6 @@ impl App {
             fps_memory: FpsMemory::default(),
             fps_slider: None,
             fps_text: None,
-            target_text: None,
             quality: None,
             dll_text: None,
             new_game: String::new(),
@@ -147,7 +143,6 @@ impl App {
         self.name_edit.is_some()
             || self.fps_slider.is_some()
             || self.fps_text.is_some()
-            || self.target_text.is_some()
             || self.quality.is_some()
             || self.dll_text.is_some()
     }
@@ -162,7 +157,6 @@ impl App {
     fn clear_profile_drafts(&mut self) {
         self.fps_slider = None;
         self.fps_text = None;
-        self.target_text = None;
         self.quality = None;
         // The picker adds to the selected profile, so it closes when that profile goes away.
         self.picker = None;
@@ -511,50 +505,6 @@ impl App {
         });
         if mode != profile.mode {
             let result = self.config.set_mode(&profile.key, mode);
-            self.report(result);
-        }
-
-        if profile.mode == Mode::Adaptive {
-            ui.indent("adaptive", |ui| self.adaptive(ui, profile));
-        } else {
-            self.target_text = None;
-        }
-    }
-
-    fn adaptive(&mut self, ui: &mut Ui, profile: &Profile) {
-        let shown = profile.target_fps.to_string();
-        let typed = ui
-            .horizontal(|ui| {
-                ui.label("Target FPS");
-                text_commit(ui, &mut self.target_text, &shown, 64.0, "")
-            })
-            .inner;
-        if let Some(text) = typed.filter(|text| text.trim() != shown) {
-            let result = parse_in_range(&text, "Target FPS", &config::TARGET_FPS_RANGE)
-                .and_then(|value| self.config.set_target_fps(&profile.key, value));
-            self.report(result);
-        }
-
-        let chosen = ui
-            .horizontal(|ui| {
-                ui.label("Max multiplier");
-                let mut max = profile.adaptive_max_multiplier;
-                for option in MAX_MULTIPLIERS {
-                    if option_button(
-                        ui,
-                        format!("{option}x"),
-                        profile.adaptive_max_multiplier == option,
-                    ) {
-                        max = option;
-                    }
-                }
-                max
-            })
-            .inner;
-        if chosen != profile.adaptive_max_multiplier {
-            let result = self
-                .config
-                .set_adaptive_max_multiplier(&profile.key, chosen);
             self.report(result);
         }
     }
@@ -907,7 +857,6 @@ fn mode_label(mode: Mode) -> String {
     match mode {
         Mode::Off => "Off".to_owned(),
         Mode::Fixed(multiplier) => format!("{multiplier}x"),
-        Mode::Adaptive => "Adaptive".to_owned(),
     }
 }
 
@@ -1007,8 +956,6 @@ mod tests {
             },
             active_in: Vec::new(),
             mode: Mode::Fixed(2),
-            target_fps: 120,
-            adaptive_max_multiplier: 3,
             flow_scale: 0.8,
             base_fps_cap: 0,
             performance_mode: false,

@@ -5,7 +5,6 @@
 #include "swapchain/present/internal.hpp"
 #include "swapchain/render_slot_ring.hpp"
 #include "swapchain/retirement.hpp"
-#include "adaptive_scheduler.hpp"
 #include "fgvk-common/helpers/errors.hpp"
 #include "fgvk-common/vulkan/command_buffer.hpp"
 #include "fgvk-common/vulkan/image.hpp"
@@ -92,11 +91,7 @@ bool Swapchain::recoverBackendIfReady(const vk::Vulkan& vk) {
 
     this->recoveryState.backendPending = false;
     this->recoveryState.generatedImageAdmission.reset();
-    if (!this->resetGenerationScheduler(
-            DiagnosticsClock::now(), "backend-recovery")) {
-        this->recoveryState.historyWarmupRemaining =
-            AdaptiveScheduler::historyWarmupFrameCount();
-    }
+    this->recoveryState.historyWarmupRemaining = historyWarmupFrameCount;
 
     std::cerr << "framegen-vulkan: backend work recovered; warming temporal "
                  "history before resuming frame generation\n";
@@ -104,16 +99,9 @@ bool Swapchain::recoverBackendIfReady(const vk::Vulkan& vk) {
 }
 
 void Swapchain::ensureHistoryWarmup(const bool restart) {
-    const size_t warmupFrames = AdaptiveScheduler::historyWarmupFrameCount();
-    if (this->adaptiveScheduler) {
-        if (restart)
-            this->adaptiveScheduler->beginHistoryWarmup(warmupFrames, true);
-        else
-            this->adaptiveScheduler->ensureHistoryWarmup(warmupFrames, true);
-    } else {
-        this->recoveryState.historyWarmupRemaining = historyWarmupFramesAfterRequest(
-            this->recoveryState.historyWarmupRemaining, warmupFrames, restart);
-    }
+    const size_t warmupFrames = historyWarmupFrameCount;
+    this->recoveryState.historyWarmupRemaining = historyWarmupFramesAfterRequest(
+        this->recoveryState.historyWarmupRemaining, warmupFrames, restart);
 }
 
 Swapchain::PresentationFramePlan Swapchain::prepareFramePlan(
@@ -122,24 +110,8 @@ Swapchain::PresentationFramePlan Swapchain::prepareFramePlan(
     PresentationFramePlan plan;
     plan.orderedAcquireRecoveryProbe = orderedAcquireRecoveryProbe;
     plan.historyWarmupActive =
-        this->recoveryState.historyWarmupRemaining > 0 ||
-        (this->adaptiveScheduler &&
-            this->adaptiveScheduler->historyWarmupActive());
-    const bool schedulerEnabled = this->adaptiveScheduler.has_value();
-    const auto adaptivePlan = schedulerEnabled &&
-            !plan.historyWarmupActive
-        ? this->adaptiveScheduler->planFrame(
-            presentNow, orderedAcquireRecoveryProbe,
-            std::nullopt,
-            this->profile.adaptive && !this->smoothCadencePacerHandoff.active()
-                ? this->smoothCadenceBaseCap.activeGenerationLimit()
-                : std::nullopt,
-            this->orderedPresentationDeadline
-        )
-        : AdaptiveFramePlan{};
-    const size_t fixedGeneratedFrameCount = schedulerEnabled
-        ? 0
-        : this->fixedRefreshBudget.plan(
+        this->recoveryState.historyWarmupRemaining > 0;
+    const size_t fixedGeneratedFrameCount = this->fixedRefreshBudget.plan(
             presentNow, std::nullopt,
             this->configuredFixedGeneratedFrames,
             false
@@ -147,18 +119,15 @@ Swapchain::PresentationFramePlan Swapchain::prepareFramePlan(
     // Fixed is a user-selected workload. Only explicit menu/lifecycle
     // transitions and direct transport failures may interrupt it; ordinary
     // gameplay cadence is never used to infer a recovery episode.
-    if (!schedulerEnabled &&
-            fixedGeneratedFrameCount <
-                this->configuredFixedGeneratedFrames) {
+    if (fixedGeneratedFrameCount <
+            this->configuredFixedGeneratedFrames) {
         this->diagnosticsState.fixedSkippedFrames +=
             this->configuredFixedGeneratedFrames -
                 fixedGeneratedFrameCount;
     }
-    plan.requestedGeneratedFrames = schedulerEnabled
-        ? adaptivePlan
-        : GeneratedFramePlan::evenlySpaced(
-            fixedGeneratedFrameCount
-        );
+    plan.requestedGeneratedFrames = GeneratedFramePlan::evenlySpaced(
+        fixedGeneratedFrameCount
+    );
     if (orderedAcquireProbeEligible(orderedAcquireRecoveryProbe,
             plan.historyWarmupActive, plan.requestedGeneratedFrames.size())) {
         // A successful native drain proves only that one image can traverse
@@ -169,25 +138,6 @@ Swapchain::PresentationFramePlan Swapchain::prepareFramePlan(
     plan.admittedGeneratedFrameCount = plan.requestedGeneratedFrames.size();
     plan.configuredAcquireTimeout = generatedImageAcquireTimeoutNs();
     return plan;
-}
-
-void Swapchain::reportAdaptiveDelivery(
-        const PresentationFramePlan& plan,
-        const size_t acceptedForPresentation) {
-    if (!this->adaptiveScheduler || plan.requestedGeneratedFrames.empty())
-        return;
-    // Ordered acquire recovery owns the cadence boundary until its one-frame
-    // probe completes. Its synthetic delivery must not advance an unrelated
-    // Adaptive ramp or stable-cadence evaluation.
-    if (this->privateOrderedTransport &&
-            (plan.orderedAcquireRecoveryProbe ||
-             this->recoveryState.orderedAcquireRecovery.active())) {
-        return;
-    }
-    this->adaptiveScheduler->reportGeneratedFrameDelivery({
-        .requested = plan.requestedGeneratedFrames.size(),
-        .acceptedForPresentation = acceptedForPresentation,
-    });
 }
 
 bool Swapchain::renderSlotsInFlight() const {
@@ -354,10 +304,7 @@ void Swapchain::handleRenderFenceBudgetMiss(
               << renderFenceWaitBudget.count() << " ms "
                  "fence budget; bypassing frame generation for this present; "
                  "native presentation retained\n";
-    if (this->adaptiveScheduler) {
-        this->reportAdaptiveDelivery(plan, 0);
-        this->adaptiveScheduler->cancelHistoryWarmup();
-    } else if (!plan.historyWarmupActive) {
+    if (!plan.historyWarmupActive) {
         // Fixed history warmup was already recorded as skipped when the plan
         // was built, so count only a delivery that was still intended.
         this->diagnosticsState.fixedSkippedFrames +=
@@ -378,76 +325,12 @@ void Swapchain::handleGeneratedImageAdmissionPressure(
         const PresentationFramePlan& plan,
         const size_t admittedGeneratedFrames,
         const bool logPressure,
-        const bool retainPartialAdmissionCapacity,
-        const bool classifyAdaptiveLoadFailure,
         const uint64_t acquireTimeoutNanoseconds,
         const char* const action) {
     this->recoveryState.generatedImageAdmission.reportBypassedFrame();
-    const bool higherMultiplierEvaluationActive =
-        this->adaptiveScheduler &&
-        this->adaptiveScheduler->snapshot().rampEvaluationActive;
-    const bool adaptiveOrderedAdmissionMiss =
-        classifyAdaptiveLoadFailure && this->adaptiveScheduler &&
-        adaptiveOrderedDeliveryMissRequiresFallback(
-            this->profile.adaptive,
-            this->privateOrderedTransport,
-            plan.requestedGeneratedFrames.size(),
-            admittedGeneratedFrames,
-            higherMultiplierEvaluationActive
-        );
-    if (adaptiveOrderedAdmissionMiss) {
-        static_cast<void>(
-            this->adaptiveScheduler->rejectActiveRampForTransportMiss(
-                DiagnosticsClock::now()
-            )
-        );
-    }
-    const auto constrainedAdaptiveOrderedWsiCapacity =
-        retainPartialAdmissionCapacity
-            ? adaptiveOrderedWsiLimitAfterPartialAdmission(
-                this->profile.adaptive,
-                this->privateOrderedTransport,
-                adaptiveOrderedAdmissionMiss,
-                plan.requestedGeneratedFrames.size(),
-                admittedGeneratedFrames,
-                this->adaptiveOrderedWsiGeneratedCapacityLimit
-            )
-            : std::nullopt;
-    if (constrainedAdaptiveOrderedWsiCapacity) {
-        const size_t previousGeneratedCapacity =
-            this->adaptiveOrderedWsiGeneratedCapacityLimit.value_or(
-                this->destinationImages.size()
-            );
-        this->adaptiveOrderedWsiGeneratedCapacityLimit =
-            *constrainedAdaptiveOrderedWsiCapacity;
-        if (presentDiagnosticsEnabled()) {
-            std::cerr << "framegen-vulkan: present diagnostics: "
-                         "operation=adaptive-wsi-headroom-limit"
-                      << " context=" << this->diagnosticsState.contextId
-                      << " requested_min_images="
-                      << this->info.requestedMinImageCount
-                      << " images=" << this->info.images.size()
-                      << " requested_generated="
-                      << plan.requestedGeneratedFrames.size()
-                      << " admitted_generated="
-                      << admittedGeneratedFrames
-                      << " previous_generated_capacity="
-                      << previousGeneratedCapacity
-                      << " effective_generated_capacity="
-                      << *this->adaptiveOrderedWsiGeneratedCapacityLimit
-                      << " evidence=higher-multiplier-partial-admission"
-                      << " action=retain-proven-generated-capacity\n";
-        }
-        this->recoveryState.generatedImageAdmission.reset();
-        static_cast<void>(this->resetGenerationScheduler(
-            DiagnosticsClock::now(), "ordered-wsi-partial-admission"
-        ));
-    }
-    if (!this->adaptiveScheduler) {
-        this->diagnosticsState.fixedSkippedFrames +=
-            plan.requestedGeneratedFrames.size() -
-                admittedGeneratedFrames;
-    }
+    this->diagnosticsState.fixedSkippedFrames +=
+        plan.requestedGeneratedFrames.size() -
+            admittedGeneratedFrames;
     if (logPressure && presentDiagnosticsEnabled()) {
         std::cerr << "framegen-vulkan: present diagnostics: "
                      "operation=generated-admission-pressure"
@@ -481,7 +364,6 @@ void Swapchain::reportGeneratedImageAdmissionAvailable(
 void Swapchain::preacquireGeneratedImages(
         const PresentInvocation& invocation,
         PresentationFramePlan& plan, const bool trackNonblockingAdmission,
-        const bool classifyAdaptiveLoadFailure,
         const uint64_t acquireTimeout,
         const bool reportAvailableOnFullAdmission) {
     if (plan.requestedGeneratedFrames.empty() || plan.historyWarmupActive)
@@ -536,11 +418,10 @@ void Swapchain::preacquireGeneratedImages(
     }
 
     if (trackNonblockingAdmission) {
+        // Only the native-first ordered batch tracks nonblocking admission.
         this->handleGeneratedImageAdmissionPressure(
-            plan, plan.admittedGeneratedFrameCount, logPressure, true,
-            classifyAdaptiveLoadFailure, 0,
-            classifyAdaptiveLoadFailure
-                ? "native-first" : "adaptive-pressure-retry"
+            plan, plan.admittedGeneratedFrameCount, logPressure, 0,
+            "native-first"
         );
     }
 }

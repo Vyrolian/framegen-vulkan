@@ -5,7 +5,6 @@
 #include "swapchain/create_policy.hpp"
 #include "swapchain/present/internal.hpp"
 #include "swapchain/retirement.hpp"
-#include "adaptive_scheduler.hpp"
 #include "fgvk-common/helpers/errors.hpp"
 #include "fgvk-common/vulkan/command_buffer.hpp"
 #include "fgvk-common/vulkan/image.hpp"
@@ -380,97 +379,13 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
 #endif
 
     const auto limiterArrival = DiagnosticsClock::now();
-    AdaptiveSchedulerSnapshot schedulerSnapshot;
-    std::optional<size_t> handoffGenerationLimit;
-    bool cadenceBaseCapEligible = false;
-    bool automaticBaseCapSuppressed = false;
-    if (this->adaptiveScheduler) {
-        schedulerSnapshot = this->adaptiveScheduler->snapshot();
-        automaticBaseCapSuppressed =
-            effectiveBaseFpsCap(this->profile, schedulerSnapshot) <= 0.0 &&
-            effectiveBaseFpsCap(this->profile) > 0.0;
-        cadenceBaseCapEligible = smoothCadenceBaseCapEligible(
-            this->profile,
-            this->privateOrderedTransport,
-            this->recoveryState.orderedAcquireRecovery.active(),
-            std::nullopt
-        ) && !automaticBaseCapSuppressed;
-        handoffGenerationLimit = smoothCadencePacerHandoffGenerationLimit(
-            this->profile,
-            this->privateOrderedTransport,
-            this->recoveryState.orderedAcquireRecovery.active(),
-            std::nullopt,
-            schedulerSnapshot,
-            this->smoothCadencePacerHandoff.activeGenerationLimit()
-        );
-    }
-    const auto cadenceBaseCap = this->smoothCadenceBaseCap.update(
-        limiterArrival,
-        cadenceBaseCapEligible,
-        this->profile.target_fps,
-        {
-            .validatedGenerationLimit =
-                schedulerSnapshot.validatedGenerationLimit,
-            .stableCadenceLimit = schedulerSnapshot.stableCadenceLimit,
-            .smoothedBaseFps = schedulerSnapshot.smoothedBaseFps,
-            .rampEvaluationActive = schedulerSnapshot.rampEvaluationActive,
-            .efficiencyProbeGenerationLimit =
-                schedulerSnapshot.efficiencyProbeGenerationLimit,
-            .rearmRequired = schedulerSnapshot.rearmRequired,
-            .discontinuityRecoveryActive =
-                schedulerSnapshot.discontinuityRecoveryActive,
-        }
-    );
-    if (cadenceBaseCap.changed) {
-        this->realFramePacer.reset();
-        present_diagnostics::adaptiveScheduler().stableCadence(
-            cadenceBaseCap.framesPerSecond
-                ? "adaptive-smooth-cadence-base-cap"
-                : "adaptive-smooth-cadence-base-cap-restored",
-            cadenceBaseCap.multiplier > 0
-                ? cadenceBaseCap.multiplier - 1
-                : 0,
-            schedulerSnapshot.smoothedBaseFps,
-            schedulerSnapshot.smoothedBaseFps,
-            cadenceBaseCap.framesPerSecond
-                ? "steady-integer-ladder-qualified"
-                : "scheduler-or-transport-guard-restored"
-        );
-    }
-    const auto handoff = this->smoothCadencePacerHandoff.update(
-        limiterArrival, handoffGenerationLimit, false
-    );
-    if (handoff.changed) {
-        this->realFramePacer.reset();
-        present_diagnostics::adaptiveScheduler().stableCadence(
-            handoff.active
-                ? "adaptive-smooth-cadence-pacer-handoff"
-                : "adaptive-smooth-cadence-pacer-restored",
-            handoff.generationLimit.value_or(
-                handoff.previousGenerationLimit.value_or(0)
-            ),
-            schedulerSnapshot.smoothedBaseFps,
-            schedulerSnapshot.smoothedBaseFps,
-            handoff.active
-                ? (!this->profile.adaptive_auto_base_fps_cap
-                    ? "ordered-vrr-accepted-integer"
-                    : (handoff.generationLimit == 1
-                        ? "ordered-fifo-target-match"
-                        : "ordered-vrr-full-rung"))
-                : "guard-restored-long-retry"
-        );
-    }
     // Transport half of worker admission; the pacing half is decided below.
     const bool detachedOutputTransport =
         !(this->deferredPresent && this->deferredPresent->serialWaitObserved()) &&
         detachedOutputModeAdmits(directUnthrottled, this->currentPresentMode) &&
         DeferredPresent::supportsChain(lowerNextChain) &&
         this->info.deferredPresentQueue && queue == vk.queue();
-    double baseFpsCap = handoff.active
-        ? 0.0
-        : cadenceBaseCap.framesPerSecond.value_or(
-            effectiveBaseFpsCap(this->profile, schedulerSnapshot)
-        );
+    double baseFpsCap = effectiveBaseFpsCap(this->profile);
     // Refresh bounds the automatic cap only. Query on each of the first 64
     // presents until a rate is known, then once per 240 presents, from the
     // owner that already has it.
@@ -551,8 +466,7 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         ? this->applicationRefreshHz / static_cast<double>(this->profile.multiplier) : 0.0;
     const bool uncappedAutoCapEligible =
         effectiveFrameGenerationEnabled(this->profile) &&
-        !this->profile.adaptive && !this->profile.adaptive_stable_cadence &&
-        !this->profile.dynamic_cadence_recovery && !handoff.active &&
+        !this->profile.adaptive_stable_cadence &&
         !this->recoveryState.orderedAcquireRecovery.active() &&
         detachedOutputTransport && this->profile.multiplier >= 2;
     const bool userCapBinding = baseFpsCap > 0 &&
@@ -581,7 +495,7 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         this->currentPresentMode == VK_PRESENT_MODE_FIFO_KHR &&
             this->info.applicationPresentTiming);
     if (this->pacingProfile) this->pacingProfile->settings(
-        this->profile.frame_generation_enabled, this->profile.adaptive,
+        this->profile.frame_generation_enabled, false,
         this->profile.multiplier, this->profile.base_fps_cap);
     // An automatic cap change between two automatic values must move the next
     // source boundary, not grant a free frame; a free frame deepens the GPU
@@ -617,8 +531,7 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
     // is not delayed. A deadline far ahead means the producer is not throttled
     // by that wait; keep the ordinary hold so the cap clock cannot run away.
     const bool releaseGated = this->releaseGate.active() &&
-        detachedOutputTransport && !this->profile.adaptive &&
-        !this->profile.dynamic_cadence_recovery &&
+        detachedOutputTransport &&
         !this->recoveryState.orderedAcquireRecovery.active() &&
         limiterDeadline - limiterArrival <= 3 * capInterval;
     bool readyOutputPacing = fixedReadyOutputPacingEligible(
@@ -652,9 +565,9 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         baseCapPacesOutputs(
             this->profile, baseFpsCap,
             (this->privateOrderedTransport || ownedTimingControlsOutput || directUnthrottled ||
-                (!this->profile.adaptive && nativeFifoOutputPacing)) &&
+                nativeFifoOutputPacing) &&
                 !this->recoveryState.orderedAcquireRecovery.active(),
-            sourceRefreshHz, compositorOutputTiming, directUnthrottled, nativeFifoOutputPacing,
+            sourceRefreshHz, directUnthrottled, nativeFifoOutputPacing,
             applicationTimingOwner) &&
         orderedGeneratedBatchCanPrepareBeforeCap(
             this->info.requestedMinImageCount, this->info.images.size(),
@@ -756,7 +669,7 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         .originalPresentDeadline = sourceDeadlinePacing
             ? std::optional{limiterDeadline} : std::nullopt,
         .deferredOutputEligible = (readyOutputPacing || releaseGated ||
-            (sourceDeadlinePacing && !this->profile.adaptive)) && detachedOutputTransport,
+            sourceDeadlinePacing) && detachedOutputTransport,
         .profiler = this->pacingProfile.get(),
     };
     struct OutputWaitObservation {
@@ -816,7 +729,7 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
                          "operation=replacement-backend-stabilization-complete"
                       << " context=" << this->diagnosticsState.contextId
                       << " history_warmup_frames="
-                      << AdaptiveScheduler::historyWarmupFrameCount()
+                      << historyWarmupFrameCount
                       << " action=resume-private-backend\n";
         }
     }
@@ -831,17 +744,10 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
                 presentNow
             );
         if (recovery.bypassGeneration) {
-            // Keep Adaptive's cadence clock current while freezing every
-            // multiplier evaluation. No backend work or synthetic swapchain
-            // acquire is attempted until the direct-failure retry deadline.
-            if (this->adaptiveScheduler) {
-                static_cast<void>(
-                    this->adaptiveScheduler->planFrame(presentNow, true)
-                );
-            } else {
-                this->diagnosticsState.fixedSkippedFrames +=
-                    this->configuredFixedGeneratedFrames;
-            }
+            // No backend work or synthetic swapchain acquire is attempted
+            // until the direct-failure retry deadline.
+            this->diagnosticsState.fixedSkippedFrames +=
+                this->configuredFixedGeneratedFrames;
             return this->presentNativeFrame(invocation);
         }
         orderedAcquireRecoveryProbe = recovery.limitGeneratedFrames;
@@ -863,7 +769,7 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
                                  recovery.drainDuration
                              ).count()
                           << " history_warmup_frames="
-                          << AdaptiveScheduler::historyWarmupFrameCount()
+                          << historyWarmupFrameCount
                           << " requested_generated=0"
                           << " admitted_generated=0"
                           << " presented_generated=0"
@@ -886,7 +792,7 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
     );
     plan.boundedOrderedAcquireProbe = boundedOrderedAcquireProbe;
 
-    if (plan.historyWarmupActive && !this->adaptiveScheduler)
+    if (plan.historyWarmupActive)
         this->diagnosticsState.fixedSkippedFrames +=
             plan.requestedGeneratedFrames.size();
 
@@ -907,7 +813,7 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         this->nativeCopyProfile->beginSource(this->pacingProfile->sourceOrdinal(),
             this->pacingProfile->backendGeneration(), invocation.swapchain);
     if (this->frameContentCapture &&
-            !this->profile.adaptive && this->profile.multiplier == 2)
+            this->profile.multiplier == 2)
         this->frameContentCapture->beginSource(vk, this->info.format,
             this->pacingProfile ? this->pacingProfile->sourceOrdinal() : this->frameState.realFrameIndex,
             this->frameState.backendFrameIndex, queue,
@@ -943,7 +849,7 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
     }
     if (nativeFirstOrderedBatch) {
         this->preacquireGeneratedImages(
-            invocation, plan, true, true, 0, true
+            invocation, plan, true, 0, true
         );
     }
     size_t scheduledGeneratedFrameCount = plan.generatedImagesPreacquired
@@ -967,7 +873,7 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
             )
             : 0;
         this->preacquireGeneratedImages(
-            invocation, plan, false, false, recoveryAcquireTimeout
+            invocation, plan, false, recoveryAcquireTimeout
         );
         if (plan.admittedGeneratedFrameCount == 0) {
             const auto probeFinishedAt = DiagnosticsClock::now();
@@ -1038,13 +944,8 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
                       << error.what() << '\n';
             this->recoveryState.backendPending = true;
             this->recoveryState.historyWarmupRemaining = 0;
-            if (this->adaptiveScheduler) {
-                this->reportAdaptiveDelivery(plan, 0);
-                this->adaptiveScheduler->cancelHistoryWarmup();
-            } else {
-                this->diagnosticsState.fixedSkippedFrames +=
-                    plan.admittedGeneratedFrameCount;
-            }
+            this->diagnosticsState.fixedSkippedFrames +=
+                plan.admittedGeneratedFrameCount;
             if (!preacquiredImagesRequireRetirement(
                     plan.generatedImagesPreacquired,
                     plan.admittedGeneratedFrameCount)) {
@@ -1079,8 +980,8 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         sourceCopyStarted
     );
     if (sourceDeadlinePacing && !plan.historyWarmupActive &&
-            (this->profile.adaptive || plan.scheduledGeneratedFrames.size() ==
-                this->configuredFixedGeneratedFrames) &&
+            plan.scheduledGeneratedFrames.size() ==
+                this->configuredFixedGeneratedFrames &&
             plan.scheduledGeneratedFrames.size() ==
                 plan.requestedGeneratedFrames.size()) {
         // Prepare inside the cap interval in native FIFO too, independent of
@@ -1088,13 +989,9 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         // and sends generated/real images as one burst.
         invocation.pacedOutputs = this->realFramePacer.scheduleOutputs(
             DiagnosticsClock::now(), limiterDeadline,
-            this->profile.adaptive
-                ? std::min<double>(this->profile.target_fps,
-                    this->profile.target_fps)
-                : baseFpsCap * this->profile.multiplier,
+            baseFpsCap * this->profile.multiplier,
             plan.scheduledGeneratedFrames.size() + 1,
-            this->adaptiveScheduler &&
-                this->adaptiveScheduler->snapshot().targetOutputClockActive,
+            false,
             invocation.deferredOutputEligible);
         if (invocation.pacedOutputs) {
             invocation.capReadyOutputPacing = invocation.deferredOutputEligible;

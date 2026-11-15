@@ -230,64 +230,6 @@ namespace {
         }
     }
 
-    void testSmoothCadenceCapFollowsActivePlan() {
-        const SmoothCadenceBaseCap::TimePoint start{};
-        for (const uint32_t target : {60U, 90U, 120U, 144U}) {
-            for (size_t validated = 3; validated <= 5; ++validated) {
-                for (size_t active = 2; active <= validated; ++active) {
-                    SmoothCadenceBaseCap cap;
-                    const double activeCap = static_cast<double>(target) / active;
-                    SmoothCadenceBaseCap::SchedulerState snapshot{
-                        .validatedGenerationLimit = validated - 1,
-                        .stableCadenceLimit = active - 1,
-                        .smoothedBaseFps = activeCap * 0.97,
-                    };
-                    static_cast<void>(cap.update(start, true, target, snapshot));
-                    auto result = cap.update(start + 1s, true, target, snapshot);
-                    if (active == 2) {
-                        // FF7 accepted 3x capacity but retained a 2x plan.
-                        // Its ordinary half-target cap must remain authoritative.
-                        expect(!result.framesPerSecond && !result.changed,
-                            "validated higher capacity throttled an active 2x plan");
-                    } else {
-                        expect(result.framesPerSecond && result.changed &&
-                                result.multiplier == active &&
-                                std::abs(*result.framesPerSecond - activeCap) < 0.001,
-                            "integer cap did not match the active constant plan");
-                    }
-                }
-            }
-        }
-
-        SmoothCadenceBaseCap cap;
-        SmoothCadenceBaseCap::SchedulerState snapshot{
-            .validatedGenerationLimit = 4,
-            .smoothedBaseFps = 24.0,
-        };
-        static_cast<void>(cap.update(start, true, 120, snapshot));
-        expect(cap.update(start + 1s, true, 120, snapshot).framesPerSecond == 24.0,
-            "validated 5x workload could not qualify without a constant plan");
-        snapshot.stableCadenceLimit = 2;
-        snapshot.smoothedBaseFps = 39.0;
-        auto result = cap.update(start + 2s, true, 120, snapshot);
-        expect(!result.framesPerSecond && result.changed,
-            "newly accepted 3x plan retained the old 5x cap during qualification");
-        result = cap.update(start + 3s, true, 120, snapshot);
-        expect(result.framesPerSecond == 40.0 && result.multiplier == 3,
-            "active 3x plan could not qualify after releasing a stricter cap");
-        snapshot.stableCadenceLimit = 1;
-        result = cap.update(start + 3010ms, true, 120, snapshot);
-        expect(!result.framesPerSecond && result.changed,
-            "newly accepted 2x plan did not immediately release the 3x cap");
-
-        // A lower-load measurement must still override the retained plan.
-        snapshot.stableCadenceLimit = 2;
-        snapshot.efficiencyProbeGenerationLimit = 1;
-        result = cap.update(start + 4s, true, 120, snapshot);
-        expect(result.framesPerSecond == 60.0 && result.multiplier == 2,
-            "active cadence prevented a lower-load efficiency probe");
-    }
-
     void testOrderedAcquireUsesExplicitFailureOnly() {
         OrderedAcquireRecovery recovery;
         const auto now = OrderedAcquireRecovery::TimePoint{};
@@ -1041,7 +983,7 @@ void testLateNativeFixedCapKeepsSpacing() {
             (void)target.schedule(returned, cap);
             expect(!target.scheduleOutputs(returned + period - slot / 2,
                     returned + period, cap * count, count, true, true),
-                "native Fixed phase correction moved an Adaptive target clock");
+                "native Fixed phase correction moved a target output clock");
         }
     }
 }
@@ -2084,7 +2026,6 @@ int main() {
     testDetachedCadenceAfterReadinessMiss();
     testDetachedCapYieldsToGameLimiter();
     testReadyFixedChangingWorkload();
-    testSmoothCadenceCapFollowsActivePlan();
     testOrderedPresentationTimeline();
     testBridgeCompositorReadiness();
     testBridgeCompletionReturnDoesNotDrift();
@@ -2106,26 +2047,6 @@ int main() {
             !orderedGeneratedBatchNeedsNonblockingAdmission(4, 6, 1) &&
             orderedGeneratedBatchNeedsNonblockingAdmission(4, 3, 1),
         "ordered admission did not distinguish a fitting batch from insufficient headroom");
-    expect(adaptiveOrderedDeliveryMissRequiresFallback(
-                true, true, 2, 0, true) &&
-            adaptiveOrderedDeliveryMissRequiresFallback(
-                true, true, 2, 1, true) &&
-            !adaptiveOrderedDeliveryMissRequiresFallback(
-                true, true, 2, 2, true) &&
-            !adaptiveOrderedDeliveryMissRequiresFallback(
-                true, true, 0, 0, true) &&
-            !adaptiveOrderedDeliveryMissRequiresFallback(
-                false, true, 2, 0, true) &&
-            !adaptiveOrderedDeliveryMissRequiresFallback(
-                true, false, 2, 0, true),
-        "Adaptive ordered multiplier probes lost immediate fallback policy");
-    for (size_t requested = 1; requested <= 4; ++requested) {
-        for (size_t admitted = 0; admitted < requested; ++admitted) {
-            expect(!adaptiveOrderedDeliveryMissRequiresFallback(
-                    true, true, requested, admitted, false),
-                "zero-wait admission miss demoted an already validated load");
-        }
-    }
     for (uint32_t applicationImages = 2; applicationImages <= 4; ++applicationImages) {
         for (size_t generated = 1; generated <= 4; ++generated) {
             const size_t images = applicationImages + generated;
@@ -2163,24 +2084,6 @@ int main() {
     expect(!orderedGeneratedBatchAcquireBudget(3, 3, 0, std::nullopt) &&
             !orderedGeneratedBatchAcquireBudget(3, 2, 1, std::nullopt),
         "empty or malformed pools gained a synthetic acquire budget");
-    expect(adaptiveOrderedWsiLimitAfterPartialAdmission(
-                true, true, true, 2, 1, std::nullopt) == 1 &&
-            adaptiveOrderedWsiLimitAfterPartialAdmission(
-                true, true, true, 4, 2, 3) == 2,
-        "partial Adaptive ordered admission did not retain its proven lower capacity");
-    expect(!adaptiveOrderedWsiLimitAfterPartialAdmission(
-                false, true, true, 2, 1, std::nullopt) &&
-            !adaptiveOrderedWsiLimitAfterPartialAdmission(
-                true, false, true, 2, 1, std::nullopt) &&
-            !adaptiveOrderedWsiLimitAfterPartialAdmission(
-                true, true, false, 2, 1, std::nullopt) &&
-            !adaptiveOrderedWsiLimitAfterPartialAdmission(
-                true, true, true, 2, 0, std::nullopt) &&
-            !adaptiveOrderedWsiLimitAfterPartialAdmission(
-                true, true, true, 2, 2, std::nullopt) &&
-            !adaptiveOrderedWsiLimitAfterPartialAdmission(
-                true, true, true, 3, 2, 1),
-        "Adaptive ordered admission limit escaped its partial, tighter, nonzero boundary");
     constexpr uint64_t acquireBudget = 50'000'000;
     expect(remainingGeneratedImageAcquireBudget(
             std::nullopt, 32'805'100) == std::nullopt,
@@ -2324,269 +2227,6 @@ int main() {
             fractionalDeadline < pacingStart + 13ms,
         "82.5 FPS pacing did not retain its fractional interval");
 
-    SmoothCadenceBaseCap cadenceBaseCap;
-    SmoothCadenceBaseCap::SchedulerState cadenceSnapshot{
-        .validatedGenerationLimit = 2,
-        .smoothedBaseFps = 45.0,
-    };
-    auto cadenceCap = cadenceBaseCap.update(
-        pacingStart, true, 120, cadenceSnapshot
-    );
-    expect(!cadenceCap.framesPerSecond && !cadenceCap.changed,
-        "Steady integer cadence activated without qualification");
-    expect(!cadenceBaseCap.activeGenerationLimit(),
-        "pending integer cap was reported as applied pacing");
-    cadenceCap = cadenceBaseCap.update(
-        pacingStart + 999ms, true, 120, cadenceSnapshot
-    );
-    expect(!cadenceCap.framesPerSecond,
-        "Steady integer cadence activated before its qualification hold");
-    cadenceCap = cadenceBaseCap.update(
-        pacingStart + SmoothCadenceBaseCap::qualificationDuration(),
-        true, 120, cadenceSnapshot
-    );
-    expect(cadenceCap.framesPerSecond && cadenceCap.changed &&
-            cadenceCap.multiplier == 3 &&
-            std::abs(*cadenceCap.framesPerSecond - 40.0) < 0.001,
-        "Steady Adaptive did not align a proven 3x load to 40 -> 120 FPS");
-    expect(cadenceBaseCap.activeGenerationLimit() == 2,
-        "qualified integer cap did not expose its applied generation rung");
-    cadenceCap = cadenceBaseCap.update(
-        pacingStart + 2s, true, 120, cadenceSnapshot
-    );
-    expect(cadenceCap.framesPerSecond && !cadenceCap.changed,
-        "retained Steady integer cadence reported a false transition");
-
-    cadenceSnapshot.rampEvaluationActive = true;
-    cadenceCap = cadenceBaseCap.update(
-        pacingStart + 3s, true, 120, cadenceSnapshot
-    );
-    expect(!cadenceCap.framesPerSecond && cadenceCap.changed,
-        "an Adaptive ramp did not restore the conservative target/2 cap");
-    expect(!cadenceBaseCap.activeGenerationLimit(),
-        "released integer cap retained stale applied pacing authority");
-    cadenceSnapshot.rampEvaluationActive = false;
-    cadenceSnapshot.validatedGenerationLimit = 1;
-    cadenceSnapshot.smoothedBaseFps = 58.0;
-    cadenceCap = cadenceBaseCap.update(
-        pacingStart + 5s, true, 120, cadenceSnapshot
-    );
-    expect(!cadenceCap.framesPerSecond && !cadenceCap.changed,
-        "the integer ladder altered a healthy near-2x source cadence");
-
-    cadenceSnapshot.validatedGenerationLimit = 3;
-    cadenceSnapshot.smoothedBaseFps = 32.0;
-    cadenceCap = cadenceBaseCap.update(
-        pacingStart + 6s, true, 120, cadenceSnapshot
-    );
-    cadenceCap = cadenceBaseCap.update(
-        pacingStart + 7s, true, 120, cadenceSnapshot
-    );
-    expect(cadenceCap.framesPerSecond && cadenceCap.multiplier == 4 &&
-            std::abs(*cadenceCap.framesPerSecond - 30.0) < 0.001,
-        "Steady Adaptive did not align a proven 4x load to 30 -> 120 FPS");
-    cadenceCap = cadenceBaseCap.update(
-        pacingStart + 8s, false, 120, cadenceSnapshot
-    );
-    expect(!cadenceCap.framesPerSecond && cadenceCap.changed,
-        "losing the ordered target-matched guard did not restore the base cap");
-
-    // RE4 hovered around the 95% entry threshold (38 FPS for 40 -> 120).
-    // Once qualified, keep the pacer stable across that boundary on every
-    // supported integer rung, including handheld refresh rates.
-    for (const uint32_t target : {60U, 90U, 120U, 144U}) {
-        for (size_t multiplier = 3; multiplier <= 5; ++multiplier) {
-            SmoothCadenceBaseCap stableCap;
-            auto now = pacingStart;
-            const double cap = static_cast<double>(target) / multiplier;
-            SmoothCadenceBaseCap::SchedulerState snapshot{
-                .validatedGenerationLimit = multiplier - 1,
-                .smoothedBaseFps = cap * 0.97,
-            };
-            static_cast<void>(stableCap.update(now, true, target, snapshot));
-            now += 1s;
-            auto decision = stableCap.update(now, true, target, snapshot);
-            expect(decision.changed && decision.framesPerSecond &&
-                    std::abs(*decision.framesPerSecond - cap) < 0.001,
-                "integer cadence matrix failed to qualify its initial cap");
-
-            const auto jitterUntil = now + 95s;
-            size_t frame = 0;
-            while (now < jitterUntil) {
-                snapshot.smoothedBaseFps = cap * (frame++ % 2 ? 0.94 : 0.97);
-                now += std::chrono::duration_cast<
-                    SmoothCadenceBaseCap::Clock::duration>(
-                        std::chrono::duration<double>{
-                            1.0 / snapshot.smoothedBaseFps});
-                decision = stableCap.update(now, true, target, snapshot);
-                expect(decision.framesPerSecond && !decision.changed,
-                    "entry-boundary jitter repeatedly reset Smooth Cadence pacing");
-            }
-
-            snapshot.smoothedBaseFps = cap * 0.85;
-            static_cast<void>(stableCap.update(now, true, target, snapshot));
-            now += 100ms;
-            snapshot.smoothedBaseFps = cap * 0.94;
-            decision = stableCap.update(now, true, target, snapshot);
-            expect(decision.framesPerSecond && !decision.changed,
-                "a short cadence dip unnecessarily released the qualified cap");
-
-            now += 1s;
-            snapshot.smoothedBaseFps = cap * 0.85;
-            decision = stableCap.update(now, true, target, snapshot);
-            expect(decision.framesPerSecond && !decision.changed,
-                "a recovered dip left stale cap-release evidence");
-            decision = stableCap.update(now + 249ms, true, target, snapshot);
-            expect(decision.framesPerSecond && !decision.changed,
-                "cap release ignored its sustained-loss hold");
-            decision = stableCap.update(now + 250ms, true, target, snapshot);
-            expect(!decision.framesPerSecond && decision.changed,
-                "sustained cadence loss could not release the integer cap");
-
-            now += 251ms;
-            snapshot.smoothedBaseFps = cap * 0.97;
-            decision = stableCap.update(now, true, target, snapshot);
-            expect(!decision.framesPerSecond && !decision.changed,
-                "released cap reactivated without new stable evidence");
-            now += 1s;
-            decision = stableCap.update(now, true, target, snapshot);
-            expect(decision.framesPerSecond && decision.changed,
-                "healthy cadence could not requalify after a genuine slowdown");
-
-            snapshot.smoothedBaseFps = static_cast<double>(target) /
-                (multiplier - 1);
-            static_cast<void>(stableCap.update(now, true, target, snapshot));
-            decision = stableCap.update(now + 250ms, true, target, snapshot);
-            expect(!decision.framesPerSecond && decision.changed,
-                "a sustained return to a lower multiplier retained the old cap");
-        }
-    }
-
-    // Safety and scheduler transitions bypass the cadence-only hold, even
-    // when a release timer is already pending.
-    for (size_t guard = 0; guard < 5; ++guard) {
-        SmoothCadenceBaseCap guardedCap;
-        SmoothCadenceBaseCap::SchedulerState snapshot{
-            .validatedGenerationLimit = 2,
-            .smoothedBaseFps = 40.0,
-        };
-        static_cast<void>(guardedCap.update(pacingStart, true, 120, snapshot));
-        static_cast<void>(guardedCap.update(pacingStart + 1s, true, 120, snapshot));
-        snapshot.smoothedBaseFps = 34.0;
-        static_cast<void>(guardedCap.update(pacingStart + 2s, true, 120, snapshot));
-        snapshot.rampEvaluationActive = guard == 1;
-        snapshot.rearmRequired = guard == 2;
-        snapshot.discontinuityRecoveryActive = guard == 3;
-        snapshot.validatedGenerationLimit = guard == 4 ? 1 : 2;
-        const auto decision = guardedCap.update(
-            pacingStart + 2010ms, guard != 0, 120, snapshot);
-        expect(!decision.framesPerSecond && decision.changed,
-            "cadence retention delayed a transport or scheduler safety exit");
-    }
-
-    SmoothCadenceBaseCap probedCap;
-    SmoothCadenceBaseCap::SchedulerState probeSnapshot{
-        .validatedGenerationLimit = 2,
-        .smoothedBaseFps = 40.0,
-    };
-    static_cast<void>(probedCap.update(pacingStart, true, 120, probeSnapshot));
-    static_cast<void>(probedCap.update(pacingStart + 1s, true, 120, probeSnapshot));
-    probeSnapshot.smoothedBaseFps = 34.0;
-    static_cast<void>(probedCap.update(pacingStart + 2s, true, 120, probeSnapshot));
-    probeSnapshot.efficiencyProbeGenerationLimit = 1;
-    auto probeCap = probedCap.update(pacingStart + 2010ms, true, 120, probeSnapshot);
-    expect(probeCap.framesPerSecond == 60.0 && probeCap.changed,
-        "cadence retention prevented a lower-load probe from changing its cap");
-    probeSnapshot.efficiencyProbeGenerationLimit.reset();
-    probeSnapshot.smoothedBaseFps = 37.7;
-    probeCap = probedCap.update(pacingStart + 3s, true, 120, probeSnapshot);
-    expect(probeCap.framesPerSecond == 40.0 && probeCap.changed,
-        "a rejected lower-load probe failed to restore its retained integer cap");
-
-    SmoothCadencePacerHandoff pacerHandoff;
-    auto handoff = pacerHandoff.update(pacingStart, 1);
-    expect(handoff.active && handoff.changed && handoff.generationLimit == 1,
-        "qualified Smooth Cadence did not hand pacing to ordered FIFO");
-    handoff = pacerHandoff.update(pacingStart + 1s, 1);
-    expect(handoff.active && !handoff.changed,
-        "retained ordered-FIFO handoff reported a false transition");
-    handoff = pacerHandoff.update(pacingStart + 2s, std::nullopt);
-    expect(!handoff.active && handoff.changed,
-        "lost Smooth Cadence qualification did not restore the base cap");
-    handoff = pacerHandoff.update(pacingStart + 30s, 1);
-    expect(!handoff.active && !handoff.changed,
-        "failed pacing handoff retried before its long cooldown");
-    handoff = pacerHandoff.update(pacingStart + 30s, 2);
-    expect(handoff.active && handoff.changed && handoff.generationLimit == 2,
-        "2x pacing cooldown blocked a separately validated 3x rung");
-    handoff = pacerHandoff.update(pacingStart + 31s, std::nullopt);
-    expect(!handoff.active && handoff.changed &&
-            handoff.previousGenerationLimit == 2,
-        "lost 3x qualification did not restore the base cap");
-    handoff = pacerHandoff.update(pacingStart + 32s, 2);
-    expect(!handoff.active,
-        "failed 3x handoff retried before its own cooldown");
-    handoff = pacerHandoff.update(
-        pacingStart + 2s + SmoothCadencePacerHandoff::retryDelay(), 1
-    );
-    expect(handoff.active && handoff.changed,
-        "eligible pacing handoff did not retry after its cooldown");
-    pacerHandoff.reset();
-    handoff = pacerHandoff.update(pacingStart + 3s, 1);
-    expect(handoff.active && handoff.changed,
-        "explicit pacing-handoff reset retained stale cooldown state");
-    pacerHandoff.pauseForExternalInterruption();
-    handoff = pacerHandoff.update(pacingStart + 4s, std::nullopt);
-    expect(!handoff.active && !handoff.changed,
-        "menu suspension retained an active FIFO handoff");
-    handoff = pacerHandoff.update(pacingStart + 5s, 1);
-    expect(handoff.active && handoff.changed,
-        "menu suspension invented a gameplay pacing cooldown");
-    static_cast<void>(pacerHandoff.update(pacingStart + 6s, std::nullopt));
-    pacerHandoff.pauseForExternalInterruption();
-    handoff = pacerHandoff.update(pacingStart + 7s, 1);
-    expect(!handoff.active,
-        "menu suspension erased a genuine earlier pacing-failure cooldown");
-    pacerHandoff.reset();
-    handoff = pacerHandoff.update(pacingStart + 8s, 2);
-    expect(handoff.active && handoff.generationLimit == 2,
-        "validated 3x did not enter its VRR FIFO handoff before menu focus");
-    pacerHandoff.pauseForExternalInterruption();
-    handoff = pacerHandoff.update(pacingStart + 9s, std::nullopt);
-    expect(!handoff.active && !handoff.changed,
-        "Steam menu focus retained the 3x FIFO handoff");
-    handoff = pacerHandoff.update(pacingStart + 10s, 2);
-    expect(handoff.active && handoff.changed && handoff.generationLimit == 2,
-        "Steam menu return imposed a failure cooldown on validated 3x");
-    handoff = pacerHandoff.update(pacingStart + 11s, std::nullopt, true);
-    expect(!handoff.active && handoff.changed &&
-            handoff.previousGenerationLimit == 2,
-        "planned VRR efficiency probe retained its previous FIFO handoff");
-    handoff = pacerHandoff.update(pacingStart + 12s, 2);
-    expect(handoff.active && handoff.changed,
-        "rejected VRR efficiency probe invented a 3x retry cooldown");
-    handoff = pacerHandoff.update(pacingStart + 13s, std::nullopt, true);
-    handoff = pacerHandoff.update(pacingStart + 14s, 1);
-    expect(handoff.active && handoff.generationLimit == 1,
-        "accepted efficiency probe did not hand off the lower 2x rung");
-    handoff = pacerHandoff.update(pacingStart + 15s, std::nullopt);
-    expect(!handoff.active && handoff.changed,
-        "genuine 2x qualification loss did not restore normal pacing");
-    handoff = pacerHandoff.update(pacingStart + 16s, 1);
-    expect(!handoff.active,
-        "planned 3x probe cleared the genuine 2x retry cooldown");
-    handoff = pacerHandoff.update(pacingStart + 16s, 2);
-    expect(handoff.active && handoff.generationLimit == 2,
-        "accepted 2x probe delayed a separately revalidated 3x rung");
-    pacerHandoff.reset();
-    static_cast<void>(pacerHandoff.update(pacingStart + 17s, 2));
-    handoff = pacerHandoff.update(pacingStart + 18s, 1, true);
-    expect(handoff.active && handoff.generationLimit == 1,
-        "planned-pause flag prevented an eligible rung transition");
-    handoff = pacerHandoff.update(pacingStart + 19s, 2);
-    expect(!handoff.active,
-        "planned-pause flag bypassed cooldown for an actual rung switch");
-
     for (size_t remaining = 0; remaining <= 3; ++remaining) {
         expect(historyWarmupFramesAfterRequest(remaining, 3, true) == 3,
             "a new Fixed menu return retained incomplete pre-menu history");
@@ -2604,18 +2244,6 @@ int main() {
     }
     expect(menuWarmupRemaining == 0,
         "Fixed history warm-up did not complete after three fresh frames");
-
-    const auto warmupFrameStarted =
-        std::chrono::steady_clock::time_point{} + 100ms;
-    const auto warmupRecoveryCompleted = warmupFrameStarted + 12ms;
-    expect(historyWarmupCadenceBoundary(
-            warmupFrameStarted, warmupRecoveryCompleted, false) ==
-            warmupRecoveryCompleted,
-        "ordinary scheduler recovery stopped using the 3.3 completion boundary");
-    expect(historyWarmupCadenceBoundary(
-            warmupFrameStarted, warmupRecoveryCompleted, true) ==
-            warmupFrameStarted,
-        "event recovery included private work in resumed gameplay cadence");
 
     FixedRefreshBudget budget;
     const auto start = FixedRefreshBudget::TimePoint{};

@@ -4,7 +4,7 @@
   <img src="assets/fgvk-render-logo.webp" width="256" alt="framegen-vulkan logo" />
 </p>
 
-framegen-vulkan is a Vulkan layer for Frame Generation on SteamOS and Linux. It supports LSFG Fixed and Adaptive Frame Generation.
+framegen-vulkan is a Vulkan layer for Frame Generation on SteamOS and Linux. It supports LSFG Fixed Frame Generation.
 
 LSFG requires a lawful, user-supplied <a href="https://store.steampowered.com/app/993090/Lossless_Scaling/" target="_blank" rel="noopener noreferrer">Lossless Scaling</a> installation. framegen-vulkan does not distribute or modify `Lossless.dll`. framegen-vulkan descends from the GPL-3.0-or-later lsfg-vk version 2 tree. See the <a href="../THIRD_PARTY_NOTICES.md" target="_blank" rel="noopener noreferrer">third-party notices</a> and <a href="../LICENSE.md" target="_blank" rel="noopener noreferrer">license</a> for lineage and redistribution terms.
 
@@ -103,7 +103,7 @@ For host, Flatpak, Arch, or complete local packages, choose an entry point in [B
 - [Configuration](docs/CONFIGURATION.md): profiles, game launch setup, and runtime behaviour.
 - [Advanced configuration](docs/CONFIGURATION-REFERENCE.md): TOML fields, defaults, and environment variables.
 - [Runtime transitions](docs/RUNTIME-TRANSITIONS.md): live, deferred, and restart-required changes.
-- [Adaptive validation](docs/ADAPTIVE-VALIDATION.md): Adaptive scheduling and validation.
+- [Fixed validation](docs/ADAPTIVE-VALIDATION.md): Fixed pacing and validation.
 - [Optional graphics integrations](docs/LAYER-CHAINING.md): MangoHud and layer isolation.
 - [Flatpak guide](docs/FLATPAK-GUIDE.md): runtime extensions and application preparation.
 - [Videos with framegen-vulkan](docs/VIDEOS_WITH_FGVK.md): Frame Generation with mpv.
