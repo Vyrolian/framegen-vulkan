@@ -468,6 +468,9 @@ namespace fgvk::layer {
         present_diagnostics::Clock::time_point splitRenderCalibratedAt{};
         bool splitRenderUnavailable{};
         std::array<present_diagnostics::SplitRenderHalf, 8> splitRenderHalves{};
+        // Backend split samples waiting for their render half (diagnostics only), with the presents waited.
+        static constexpr uint8_t splitRenderWaitPresents = 6;
+        std::vector<std::pair<backend::SplitFrameProfile, uint8_t>> splitAwaitingRender;
         size_t splitRenderHalfNext{};
         PrivateResourceTransition<FrameGenerationResourceRequest>
             frameGenerationTransition;

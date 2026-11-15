@@ -296,6 +296,7 @@ void Swapchain::commitFrameGenerationResources(
     // The predictor's batch indices and the previous batch end belong to the replaced context.
     this->resetGpuRelease();
     this->gpuPreviousArrival.reset();
+    this->splitAwaitingRender.clear();
     if (this->pacingProfile) this->pacingProfile->resetBackend();
     for (auto& slot : this->renderSlots) {
         slot.inFlight = false;

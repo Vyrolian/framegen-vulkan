@@ -255,15 +255,23 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
     }
     if (this->pacingProfile && present_diagnostics::pacingGpuSplitProfileEnabled() &&
             this->instance && !this->destinationImages.empty()) {
-        // Samples were collected after the backend's existing fence wait; reading them adds no GPU wait.
-        for (const auto& split : this->instance->takeCompletedSplitProfiles(this->ctx.get())) {
+        // Samples were collected after their fences signalled; reading them adds no GPU wait. The
+        // backend half can complete before the render half is collected (the L5 poll reads batches
+        // as soon as they finish), so a sample waits up to splitRenderWaitPresents presents for it.
+        for (const auto& split : this->instance->takeCompletedSplitProfiles(this->ctx.get()))
+            this->splitAwaitingRender.push_back({split, 0});
+        std::erase_if(this->splitAwaitingRender, [this](auto& pending) {
+            const auto& split = pending.first;
             const auto source = this->pacingProfile->sourceForBackend(split.backendFrameIndex);
             const auto render = this->findRenderSplitHalf(source);
+            if (render.gameDoneNs == 0 && source != 0 && pending.second++ < splitRenderWaitPresents)
+                return false;
             present_diagnostics::logPacingGpuSplitFrame(this->diagnosticsState.contextId,
                 source, split.backendFrameIndex,
                 render.gameDoneNs, render.sourceCopyEndNs,
                 split.fgStartNs, split.prepassEndNs, split.generatedEndNs, split.batchEndNs);
-        }
+            return true;
+        });
     }
     const DiagnosticsContextScope diagnosticsContext(
         this->diagnosticsState.contextId, this->pacingProfile.get()
