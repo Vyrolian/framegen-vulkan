@@ -25,8 +25,9 @@ export XDG_CONFIG_HOME="$test_config_home"
 overlay_enabled_config="$test_root/overlay-enabled.conf"
 printf '%s\n' 'version=1' 'disable_steam_overlay=0' > "$overlay_enabled_config"
 # Gamescope sessions are detected from this variable alone. Clear it so every
-# case below is a desktop launch; the early-exit case sets its own.
-unset GAMESCOPE_WAYLAND_DISPLAY
+# case below is a desktop launch; the early-exit case sets its own. The opt-in
+# is cleared too, so only the cases that set it see it.
+unset GAMESCOPE_WAYLAND_DISPLAY FGVK_GAMESCOPE
 expected_layer_path="$install_prefix/share/framegen-vulkan/vulkan/implicit_layer.d"
 if [[ ! -d "$expected_layer_path" && -d "$test_data_home/framegen-vulkan/vulkan/implicit_layer.d" ]]; then
     expected_layer_path="$test_data_home/framegen-vulkan/vulkan/implicit_layer.d"
@@ -119,6 +120,49 @@ fi
 if [[ "$(cat "$gamescope_stderr")" != "framegen-vulkan: Gamescope sessions are not supported; starting without frame generation" ]]; then
     fail "Gamescope early-exit notice was not printed exactly once:\n$(cat "$gamescope_stderr")"
 fi
+
+# FGVK_GAMESCOPE=1 is the experimental opt-in. The same Gamescope session then
+# takes the normal launch path with no launcher notice; only the exact value 1
+# opts in, and every other value keeps the early exit above.
+gamescope_optin_stderr="$test_root/gamescope-optin.stderr"
+gamescope_optin_output="$(
+    FGVK_LAUNCH_CONFIG="$overlay_enabled_config" \
+        GAMESCOPE_WAYLAND_DISPLAY=gamescope-0 \
+        WAYLAND_DISPLAY=gamescope-0 \
+        FGVK_GAMESCOPE=1 \
+        XDG_DATA_HOME="$test_data_home" \
+        "$launcher" bash -c '
+            printf "%s\n" \
+                "${ENABLE_FGVK:-unset}" \
+                "${DISABLE_LSFG:-unset}" \
+                "${FGVK_GAMESCOPE:-unset}" \
+                "${GAMESCOPE_WAYLAND_DISPLAY:-unset}" \
+                "${VK_IMPLICIT_LAYER_PATH:-unset}"
+        ' 2> "$gamescope_optin_stderr"
+)" || fail "Gamescope opt-in launch failed"
+expected_gamescope_optin="$(printf '1\n1\n1\ngamescope-0\n%s' "$expected_layer_path")"
+if [[ "$gamescope_optin_output" != "$expected_gamescope_optin" ]]; then
+    fail "Gamescope opt-in did not reach the normal launch path:\n$gamescope_optin_output"
+fi
+if [[ -s "$gamescope_optin_stderr" ]]; then
+    fail "Gamescope opt-in printed a launcher notice:\n$(cat "$gamescope_optin_stderr")"
+fi
+for gamescope_optin_value in 0 true yes ''; do
+    gamescope_value_output="$(
+        FGVK_GAMESCOPE="$gamescope_optin_value" \
+            GAMESCOPE_WAYLAND_DISPLAY=gamescope-0 \
+            WAYLAND_DISPLAY=gamescope-0 \
+            XDG_DATA_HOME="$test_data_home" \
+            "$launcher" bash -c 'printf "%s\n" "${ENABLE_FGVK:-unset}"' \
+            2> "$gamescope_stderr"
+    )" || fail "Gamescope early exit failed for FGVK_GAMESCOPE='$gamescope_optin_value'"
+    if [[ "$gamescope_value_output" != "unset" ]]; then
+        fail "FGVK_GAMESCOPE='$gamescope_optin_value' opted in to a Gamescope session"
+    fi
+    if [[ "$(cat "$gamescope_stderr")" != "framegen-vulkan: Gamescope sessions are not supported; starting without frame generation" ]]; then
+        fail "FGVK_GAMESCOPE='$gamescope_optin_value' changed the early-exit notice:\n$(cat "$gamescope_stderr")"
+    fi
+done
 
 fake_flatpak="$test_root/flatpak"
 printf '%s\n' '#!/usr/bin/env bash' \

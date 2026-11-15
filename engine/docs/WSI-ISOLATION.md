@@ -2,7 +2,7 @@
 
 This guide defines framegen-vulkan's Vulkan-layer discovery and presentation ownership. [runtime configuration transitions](RUNTIME-TRANSITIONS.md) owns swapchain replacement and retirement.
 
-The [maintenance checklist](../../MAINTENANCE.md) identifies upstream dependencies and review triggers. Gamescope sessions are outside this boundary: `fgvk` starts them without framegen-vulkan.
+The [maintenance checklist](../../MAINTENANCE.md) identifies upstream dependencies and review triggers. Gamescope sessions are outside this boundary by default: `fgvk` starts them without framegen-vulkan. `FGVK_GAMESCOPE=1` is an experimental opt-in that lets the launcher and the layer run in them.
 
 ## Why presentation needs one owner
 
@@ -124,7 +124,7 @@ Do not claim general multi-instance, multi-queue, or multi-swapchain-batch suppo
 | Component | Managed behavior |
 | --- | --- |
 | framegen-vulkan render role | Admitted and gated by `ENABLE_FGVK=1` |
-| Gamescope sessions | Not supported: the launcher and the layer stay inactive |
+| Gamescope sessions | Unsupported by default: the launcher and the layer stay inactive; `FGVK_GAMESCOPE=1` is an experimental opt-in that lets both run |
 | Known competing Frame Generation layers | Disabled |
 | System implicit overlays, capture, Mesa helpers, and vendor layers | Excluded unless a named guarded exception stages an exact manifest |
 | Explicit application layers | Outside this implicit-discovery policy |

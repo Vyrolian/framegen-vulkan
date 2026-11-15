@@ -223,10 +223,16 @@ Root::Root() {
         std::memory_order_relaxed);
     std::cerr << fgvkBuildIdentity << '\n';
 
-    if (gamescopeSessionDetected()) {
+    const bool gamescopeSession = gamescopeSessionDetected();
+    if (gamescopeSessionBlocked(gamescopeSession, std::getenv("FGVK_GAMESCOPE"))) {
         std::cerr << "framegen-vulkan: Gamescope sessions are not supported; "
                      "the layer stays inactive\n";
         return;
+    }
+    if (gamescopeSession) {
+        std::cerr << "framegen-vulkan: gamescope session: opt-in active gamescope_wsi="
+                  << (environmentFlagEnabled(std::getenv("ENABLE_GAMESCOPE_WSI")) ? 1 : 0)
+                  << '\n';
     }
 
     // find active profile

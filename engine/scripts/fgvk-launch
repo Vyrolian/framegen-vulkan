@@ -170,12 +170,14 @@ case "$1" in
         ;;
 esac
 
-# Gamescope sessions are not supported. Decide before any environment change so
-# the command starts with its environment exactly as launched. The renderer
-# makes its own check and stays inactive when this one is bypassed.
+# Gamescope sessions are not supported unless FGVK_GAMESCOPE=1 opts in. Decide
+# before any environment change so the command starts with its environment
+# exactly as launched. The renderer makes its own check and stays inactive
+# unless the same opt-in is present.
 if [[ -n "${GAMESCOPE_WAYLAND_DISPLAY:-}" &&
         ( -z "${WAYLAND_DISPLAY:-}" ||
-          "${WAYLAND_DISPLAY}" == "${GAMESCOPE_WAYLAND_DISPLAY}" ) ]]; then
+          "${WAYLAND_DISPLAY}" == "${GAMESCOPE_WAYLAND_DISPLAY}" ) &&
+        "${FGVK_GAMESCOPE:-}" != "1" ]]; then
     echo "framegen-vulkan: Gamescope sessions are not supported; starting without frame generation" >&2
     exec "$@"
 fi
