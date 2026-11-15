@@ -109,6 +109,11 @@ namespace fgvk::layer {
 
             return it->second;
         }
+        /// swapchain context, or nullptr for a native or dormant swapchain
+        [[nodiscard]] Swapchain* findSwapchainContext(VkSwapchainKHR swapchain) {
+            const auto it = this->swapchains.find(swapchain);
+            return it == this->swapchains.end() ? nullptr : &it->second;
+        }
         /// Remove a context from live configuration updates while preserving
         /// its GPU resources for bounded presentation-fence retirement.
         [[nodiscard]] std::optional<Swapchain> takeSwapchainContext(

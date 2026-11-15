@@ -14,6 +14,7 @@
 #include "swapchain/retirement.hpp"
 #include "swapchain/private_present_queue.hpp"
 #include "swapchain/release_gate.hpp"
+#include "swapchain/low_latency.hpp"
 #include "swapchain/internal_images.hpp"
 #include "swapchain/present_marker.hpp"
 
@@ -2103,6 +2104,8 @@ namespace {
             if (mapping == instance_info->swapchains.end()) {
                 return VK_ERROR_INITIALIZATION_FAILED;
             }
+            // A native present takes no release token: drop the submit mark a later present would take.
+            ReleaseGate::forgetSubmitMark(queue);
             const VkResult nativeResult =
                 mapping->second.get().df().QueuePresentKHR(queue, info);
             // A prior managed swapchain may still be retiring on this surface.
@@ -2397,6 +2400,31 @@ namespace {
         return result;
     }
 
+    // Native acquire fallback (low_latency; swapchain/low_latency.hpp): an application that
+    // waits on no release token starts its next frame at the swapchain's last release point,
+    // so its acquire waits for that point. Returns VK_TIMEOUT when the point is past the
+    // caller's timeout. Otherwise the timeout is lowered by the time held.
+    std::optional<VkResult> holdAcquireForRelease(const VkSwapchainKHR swapchain, uint64_t& timeout) {
+        const auto mapping = instance_info->swapchains.find(swapchain);
+        if (mapping == instance_info->swapchains.end() ||
+                instance_info->nativeSwapchains.contains(swapchain))
+            return std::nullopt;
+        auto* found = layer_info->root.findSwapchainContext(swapchain);
+        if (!found) return std::nullopt;
+        auto& context = *found;
+        const auto release = context.acquireRelease();
+        if (!release) return std::nullopt;
+        using Clock = ReleaseGate::Clock;
+        const auto hold = acquireHold(Clock::now(), *release, timeout);
+        if (hold.wait > Clock::duration::zero()) {
+            context.noteAcquireHold();
+            std::this_thread::sleep_for(hold.wait);
+        }
+        if (hold.expired) return VK_TIMEOUT;
+        if (timeout != UINT64_MAX) timeout -= static_cast<uint64_t>(hold.wait.count());
+        return std::nullopt;
+    }
+
     VkResult myvkAcquireNextImageKHRBody(
             VkDevice device, VkSwapchainKHR swapchain, uint64_t timeout,
             VkSemaphore semaphore, VkFence fence, uint32_t* imageIndex);
@@ -2415,11 +2443,13 @@ namespace {
         return present_diagnostics::observeApplicationAcquire(
             device, swapchain, present_diagnostics::ApplicationFrameApi::AcquireKhr,
             timeout, [&] {
+                auto timeoutLeft = timeout;
+                if (const auto held = holdAcquireForRelease(swapchain, timeoutLeft)) return *held;
                 if (auto* internal = internalImagesFor(swapchain)) {
-                    return acquireInternalSwapchainImage(swapchain, *internal, timeout,
+                    return acquireInternalSwapchainImage(swapchain, *internal, timeoutLeft,
                         semaphore, fence, imageIndex);
                 }
-                return acquireAfterDeferredPresent(swapchain, timeout, [&](uint64_t remaining) {
+                return acquireAfterDeferredPresent(swapchain, timeoutLeft, [&](uint64_t remaining) {
                     return present_diagnostics::observeApplicationAcquireDriver(remaining, [&] {
                         return mapping->second.get().df().AcquireNextImageKHR(
                             device, swapchain, remaining, semaphore, fence, imageIndex);
@@ -2445,11 +2475,13 @@ namespace {
         return present_diagnostics::observeApplicationAcquire(
             device, info->swapchain, present_diagnostics::ApplicationFrameApi::AcquireKhr2,
             info->timeout, [&] {
+                auto timeoutLeft = info->timeout;
+                if (const auto held = holdAcquireForRelease(info->swapchain, timeoutLeft)) return *held;
                 if (auto* internal = internalImagesFor(info->swapchain)) {
                     return acquireInternalSwapchainImage(info->swapchain, *internal,
-                        info->timeout, info->semaphore, info->fence, imageIndex);
+                        timeoutLeft, info->semaphore, info->fence, imageIndex);
                 }
-                return acquireAfterDeferredPresent(info->swapchain, info->timeout, [&](uint64_t remaining) {
+                return acquireAfterDeferredPresent(info->swapchain, timeoutLeft, [&](uint64_t remaining) {
                     auto adjusted = *info;
                     adjusted.timeout = remaining;
                     return present_diagnostics::observeApplicationAcquireDriver(remaining,

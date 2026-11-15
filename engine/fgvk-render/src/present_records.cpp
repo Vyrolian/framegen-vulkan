@@ -695,6 +695,21 @@ void formatPacingWindowBody(const PacingWindowPayload& payload, const PacingProf
     for (size_t i = 0; i < timingNames.size(); ++i)
         line << " timing_" << timingNames[i] << "_attempts=" << window.timingAttempts[i];
     line << " present_target_discontinuities=" << window.targetDiscontinuities;
+    // low_latency: the setting, the mean release delay of the capped sources, and which
+    // release-token kinds the application has used, in ReleaseGate::kindBit order and then
+    // the acquire fallback (none when it has used none).
+    {
+        constexpr std::array<std::string_view, 4> holdNames{"vkd3d", "present-id", "dxvk", "acquire"};
+        line << " low_latency=" << (window.lowLatency ? 1 : 0)
+             << " low_latency_extra_ms=" << window.lowLatencyExtra.mean() << " low_latency_hold=";
+        bool any = false;
+        for (size_t bit = 0; bit < holdNames.size(); ++bit) {
+            if (!(window.lowLatencyKinds & (1u << bit))) continue;
+            line << (any ? "," : "") << holdNames[bit];
+            any = true;
+        }
+        if (!any) line << "none";
+    }
     const auto ms = [](Clock::duration duration) {
         return std::chrono::duration<double, std::milli>(duration).count();
     };

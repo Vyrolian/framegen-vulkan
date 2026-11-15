@@ -2,6 +2,7 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
@@ -35,14 +36,37 @@ namespace fgvk::layer {
 // is released the same way through that ID: the token is the present itself, and
 // the application's successful wait on the ID (its frame-latency thread) is held to
 // the deadline. Tokens of the two kinds never match each other.
+//
+// A present also records the timeline value of its thread's last submit on the
+// presenting queue (SubmitMark). DXVK's finish thread waits for that value before it
+// signals the frame, so the same hold applies (kind LastSubmit). It is recorded only
+// while the application has not released through a semaphore or present ID token,
+// because a VKD3D-Proton submission timeline also serves the game's own fence and
+// queue-idle waits. An application that waits on no token at all releases through its
+// next acquire instead (ReleaseGateOwner::acquireRelease).
 class ReleaseGate {
 public:
     using Clock = std::chrono::steady_clock;
+
+    // Token kinds. Semaphore and LastSubmit tokens are both satisfied by a semaphore wait.
+    enum class Kind : uint8_t { Semaphore, PresentId, LastSubmit };
+    static constexpr uint32_t kindBit(Kind kind) noexcept {
+        return uint32_t{1} << static_cast<uint32_t>(kind);
+    }
+    static constexpr uint32_t tokenKinds() noexcept {
+        return kindBit(Kind::Semaphore) | kindBit(Kind::PresentId) | kindBit(Kind::LastSubmit);
+    }
+    // Owner::consumedKinds bit of the native acquire fallback having held an acquire.
+    static constexpr uint32_t acquireBit = uint32_t{1} << 3;
 
     struct Owner {
         std::atomic_bool alive{true};
         std::atomic<uint32_t> consumedRun{0};
         std::atomic<uint32_t> outstanding{0};
+        // kindBit of every token kind the application has waited on, plus acquireBit.
+        std::atomic<uint32_t> consumedKinds{0};
+        // Release point of the latest capped present, as Clock::rep; zero when none.
+        std::atomic<Clock::rep> acquireRelease{0};
 
         // Two consecutive consumed tokens with a bounded backlog show that
         // the application releases its producer through this wait.
@@ -83,11 +107,13 @@ public:
     static void disarm() noexcept { pending().owner.reset(); }
     [[nodiscard]] static bool armed() noexcept { return static_cast<bool>(pending().owner); }
 
-    // Called for every application vkQueueSubmit2. The unarmed path is one
+    // Called for every application vkQueueSubmit2. It stores this thread's submit
+    // mark (a few stores, no lock). The unarmed path then returns after one
     // thread-local load. Any submit consumes the arm: only the submit that
     // immediately follows the present can carry its release token.
     void observeSubmit2(VkQueue queue, uint32_t submitCount,
             const VkSubmitInfo2* submits, VkFence fence, Clock::time_point now = Clock::now()) {
+        noteSubmitMark(queue, submitCount, submits);
         if (!armed()) return;
         auto slot = std::move(pending());
         pending() = {};
@@ -112,8 +138,36 @@ public:
             std::move(owner), now);
     }
 
+    // The timeline value of a present's last submit: the application's wait for it ends the frame.
+    void recordLastSubmit(std::shared_ptr<Owner> owner, VkSemaphore semaphore, uint64_t value,
+            Clock::time_point deadline, Clock::time_point now = Clock::now()) {
+        record(Kind::LastSubmit, reinterpret_cast<uint64_t>(semaphore), value, deadline,
+            std::move(owner), now);
+    }
+
     [[nodiscard]] bool empty() const noexcept {
         return count.load(std::memory_order_acquire) == 0;
+    }
+
+    // The timeline signal that this thread's last submit on a queue made, since the previous
+    // present on this thread. A present takes it on entry, so no present carries an
+    // earlier present's submit.
+    struct SubmitMark {
+        VkQueue queue{};
+        VkSemaphore semaphore{};
+        uint64_t value{};
+    };
+    [[nodiscard]] static std::optional<SubmitMark> takeSubmitMark(VkQueue queue) noexcept {
+        auto& marks = submitMarks();
+        const auto slot = std::ranges::find(marks.slots, queue, &SubmitMark::queue);
+        if (slot == marks.slots.end() || !slot->semaphore) return std::nullopt;
+        const auto mark = *slot;
+        *slot = {};
+        return mark;
+    }
+    // A present that is not held by the gate (native forwarding) drops the mark it would take.
+    static void forgetSubmitMark(VkQueue queue) noexcept {
+        static_cast<void>(takeSubmitMark(queue));
     }
 
     // After a successful wait-all on these semaphores. `limit` is the end of
@@ -125,7 +179,7 @@ public:
                 !info.pSemaphores || !info.pValues)
             return std::nullopt;
         return releaseSatisfied(now, limit, [&](const Entry& entry) {
-            if (entry.kind != Kind::Semaphore) return false;
+            if (entry.kind == Kind::PresentId) return false;
             for (uint32_t i = 0; i < info.semaphoreCount; ++i)
                 if (reinterpret_cast<uint64_t>(info.pSemaphores[i]) == entry.key &&
                         entry.value <= info.pValues[i])
@@ -161,7 +215,6 @@ public:
     }
 
 private:
-    enum class Kind : uint8_t { Semaphore, PresentId };
     struct Entry {
         uint64_t key{};
         uint64_t value{};
@@ -177,6 +230,38 @@ private:
     static Pending& pending() noexcept {
         static thread_local Pending slot;
         return slot;
+    }
+    // One slot per recent queue; a thread submits on few queues.
+    struct SubmitMarks {
+        std::array<SubmitMark, 4> slots{};
+        size_t next{};
+    };
+    static SubmitMarks& submitMarks() noexcept {
+        static thread_local SubmitMarks marks;
+        return marks;
+    }
+    // The last signal with a non-zero value (a timeline value), or none.
+    static void noteSubmitMark(VkQueue queue, uint32_t submitCount,
+            const VkSubmitInfo2* submits) noexcept {
+        if (submitCount == 0 || !submits) return;
+        const auto& submit = submits[submitCount - 1];
+        SubmitMark mark{queue};
+        const uint32_t signals = submit.pSignalSemaphoreInfos ? submit.signalSemaphoreInfoCount : 0;
+        for (uint32_t i = signals; i-- > 0;) {
+            const auto& signal = submit.pSignalSemaphoreInfos[i];
+            if (signal.semaphore && signal.value) {
+                mark.semaphore = signal.semaphore;
+                mark.value = signal.value;
+                break;
+            }
+        }
+        auto& marks = submitMarks();
+        auto slot = std::ranges::find(marks.slots, queue, &SubmitMark::queue);
+        if (slot == marks.slots.end()) {
+            slot = marks.slots.begin() + static_cast<std::ptrdiff_t>(marks.next);
+            marks.next = (marks.next + 1) % marks.slots.size();
+        }
+        *slot = mark;
     }
 
     // Owner counters change only under the registry mutex; atomics let the
@@ -213,6 +298,7 @@ private:
             if (const auto owner = entry.owner.lock()) {
                 release(*owner);
                 owner->consumedRun.fetch_add(1, std::memory_order_relaxed);
+                owner->consumedKinds.fetch_or(kindBit(entry.kind), std::memory_order_relaxed);
             }
             if (entry.kind == Kind::PresentId)
                 presentIdConsumed.fetch_add(1, std::memory_order_relaxed);
@@ -288,6 +374,36 @@ public:
     void recordPresentId(VkSwapchainKHR swapchain, uint64_t presentId,
             ReleaseGate::Clock::time_point deadline) const {
         if (owner) ReleaseGate::global().recordPresentId(owner, swapchain, presentId, deadline);
+    }
+    // A present's last submit (ReleaseGate::SubmitMark). Skipped once this application has
+    // released through a semaphore or present ID token (see the header comment).
+    void recordLastSubmit(VkSemaphore semaphore, uint64_t value,
+            ReleaseGate::Clock::time_point deadline) const {
+        constexpr uint32_t gatedBy = ReleaseGate::kindBit(ReleaseGate::Kind::Semaphore) |
+            ReleaseGate::kindBit(ReleaseGate::Kind::PresentId);
+        if (owner && !(owner->consumedKinds.load(std::memory_order_relaxed) & gatedBy))
+            ReleaseGate::global().recordLastSubmit(owner, semaphore, value, deadline);
+    }
+    // Native acquire fallback: the release point of the latest capped present.
+    void setAcquireRelease(std::optional<ReleaseGate::Clock::time_point> release) const {
+        if (owner) owner->acquireRelease.store(
+            release ? release->time_since_epoch().count() : 0, std::memory_order_relaxed);
+    }
+    // The point the next acquire waits for, while no token kind has been consumed: an
+    // application that releases through tokens starts its frames at their deadlines.
+    [[nodiscard]] std::optional<ReleaseGate::Clock::time_point> acquireRelease() const {
+        if (!owner || (owner->consumedKinds.load(std::memory_order_relaxed) & ReleaseGate::tokenKinds()))
+            return std::nullopt;
+        const auto rep = owner->acquireRelease.load(std::memory_order_relaxed);
+        if (rep == 0) return std::nullopt;
+        return ReleaseGate::Clock::time_point{ReleaseGate::Clock::duration{rep}};
+    }
+    // Token kinds (ReleaseGate::kindBit) and acquireBit this application has used.
+    [[nodiscard]] uint32_t consumedKinds() const {
+        return owner ? owner->consumedKinds.load(std::memory_order_relaxed) : 0;
+    }
+    void noteAcquireHold() const {
+        if (owner) owner->consumedKinds.fetch_or(ReleaseGate::acquireBit, std::memory_order_relaxed);
     }
 
 private:

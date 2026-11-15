@@ -42,6 +42,7 @@ frame_generation_enabled = true
 swapchain_image_count_compatibility = false
 base_fps_cap = 0
 adaptive_stable_cadence = true
+low_latency = true # release each capped frame just in time at the cap
 ultra_performance = false
 flow_scale = 0.85
 performance_mode = true
@@ -78,6 +79,7 @@ ConfigFile::ConfigFile() {
             GameConfDefaults::swapchainImageCountCompatibility,
         .base_fps_cap = GameConfDefaults::baseFpsCap,
         .adaptive_stable_cadence = GameConfDefaults::adaptiveStableCadence,
+        .low_latency = GameConfDefaults::lowLatency,
         .ultra_performance = GameConfDefaults::ultraPerformance,
         .flow_scale = 0.85F,
         .performance_mode = true,
@@ -194,6 +196,7 @@ namespace {
             .adaptive_stable_cadence = tbl["adaptive_stable_cadence"].value_or(
                 GameConfDefaults::adaptiveStableCadence
             ),
+            .low_latency = tbl["low_latency"].value_or(GameConfDefaults::lowLatency),
             .ultra_performance = tbl["ultra_performance"].value_or(
                 GameConfDefaults::ultraPerformance
             ),
@@ -236,6 +239,7 @@ namespace {
         );
         profile.insert("base_fps_cap", static_cast<int64_t>(conf.base_fps_cap));
         profile.insert("adaptive_stable_cadence", conf.adaptive_stable_cadence);
+        profile.insert("low_latency", conf.low_latency);
         profile.insert("ultra_performance", conf.ultra_performance);
         profile.insert("flow_scale", conf.flow_scale);
         profile.insert("performance_mode", conf.performance_mode);
@@ -279,6 +283,7 @@ namespace {
                 GameConfDefaults::swapchainImageCountCompatibility,
             .base_fps_cap = GameConfDefaults::baseFpsCap,
             .adaptive_stable_cadence = GameConfDefaults::adaptiveStableCadence,
+            .low_latency = GameConfDefaults::lowLatency,
             .ultra_performance = GameConfDefaults::ultraPerformance,
             .flow_scale = GameConfDefaults::flowScale,
             .performance_mode = GameConfDefaults::performanceMode,

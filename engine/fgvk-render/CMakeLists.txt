@@ -314,6 +314,12 @@ if(BUILD_TESTING)
     add_test(NAME release-gate COMMAND fgvk-release-gate-tests)
     fgvk_register_portable_policy_test(fgvk-release-gate-tests release-gate)
 
+    # Just-in-time release: the pure delay controller and the native acquire hold.
+    add_executable(fgvk-low-latency-tests "tests/low_latency_tests.cpp")
+    target_include_directories(fgvk-low-latency-tests PRIVATE "src")
+    add_test(NAME low-latency COMMAND fgvk-low-latency-tests)
+    fgvk_register_portable_policy_test(fgvk-low-latency-tests low-latency)
+
     # Reflex frame limit: the pure interval rule and the per-swapchain request state.
     add_executable(fgvk-reflex-frame-limit-tests "tests/reflex_frame_limit_tests.cpp")
     target_include_directories(fgvk-reflex-frame-limit-tests PRIVATE "src")

@@ -28,6 +28,8 @@ const GAMES_BOX_WIDTH: f32 = 380.0;
 /// Space between an entry's name and its Remove button.
 const REMOVE_GAP: f32 = 2.0;
 const NO_GAMES: &str = "No games yet. Add an executable name or pick a running program.";
+const LOW_LATENCY_TIP: &str =
+    "starts the game's next frame just in time at the cap; off = up to three frames queued";
 const MODES: [Mode; 5] = [
     Mode::Off,
     Mode::Fixed(2),
@@ -392,6 +394,7 @@ impl App {
 
         ui.add_space(6.0);
         self.fps_limit(ui, profile);
+        self.low_latency(ui, profile);
     }
 
     fn games(&mut self, ui: &mut Ui, profile: &Profile) {
@@ -535,6 +538,18 @@ impl App {
         let mut on = profile.performance_mode;
         if ui.checkbox(&mut on, "Performance mode").changed() {
             let result = self.config.set_performance_mode(&profile.key, on);
+            self.report(result);
+        }
+    }
+
+    /// Starts each capped frame just in time instead of queueing frames ahead. Applies live.
+    fn low_latency(&mut self, ui: &mut Ui, profile: &Profile) {
+        let mut on = profile.low_latency;
+        let response = ui
+            .checkbox(&mut on, "Low latency")
+            .on_hover_text(LOW_LATENCY_TIP);
+        if response.changed() {
+            let result = self.config.set_low_latency(&profile.key, on);
             self.report(result);
         }
     }
@@ -959,6 +974,7 @@ mod tests {
             flow_scale: 0.8,
             base_fps_cap: 0,
             performance_mode: false,
+            low_latency: true,
         }
     }
 

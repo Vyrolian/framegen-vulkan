@@ -40,6 +40,7 @@ namespace ls {
         static constexpr bool swapchainImageCountCompatibility = false;
         static constexpr uint32_t baseFpsCap = 0;
         static constexpr bool adaptiveStableCadence = true;
+        static constexpr bool lowLatency = true;
         static constexpr bool ultraPerformance = false;
         static constexpr float ultraPerformanceFlowScale = 0.7F;
         static constexpr float flowScale = 0.8F;
@@ -80,6 +81,9 @@ namespace ls {
         /// maximum application-present rate before frame generation; zero disables it
         uint32_t base_fps_cap{GameConfDefaults::baseFpsCap};
         bool adaptive_stable_cadence{GameConfDefaults::adaptiveStableCadence};
+        /// release each capped frame just in time at its cap deadline instead of letting the game
+        /// queue frames ahead; off keeps the release at the deadline (swapchain/low_latency.hpp)
+        bool low_latency{GameConfDefaults::lowLatency};
         /// trade live profile reloads for the lowest supported resource cost
         bool ultra_performance{GameConfDefaults::ultraPerformance};
         /// non-inverted flow scale

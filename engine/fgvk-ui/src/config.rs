@@ -37,6 +37,7 @@ const DEFAULT_FLOW_SCALE: f64 = 0.8;
 const DEFAULT_ALLOW_FP16: bool = true;
 const DEFAULT_PACING_CORRECTION: bool = true;
 const DEFAULT_PERFORMANCE_MODE: bool = false;
+const DEFAULT_LOW_LATENCY: bool = true;
 
 /// Chooses the configuration path from an environment lookup.
 ///
@@ -108,6 +109,8 @@ pub struct Profile {
     pub flow_scale: f64,
     pub base_fps_cap: i64,
     pub performance_mode: bool,
+    /// Release each capped frame just in time at its cap deadline. Off queues up to three frames.
+    pub low_latency: bool,
 }
 
 /// Typed snapshot of the parts of the file the window edits.
@@ -299,6 +302,12 @@ impl Config {
         })
     }
 
+    pub fn set_low_latency(&mut self, key: &ProfileKey, value: bool) -> Result<(), String> {
+        self.edit_profile(key, |table| {
+            set_value(table, "low_latency", Value::from(value));
+        })
+    }
+
     /// `None` removes the `dll` key. The `[global]` table is created only when a path is set.
     pub fn set_global_dll(&mut self, dll: Option<&str>) -> Result<(), String> {
         let dll = dll.map(str::trim).filter(|dll| !dll.is_empty());
@@ -464,6 +473,10 @@ fn read_profile(index: usize, table: &Table) -> Profile {
             .get("performance_mode")
             .and_then(Item::as_bool)
             .unwrap_or(DEFAULT_PERFORMANCE_MODE),
+        low_latency: table
+            .get("low_latency")
+            .and_then(Item::as_bool)
+            .unwrap_or(DEFAULT_LOW_LATENCY),
     }
 }
 
@@ -977,6 +990,38 @@ mod tests {
         let settings = ready(&config);
         assert!(settings.allow_fp16);
         assert!(!settings.profiles[0].performance_mode);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn low_latency_defaults_on_and_round_trips() {
+        let doc = parse("version = 2\n\n[[profile]]\nname = \"Bare\"\n");
+        assert!(
+            profiles(&doc).remove(0).low_latency,
+            "missing key reads as on"
+        );
+        let doc = parse("version = 2\n\n[[profile]]\nname = \"Bare\"\nlow_latency = 0\n");
+        assert!(
+            profiles(&doc).remove(0).low_latency,
+            "non-boolean reads as on"
+        );
+
+        let dir = temp_dir("low-latency");
+        let path = dir.join(FILE_NAME);
+        fs::write(&path, BASE).expect("write fixture");
+        let mut config = Config::open(Ok(path.clone()));
+        let alpha = key(0, "Alpha");
+        assert!(ready(&config).profiles[0].low_latency);
+        config
+            .set_low_latency(&alpha, false)
+            .expect("low latency off saves");
+        assert!(!ready(&config).profiles[0].low_latency);
+        let saved = fs::read_to_string(&path).expect("read saved file");
+        assert!(saved.contains("low_latency = false"), "{saved}");
+        config
+            .set_low_latency(&alpha, true)
+            .expect("low latency on saves");
+        assert!(ready(&config).profiles[0].low_latency);
         fs::remove_dir_all(&dir).ok();
     }
 

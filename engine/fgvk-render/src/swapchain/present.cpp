@@ -115,6 +115,9 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
     // consume the current waits exactly once before propagating that error.
     // A previous present's token must not attach to an unrelated submit.
     ReleaseGate::disarm();
+    // This thread's last timeline submit on the presenting queue, taken before any work
+    // of this present (release_gate.hpp, SubmitMark).
+    const auto lastSubmit = ReleaseGate::takeSubmitMark(queue);
     const auto deferred = this->completeDeferredPresentRetainingOverlap();
     this->deferredOutputQueuedThisFrame = false;
     if (deferred < 0) {
@@ -561,6 +564,25 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
     }
     const bool releaseGated = releaseGateHolds &&
         limiterDeadline - limiterArrival <= 3 * capInterval;
+    // Just-in-time release (low_latency; low_latency.hpp). A capped source present sets the
+    // delay of its release point from its lead after the catch-up above. The cap clock and
+    // limiterDeadline do not move. Off, or without a cap or frame generation, the delay is zero.
+    const bool lowLatencyOn = this->profile.low_latency && baseFpsCap > 0 &&
+        effectiveFrameGenerationEnabled(this->profile);
+    if (lowLatencyOn) this->lowLatencyRelease.observe(limiterDeadline - limiterArrival, capInterval);
+    else this->lowLatencyRelease.reset();
+    const auto releaseDelay = lowLatencyOn
+        ? this->lowLatencyRelease.delay() : LowLatencyRelease::Duration{};
+    const auto releasePoint = limiterDeadline + releaseDelay;
+    // The native acquire fallback holds the application's next acquire until this point, one
+    // cap interval before this present's release point (entrypoint.cpp).
+    this->releaseGate.setAcquireRelease(lowLatencyOn
+        ? std::optional{releasePoint - capInterval} : std::nullopt);
+    // Recorded before the sleeps below: a game wait for this submit may complete during them.
+    if (lowLatencyOn && lastSubmit)
+        this->releaseGate.recordLastSubmit(lastSubmit->semaphore, lastSubmit->value, releasePoint);
+    if (this->pacingProfile) this->pacingProfile->lowLatency(lowLatencyOn, releaseDelay,
+        this->releaseGate.consumedKinds());
     bool readyOutputPacing = fixedReadyOutputPacingEligible(
         this->profile, directUnthrottled || nativeFifoOutputPacing,
         compositorOutputTiming || applicationTimingOwner,
@@ -614,6 +636,13 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
 #if defined(VK_KHR_present_id2)
     applicationPresentId = applicationIds.id;
 #endif
+    // With low_latency, an ID on an immediate or mailbox present is not one the application
+    // waits on (DXVK attaches an ID to every present but waits on it only in FIFO modes). It
+    // would only fill the gate's backlog, so the present is released through its submit
+    // like a present without an ID.
+    if (lowLatencyOn && (this->currentPresentMode == VK_PRESENT_MODE_IMMEDIATE_KHR ||
+            this->currentPresentMode == VK_PRESENT_MODE_MAILBOX_KHR))
+        applicationPresentId.reset();
     // Destroyed after the return-deadline sleep below. Arm on every capped
     // return, including holds, so the release wait can be observed first. An
     // uncapped detached return arms at its arrival: that deadline never delays
@@ -638,7 +667,7 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
             } catch (...) {}
         }
     } releaseArm{this->releaseGate, queue, swapchain,
-        baseFpsCap > 0 ? std::optional{limiterDeadline}
+        baseFpsCap > 0 ? std::optional{releasePoint}
             : detachedOutputTransport ? std::optional{limiterArrival}
             : std::nullopt,
         applicationPresentId};

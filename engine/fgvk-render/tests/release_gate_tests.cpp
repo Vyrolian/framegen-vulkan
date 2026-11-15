@@ -176,6 +176,115 @@ void presentIdAndSemaphoreTokensShareActivation() {
     expect(gate.released(wait.info, now, unbounded) && owner.active() && gate.empty(),
         "a present ID token and a semaphore token did not share one activation run");
 }
+
+// A present's last submit: the application's wait for its timeline value ends the frame.
+void lastSubmitTokenReleasesAtDeadline() {
+    using Clock = ReleaseGate::Clock;
+    const auto now = Clock::now();
+    auto& gate = ReleaseGate::global();
+    expect(gate.empty(), "release tokens were left by an earlier test");
+    const auto timeline = handle<VkSemaphore>(0x60);
+    ReleaseGateOwner owner;
+    owner.recordLastSubmit(timeline, 9, now + 7ms);
+    expect(!gate.empty(), "a last-submit token was not recorded");
+    uint64_t value = 8;
+    VkSemaphoreWaitInfo info{.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
+        .semaphoreCount = 1, .pSemaphores = &timeline, .pValues = &value};
+    expect(!gate.released(info, now, unbounded) && !gate.empty(),
+        "a wait below the submit's timeline value released the last-submit token");
+    value = 9;
+    const auto release = gate.released(info, now, unbounded);
+    expect(release && release->consumed && release->deadline == now + 7ms && gate.empty(),
+        "the last-submit wait did not end at the token's deadline");
+    expect(owner.consumedKinds() == ReleaseGate::kindBit(ReleaseGate::Kind::LastSubmit),
+        "a consumed last-submit token was not recorded as the owner's kind");
+}
+
+// Once the application has released through a semaphore or present ID token, presents
+// no longer record last-submit tokens: those values also serve its own waits.
+void lastSubmitTokenStopsOnceTokensAreUsed() {
+    using Clock = ReleaseGate::Clock;
+    const auto now = Clock::now();
+    auto& gate = ReleaseGate::global();
+    expect(gate.empty() && !ReleaseGate::armed(), "release tokens were left by an earlier test");
+    {
+        ReleaseGateOwner owner;
+        owner.arm(queue, now);
+        const SignalOnly signal(1);
+        gate.observeSubmit2(queue, 1, &signal.submit, VK_NULL_HANDLE, now);
+        const Wait wait(1);
+        expect(gate.released(wait.info, now, unbounded) && gate.empty(),
+            "the semaphore token was not released");
+        expect(owner.consumedKinds() == ReleaseGate::kindBit(ReleaseGate::Kind::Semaphore),
+            "a consumed semaphore token was not recorded as the owner's kind");
+        owner.recordLastSubmit(handle<VkSemaphore>(0x61), 5, now + 3ms);
+        expect(gate.empty(), "a last-submit token was recorded after a semaphore token was used");
+    }
+    {
+        ReleaseGateOwner owner;
+        owner.recordPresentId(swapchain, 4, now);
+        expect(gate.releasedPresent(swapchain, 4, now, unbounded) && gate.empty(),
+            "the present ID token was not released");
+        owner.recordLastSubmit(handle<VkSemaphore>(0x62), 6, now + 3ms);
+        expect(gate.empty(), "a last-submit token was recorded after a present ID token was used");
+    }
+}
+
+// The last timeline signal of each queue's last submit, taken once by a present.
+void submitMarkKeepsLastTimelineSignalPerQueue() {
+    using Clock = ReleaseGate::Clock;
+    const auto now = Clock::now();
+    auto& gate = ReleaseGate::global();
+    const auto other = handle<VkQueue>(0x13);
+    ReleaseGate::forgetSubmitMark(queue);
+    ReleaseGate::forgetSubmitMark(other);
+    const SignalOnly first(4);
+    gate.observeSubmit2(queue, 1, &first.submit, VK_NULL_HANDLE, now);
+    const SignalOnly second(7);
+    gate.observeSubmit2(other, 1, &second.submit, VK_NULL_HANDLE, now);
+    const auto mark = ReleaseGate::takeSubmitMark(queue);
+    expect(mark && mark->semaphore == completion && mark->value == 4,
+        "a queue's mark was not its last timeline signal");
+    expect(!ReleaseGate::takeSubmitMark(queue), "a submit mark was taken twice");
+    const auto otherMark = ReleaseGate::takeSubmitMark(other);
+    expect(otherMark && otherMark->queue == other && otherMark->value == 7,
+        "a second queue's mark was lost to the first queue");
+    // A later submit without a timeline signal drops the earlier mark of its queue.
+    gate.observeSubmit2(queue, 1, &first.submit, VK_NULL_HANDLE, now);
+    VkSubmitInfo2 bare{.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
+    gate.observeSubmit2(queue, 1, &bare, VK_NULL_HANDLE, now);
+    expect(!ReleaseGate::takeSubmitMark(queue), "a submit without a timeline signal kept an earlier mark");
+    gate.observeSubmit2(queue, 1, &first.submit, VK_NULL_HANDLE, now);
+    ReleaseGate::forgetSubmitMark(queue);
+    expect(!ReleaseGate::takeSubmitMark(queue), "a forgotten submit mark was still taken");
+    expect(gate.empty() && !ReleaseGate::armed(), "an unarmed submit recorded a release token");
+}
+
+// Native acquire fallback: the release point of the latest capped present is held only
+// while the application has used no token kind.
+void acquireReleaseHeldOnlyWithoutTokens() {
+    using Clock = ReleaseGate::Clock;
+    const auto now = Clock::now();
+    auto& gate = ReleaseGate::global();
+    expect(gate.empty(), "release tokens were left by an earlier test");
+    ReleaseGateOwner owner;
+    expect(!owner.acquireRelease(), "a new owner had a release point");
+    owner.setAcquireRelease(now + 15ms);
+    expect(owner.acquireRelease() == std::optional{now + 15ms},
+        "the release point was not kept for the native acquire");
+    owner.noteAcquireHold();
+    expect(owner.consumedKinds() == ReleaseGate::acquireBit && owner.acquireRelease(),
+        "noting an acquire hold changed the fallback");
+    owner.recordPresentId(swapchain, 2, now);
+    expect(gate.releasedPresent(swapchain, 2, now, unbounded).has_value(),
+        "the present ID token was not released");
+    expect(!owner.acquireRelease(), "an application that waits on tokens kept the acquire fallback");
+    owner.setAcquireRelease(std::nullopt);
+    ReleaseGateOwner plain;
+    plain.setAcquireRelease(now);
+    plain.setAcquireRelease(std::nullopt);
+    expect(!plain.acquireRelease(), "a cleared release point was still held");
+}
 }
 
 int main() {
@@ -301,5 +410,9 @@ int main() {
     presentIdTimeoutKeepsToken();
     presentIdAndSemaphoreTokensShareActivation();
     catchUpStartsOnlyAboveThreeIntervals();
+    lastSubmitTokenReleasesAtDeadline();
+    lastSubmitTokenStopsOnceTokensAreUsed();
+    submitMarkKeepsLastTimelineSignalPerQueue();
+    acquireReleaseHeldOnlyWithoutTokens();
     std::cout << "release gate tests passed\n";
 }

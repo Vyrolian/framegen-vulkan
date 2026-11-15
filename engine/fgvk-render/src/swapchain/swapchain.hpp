@@ -23,6 +23,7 @@
 #include "present_timing.hpp"
 #include "swapchain/deferred_present.hpp"
 #include "swapchain/internal_images.hpp"
+#include "swapchain/low_latency.hpp"
 #include "swapchain/present_feedback_probe.hpp"
 #include "swapchain/reflex_frame_limit.hpp"
 #include "swapchain/release_gate.hpp"
@@ -200,6 +201,15 @@ namespace fgvk::layer {
         /// stable identifier used to correlate this context's diagnostics
         [[nodiscard]] uint64_t diagnosticsId() const {
             return this->diagnosticsState.contextId;
+        }
+        /// Native acquire fallback (low_latency): the release point the next acquire waits for,
+        /// or nothing while the application releases through tokens (release_gate.hpp).
+        [[nodiscard]] std::optional<ReleaseGate::Clock::time_point> acquireRelease() const {
+            return this->releaseGate.acquireRelease();
+        }
+        /// The acquire fallback held an acquire; the application is recorded as a native waiter.
+        void noteAcquireHold() const {
+            this->releaseGate.noteAcquireHold();
         }
         [[nodiscard]] VkExtent2D frameGenerationResourceExtent() const {
             return this->info.extent;
@@ -476,6 +486,8 @@ namespace fgvk::layer {
         // Source-cap deadline moved to the application's own release wait;
         // see release_gate.hpp. Learns per context; holds presents until then.
         ReleaseGateOwner releaseGate;
+        // Delay of every release point of this context (low_latency; low_latency.hpp).
+        LowLatencyRelease lowLatencyRelease;
         // Reflex request of this swapchain, shared with the Reflex wrapper through
         // ReflexFrameLimitRegistry; fetched at the first present.
         std::shared_ptr<ReflexFrameLimit> reflexLimit;

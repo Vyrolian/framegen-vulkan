@@ -45,6 +45,7 @@ The window has these controls:
 | Frame generation | `Off` or a fixed `2x` to `5x` multiplier. |
 | Quality (flow scale) | `flow_scale` from 25% to 100%. Higher values track motion more precisely and cost more GPU time. |
 | FPS limit | Optional real-FPS cap, stored as `base_fps_cap`. Turn it off to remove the manual cap. |
+| Low latency | `low_latency` for the selected profile. On by default; starts each capped frame just in time. Applies live. |
 | Performance mode | `performance_mode` for the selected profile. |
 | FP16 (faster) | `[global] allow_fp16`. Restart the game to apply. |
 | Pacing correction | `[global] pacing_correction`. Restart the game to apply. |
@@ -69,6 +70,7 @@ Enable `frame_generation_provisioned` before launching to allow Frame Generation
 | `multiplier` | Fixed output multiplier, 2–5. Start at 2. |
 | `adaptive_stable_cadence` | Favours consistent delivery; compare on and off for responsiveness. |
 | `base_fps_cap` | Limits real FPS. Off adds no manual cap. |
+| `low_latency` | On by default. With frame generation at a cap, the game starts each frame later, just in time, instead of queueing up to three frames ahead. Off keeps the release at the cap deadline. Live. The latency effect is not yet measured in a game run. |
 
 Older files can still contain `adaptive`, `adaptive_max_multiplier`, `adaptive_auto_base_fps_cap`, `adaptive_fractional_real_frame_priority`, `adaptive_target_refresh_rate`, `target_fps`, `dynamic_cadence_recovery`, and `dynamic_cadence_probe_interval_seconds`. These keys are accepted and ignored: a profile with `adaptive = true` runs Fixed with its `multiplier`, and framegen-vulkan does not write them.
 
@@ -103,7 +105,7 @@ HDR swapchains run without frame generation; `disable_hdr_exposure` in old launc
 | Timing | Common settings |
 | --- | --- |
 | Restart | Enabling `frame_generation_provisioned`; `dll`; `allow_fp16`; `pacing_correction`; `gpu`; `ultra_performance`; `swapchain_image_count_compatibility`; launcher compatibility settings |
-| Live | `frame_generation_enabled`; most Frame Generation timing and cap settings; `flow_scale`; `performance_mode` |
+| Live | `frame_generation_enabled`; most Frame Generation timing and cap settings; `flow_scale`; `performance_mode`; `low_latency` |
 | May wait for resolution change or restart | Changes needing more Frame Generation capacity |
 
 Some live changes rebuild resources and may briefly hitch. See [Runtime transitions](RUNTIME-TRANSITIONS.md) for details.

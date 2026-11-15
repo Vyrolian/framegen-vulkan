@@ -56,6 +56,7 @@ namespace {
                 right.swapchain_image_count_compatibility &&
             left.base_fps_cap == right.base_fps_cap &&
             left.adaptive_stable_cadence == right.adaptive_stable_cadence &&
+            left.low_latency == right.low_latency &&
             left.ultra_performance == right.ultra_performance &&
             left.flow_scale == right.flow_scale &&
             left.performance_mode == right.performance_mode &&
@@ -273,6 +274,20 @@ dynamic_cadence_probe_interval_seconds = 0.5
             "Rewriting a configuration must keep the Fixed multiplier, base cap, Smooth Cadence and flow scale");
     }
 
+    // low_latency defaults on for a profile that omits it and keeps an explicit off across a rewrite.
+    void testLowLatencyKey(const std::filesystem::path& directory) {
+        const auto path = directory / "low-latency.toml";
+        writeText(path, "version = 2\n[[profile]]\nname = 'game'\n");
+        expect(ls::ConfigFile(path).profiles().front().low_latency,
+            "A profile without low_latency must read as on");
+        writeText(path, "version = 2\n[[profile]]\nname = 'game'\nlow_latency = false\n");
+        const ls::ConfigFile off(path);
+        expect(!off.profiles().front().low_latency, "An explicit low_latency = false must be read");
+        off.write(path);
+        expect(readText(path).find("low_latency = false") != std::string::npos,
+            "Rewriting a configuration must keep low_latency = false");
+    }
+
 int main() {
     const ls::GameConf defaults;
     expect(defaults.multiplier == ls::GameConfDefaults::multiplier &&
@@ -285,6 +300,7 @@ int main() {
             defaults.base_fps_cap == ls::GameConfDefaults::baseFpsCap &&
             defaults.adaptive_stable_cadence ==
                 ls::GameConfDefaults::adaptiveStableCadence &&
+            defaults.low_latency == ls::GameConfDefaults::lowLatency &&
             defaults.ultra_performance ==
                 ls::GameConfDefaults::ultraPerformance &&
             defaults.flow_scale == ls::GameConfDefaults::flowScale &&
@@ -304,6 +320,7 @@ int main() {
     unsetenv("FGVK_ENV");
     testRetiredHeadroomKey(directory);
     testRetiredAdaptiveKeys(directory);
+    testLowLatencyKey(directory);
     testOptionalLosslessDll(directory);
     testRetiredPowerTables(directory);
     testRetiredCapLeadFrames(directory);

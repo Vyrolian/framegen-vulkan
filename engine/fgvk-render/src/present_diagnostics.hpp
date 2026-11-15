@@ -280,6 +280,11 @@ namespace fgvk::layer::present_diagnostics {
             // create-time mode, which applies to presents without one.
             std::array<size_t, PresentModeSlotCount> applicationModes{}, realModes{}, generatedModes{};
             int64_t swapchainPresentMode{-1};
+            // low_latency: whether the setting was on, the release delay of each capped source,
+            // and the release-token kinds the application has used (ReleaseGate::kindBit).
+            bool lowLatency{};
+            Samples lowLatencyExtra;
+            uint32_t lowLatencyKinds{};
         };
         static constexpr std::array<std::string_view, PresentModeSlotCount> presentModeSlotNames{
             "none", "immediate", "mailbox", "fifo", "fifo_relaxed", "fifo_latest_ready", "other"};
@@ -384,6 +389,12 @@ namespace fgvk::layer::present_diagnostics {
             window.adaptive = adaptive;
             window.configuredMultiplier = multiplier;
             window.configuredCapFps = configuredCap;
+        }
+        // One call per present; delay samples only the capped sources the setting governs.
+        void lowLatency(bool enabled, Clock::duration delay, uint32_t kinds) {
+            window.lowLatency = enabled;
+            if (enabled) window.lowLatencyExtra.add(delay);
+            window.lowLatencyKinds = kinds;
         }
         void phaseTiming(const std::array<Clock::duration, 9>& durations) {
             lastPhases = durations;
