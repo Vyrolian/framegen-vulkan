@@ -332,8 +332,8 @@ void completePresentationOrder() {
     image = 12; expect(worker.enqueue(info, at + 2ms), "real output rejected");
     worker.closeBatch();
     expect(worker.finish(UINT64_MAX)->count == 2, "ordered batch failed to drain");
-    // Smooth Cadence off, native-only, partial/error and unsupported-chain
-    // paths remain synchronous, without migrating to an application queue.
+    // Native-only, partial/error and unsupported-chain paths remain
+    // synchronous, without migrating to an application queue.
     VkPresentRegionsKHR damage{.sType = VK_STRUCTURE_TYPE_PRESENT_REGIONS_KHR};
     VkResult callerResult{};
     synchronousChain = &damage;

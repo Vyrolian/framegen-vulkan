@@ -26,7 +26,6 @@ namespace fgvk::layer {
     struct ProfileUpdateDecision {
         ProfileUpdateAction action{ProfileUpdateAction::NoRuntimeChange};
         bool frameGenerationChanged{false};
-        bool generationPolicyChanged{false};
         bool fixedMultiplierChanged{false};
         bool baseFpsCapChanged{false};
         bool frameGenerationBackendChanged{false};
@@ -49,9 +48,7 @@ namespace fgvk::layer {
     [[nodiscard]] constexpr bool
     profileUpdateInvalidatesTransientGenerationRecovery(
             const ProfileUpdateDecision& decision) noexcept {
-        return decision.generationPolicyChanged ||
-            decision.fixedMultiplierChanged ||
-            decision.baseFpsCapChanged;
+        return decision.fixedMultiplierChanged || decision.baseFpsCapChanged;
     }
 
     struct ProcessStaticProfileProjection {
@@ -312,17 +309,16 @@ namespace fgvk::layer {
             profile.frame_generation_enabled;
     }
 
-    /// Smooth Cadence opts into ready-output spacing. A Fixed batch that the
-    /// private worker can deliver detached is eligible regardless of cap:
-    /// a positive nonbinding cap leaves no cap-owned output slots. The worker
-    /// spaces that batch without waiting in the application's present call.
+    /// A Fixed batch that the private worker can deliver detached is eligible
+    /// regardless of cap: a positive nonbinding cap leaves no cap-owned output
+    /// slots. The worker spaces that batch without waiting in the application's
+    /// present call.
     [[nodiscard]] inline bool fixedReadyOutputPacingEligible(
             const ls::GameConf& profile, const bool nativeOutputPacingEligible,
             const bool anotherTimingOwner, const bool recovering,
             const bool detachedOutput = false) {
         return nativeOutputPacingEligible && !anotherTimingOwner && !recovering &&
-            effectiveFrameGenerationEnabled(profile) &&
-            (profile.adaptive_stable_cadence || detachedOutput);
+            effectiveFrameGenerationEnabled(profile) && detachedOutput;
     }
 
     /// Use the existing cap interval for exact Fixed batches that fit the
@@ -494,11 +490,7 @@ namespace fgvk::layer {
         const bool baseFpsCapChanged =
             effectiveBaseFpsCap(current) !=
                 effectiveBaseFpsCap(applied);
-        const bool generationPolicyChanged =
-            current.adaptive_stable_cadence !=
-                applied.adaptive_stable_cadence;
         const bool liveChange = frameGenerationChanged ||
-                generationPolicyChanged ||
                 fixedMultiplierChanged ||
                 baseFpsCapChanged ||
                 frameGenerationPrivateRebuild;
@@ -515,7 +507,6 @@ namespace fgvk::layer {
             .decision = {
                 .action = action,
                 .frameGenerationChanged = frameGenerationChanged,
-                .generationPolicyChanged = generationPolicyChanged,
                 .fixedMultiplierChanged = fixedMultiplierChanged,
                 .baseFpsCapChanged = baseFpsCapChanged,
                 .frameGenerationBackendChanged =

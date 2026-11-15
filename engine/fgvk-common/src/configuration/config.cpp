@@ -41,7 +41,6 @@ frame_generation_provisioned = true
 frame_generation_enabled = true
 swapchain_image_count_compatibility = false
 base_fps_cap = 0
-adaptive_stable_cadence = true
 low_latency = true # release each capped frame just in time at the cap
 ultra_performance = false
 flow_scale = 0.85
@@ -78,7 +77,6 @@ ConfigFile::ConfigFile() {
         .swapchain_image_count_compatibility =
             GameConfDefaults::swapchainImageCountCompatibility,
         .base_fps_cap = GameConfDefaults::baseFpsCap,
-        .adaptive_stable_cadence = GameConfDefaults::adaptiveStableCadence,
         .low_latency = GameConfDefaults::lowLatency,
         .ultra_performance = GameConfDefaults::ultraPerformance,
         .flow_scale = 0.85F,
@@ -193,9 +191,6 @@ namespace {
                     GameConfDefaults::swapchainImageCountCompatibility
                 ),
             .base_fps_cap = tbl["base_fps_cap"].value_or(GameConfDefaults::baseFpsCap),
-            .adaptive_stable_cadence = tbl["adaptive_stable_cadence"].value_or(
-                GameConfDefaults::adaptiveStableCadence
-            ),
             .low_latency = tbl["low_latency"].value_or(GameConfDefaults::lowLatency),
             .ultra_performance = tbl["ultra_performance"].value_or(
                 GameConfDefaults::ultraPerformance
@@ -238,7 +233,6 @@ namespace {
             conf.swapchain_image_count_compatibility
         );
         profile.insert("base_fps_cap", static_cast<int64_t>(conf.base_fps_cap));
-        profile.insert("adaptive_stable_cadence", conf.adaptive_stable_cadence);
         profile.insert("low_latency", conf.low_latency);
         profile.insert("ultra_performance", conf.ultra_performance);
         profile.insert("flow_scale", conf.flow_scale);
@@ -282,7 +276,6 @@ namespace {
             .swapchain_image_count_compatibility =
                 GameConfDefaults::swapchainImageCountCompatibility,
             .base_fps_cap = GameConfDefaults::baseFpsCap,
-            .adaptive_stable_cadence = GameConfDefaults::adaptiveStableCadence,
             .low_latency = GameConfDefaults::lowLatency,
             .ultra_performance = GameConfDefaults::ultraPerformance,
             .flow_scale = GameConfDefaults::flowScale,
@@ -312,9 +305,6 @@ namespace {
         const char* base_fps_cap = std::getenv("FGVK_BASE_FPS_CAP");
         if (base_fps_cap)
             conf.base_fps_cap = static_cast<uint32_t>(std::stoul(base_fps_cap));
-        const char* adaptive_stable_cadence = std::getenv("FGVK_ADAPTIVE_STABLE_CADENCE");
-        if (adaptive_stable_cadence)
-            conf.adaptive_stable_cadence = std::string(adaptive_stable_cadence) != "0";
         const char* flow_scale = std::getenv("FGVK_FLOW_SCALE");
         if (flow_scale) conf.flow_scale = std::stof(flow_scale);
         const char* ultra_performance = std::getenv("FGVK_ULTRA_PERFORMANCE");

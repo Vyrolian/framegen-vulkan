@@ -137,8 +137,7 @@ ProfileUpdateDecision Swapchain::updateProfile(
             decision.baseFpsCapChanged || enabling || disabling) {
         this->fixedRefreshBudget.reset();
     }
-    if (decision.baseFpsCapChanged || decision.generationPolicyChanged ||
-            enabling || disabling) {
+    if (decision.baseFpsCapChanged || enabling || disabling) {
         this->realFramePacer.reset();
     }
 
@@ -164,8 +163,7 @@ ProfileUpdateDecision Swapchain::updateProfile(
     const bool transportLoadTransition = this->privateOrderedTransport &&
         effectiveFrameGenerationEnabled(
             this->profile
-        ) && (decision.generationPolicyChanged ||
-              decision.fixedMultiplierChanged || enabling);
+        ) && (decision.fixedMultiplierChanged || enabling);
     if (transportLoadTransition) {
         this->recoveryState.orderedAcquireRecovery
             .armTransitionRecreation();

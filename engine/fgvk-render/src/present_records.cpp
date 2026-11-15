@@ -354,7 +354,7 @@ void formatPacingSource(const PacingSourcePayload& payload, std::ostream& line) 
          << " backend_scheduled=" << sample.backendScheduled << " backend_epoch=" << sample.backendEpoch
          << " backend_frame=" << sample.backendFrame
          << " frame_generation_enabled=" << sample.frameGeneration << " adaptive=" << sample.adaptive
-         << " multiplier=" << sample.multiplier << " smooth_cadence=" << sample.smooth
+         << " multiplier=" << sample.multiplier
          << " effective_cap_fps=" << sample.cap << " configured_cap_fps=" << sample.configuredCap;
     constexpr std::array<std::string_view, 3> waitNames{"cap", "readiness", "output"};
     for (size_t i = 0; i < waitNames.size(); ++i)
@@ -648,7 +648,6 @@ void formatPacingWindowBody(const PacingWindowPayload& payload, const PacingProf
          << " output_trace_dropped=" << (pacingFrameTraceEnabled() ? 0 : window.outputTraceDropped)
          << " wait_capture=1"
          << " fifo_caller_timing_sources=" << window.fifoCallerTimingSources
-         << " smooth_cadence=" << window.smoothCadence
          << " effective_base_cap_fps=" << window.effectiveCapFps
          << " frame_generation_enabled=" << window.frameGenerationEnabled
          << " adaptive=" << window.adaptive

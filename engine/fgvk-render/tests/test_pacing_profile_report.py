@@ -26,7 +26,7 @@ class FrameTimelineTests(unittest.TestCase):
         durations = {name+"_ns": 0 for name in ("cap_wait", "readiness_wait", "output_wait", "private_total", "render_fence", "schedule", "source_copy", "acquire", "generated_submit", "generated_present", "original_present", "unattributed")}
         sample = dict(pid=10, tid=20, context=30, source=source, started_ns=start, finished_ns=start+1000000,
                       backend_scheduled=1, backend_epoch=epoch, backend_frame=frame, frame_generation_enabled=1,
-                      adaptive=0, multiplier=2, smooth_cadence=0, effective_cap_fps=60, configured_cap_fps=60,
+                      adaptive=0, multiplier=2, effective_cap_fps=60, configured_cap_fps=60,
                       swapchain="0x123", **durations)
         app = dict(pid=10, tid=20, stream=40, ordinal=source, context=30, source=source, api="present", image_index=2,
                    started_ns=start-5000000, finished_ns=start+2000000, result_known=0, result=0,
@@ -44,6 +44,14 @@ class FrameTimelineTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path=Path(directory)/"pacing.log";path.write_text("".join(lines))
             return report.read_observations(path)
+
+    def test_logs_from_before_the_smooth_cadence_field_still_parse(self):
+        # Logs written before adaptive_stable_cadence was removed carry smooth_cadence=; new logs do not.
+        new,_,_=self.fixture()
+        old=dict(new, smooth_cadence=0)
+        observations,invalid=self.parse([self.line("pacing-profile-source",old),self.line("pacing-profile-source",new)])
+        self.assertEqual(invalid,0)
+        self.assertEqual(len(observations["sources"]),2)
 
     def test_exact_source_gpu_outer_boundaries_and_partial_capture(self):
         first,app,gpu = self.fixture()
@@ -463,6 +471,7 @@ class PacingReportTests(unittest.TestCase):
                 "pacing-profile-capture-limit version=1 pid=10 limit_bytes=67108864 captured_bytes=66000000 rejected_bytes=1000000\n")
             observations,invalid=report.read_observations(path)
         self.assertEqual(invalid,0)
+        # smooth_cadence is a field of old logs only: it is accepted and never printed.
         base={"window_ms":1000,"sources":60,"output_attempts":120,"sample_end_monotonic_ms":1000,
               "smooth_cadence":0,"effective_base_cap_fps":60,"present_mode":2,"configured_multiplier":2,
               "configured_base_cap_fps":60,"adaptive":0}
@@ -473,6 +482,7 @@ class PacingReportTests(unittest.TestCase):
         self.assertIn("preserving the beginning",text)
         self.assertIn("fg=1 multiplier=2 adaptive=0",text)
         self.assertIn("fg=0 multiplier=2 adaptive=0",text)
+        self.assertNotIn("smooth",text)
 
     def test_context_isolation_and_correlated_hitch(self):
         prefix = "framegen-vulkan: present diagnostics: operation=pacing-profile "

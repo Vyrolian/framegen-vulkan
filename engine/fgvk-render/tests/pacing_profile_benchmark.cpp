@@ -35,7 +35,7 @@ int main() {
             (void)Clock::now();
             profile.beginSource(now);
             ContextScope context(1, &profile);
-            profile.policy(true, 60);
+            profile.policy(60);
             std::array<Clock::duration, 9> phases{};
             for (size_t phase = 1; phase < phases.size(); ++phase) {
                 const auto phaseStarted = fgvk::layer::present_detail::startPhaseTimer();

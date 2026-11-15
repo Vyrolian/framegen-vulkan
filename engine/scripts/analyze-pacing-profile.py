@@ -18,7 +18,7 @@ from typing import NamedTuple
 # fields are never validated, so a newer field cannot reject a window.
 COMPUTED_FIELDS = frozenset({"sources", "present_mode", "output_trace_dropped", "wayland_requested",
                              "wait_capture", "gpu_requested", "fifo_caller_timing_sources",
-                             "smooth_cadence", "frame_generation_enabled", "configured_multiplier",
+                             "frame_generation_enabled", "configured_multiplier",
                              "adaptive", "present_target_discontinuities"})
 COMPUTED_SUFFIXES = ("_ms", "_us", "_samples", "_attempts", "_fps")
 # present_mode is an int64 that the layer reports as -1 when no mode is known; real_offset_us is signed.
@@ -89,7 +89,7 @@ def read_observations(path: Path) -> tuple[dict[str, list[dict]], int]:
             try:
                 if operation in ("pacing-profile-source", "pacing-profile-gpu", "pacing-profile-application", "pacing-profile-wait"):
                     required = {
-                        "pacing-profile-source": ("pid", "tid", "context", "source", "started_ns", "finished_ns", "backend_scheduled", "backend_epoch", "backend_frame", "frame_generation_enabled", "adaptive", "multiplier", "smooth_cadence", "effective_cap_fps", "configured_cap_fps", "cap_wait_ns", "readiness_wait_ns", "output_wait_ns", "private_total_ns", "render_fence_ns", "schedule_ns", "source_copy_ns", "acquire_ns", "generated_submit_ns", "generated_present_ns", "original_present_ns", "unattributed_ns"),
+                        "pacing-profile-source": ("pid", "tid", "context", "source", "started_ns", "finished_ns", "backend_scheduled", "backend_epoch", "backend_frame", "frame_generation_enabled", "adaptive", "multiplier", "effective_cap_fps", "configured_cap_fps", "cap_wait_ns", "readiness_wait_ns", "output_wait_ns", "private_total_ns", "render_fence_ns", "schedule_ns", "source_copy_ns", "acquire_ns", "generated_submit_ns", "generated_present_ns", "original_present_ns", "unattributed_ns"),
                         "pacing-profile-gpu": ("pid", "context", "source", "backend_epoch", "backend_frame", "previous_wait_us", "prepass_submit_us", "generation_submit_us", "prepass_us", "span_us", "readback_us", "outputs"),
                         "pacing-profile-application": ("pid", "tid", "stream", "ordinal", "context", "source", "image_index", "started_ns", "finished_ns", "result_known", "result", "timeout_known", "timeout_ns", "join_known", "join_ns", "configuration_known", "configuration_ns"),
                         "pacing-profile-wait": ("pid", "tid", "present_id", "timeout_ns", "result", "started_ns", "finished_ns"),
@@ -102,7 +102,7 @@ def read_observations(path: Path) -> tuple[dict[str, list[dict]], int]:
                         raise ValueError("invalid frame trace value")
                     if "finished_ns" in record and record["finished_ns"] < record["started_ns"]:
                         raise ValueError("backwards frame trace")
-                    for key in ("backend_scheduled", "frame_generation_enabled", "adaptive", "smooth_cadence", "result_known", "timeout_known", "join_known", "configuration_known"):
+                    for key in ("backend_scheduled", "frame_generation_enabled", "adaptive", "result_known", "timeout_known", "join_known", "configuration_known"):
                         if key in record and record[key] not in (0, 1):
                             raise ValueError("invalid trace boolean")
                     if operation == "pacing-profile-gpu":
@@ -789,19 +789,19 @@ def report(windows: list[Window], top: int = 5, skip_seconds: float = 0,
         lines.append(f"  Source: {source_rate:.2f} frames/s; output: {output_rate:.2f} attempts/s")
         segments = []
         for window in group:
-            key = tuple(window.values.get(name) for name in ("smooth_cadence", "effective_base_cap_fps", "present_mode",
+            key = tuple(window.values.get(name) for name in ("effective_base_cap_fps", "present_mode",
                 "frame_generation_enabled", "configured_multiplier", "configured_base_cap_fps", "adaptive"))
             if not segments or segments[-1][0] != key:
                 segments.append((key, []))
             segments[-1][1].append(window)
         if len(segments) > 1:
             lines.append("  Settings segments (transition windows can contain both settings):")
-            for (smooth, cap, mode, fg, multiplier, configured_cap, adaptive), segment in segments:
+            for (cap, mode, fg, multiplier, configured_cap, adaptive), segment in segments:
                 seconds = sum(w.values["window_ms"] for w in segment) / 1000
                 sources = sum(w.values["sources"] for w in segment)
                 setting = lambda value: "unknown" if value is None else f"{value:g}"
                 lines.append(f"    fg={setting(fg)} multiplier={setting(multiplier)} adaptive={setting(adaptive)} "
-                             f"smooth={setting(smooth)} cap={setting(cap)} configured_cap={setting(configured_cap)} mode={setting(mode)}: {seconds:.2f} s, {sources / seconds:.2f} source FPS")
+                             f"cap={setting(cap)} configured_cap={setting(configured_cap)} mode={setting(mode)}: {seconds:.2f} s, {sources / seconds:.2f} source FPS")
         selected_outputs = [r for r in (observations or {}).get("outputs", []) if r["pid"] == pid and r["context"] == context]
         if skip_seconds and group[0].values.get("sample_end_monotonic_ms"):
             cutoff = (first + skip_seconds * 1000 - group[0].values["window_ms"]) * 1e6
@@ -816,11 +816,11 @@ def report(windows: list[Window], top: int = 5, skip_seconds: float = 0,
         end_ms = max(w.values.get("sample_end_monotonic_ms", 0) for w in group)
         wayland = (observations or {}).get("wayland", [])
         if wayland or any(w.values.get("wayland_requested") for w in group):
-            for (smooth, cap, mode, fg, multiplier, configured_cap, adaptive), segment in segments:
+            for (cap, mode, fg, multiplier, configured_cap, adaptive), segment in segments:
                 segment_start = min(w.values.get("sample_end_monotonic_ms", 0) - w.values["window_ms"] for w in segment)
                 segment_end = max(w.values.get("sample_end_monotonic_ms", 0) for w in segment)
                 if len(segments) > 1:
-                    lines.append(f"  Wayland settings segment: fg={fg} multiplier={multiplier} adaptive={adaptive} smooth={smooth} "
+                    lines.append(f"  Wayland settings segment: fg={fg} multiplier={multiplier} adaptive={adaptive} "
                                  f"cap={cap} configured_cap={configured_cap} mode={mode} (transition windows may mix settings)")
                 lines.extend(wayland_report(wayland, pid, context, int(segment_start * 1e6), int(segment_end * 1e6), top))
             omitted = sum(r["lost_records"] for r in (observations or {}).get("wayland_gaps", []) if r["pid"] == pid)

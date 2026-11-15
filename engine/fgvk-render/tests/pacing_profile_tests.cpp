@@ -157,7 +157,7 @@ void sourceIdentity() {
     const auto now = Clock::time_point{10s};
     profile.beginSource(now);
     profile.settings(true, false, 2, 60);
-    profile.policy(false, 60);
+    profile.policy(60);
     profile.backendScheduled(0);
     profile.wait(PacingProfile::SourceCapWait, 2ms);
     profile.phaseTiming({5ms, 1ms});
@@ -253,7 +253,7 @@ void emit() {
     PacingProfile profile;
     const auto start = Clock::time_point{10s};
     profile.beginSource(start);
-    profile.policy(true, 60, true);
+    profile.policy(60, true);
     profile.settings(true, false, 2, 60);
     // VKD3D-Proton: FIFO-created swapchain, IMMEDIATE per present.
     profile.presentModes(VK_PRESENT_MODE_IMMEDIATE_KHR, VK_PRESENT_MODE_IMMEDIATE_KHR, VK_PRESENT_MODE_FIFO_KHR);

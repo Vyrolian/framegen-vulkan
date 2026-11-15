@@ -1436,8 +1436,9 @@ namespace fgvk::layer {
     };
 
     /// Normally suppress synthetic frames that exceed confirmed refresh.
-    /// Fixed Smooth Cadence can instead request the full multiplier when
-    /// ordered FIFO owns real-frame pacing, including under VRR.
+    /// A caller may instead request the full multiplier (fullMultiplierCadence)
+    /// when ordered FIFO owns real-frame pacing, including under VRR; the Fixed
+    /// presentation path never does.
     class FixedRefreshBudget {
     public:
         using TimePoint = std::chrono::steady_clock::time_point;

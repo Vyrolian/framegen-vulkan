@@ -55,7 +55,6 @@ namespace {
             left.swapchain_image_count_compatibility ==
                 right.swapchain_image_count_compatibility &&
             left.base_fps_cap == right.base_fps_cap &&
-            left.adaptive_stable_cadence == right.adaptive_stable_cadence &&
             left.low_latency == right.low_latency &&
             left.ultra_performance == right.ultra_performance &&
             left.flow_scale == right.flow_scale &&
@@ -225,9 +224,9 @@ performance_mode = false
 )";
 }
 
-    // Retired Adaptive and cadence keys: an old file with every key present
-    // loads, the Fixed multiplier and the surviving settings keep their values,
-    // and a rewrite drops the retired keys.
+    // Retired Adaptive keys: an old file with every key present loads, the
+    // Fixed multiplier and the surviving settings keep their values, and a
+    // rewrite drops the retired keys.
     void testRetiredAdaptiveKeys(const std::filesystem::path& directory) {
         const auto path = directory / "retired-adaptive-keys.toml";
         writeText(path, R"(version = 2
@@ -236,7 +235,6 @@ name = "game"
 active_in = "Game.exe"
 multiplier = 3
 base_fps_cap = 60
-adaptive_stable_cadence = false
 flow_scale = 0.85
 adaptive = true
 adaptive_max_multiplier = 5
@@ -253,7 +251,6 @@ dynamic_cadence_probe_interval_seconds = 0.5
             "Retired Adaptive keys must not reject the file");
         const auto& profile = retired.profiles().front();
         expect(profile.multiplier == 3 && profile.base_fps_cap == 60 &&
-                !profile.adaptive_stable_cadence &&
                 profile.flow_scale == 0.85F,
             "Retired Adaptive keys must leave the Fixed multiplier and surviving settings unchanged");
         retired.write(path);
@@ -269,9 +266,27 @@ dynamic_cadence_probe_interval_seconds = 0.5
         }
         expect(rewritten.find("multiplier = 3") != std::string::npos &&
                 rewritten.find("base_fps_cap = 60") != std::string::npos &&
-                rewritten.find("adaptive_stable_cadence = false") != std::string::npos &&
                 rewritten.find("flow_scale = ") != std::string::npos,
-            "Rewriting a configuration must keep the Fixed multiplier, base cap, Smooth Cadence and flow scale");
+            "Rewriting a configuration must keep the Fixed multiplier, base cap and flow scale");
+    }
+
+    // adaptive_stable_cadence is retired and behaves as off for every profile. An old file that
+    // still sets it to true loads exactly like the same file without it, and a rewrite drops it.
+    void testRetiredStableCadenceKey(const std::filesystem::path& directory) {
+        const std::string profile = "version = 2\n[[profile]]\nname = 'game'\nmultiplier = 3\n"
+            "base_fps_cap = 60\nflow_scale = 0.85\n";
+        const auto retiredPath = directory / "retired-stable-cadence.toml";
+        writeText(retiredPath, profile + "adaptive_stable_cadence = true\n");
+        const auto plainPath = directory / "plain-stable-cadence.toml";
+        writeText(plainPath, profile);
+        const ls::ConfigFile retired(retiredPath);
+        const ls::ConfigFile plain(plainPath);
+        expect(retired.profiles().size() == 1 && plain.profiles().size() == 1 &&
+                sameGameConf(retired.profiles().front(), plain.profiles().front()),
+            "A retired adaptive_stable_cadence = true key must change nothing");
+        retired.write(retiredPath);
+        expect(readText(retiredPath).find("adaptive_stable_cadence") == std::string::npos,
+            "Rewriting a configuration must drop the retired adaptive_stable_cadence key");
     }
 
     // low_latency defaults on for a profile that omits it and keeps an explicit off across a rewrite.
@@ -298,8 +313,6 @@ int main() {
             defaults.swapchain_image_count_compatibility ==
                 ls::GameConfDefaults::swapchainImageCountCompatibility &&
             defaults.base_fps_cap == ls::GameConfDefaults::baseFpsCap &&
-            defaults.adaptive_stable_cadence ==
-                ls::GameConfDefaults::adaptiveStableCadence &&
             defaults.low_latency == ls::GameConfDefaults::lowLatency &&
             defaults.ultra_performance ==
                 ls::GameConfDefaults::ultraPerformance &&
@@ -310,8 +323,6 @@ int main() {
         "GameConf must use the Renderer profile defaults");
     expect(ls::GameConfDefaults::flowScale == 0.8F,
         "new Renderer profiles must default to the 80% Flow Scale");
-    expect(ls::GameConfDefaults::adaptiveStableCadence,
-        "Smooth Cadence must default to on for new standalone Renderer profiles");
 
     const auto directory = std::filesystem::temp_directory_path() /
         ("fgvk-config-test-" + std::to_string(static_cast<long long>(::getpid())));
@@ -320,6 +331,7 @@ int main() {
     unsetenv("FGVK_ENV");
     testRetiredHeadroomKey(directory);
     testRetiredAdaptiveKeys(directory);
+    testRetiredStableCadenceKey(directory);
     testLowLatencyKey(directory);
     testOptionalLosslessDll(directory);
     testRetiredPowerTables(directory);

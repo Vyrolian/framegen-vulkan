@@ -204,14 +204,14 @@ namespace fgvk::layer::present_diagnostics {
             Clock::time_point started{}, finished{};
             std::array<Clock::duration, 3> waits{};
             std::array<Clock::duration, 9> phases{};
-            bool smooth{}, frameGeneration{}, adaptive{};
+            bool frameGeneration{}, adaptive{};
             size_t multiplier{};
             double cap{}, configuredCap{};
         };
         [[nodiscard]] SourceSample sourceSample(Clock::time_point finished) const {
             return {batch, backendEpoch, backendFrame, hasBackendFrame,
                 sourceStarted.value_or(Clock::time_point{}), finished, waits, lastPhases,
-                window.smoothCadence, window.frameGenerationEnabled, window.adaptive,
+                window.frameGenerationEnabled, window.adaptive,
                 window.configuredMultiplier, window.effectiveCapFps, window.configuredCapFps};
         }
         // Diagnostic identities are bounded, context-local and never feed policy.
@@ -265,7 +265,6 @@ namespace fgvk::layer::present_diagnostics {
             std::array<OutputSample, outputTraceCapacity> outputTrace{};
             size_t outputTraceCount{}, outputTraceDropped{};
             Clock::duration elapsed{};
-            bool smoothCadence{};
             double effectiveCapFps{};
             bool frameGenerationEnabled{}, adaptive{};
             size_t configuredMultiplier{};
@@ -386,8 +385,7 @@ namespace fgvk::layer::present_diagnostics {
         void gpuMicroseconds(Metric metric, double value) {
             window.metrics[metric].addMilliseconds(value / 1000.0);
         }
-        void policy(bool smooth, double cap, bool fifoCallerTiming = false) {
-            window.smoothCadence = smooth;
+        void policy(double cap, bool fifoCallerTiming = false) {
             window.effectiveCapFps = cap;
             window.fifoCallerTimingSources += fifoCallerTiming;
         }

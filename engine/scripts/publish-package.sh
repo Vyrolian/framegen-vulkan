@@ -203,7 +203,7 @@ $manual_release_notes
 
 Every game, renderer, and display setup behaves differently. Compare Frame Generation settings one setting at a time. If Frame Generation does not work, test Fullscreen, Borderless Fullscreen, and Windowed; none is universally best. Changing display mode can change GPU cost. Restart after changing a setting labelled **(Restart)**. Flow Scale and Lighter FG Model normally apply live and may cause one brief hitch while framegen-vulkan replaces their private resources.
 
-- **Quality and latency tuning:** Higher multipliers and lower real-frame rates can increase ghosting and input latency. Smooth Cadence may improve motion consistency while reducing responsiveness, so compare the available choices per game.
+- **Quality and latency tuning:** Higher multipliers and lower real-frame rates can increase ghosting and input latency. Compare multipliers per game.
 
 > [!IMPORTANT]
 > framegen-vulkan does not contain or distribute Lossless Scaling, \`Lossless.dll\`, or extracted proprietary model payloads. Frame Generation reads selected resources at runtime from a lawful, user-supplied Lossless Scaling installation. framegen-vulkan does not alter the user's DLL file, and translated resources remain process-local. Users are responsible for complying with the terms applicable to their copy.

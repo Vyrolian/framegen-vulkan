@@ -1720,7 +1720,7 @@ void testReadyFixedChangingWorkload() {
                             : std::nullopt;
                         if (!batch) batch = pacer.scheduleReadyOutputs(ready, count);
                         if (frame >= 40)
-                            expect(batch.has_value(), "settled workload lost smooth output spacing");
+                            expect(batch.has_value(), "settled workload lost output spacing");
                         if (!batch) released = true;
                         auto returned = std::max(ready, deadline);
                         Clock::duration wait{};
@@ -2257,9 +2257,10 @@ int main() {
     expect(generated >= 115 && generated <= 125,
         "100 FPS Fixed 2x should synthesize only the displayable remainder");
 
-    // With Smooth Cadence and ordered FIFO, Fixed requests its full multiplier
-    // and lets the present queue provide back-pressure instead of sleeping in
-    // the game present call. First-frame and long-stall guards still apply.
+    // With fullMultiplierCadence and ordered FIFO, a caller requests its full
+    // multiplier and lets the present queue provide back-pressure instead of
+    // sleeping in the game present call. First-frame and long-stall guards still
+    // apply.
     for (const uint32_t refreshHz : {60U, 90U, 120U, 144U}) {
         for (size_t multiplier = 2; multiplier <= 5; ++multiplier) {
             budget.reset();

@@ -68,7 +68,6 @@ Enable `frame_generation_provisioned` before launching to allow Frame Generation
 | Setting | What it does |
 | --- | --- |
 | `multiplier` | Fixed output multiplier, 2–5. Start at 2. |
-| `adaptive_stable_cadence` | Favours consistent delivery; compare on and off for responsiveness. |
 | `base_fps_cap` | Limits real FPS. Off adds no manual cap. |
 | `low_latency` | On by default. With frame generation at a cap, the game starts each frame later, just in time, instead of queueing up to three frames ahead. It also holds the game's next frame until the GPU is about to finish the previous one, like Reflex. Off keeps the release at the cap deadline. It also starts each output batch about 2 ms after its frames are ready, phase-locked to the batch cadence. With the game's Reflex on, Reflex holds the game; low latency only starts frame generation just in time. Live. The latency effect is not yet measured in a game run. |
 

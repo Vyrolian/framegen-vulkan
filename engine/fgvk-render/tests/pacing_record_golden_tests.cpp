@@ -46,7 +46,7 @@ void profileScenario() {
     profile.gpuRelease(fgvk::layer::GpuReleaseMode::Predicted, 4ms);
     profile.gpuPrevEnd(1ms);
     profile.gpuPrevEnd(-3ms);
-    profile.policy(false, 60, true);
+    profile.policy(60, true);
     profile.backendScheduled(0);
     profile.wait(PacingProfile::SourceCapWait, 3ms);
     profile.wait(PacingProfile::ReadinessWait, 2ms);

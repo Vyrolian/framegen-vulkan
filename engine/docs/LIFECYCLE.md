@@ -154,9 +154,9 @@ Device destruction waits up to 250 ms across deferred retirements and then force
 
 Fixed 2x–5x requests one to four generated frames between real frames. Confirmed refresh limits outputs the display cannot consume; absent feedback preserves the requested multiplier. The refresh threshold fails open when feedback is missing. Gameplay cadence cannot change the selected multiplier or authorize recovery.
 
-### Base cap and Smooth Cadence
+### Base cap and ready-output pacing
 
-The real-frame cap uses an absolute deadline and rebases after late frames; its intentional sleep can span the selected cap interval. Smooth Cadence (`adaptive_stable_cadence`) remains a Fixed setting: ready-output pacing is eligible when it is on or the output is detached, and the uncapped automatic cap applies only while it is off. Manual caps remain authoritative.
+The real-frame cap uses an absolute deadline and rebases after late frames; its intentional sleep can span the selected cap interval. Ready-output pacing is eligible when the output is detached. The uncapped automatic cap (refresh divided by the multiplier) applies to detached Fixed output at 2x and above with generation on, outside ordered-acquire recovery. Manual caps remain authoritative.
 
 ## Pressure and recovery policies
 

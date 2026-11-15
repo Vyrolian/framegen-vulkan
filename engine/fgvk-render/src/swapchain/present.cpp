@@ -556,7 +556,6 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         ? this->applicationRefreshHz / static_cast<double>(this->profile.multiplier) : 0.0;
     const bool uncappedAutoCapEligible =
         effectiveFrameGenerationEnabled(this->profile) &&
-        !this->profile.adaptive_stable_cadence &&
         !this->recoveryState.orderedAcquireRecovery.active() &&
         detachedOutputTransport && this->profile.multiplier >= 2;
     const bool userCapBinding = baseFpsCap > 0 &&
@@ -581,7 +580,7 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
     const bool autoCapRetune = autoCapApplied && this->uncappedAutoCapApplied;
     this->uncappedAutoCapApplied = autoCapApplied;
     if (this->pacingProfile) this->pacingProfile->policy(
-        this->profile.adaptive_stable_cadence, baseFpsCap,
+        baseFpsCap,
         this->currentPresentMode == VK_PRESENT_MODE_FIFO_KHR &&
             this->info.applicationPresentTiming);
     if (this->pacingProfile) this->pacingProfile->settings(
@@ -1015,9 +1014,9 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
                 this->configuredFixedGeneratedFrames &&
             plan.scheduledGeneratedFrames.size() ==
                 plan.requestedGeneratedFrames.size()) {
-        // Prepare inside the cap interval in native FIFO too, independent of
-        // Smooth Cadence. Sleeping before preparation leaves no cap slack
-        // and sends generated/real images as one burst.
+        // Prepare inside the cap interval in native FIFO too. Sleeping before
+        // preparation leaves no cap slack and sends generated/real images as
+        // one burst.
         invocation.pacedOutputs = this->realFramePacer.scheduleOutputs(
             DiagnosticsClock::now(), limiterDeadline,
             baseFpsCap * this->profile.multiplier,
