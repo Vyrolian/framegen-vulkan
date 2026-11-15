@@ -24,7 +24,10 @@ pub enum Action {
     /// No arguments: open the settings window.
     Gui,
     /// Arguments present: run `helper` with `args` in place of this process.
-    Exec { helper: PathBuf, args: Vec<OsString> },
+    Exec {
+        helper: PathBuf,
+        args: Vec<OsString>,
+    },
 }
 
 /// Chooses the action for a full argument vector whose first item is the program name.
@@ -58,7 +61,9 @@ fn helper_path(
         format!("cannot locate the fgvk executable; set {HELPER_ENV} to the launch helper")
     })?;
     let directory = binary.parent().ok_or_else(|| {
-        format!("cannot locate the fgvk executable directory; set {HELPER_ENV} to the launch helper")
+        format!(
+            "cannot locate the fgvk executable directory; set {HELPER_ENV} to the launch helper"
+        )
     })?;
     Ok(directory.join(HELPER_FROM_BINARY))
 }
@@ -116,7 +121,11 @@ mod tests {
 
     #[test]
     fn no_arguments_open_the_window() {
-        let action = plan(argv(&["fgvk"]), no_environment, exe("/home/u/.local/bin/fgvk"));
+        let action = plan(
+            argv(&["fgvk"]),
+            no_environment,
+            exe("/home/u/.local/bin/fgvk"),
+        );
         assert_eq!(action, Ok(Action::Gui));
     }
 
@@ -129,7 +138,15 @@ mod tests {
     #[test]
     fn any_argument_routes_to_the_helper_unchanged() {
         let action = plan(
-            argv(&["fgvk", "%command%", "--", "Game.exe", "", "a b", "--flag=value"]),
+            argv(&[
+                "fgvk",
+                "%command%",
+                "--",
+                "Game.exe",
+                "",
+                "a b",
+                "--flag=value",
+            ]),
             no_environment,
             exe("/home/u/.local/bin/fgvk"),
         );
@@ -145,7 +162,11 @@ mod tests {
     #[test]
     fn help_flags_are_forwarded_not_parsed() {
         for flag in ["--help", "-h"] {
-            let action = plan(argv(&["fgvk", flag]), no_environment, exe("/opt/fgvk/bin/fgvk"));
+            let action = plan(
+                argv(&["fgvk", flag]),
+                no_environment,
+                exe("/opt/fgvk/bin/fgvk"),
+            );
             assert_eq!(
                 action,
                 Ok(Action::Exec {
@@ -230,7 +251,10 @@ mod tests {
         let Ok(Action::Exec { helper, args }) = action else {
             panic!("expected a helper hand-off, got {action:?}");
         };
-        assert_eq!(helper, PathBuf::from("/usr/bin/../libexec/framegen-vulkan/fgvk-launch"));
+        assert_eq!(
+            helper,
+            PathBuf::from("/usr/bin/../libexec/framegen-vulkan/fgvk-launch")
+        );
         assert_eq!(args, argv(&["FGVK_LAUNCH_HELPER=/evil"]));
     }
 }

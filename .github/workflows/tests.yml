@@ -14,8 +14,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  trace-producer:
-    name: Trace producer contract (${{ matrix.os }})
+  protected-inputs:
+    name: Protected-input and release-candidate checks (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 5
     strategy:
@@ -41,11 +41,6 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@v6
-
-      - name: Set up Python runtime
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.11"
 
       - name: Set up Node.js
         uses: actions/setup-node@v7

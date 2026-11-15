@@ -102,8 +102,7 @@ namespace fgvk::layer {
         /// @param swapchain swapchain handle
         /// @return swapchain context
         /// @throws ls::error if not found
-        [[nodiscard]] Swapchain& getSwapchainContext(
-                VkSwapchainKHR swapchain, const vk::Vulkan& vk) {
+        [[nodiscard]] Swapchain& getSwapchainContext(VkSwapchainKHR swapchain) {
             const auto& it = this->swapchains.find(swapchain);
             if (it == this->swapchains.end())
                 throw ls::error("swapchain context not found");

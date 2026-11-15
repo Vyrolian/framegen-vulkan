@@ -4,7 +4,6 @@
 
 #include "fgvk-common/vulkan/device_memory_accounting.hpp"
 
-#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <filesystem>

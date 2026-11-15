@@ -1025,7 +1025,7 @@ namespace {
         if (mapping == instance_info->swapchains.end() ||
                 instance_info->nativeSwapchains.contains(swapchain)) return VK_SUCCESS;
         try {
-            return layer_info->root.getSwapchainContext(swapchain, mapping->second.get())
+            return layer_info->root.getSwapchainContext(swapchain)
                 .completeDeferredPresent(timeout);
         } catch (const std::exception&) { return VK_ERROR_INITIALIZATION_FAILED; }
     }
@@ -1039,10 +1039,9 @@ namespace {
                 static_cast<void>(completeDeferredPresent(swapchain, UINT64_MAX));
                 continue;
             }
-            const auto mapping = instance_info->swapchains.find(swapchain);
             if (instance_info->nativeSwapchains.contains(swapchain)) continue;
             try {
-                static_cast<void>(layer_info->root.getSwapchainContext(swapchain, mapping->second.get())
+                static_cast<void>(layer_info->root.getSwapchainContext(swapchain)
                     .completeDeferredPresentRetainingOverlap());
             } catch (const std::exception&) {}
         }
@@ -1669,7 +1668,7 @@ namespace {
         uint32_t imageCount = 0;
         std::shared_ptr<InternalSwapchainImages> images;
         try {
-            auto& context = layer_info->root.getSwapchainContext(swapchain, vk);
+            auto& context = layer_info->root.getSwapchainContext(swapchain);
             const auto& profile = context.appliedProfile();
             const auto support = queryInternalImageSupport(
                 vk, application.imageFormat, application.imageUsage);
@@ -2169,7 +2168,7 @@ namespace {
                     )
                     : std::span<const VkSemaphore>{};
 
-                auto& context = layer_info->root.getSwapchainContext(swapchain, it->second);
+                auto& context = layer_info->root.getSwapchainContext(swapchain);
                 presentingContextId = context.diagnosticsId();
                 if (const auto found = instance_info->internalSwapchains.find(swapchain);
                         found != instance_info->internalSwapchains.end()) {
@@ -2281,7 +2280,7 @@ namespace {
         const auto mapping = instance_info->swapchains.find(swapchain);
         if (mapping == instance_info->swapchains.end() ||
                 instance_info->nativeSwapchains.contains(swapchain)) return acquire(timeout);
-        auto& context = layer_info->root.getSwapchainContext(swapchain, mapping->second.get());
+        auto& context = layer_info->root.getSwapchainContext(swapchain);
         present_diagnostics::bindApplicationAcquireContext(context.diagnosticsId());
         if (!context.hasDeferredPresent()) return acquire(timeout);
         if (observeApplication) context.observeDeferredApplicationAcquire();
@@ -2325,7 +2324,7 @@ namespace {
         const auto mapping = instance_info->swapchains.find(swapchain);
         if (mapping == instance_info->swapchains.end())
             return VK_ERROR_INITIALIZATION_FAILED;
-        auto& context = layer_info->root.getSwapchainContext(swapchain, mapping->second.get());
+        auto& context = layer_info->root.getSwapchainContext(swapchain);
         present_diagnostics::bindApplicationAcquireContext(context.diagnosticsId());
         context.observeDeferredApplicationAcquire();
         const auto completed = context.completeDeferredPresent(0);

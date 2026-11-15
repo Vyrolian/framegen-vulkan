@@ -16,6 +16,15 @@ namespace {
         std::exit(1);
     }
 
+    // The production walks copy each pNext link with memcpy. For a local node
+    // reached only that way, GCC 16 at -O2/-O3 can lose track of the pointer
+    // and drop the stores that initialize the node. Publishing the node to an
+    // opaque volatile sink makes it escape without changing its contents.
+    const void* volatile publishedChainNode{};
+    void publishChainNode(const void* node) {
+        publishedChainNode = node;
+    }
+
     void testGeneratedOutputMetadata() {
         constexpr uint64_t presentIds[]{1234};
         constexpr VkPresentModeKHR modes[]{VK_PRESENT_MODE_FIFO_KHR};
@@ -120,6 +129,8 @@ namespace {
             .pNext = &wait2,
             .presentId2 = VK_TRUE,
         };
+        publishChainNode(&wait2);
+        publishChainNode(&id2);
         expect(enablesApplicationPresentId2Wait2(&id2),
             "enabled present ID2 and wait2 features were not recognized");
 
@@ -145,6 +156,7 @@ namespace {
             .pNext = &wait2,
             .timelineSemaphore = VK_TRUE,
         };
+        publishChainNode(&unrelated);
         id2.pNext = &unrelated;
         expect(enablesApplicationPresentId2Wait2(&id2),
             "features behind an unrelated feature node were not found");

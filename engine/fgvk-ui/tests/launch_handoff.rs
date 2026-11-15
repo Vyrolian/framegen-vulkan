@@ -8,13 +8,12 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-const FAKE_HELPER: &str = "#!/bin/sh\nfor argument in \"$@\"; do\n  printf '%s\\n' \"$argument\"\ndone\nexit 23\n";
+const FAKE_HELPER: &str =
+    "#!/bin/sh\nfor argument in \"$@\"; do\n  printf '%s\\n' \"$argument\"\ndone\nexit 23\n";
 
 fn scratch_directory(name: &str) -> PathBuf {
-    let directory = std::env::temp_dir().join(format!(
-        "fgvk-launch-handoff-{name}-{}",
-        std::process::id()
-    ));
+    let directory =
+        std::env::temp_dir().join(format!("fgvk-launch-handoff-{name}-{}", std::process::id()));
     let _ = fs::remove_dir_all(&directory);
     fs::create_dir_all(&directory).expect("create scratch directory");
     directory

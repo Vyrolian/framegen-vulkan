@@ -107,6 +107,11 @@ if(BUILD_TESTING)
         "tests/gpu_clock_tests.cpp")
     target_link_libraries(fgvk-gpu-clock-tests PRIVATE fgvk-common)
     add_test(NAME gpu-clock-mapping COMMAND fgvk-gpu-clock-tests)
+
+    add_executable(fgvk-timestamp-query-pool-tests
+        "tests/timestamp_query_pool_tests.cpp")
+    target_link_libraries(fgvk-timestamp-query-pool-tests PRIVATE fgvk-common)
+    add_test(NAME timestamp-elapsed-microseconds COMMAND fgvk-timestamp-query-pool-tests)
 endif()
 
 if(FGVK_INSTALL_DEVELOP)
