@@ -3924,6 +3924,76 @@ void skippedGeneratedCopySignalsItsFenceOnce() {
     copyAcquireResult = VK_SUCCESS;
 }
 
+// (X4) A per-present mode change clears the serialized-producer latch, from either cause, so the
+// next mode learns it again. Cross-thread waits are covered by the lifecycle test.
+void serialLatchClearsOnModeChange() {
+    auto queue = std::make_shared<DeferredPresentQueue>();
+    queue->queue = handle<VkQueue>(7);
+    const auto swapchain = handle<VkSwapchainKHR>(0x51);
+    const auto semaphore = handle<VkSemaphore>(0x52);
+    uint64_t id = 0x500;
+    VkPresentIdKHR ids{.sType = VK_STRUCTURE_TYPE_PRESENT_ID_KHR,
+        .swapchainCount = 1, .pPresentIds = &id};
+    uint32_t image = 1;
+    const VkPresentInfoKHR info{.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+        .pNext = &ids,
+        .waitSemaphoreCount = 1, .pWaitSemaphores = &semaphore,
+        .swapchainCount = 1, .pSwapchains = &swapchain, .pImageIndices = &image};
+    DeferredPresent worker(queue, present);
+    worker.setDiagnosticsContext(0x77);
+    expect(worker.enqueue(info, DeferredPresent::Clock::now()), "serial latch test admission failed");
+    DeferredPresent::applicationWait(swapchain, id, UINT64_MAX);
+    expect(worker.serialWaitObserved(), "a blocking wait on the newest ID did not latch");
+    worker.clearSerialWait();
+    expect(!worker.serialWaitObserved(), "a per-present mode change did not clear the application-wait latch");
+    DeferredPresent::applicationWait(swapchain, id, UINT64_MAX);
+    expect(worker.serialWaitObserved(), "the latch was not learned again in the new mode");
+    worker.clearSerialWait();
+    worker.completionPacingBlocksSource();
+    expect(worker.serialWaitObserved(), "completion pacing did not latch the serialized producer");
+    worker.clearSerialWait();
+    expect(!worker.serialWaitObserved(), "a per-present mode change did not clear the completion latch");
+    expect(worker.finish(UINT64_MAX).has_value(), "serial latch test presentation did not complete");
+}
+
+// (X4) Completion evidence of the newest record after a delivered, observed wait. The optional discard
+// stands for a present that changed the application's mode.
+DeferredPresent::CompletionWait completionEvidenceAfterDelivery(const bool discard) {
+    auto queue = std::make_shared<DeferredPresentQueue>();
+    queue->queue = handle<VkQueue>(7);
+    const auto device = handle<VkDevice>(42);
+    const auto swapchain = handle<VkSwapchainKHR>(0x61);
+    const auto semaphore = handle<VkSemaphore>(0x62);
+    uint64_t id = 0x610;
+    VkPresentIdKHR ids{.sType = VK_STRUCTURE_TYPE_PRESENT_ID_KHR,
+        .swapchainCount = 1, .pPresentIds = &id};
+    uint32_t image = 1;
+    const VkPresentInfoKHR info{.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+        .pNext = &ids,
+        .waitSemaphoreCount = 1, .pWaitSemaphores = &semaphore,
+        .swapchainCount = 1, .pSwapchains = &swapchain, .pImageIndices = &image};
+    DeferredPresent worker(queue, present, device);
+    expect(worker.beginBatch(1, {.capOwned = true}) && worker.enqueue(info, DeferredPresent::Clock::now() + 10ms),
+        "completion evidence test admission failed");
+    worker.closeBatch();
+    std::thread waiter([&] {
+        expect(DeferredPresent::waitForPresent(device, swapchain, id, UINT64_MAX,
+            [](uint64_t) { return VK_SUCCESS; }) == VK_SUCCESS, "completion evidence wait failed");
+    });
+    std::this_thread::sleep_for(10ms);
+    expect(worker.finish(UINT64_MAX).has_value(), "completion evidence presentation did not complete");
+    waiter.join();
+    if (discard) worker.discardCompletionPacingWait();
+    return worker.takeCompletionPacingWait();
+}
+void discardedCompletionEvidenceIsNotTaken() {
+    lowerResult = VK_SUCCESS;
+    expect(completionEvidenceAfterDelivery(false).finished != DeferredPresent::Clock::time_point{},
+        "a finished, observed completion wait was not takeable (test precondition)");
+    expect(completionEvidenceAfterDelivery(true).finished == DeferredPresent::Clock::time_point{},
+        "a mode change did not discard the newest record's completion wait");
+}
+
 int main([[maybe_unused]] int argc, [[maybe_unused]] char** argv) {
     generatedPreparedOrderAndBudget(); generatedPreparationFallbackAndGates();
     generatedChainOutputOffsetsMoveEachOutput();
@@ -3964,4 +4034,5 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char** argv) {
     // counts calls for the earlier lifecycle test.
     skippedInternalRealSignalsItsFenceOnce(); stoppedInternalRealSignalsItsFenceOnce();
     presentedJobsKeepTheirFenceForTheLowerPresent(); skippedGeneratedCopySignalsItsFenceOnce();
+    serialLatchClearsOnModeChange(); discardedCompletionEvidenceIsNotTaken();
 }

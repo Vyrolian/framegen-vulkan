@@ -1445,6 +1445,36 @@ void testCompletionThreadDoesNotTeachItsOutputWait() {
     }
 }
 
+// X4: a mode change forgets the completion-blocked samples of the old mode; the new mode must observe
+// two slower completion-gated sources again before it is classified as completion paced.
+void testModeChangeResetsCompletionBlockedSamples() {
+    using Clock = RealFramePacer::Clock;
+    RealFramePacer pacer;
+    auto arrival = Clock::time_point{140s};
+    // The same source as testCompletionThreadDoesNotTeachItsOutputWait, one frame at a time.
+    const auto frame = [&](const bool completionPaced) {
+        (void)pacer.schedule(arrival, 0);
+        if (completionPaced) pacer.recordCompletionPacingWait(8ms);
+        pacer.observeSource(arrival, true, 2);
+        const auto batch = pacer.scheduleReadyOutputs(arrival + 1ms, 2, true);
+        pacer.recordOutputWait(0ns, batch.has_value(), batch.has_value());
+    };
+    for (size_t index = 0; index < 240; ++index) {
+        frame(index >= 16);
+        arrival += index >= 15 ? 24ms : 16ms;
+    }
+    expect(pacer.completionPacingBlocksSource(), "setup did not establish completion pacing");
+    pacer.resetCompletionBlockedSamples();
+    expect(!pacer.completionPacingBlocksSource(),
+        "a mode change kept the old mode's completion-blocked samples");
+    frame(true);
+    arrival += 24ms;
+    expect(!pacer.completionPacingBlocksSource(),
+        "one completion-gated sample after a mode change established completion pacing");
+    frame(true);
+    expect(pacer.completionPacingBlocksSource(), "the new mode did not relearn completion pacing");
+}
+
 void testDetachedBatchPhaseContinuity() {
     using Clock = RealFramePacer::Clock;
     constexpr auto period = 22222200ns; // Integral slots for every 2x-5x rung.
@@ -2012,6 +2042,7 @@ int main() {
     testWorkerReadinessPreservesCapAndOutputPhase();
     testReadyFixedCapOwnershipRequalification();
     testCompletionThreadDoesNotTeachItsOutputWait();
+    testModeChangeResetsCompletionBlockedSamples();
     testGameCapRetainsFallbackAfterIsolatedCapBatch();
     testStableGameCadenceWithChangingReadiness();
     testReadyFixedSourceJitterAndCapIncrease();

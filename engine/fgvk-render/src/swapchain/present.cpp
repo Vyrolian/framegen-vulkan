@@ -415,6 +415,8 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
             }
         }
     }
+    // X4: set by the present where the application's per-present mode changes (see below).
+    bool applicationModeChanged = false;
     {
         // -1: no per-present mode, the create-time mode applies.
         const auto chainMode = [](const void* chain) -> int64_t {
@@ -425,6 +427,15 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         };
         const int64_t applicationMode = chainMode(nextChain);
         const int64_t realMode = chainMode(lowerNextChain);
+        // X4: a change of the application's per-present mode ends the serialized-producer latch and
+        // the completion-blocked samples learned in the old mode, before this present's transport
+        // and pacing decisions below.
+        if (applicationMode != this->previousApplicationPresentMode) {
+            this->previousApplicationPresentMode = applicationMode;
+            applicationModeChanged = true;
+            if (this->deferredPresent) this->deferredPresent->clearSerialWait();
+            this->realFramePacer.resetCompletionBlockedSamples();
+        }
         if (this->pacingProfile)
             this->pacingProfile->presentModes(applicationMode, realMode, this->info.presentMode);
         if (applicationMode != this->loggedApplicationPresentMode ||
@@ -661,7 +672,10 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         this->recoveryState.orderedAcquireRecovery.active(),
         detachedOutputTransport) &&
         !(this->deferredPresent && this->deferredPresent->serialWaitObserved());
-    const auto completionWait = this->deferredPresent
+    // X4: on a mode-change present the newest record's completion evidence is from the old mode.
+    // Drop it and take nothing, so it cannot latch here or on a later present.
+    if (this->deferredPresent && applicationModeChanged) this->deferredPresent->discardCompletionPacingWait();
+    const auto completionWait = this->deferredPresent && !applicationModeChanged
         ? this->deferredPresent->takeCompletionPacingWait() : DeferredPresent::CompletionWait{};
     const auto completionDelay = completionWait.finished <= limiterArrival
         ? completionWait.waited : DiagnosticsClock::duration{};

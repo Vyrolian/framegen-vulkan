@@ -19,6 +19,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <iostream>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -500,17 +501,27 @@ public:
     // FIFO delivery for that client instead of learning our own output delay
     // as a progressively slower source period. Enabled features, zero-time
     // polls, older IDs and waits on other threads do not establish this case.
+    // X4: the target is thread-local, so only the thread whose last admitted job carries this ID
+    // latches. clearSerialWait ends the latch on a mode change.
     static void applicationWait(VkSwapchainKHR swapchain, uint64_t id, uint64_t timeout) {
         const auto& target = waitTarget();
         if (timeout && id && target.swapchain == swapchain &&
                 (target.id == id || target.id2 == id)) {
-            if (auto state = target.serial.lock()) state->store(true, std::memory_order_relaxed);
+            if (auto state = target.serial.lock()) latchSerialWait(*state, "application-wait", target.context);
         }
     }
     [[nodiscard]] bool serialWaitObserved() const {
         return serialWait->load(std::memory_order_relaxed);
     }
-    void completionPacingBlocksSource() { serialWait->store(true, std::memory_order_relaxed); }
+    void completionPacingBlocksSource() { latchSerialWait(*serialWait, "completion", diagnosticsContext); }
+    // X4: the application's per-present mode changed, so the serialized-producer episode learned in
+    // the old mode ends. The next latch is learned again in the new mode.
+    void clearSerialWait() {
+        if (serialWait->exchange(false, std::memory_order_relaxed))
+            std::cerr << "framegen-vulkan: serial wait latch: state=cleared cause=present-mode\n";
+    }
+    // X4: the owning swapchain's diagnostics context, written on latch records.
+    void setDiagnosticsContext(const uint64_t context) { this->diagnosticsContext = context; }
 
     // A successful application present may still be retained by this worker.
     // The lower wait API may only see an ID after its lower present returned.
@@ -586,6 +597,12 @@ public:
             return {};
         delivery->delayTaken = true;
         return {delivery->completionDelay, delivery->capOwned, delivery->waitFinishedAt};
+    }
+    // X4: a present that changes the application's mode drops the newest record's completion
+    // evidence even if its wait is still in flight. The delayTaken mark also blocks a later take.
+    void discardCompletionPacingWait() {
+        const std::lock_guard lock(delivery->mutex);
+        delivery->delayTaken = true;
     }
 
     // Open one source batch, or a newer one while every pending batch is sealed and
@@ -835,12 +852,21 @@ private:
         std::weak_ptr<std::atomic_bool> serial;
         VkSwapchainKHR swapchain{};
         uint64_t id{}, id2{};
+        // X4: the owning context, for the latch record.
+        uint64_t context{};
     };
     static WaitTarget& waitTarget() {
         static thread_local WaitTarget target;
         return target;
     }
+    // X4: one stderr record per latch transition, not per present.
+    static void latchSerialWait(std::atomic_bool& state, const char* cause, const uint64_t context) {
+        if (!state.exchange(true, std::memory_order_relaxed))
+            std::cerr << "framegen-vulkan: serial wait latch: state=set cause=" << cause
+                      << " context=" << context << '\n';
+    }
     std::shared_ptr<std::atomic_bool> serialWait = std::make_shared<std::atomic_bool>(false);
+    uint64_t diagnosticsContext{};
     struct Metadata {
         VkFence fence{};
         uint64_t id{}, id2{};
@@ -989,7 +1015,8 @@ private:
         }
         waitTarget() = {serialWait, info.pSwapchains[0],
             metadata->hasId ? metadata->id : 0,
-            metadata->hasId2 && !metadata->ownedId2 ? metadata->id2 : 0};
+            metadata->hasId2 && !metadata->ownedId2 ? metadata->id2 : 0,
+            this->diagnosticsContext};
         changed.notify_all();
         return true;
     }

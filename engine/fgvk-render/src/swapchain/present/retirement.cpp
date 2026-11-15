@@ -147,6 +147,7 @@ bool Swapchain::beginDeferredPresentBatch(const vk::Vulkan& vk, const size_t lim
             this->deferredPresent = std::make_unique<DeferredPresent>(
                 this->info.deferredPresentQueue, vk.df().QueuePresentKHR, vk.dev(), vk.df().QueueSubmit);
             this->deferredPresent->setOwnedPresentIdStorage(&this->presentFeedbackTag);
+            this->deferredPresent->setDiagnosticsContext(this->diagnosticsState.contextId);
         } catch (const std::exception&) { return false; }
     }
     return this->deferredPresent->beginBatch(limit, {
@@ -329,6 +330,7 @@ VkResult Swapchain::queuePresentWithRetirementFence(
                     this->deferredPresent = std::make_unique<DeferredPresent>(
                         this->info.deferredPresentQueue, vk.df().QueuePresentKHR, vk.dev(), vk.df().QueueSubmit);
                     this->deferredPresent->setOwnedPresentIdStorage(&this->presentFeedbackTag);
+                    this->deferredPresent->setDiagnosticsContext(this->diagnosticsState.contextId);
                 } catch (const std::exception&) {
                     // Thread/resource exhaustion retains synchronous delivery.
                 }

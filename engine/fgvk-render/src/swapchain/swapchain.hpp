@@ -483,6 +483,8 @@ namespace fgvk::layer {
         VkPresentModeKHR currentPresentMode{VK_PRESENT_MODE_FIFO_KHR};
         // Last per-present modes printed to stderr (-2 = nothing printed yet).
         int64_t loggedApplicationPresentMode{-2}, loggedRealPresentMode{-2};
+        // X4: the application's per-present mode of the previous present (-2 = no present yet).
+        int64_t previousApplicationPresentMode{-2};
         FixedRefreshBudget fixedRefreshBudget;
         RealFramePacer realFramePacer;
         // Source-cap deadline moved to the application's own release wait;

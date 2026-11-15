@@ -1109,6 +1109,9 @@ namespace fgvk::layer {
             this->sourceCompletionPaced = wait > Clock::duration::zero();
         }
         [[nodiscard]] bool completionPacingBlocksSource() const { return this->completionBlockedSamples >= 2; }
+        /// X4: an application present-mode change starts a new output clock. Completion samples taken
+        /// in the old mode no longer establish completion pacing; the new mode must observe them again.
+        void resetCompletionBlockedSamples() { this->completionBlockedSamples = 0; }
 
         /// No fallback delay on a missed source interval or when preparation
         /// has already consumed a whole interval. GPU readiness shares this
