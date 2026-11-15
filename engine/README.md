@@ -6,7 +6,7 @@
 
 framegen-vulkan is a Vulkan layer for Frame Generation on SteamOS and Linux. It supports LSFG Fixed Frame Generation.
 
-LSFG requires a lawful, user-supplied <a href="https://store.steampowered.com/app/993090/Lossless_Scaling/" target="_blank" rel="noopener noreferrer">Lossless Scaling</a> installation. framegen-vulkan does not distribute or modify `Lossless.dll`. framegen-vulkan descends from the GPL-3.0-or-later lsfg-vk version 2 tree. See the <a href="../THIRD_PARTY_NOTICES.md" target="_blank" rel="noopener noreferrer">third-party notices</a> and <a href="../LICENSE.md" target="_blank" rel="noopener noreferrer">license</a> for lineage and redistribution terms.
+LSFG requires a lawful, user-supplied <a href="https://store.steampowered.com/app/993090/Lossless_Scaling/" target="_blank" rel="noopener noreferrer">Lossless Scaling</a> installation. framegen-vulkan does not distribute or modify `Lossless.dll`. framegen-vulkan descends from the GPL-3.0-or-later lsfg-vk version 2 tree. See the <a href="../THIRD_PARTY_NOTICES.md" target="_blank" rel="noopener noreferrer">third-party notices</a>, the <a href="../COPYRIGHT.md" target="_blank" rel="noopener noreferrer">copyright notices</a> and the <a href="../LICENSE" target="_blank" rel="noopener noreferrer">GPL text</a> for lineage and redistribution terms.
 
 ## Downloads
 

@@ -1,6 +1,6 @@
 # framegen-vulkan third-party notices
 
-This document supplements [LICENSE.md](LICENSE.md). It identifies third-party material distributed with MAKO and proprietary software that MAKO can use but does not distribute. Each third-party copyright, license, and trademark remains with its owner.
+This document supplements [COPYRIGHT.md](COPYRIGHT.md) and the GPL text in [LICENSE](LICENSE). It identifies third-party material distributed with MAKO and proprietary software that MAKO can use but does not distribute. Each third-party copyright, license, and trademark remains with its owner.
 
 ## Lossless Scaling is not distributed by framegen-vulkan
 
@@ -14,7 +14,7 @@ Lossless Scaling, LS1, and LSFG are used descriptively and remain the property o
 
 ## Incorporated Renderer source
 
-The complete notices for the GPL-3.0-or-later lsfg-vk version 2 Renderer lineage, toml++, and Bjoern Hoehrmann's UTF-8 decoder are reproduced in [LICENSE.md](LICENSE.md).
+The complete notices for the GPL-3.0-or-later lsfg-vk version 2 Renderer lineage, toml++, and Bjoern Hoehrmann's UTF-8 decoder are reproduced in [COPYRIGHT.md](COPYRIGHT.md).
 
 ### lsfg-vk Renderer provenance
 

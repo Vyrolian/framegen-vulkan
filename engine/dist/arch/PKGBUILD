@@ -88,7 +88,7 @@ _fgvk_install_payload_file() {
             # desktop entries, including those in older archives.
             return 0
             ;;
-        share/doc/framegen-vulkan/LICENSE.md | share/doc/framegen-vulkan/THIRD_PARTY_NOTICES.md)
+        share/doc/framegen-vulkan/LICENSE | share/doc/framegen-vulkan/COPYRIGHT.md | share/doc/framegen-vulkan/THIRD_PARTY_NOTICES.md)
             destination_path="$pkgdir/usr/share/licenses/$pkgname/${relative_path##*/}"
             ;;
         share/doc/framegen-vulkan/*)
@@ -140,7 +140,8 @@ package() {
         lib/libfgvk-render.so
         lib32/libfgvk-render.so
         share/doc/framegen-vulkan/ASSET_PROVENANCE.md
-        share/doc/framegen-vulkan/LICENSE.md
+        share/doc/framegen-vulkan/COPYRIGHT.md
+        share/doc/framegen-vulkan/LICENSE
         share/doc/framegen-vulkan/THIRD_PARTY_NOTICES.md
         share/framegen-vulkan/vulkan/implicit_layer.d/VkLayer_FGVK_render.json
         share/framegen-vulkan/vulkan/implicit_layer.d/VkLayer_FGVK_render.x86.json

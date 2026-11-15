@@ -30,6 +30,8 @@ PY
 "$script_dir/check-release-pin.sh" >/dev/null
 grep -Fq "'libx11'" "$script_dir/PKGBUILD"
 grep -Fq 'done < framegen-vulkan-install-manifest.txt' "$script_dir/PKGBUILD"
+grep -Fqx '        share/doc/framegen-vulkan/COPYRIGHT.md' "$script_dir/PKGBUILD"
+grep -Fqx '        share/doc/framegen-vulkan/LICENSE' "$script_dir/PKGBUILD"
 grep -Fq 'pacman -Syu --noconfirm --needed fakeroot' \
     "$script_dir/verify-release-package.sh"
 grep -Fq 'command -v makepkg >/dev/null 2>&1 || ! command -v fakeroot' \
@@ -234,6 +236,9 @@ printf '%s\n' fgvk > "$mapping_root/bin/fgvk"
 printf '%s\n' launcher > "$mapping_root/libexec/framegen-vulkan/fgvk-launch"
 printf '%s\n' entry > "$mapping_root/share/applications/legacy-entry"
 printf '%s\n' future > "$mapping_root/share/framegen-vulkan/future/payload.dat"
+mkdir -p "$mapping_root/share/doc/framegen-vulkan"
+printf '%s\n' copyright > "$mapping_root/share/doc/framegen-vulkan/COPYRIGHT.md"
+printf '%s\n' gpl > "$mapping_root/share/doc/framegen-vulkan/LICENSE"
 (
     # shellcheck disable=SC1091
     . "$script_dir/PKGBUILD"
@@ -245,6 +250,8 @@ printf '%s\n' future > "$mapping_root/share/framegen-vulkan/future/payload.dat"
     _fgvk_install_payload_file libexec/framegen-vulkan/fgvk-launch
     _fgvk_install_payload_file share/applications/legacy-entry
     _fgvk_install_payload_file share/framegen-vulkan/future/payload.dat
+    _fgvk_install_payload_file share/doc/framegen-vulkan/COPYRIGHT.md
+    _fgvk_install_payload_file share/doc/framegen-vulkan/LICENSE
     if _fgvk_install_payload_file ../escape 2>/dev/null; then
         echo "Arch package accepted an unsafe manifest path" >&2
         exit 1
@@ -254,6 +261,9 @@ printf '%s\n' future > "$mapping_root/share/framegen-vulkan/future/payload.dat"
 [[ -x "$mapping_pkgdir/usr/bin/fgvk" ]]
 [[ -x "$mapping_pkgdir/usr/libexec/framegen-vulkan/fgvk-launch" ]]
 [[ -f "$mapping_pkgdir/usr/share/framegen-vulkan/future/payload.dat" ]]
+[[ -f "$mapping_pkgdir/usr/share/licenses/framegen-vulkan-bin/COPYRIGHT.md" ]]
+[[ -f "$mapping_pkgdir/usr/share/licenses/framegen-vulkan-bin/LICENSE" ]]
+[[ ! -e "$mapping_pkgdir/usr/share/doc/framegen-vulkan-bin/LICENSE" ]]
 [[ ! -e "$mapping_pkgdir/usr/bin/fgvk-installer" ]]
 [[ ! -e "$mapping_pkgdir/usr/share/applications/legacy-entry" ]]
 

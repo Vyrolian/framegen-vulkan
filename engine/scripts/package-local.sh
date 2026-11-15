@@ -295,7 +295,8 @@ required_paths=(
     "libexec/framegen-vulkan/fgvk-launch" \
     "lib/libfgvk-render.so" \
     "share/doc/framegen-vulkan/ASSET_PROVENANCE.md" \
-    "share/doc/framegen-vulkan/LICENSE.md" \
+    "share/doc/framegen-vulkan/COPYRIGHT.md" \
+    "share/doc/framegen-vulkan/LICENSE" \
     "share/doc/framegen-vulkan/THIRD_PARTY_NOTICES.md" \
     "share/framegen-vulkan/vulkan/implicit_layer.d/VkLayer_FGVK_render.json" \
     "share/vulkan/implicit_layer.d/VkLayer_FGVK_render.json"

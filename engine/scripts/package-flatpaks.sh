@@ -173,7 +173,8 @@ while IFS= read -r runtime_version || [[ -n "$runtime_version" ]]; do
         "files/share/framegen-vulkan/vulkan/implicit_layer.d/VkLayer_FGVK_render.json" \
         "files/share/framegen-vulkan/vulkan/implicit_layer.d/VkLayer_FGVK_render.x86.json" \
         "files/share/doc/framegen-vulkan/ASSET_PROVENANCE.md" \
-        "files/share/doc/framegen-vulkan/LICENSE.md" \
+        "files/share/doc/framegen-vulkan/COPYRIGHT.md" \
+        "files/share/doc/framegen-vulkan/LICENSE" \
         "files/share/doc/framegen-vulkan/THIRD_PARTY_NOTICES.md" \
         "files/lib64/libfgvk-render.so" \
         "files/lib/i386-linux-gnu/libfgvk-render.so"; do
@@ -256,7 +257,7 @@ while IFS= read -r runtime_version || [[ -n "$runtime_version" ]]; do
         echo "Flatpak packaging failed: deployed 32-bit library is missing for $runtime_version" >&2
         exit 1
     fi
-    for legal_file in ASSET_PROVENANCE.md LICENSE.md THIRD_PARTY_NOTICES.md; do
+    for legal_file in ASSET_PROVENANCE.md COPYRIGHT.md LICENSE THIRD_PARTY_NOTICES.md; do
         if [[ ! -f "$deployed_dir/files/share/doc/framegen-vulkan/$legal_file" ]]; then
             echo "Flatpak packaging failed: deployed legal file $legal_file is missing for $runtime_version" >&2
             exit 1
