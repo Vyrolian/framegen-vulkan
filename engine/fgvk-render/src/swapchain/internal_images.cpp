@@ -893,10 +893,13 @@ namespace fgvk::layer {
     }
 
     VkResult InternalSwapchainImages::consumeWithoutCopy(const uint32_t applicationIndex,
-            const std::span<const VkSemaphore> applicationWaits) {
+            const std::span<const VkSemaphore> applicationWaits, const VkFence presentFence) {
         markPending(applicationIndex);
         const std::lock_guard lock(impl->queue->mutex);
-        return impl->releaseLocked(impl->queue->queue, applicationIndex, applicationWaits);
+        const VkResult released = impl->releaseLocked(impl->queue->queue, applicationIndex, applicationWaits);
+        if (presentFence != VK_NULL_HANDLE)
+            static_cast<void>(impl->funcs.QueueSubmit(impl->queue->queue, 0, nullptr, presentFence));
+        return released;
     }
 
     void InternalSwapchainImages::releaseNotHandedOff(const VkQueue applicationQueue,

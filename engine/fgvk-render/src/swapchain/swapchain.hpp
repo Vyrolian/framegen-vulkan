@@ -181,6 +181,10 @@ namespace fgvk::layer {
             std::chrono::steady_clock::duration outputInterval = {},
             std::chrono::steady_clock::time_point arrival = {});
         [[nodiscard]] bool hasDeferredPresent() const { return static_cast<bool>(this->deferredPresent); }
+        // X3: whether the application chain of the latest present reached a lower present or the
+        // deferred worker. False after a present that threw or returned before that point: the
+        // caller then signals the application's present fence itself.
+        [[nodiscard]] bool applicationChainWasHandedOff() const { return this->applicationChainHandedOff; }
         // True while an admitted batch is still outputting or waiting to be joined.
         [[nodiscard]] bool deferredPresentPending() const {
             return this->deferredPresent && this->deferredPresent->pending();
@@ -551,6 +555,9 @@ namespace fgvk::layer {
         std::optional<std::chrono::steady_clock::time_point> deferredPresentDeadline;
         // Set only for the duration of a present() that was given an internal image.
         InternalPresentImage* internalPresent{nullptr};
+        // X3: set when the present's application image reaches a lower present or the deferred worker.
+        // present() clears it on entry.
+        bool applicationChainHandedOff{false};
 
         SwapchainColorPipeline colorPipeline;
         bool fp16Requested{true};

@@ -3722,6 +3722,208 @@ void justInTimeBatchKeepsQuarterIntervalAfterPreviousReal() {
 }
 }
 
+// X3: the empty submits the worker makes to signal an application present fence that no lower
+// present received. Each one is recorded in order.
+namespace {
+std::mutex fenceSignalMutex;
+std::vector<VkFence> fenceSignals;
+VkResult VKAPI_CALL fenceSubmit(VkQueue queue, uint32_t count, const VkSubmitInfo* info, VkFence fence) {
+    expect(queue == handle<VkQueue>(7) && count == 0 && info == nullptr,
+        "application present fence was not signalled by an empty submit on the private queue");
+    const std::lock_guard lock(fenceSignalMutex);
+    fenceSignals.push_back(fence);
+    return VK_SUCCESS;
+}
+std::vector<VkFence> signalledFences() {
+    const std::lock_guard lock(fenceSignalMutex);
+    return fenceSignals;
+}
+void clearSignalledFences() {
+    const std::lock_guard lock(fenceSignalMutex);
+    fenceSignals.clear();
+}
+// Lower callbacks for an internal output that never becomes ready, so the worker is still
+// inside the job when it is asked to stop.
+struct StoppingFake {
+    std::atomic_int polls{};
+    std::atomic_int abandons{};
+};
+VkResult stoppingTryAcquire(void* owner, uint32_t*) {
+    ++static_cast<StoppingFake*>(owner)->polls;
+    return VK_NOT_READY;
+}
+VkResult stoppingSubmit(void*, VkQueue, uint32_t, uint32_t, VkSemaphore, VkSemaphore*) {
+    expect(false, "a stopped internal output was copied");
+    return VK_ERROR_UNKNOWN;
+}
+VkResult stoppingAbandon(void* owner, VkQueue queue, uint32_t, VkSemaphore) {
+    expect(queue == handle<VkQueue>(7), "abandon submitted on the wrong queue");
+    ++static_cast<StoppingFake*>(owner)->abandons;
+    return VK_SUCCESS;
+}
+}
+
+// (X3a) An internal output that ends skipped on an acquire error signals its application fence
+// exactly once, and only when the application passed one. It never reaches a lower present.
+void skippedInternalRealSignalsItsFenceOnce() {
+    for (const bool withFence : {false, true}) {
+        auto queue = std::make_shared<DeferredPresentQueue>();
+        queue->queue = handle<VkQueue>(7);
+        DeferredPresent worker(queue, recordingPresent, VK_NULL_HANDLE, fenceSubmit);
+        copyPresents.clear();
+        clearSignalledFences();
+        const auto swapchain = handle<VkSwapchainKHR>(11);
+        const auto continuation = handle<VkSemaphore>(12);
+        const auto fence = handle<VkFence>(0x41);
+        VkSwapchainPresentFenceInfoEXT fences{
+            .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_FENCE_INFO_EXT,
+            .swapchainCount = 1, .pFences = &fence,
+        };
+        uint32_t applicationImage = 2;
+        const VkPresentInfoKHR info{.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+            .pNext = withFence ? &fences : nullptr,
+            .waitSemaphoreCount = 1, .pWaitSemaphores = &continuation,
+            .swapchainCount = 1, .pSwapchains = &swapchain, .pImageIndices = &applicationImage};
+        auto fake = std::make_shared<InternalFake>();
+        fake->notReadyPolls = 1;
+        fake->failure = VK_ERROR_OUT_OF_DATE_KHR;
+        expect(worker.beginBatch(1), "fenced failing internal batch rejected");
+        expect(worker.enqueueInternalReal(info, DeferredPresent::Clock::now(), internalCopy(fake, 2)),
+            "fenced failing internal output rejected");
+        worker.closeBatch();
+        const auto completion = worker.finish(UINT64_MAX);
+        expect(completion && completion->count == 1 && completion->calls[0].skipped &&
+            fake->abandons == 1 && fake->submits == 0 && copyPresents.empty(),
+            "failing internal output did not skip after abandoning its image once");
+        expect(signalledFences() == (withFence ? std::vector{fence} : std::vector<VkFence>{}),
+            "a skipped job's application present fence was not signalled exactly once");
+    }
+}
+
+// (X3b) An internal output still waiting for its deadline when the worker stops ends skipped as
+// Stopping, and its application fence is signalled exactly once.
+void stoppedInternalRealSignalsItsFenceOnce() {
+    auto queue = std::make_shared<DeferredPresentQueue>();
+    queue->queue = handle<VkQueue>(7);
+    DeferredPresent worker(queue, recordingPresent, VK_NULL_HANDLE, fenceSubmit);
+    clearSignalledFences();
+    const auto swapchain = handle<VkSwapchainKHR>(11);
+    const auto continuation = handle<VkSemaphore>(12);
+    const auto fence = handle<VkFence>(0x42);
+    VkSwapchainPresentFenceInfoEXT fences{
+        .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_FENCE_INFO_EXT,
+        .swapchainCount = 1, .pFences = &fence,
+    };
+    uint32_t applicationImage = 1;
+    const VkPresentInfoKHR info{.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+        .pNext = &fences,
+        .waitSemaphoreCount = 1, .pWaitSemaphores = &continuation,
+        .swapchainCount = 1, .pSwapchains = &swapchain, .pImageIndices = &applicationImage};
+    auto fake = std::make_shared<StoppingFake>();
+    const DeferredPresent::InternalRealCopy copy{
+        .owner = fake, .tryAcquire = stoppingTryAcquire, .submit = stoppingSubmit,
+        .abandon = stoppingAbandon, .applicationIndex = 1,
+    };
+    expect(worker.beginBatch(1), "stopped internal batch rejected");
+    // A long deadline keeps the job in flight until the stop, even under a loaded test run.
+    expect(worker.enqueueInternalReal(info, DeferredPresent::Clock::now() + 500ms, copy),
+        "stopped internal output rejected");
+    worker.closeBatch();
+    // Stop only once the worker is inside the job, so the job is not dropped before it starts.
+    for (int waited = 0; fake->polls.load() == 0 && waited < 5000; ++waited)
+        std::this_thread::sleep_for(1ms);
+    expect(fake->polls.load() > 0, "the worker never started the internal output");
+    DeferredPresentTestAccess::requestStop(worker);
+    const auto completion = worker.finish(UINT64_MAX);
+    expect(completion && completion->count == 1 && completion->calls[0].skipped &&
+        completion->calls[0].skipReason == DeferredPresent::SkipReason::Stopping &&
+        fake->abandons == 1,
+        "stopped internal output did not skip as Stopping after abandoning its image once");
+    expect(signalledFences() == std::vector{fence},
+        "a stopped job's application present fence was not signalled exactly once");
+}
+
+// (X3c) A present whose lower present received the fence never gets a layer signal, whatever that
+// present returned: plain and internal outputs, with success, out-of-date and surface loss.
+void presentedJobsKeepTheirFenceForTheLowerPresent() {
+    for (const VkResult lower : {VK_SUCCESS, VK_ERROR_OUT_OF_DATE_KHR, VK_ERROR_SURFACE_LOST_KHR}) {
+        for (const bool internal : {false, true}) {
+            lowerResult = lower;
+            auto queue = std::make_shared<DeferredPresentQueue>();
+            queue->queue = handle<VkQueue>(7);
+            DeferredPresent worker(queue, present, VK_NULL_HANDLE, fenceSubmit);
+            clearSignalledFences();
+            const auto swapchain = handle<VkSwapchainKHR>(11);
+            const auto continuation = handle<VkSemaphore>(12);
+            const auto fence = handle<VkFence>(0x43);
+            VkSwapchainPresentFenceInfoEXT fences{
+                .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_FENCE_INFO_EXT,
+                .swapchainCount = 1, .pFences = &fence,
+            };
+            uint32_t applicationImage = 0;
+            const VkPresentInfoKHR info{.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+                .pNext = &fences,
+                .waitSemaphoreCount = 1, .pWaitSemaphores = &continuation,
+                .swapchainCount = 1, .pSwapchains = &swapchain, .pImageIndices = &applicationImage};
+            const auto deadline = DeferredPresent::Clock::now();
+            auto fake = std::make_shared<InternalFake>();
+            fake->presentWait = handle<VkSemaphore>(95);
+            expect(worker.beginBatch(1), "fenced presented batch rejected");
+            const bool admitted = internal
+                ? worker.enqueueInternalReal(info, deadline, internalCopy(fake, 0))
+                : worker.enqueue(info, deadline);
+            expect(admitted, "fenced presented output rejected");
+            worker.closeBatch();
+            const auto completion = worker.finish(UINT64_MAX);
+            expect(completion && completion->count == 1 && !completion->calls[0].skipped &&
+                completion->calls[0].result == lower,
+                "fenced presented output was skipped or lost its lower result");
+            expect(observedFence == fence,
+                "the lower present did not receive the application present fence");
+            expect(signalledFences().empty(),
+                "the layer signalled a present fence that the lower present had received");
+        }
+    }
+    lowerResult = VK_SUCCESS;
+}
+
+// (X3d) A generated output that skips for want of a lower image signals its application fence once.
+void skippedGeneratedCopySignalsItsFenceOnce() {
+    auto queue = std::make_shared<DeferredPresentQueue>();
+    queue->queue = handle<VkQueue>(7);
+    DeferredPresent worker(queue, recordingPresent, VK_NULL_HANDLE, fenceSubmit);
+    copySubmits.clear(); copyPresents.clear(); copyAcquireCalls = 0; copyAcquireResult = VK_NOT_READY;
+    clearSignalledFences();
+    const auto swapchain = handle<VkSwapchainKHR>(11);
+    const auto realWait = handle<VkSemaphore>(12);
+    const auto fence = handle<VkFence>(0x44);
+    VkSwapchainPresentFenceInfoEXT fences{
+        .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_FENCE_INFO_EXT,
+        .swapchainCount = 1, .pFences = &fence,
+    };
+    uint32_t realImage = 4;
+    const VkPresentInfoKHR realInfo{.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+        .waitSemaphoreCount = 1, .pWaitSemaphores = &realWait,
+        .swapchainCount = 1, .pSwapchains = &swapchain, .pImageIndices = &realImage};
+    const auto copy = generatedCopy();
+    const auto deadline = DeferredPresent::Clock::now();
+    expect(worker.beginBatch(2), "fenced skipped generated batch rejected");
+    expect(worker.enqueueGeneratedCopy(swapchain, &fences, deadline, copy),
+        "fenced skipped generated copy rejected");
+    expect(worker.enqueue(realInfo, deadline + 1ms), "real output rejected after fenced skipped generated copy");
+    worker.closeBatch();
+    const auto completion = worker.finish(UINT64_MAX);
+    expect(completion && completion->count == 2 && completion->calls[0].skipped &&
+        !completion->calls[1].skipped,
+        "fenced generated output was not a skip ahead of the real output");
+    expect(copySubmits.size() == 1 && copySubmits.front().fence == handle<VkFence>(64) &&
+        copyPresents.size() == 1 && copyPresents[0] == std::pair{4u, realWait},
+        "fenced generated skip presented an image or lost the real output");
+    expect(signalledFences() == std::vector{fence},
+        "a skipped generated output's application present fence was not signalled exactly once");
+    copyAcquireResult = VK_SUCCESS;
+}
+
 int main([[maybe_unused]] int argc, [[maybe_unused]] char** argv) {
     generatedPreparedOrderAndBudget(); generatedPreparationFallbackAndGates();
     generatedChainOutputOffsetsMoveEachOutput();
@@ -3758,4 +3960,8 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char** argv) {
     internalRealPreparationSubmitErrorSkipsWithoutAbandon(); internalRealLockSplitIsProfileOnly();
     lowerRecordsFollowHistory(); inFlightCallFollowsHistory(); synchronousPresentIsNoted();
     presentsAreNotedWithHistory();
+    // X3 last: presentedJobsKeepTheirFenceForTheLowerPresent uses the shared `present` fake, which
+    // counts calls for the earlier lifecycle test.
+    skippedInternalRealSignalsItsFenceOnce(); stoppedInternalRealSignalsItsFenceOnce();
+    presentedJobsKeepTheirFenceForTheLowerPresent(); skippedGeneratedCopySignalsItsFenceOnce();
 }

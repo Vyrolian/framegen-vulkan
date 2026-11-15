@@ -180,6 +180,8 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         ~InternalPresentBinding() { slot = nullptr; }
     } internalBinding{this->internalPresent};
     this->internalPresent = internal;
+    // X3: no application chain has reached a lower present yet in this call.
+    this->applicationChainHandedOff = false;
     // Diagnostics only: marks this swapchain's pacing window as using F5 internal images.
     if (internal && this->pacingProfile) this->pacingProfile->internalImagesActive();
     if (internal && internal->applicationIndex != imageIndex)

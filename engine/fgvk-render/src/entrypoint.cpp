@@ -2095,6 +2095,16 @@ namespace {
             }
             if (shouldRejectManagedMultiSwapchainPresent(
                     info->swapchainCount, containsManagedFgvkContext)) {
+                // X3: nothing in this batch is presented, so each application present fence is
+                // signalled here, through its swapchain's device. A swapchain the layer does not
+                // know has no device to submit on.
+                for (uint32_t i = 0; i < info->swapchainCount; ++i) {
+                    const auto mapping = instance_info->swapchains.find(info->pSwapchains[i]);
+                    if (mapping != instance_info->swapchains.end())
+                        static_cast<void>(signalUnforwardedPresentFence(
+                            mapping->second.get().df().QueueSubmit, queue,
+                            applicationPresentFence(*info, i)));
+                }
                 constexpr VkResult unsupported =
                     VK_ERROR_UNKNOWN;
                 if (info->pResults) {
@@ -2180,6 +2190,10 @@ namespace {
             }
 
             std::optional<uint64_t> presentingContextId;
+            // X3: the swapchain's context once it is known, and whether this swapchain took the
+            // internal path, which signals its own application fence (presentInternalSwapchainImage).
+            Swapchain* presentingContext = nullptr;
+            bool internalPresent = false;
             try {
                 const auto metadata =
                     instance_info->swapchainInfos.find(swapchain);
@@ -2190,11 +2204,13 @@ namespace {
                     : std::span<const VkSemaphore>{};
 
                 auto& context = layer_info->root.getSwapchainContext(swapchain);
+                presentingContext = &context;
                 presentingContextId = context.diagnosticsId();
                 if (const auto found = instance_info->internalSwapchains.find(swapchain);
                         found != instance_info->internalSwapchains.end()) {
                     // A copy keeps the images alive for this whole present call.
                     const auto internal = found->second;
+                    internalPresent = true;
                     result = presentInternalSwapchainImage(context, it->second,
                         queue, swapchain, internal, *info, static_cast<uint32_t>(i));
                 } else {
@@ -2275,6 +2291,13 @@ namespace {
                 std::cerr << "- " << e.what() << '\n';
                 result = VK_ERROR_UNKNOWN;
             }
+
+            // X3: a present whose application chain never reached a lower present or the deferred
+            // worker (a throw or early return inside Swapchain::present, or no context at all) signals
+            // the application's present fence here, once. A lower present that received it never does.
+            if (!internalPresent && (!presentingContext || !presentingContext->applicationChainWasHandedOff()))
+                static_cast<void>(signalUnforwardedPresentFence(it->second.get().df().QueueSubmit, queue,
+                    applicationPresentFence(*info, static_cast<uint32_t>(i))));
 
             recordPresentResult(*info, i, result);
 
@@ -2372,10 +2395,22 @@ namespace {
             ? std::span<const VkSemaphore>(
                 presentInfo.pWaitSemaphores, presentInfo.waitSemaphoreCount)
             : std::span<const VkSemaphore>{};
-        if (!images.isAcquired(applicationIndex))
+        // X3: every return below that issues no lower present with the application chain signals the
+        // application's present fence for this image once: on the application queue, except the sticky
+        // return, which signals it on the private queue after the consumed waits. Only those
+        // returns look the fence up, so the normal path does not walk the pNext chain.
+        const auto signalUnforwardedFence = [&] {
+            static_cast<void>(signalUnforwardedPresentFence(vk.df().QueueSubmit, queue,
+                applicationPresentFence(presentInfo, presentIndex)));
+        };
+        if (!images.isAcquired(applicationIndex)) {
+            signalUnforwardedFence();
             return VK_ERROR_VALIDATION_FAILED_EXT;
+        }
         if (const VkResult sticky = images.stickyError(); sticky != VK_SUCCESS) {
-            static_cast<void>(images.consumeWithoutCopy(applicationIndex, applicationWaits));
+            // X3: the waits are consumed on the private queue, so the fence follows them there.
+            static_cast<void>(images.consumeWithoutCopy(applicationIndex, applicationWaits,
+                applicationPresentFence(presentInfo, presentIndex)));
             return sticky;
         }
 
@@ -2407,12 +2442,17 @@ namespace {
                 const_cast<void*>(presentInfo.pNext), applicationIndex,
                 applicationWaits, &descriptor);
         } catch (...) {
-            if (!descriptor.handedOff)
+            if (!descriptor.handedOff) {
                 images.releaseNotHandedOff(queue, applicationIndex);
+                signalUnforwardedFence();
+            }
             throw;
         }
+        // handedOff is the complete record: the lower present with the application chain (or the
+        // worker's job for it) exists exactly when it is set. See Swapchain::queuePresentWithRetirementFence.
         if (!descriptor.handedOff) {
             images.releaseNotHandedOff(queue, applicationIndex);
+            signalUnforwardedFence();
             return result < 0 ? result : VK_ERROR_OUT_OF_DATE_KHR;
         }
         return result;

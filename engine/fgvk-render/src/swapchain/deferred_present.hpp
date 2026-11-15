@@ -6,6 +6,7 @@
 #include "swapchain/output_margin.hpp"
 #include "swapchain/present_marker.hpp"
 #include "swapchain/create_policy.hpp"
+#include "swapchain/retirement.hpp"
 #include "present_diagnostics.hpp"
 
 #include <algorithm>
@@ -463,9 +464,12 @@ public:
             ? std::max(requested, previousStarted + interval) : requested;
     }
 
+    // submit is the device's vkQueueSubmit. X3 uses it to signal an application present fence
+    // when the job that carries the fence ends skipped. Production callers always pass it.
     DeferredPresent(std::shared_ptr<DeferredPresentQueue> queue,
-            PFN_vkQueuePresentKHR present, VkDevice device = VK_NULL_HANDLE) :
-            device(device), queue(std::move(queue)), present(present),
+            PFN_vkQueuePresentKHR present, VkDevice device = VK_NULL_HANDLE,
+            PFN_vkQueueSubmit submit = nullptr) :
+            device(device), queue(std::move(queue)), present(present), queueSubmit(submit),
             worker() {
         // Initialize and report the setting before the worker can use it.
         static_cast<void>(realOffsetAuto());
@@ -1007,6 +1011,8 @@ private:
     std::array<std::optional<Completion>, 4> completedQueue{};
     std::shared_ptr<DeferredPresentQueue> queue;
     PFN_vkQueuePresentKHR present;
+    // X3: the device's vkQueueSubmit, used only to signal a skipped job's application present fence.
+    PFN_vkQueueSubmit queueSubmit{};
     mutable std::mutex mutex;
     std::condition_variable changed;
     bool stopping{};
@@ -1850,6 +1856,14 @@ private:
             // A prepared output follows F9b: its lower present is always issued,
             // including during stop/retirement; no second release mechanism is needed.
             heldLowerImages = 0;
+            // X3: every skipped job ends here without a lower present, so an application present
+            // fence in its chain is signalled once, on the private queue after the job's own
+            // submit on that queue (copy, abandon or skip). A presented job never gets this signal.
+            if (result.skipped && metadata.hasFence && metadata.fence) {
+                assert(queueSubmit != nullptr);
+                const std::lock_guard queueLock(queue->mutex);
+                static_cast<void>(signalUnforwardedPresentFence(queueSubmit, queue->queue, metadata.fence));
+            }
             if (applicationIdentified(metadata)) {
                 {
                     // Batches are presented in order, so this is the oldest unsubmitted record with these IDs.

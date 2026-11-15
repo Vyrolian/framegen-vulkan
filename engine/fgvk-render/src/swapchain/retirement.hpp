@@ -305,6 +305,26 @@ namespace fgvk::layer {
         return nullptr;
     }
 
+    /// The application's present fence for swapchain `index` of a present (pFences[index]),
+    /// or VK_NULL_HANDLE when the chain has no VkSwapchainPresentFenceInfoEXT for it.
+    [[nodiscard]] inline VkFence applicationPresentFence(const VkPresentInfoKHR& info,
+            const uint32_t index) noexcept {
+        const auto* fences = findSwapchainPresentFenceInfo(info.pNext);
+        if (!fences || !fences->pFences || index >= fences->swapchainCount)
+            return VK_NULL_HANDLE;
+        return fences->pFences[index];
+    }
+
+    /// X3: an application present fence that no lower present received is signalled by the
+    /// layer exactly once, with an empty submit on `queue`. The caller submits it after the
+    /// work that consumed the present's waits on that queue. VK_NULL_HANDLE is a no-op.
+    [[nodiscard]] inline VkResult signalUnforwardedPresentFence(const PFN_vkQueueSubmit submit,
+            const VkQueue queue, const VkFence fence) {
+        if (fence == VK_NULL_HANDLE)
+            return VK_SUCCESS;
+        return submit(queue, 0, nullptr, fence);
+    }
+
     /// WSI surface loss and out-of-date still enqueue the present's waits and
     /// maintenance1 fences. A bridge rejection occurs before lower WSI, so
     /// complete those queue operations exactly once without presenting to a

@@ -378,8 +378,10 @@ namespace fgvk::layer {
         void markPending(uint32_t applicationIndex);
         /// Consumes the application waits without copying, then frees the image.
         /// Used only on the sticky-error path, which never reaches a lower acquire.
+        /// X3: a non-null presentFence (the application's present fence) is signalled on the
+        /// private queue right after that release, so it follows the consumed waits.
         [[nodiscard]] VkResult consumeWithoutCopy(uint32_t applicationIndex,
-            std::span<const VkSemaphore> applicationWaits);
+            std::span<const VkSemaphore> applicationWaits, VkFence presentFence = VK_NULL_HANDLE);
         /// Image not handed off: an empty submit on the application queue signals a
         /// handoff semaphore after any source copy already submitted there. The private
         /// queue then waits it and signals the release timeline, freeing the image. The

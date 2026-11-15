@@ -153,7 +153,7 @@ bool Swapchain::beginDeferredPresentBatch(const vk::Vulkan& vk, const size_t lim
     if (!this->deferredPresent) {
         try {
             this->deferredPresent = std::make_unique<DeferredPresent>(
-                this->info.deferredPresentQueue, vk.df().QueuePresentKHR, vk.dev());
+                this->info.deferredPresentQueue, vk.df().QueuePresentKHR, vk.dev(), vk.df().QueueSubmit);
             this->deferredPresent->setOwnedPresentIdStorage(&this->presentFeedbackTag);
         } catch (const std::exception&) { return false; }
     }
@@ -335,7 +335,7 @@ VkResult Swapchain::queuePresentWithRetirementFence(
             if (!this->deferredPresent) {
                 try {
                     this->deferredPresent = std::make_unique<DeferredPresent>(
-                        this->info.deferredPresentQueue, vk.df().QueuePresentKHR, vk.dev());
+                        this->info.deferredPresentQueue, vk.df().QueuePresentKHR, vk.dev(), vk.df().QueueSubmit);
                     this->deferredPresent->setOwnedPresentIdStorage(&this->presentFeedbackTag);
                 } catch (const std::exception&) {
                     // Thread/resource exhaustion retains synchronous delivery.
@@ -346,6 +346,9 @@ VkResult Swapchain::queuePresentWithRetirementFence(
                 : this->deferredPresent->enqueue(info, *this->deferredPresentDeadline, observation.generated,
                     DeferredPresent::OutputIdentity{observation.backendFrame, observation.phase}));
             if (admitted) {
+                // X3: the worker now owns the application chain, and signals its fence if the job skips.
+                if (observation.applicationImage)
+                    this->applicationChainHandedOff = true;
                 this->deferredOutputQueuedThisFrame = true;
                 this->deferredPresentDeadline.reset();
                 return VK_SUCCESS;
@@ -378,6 +381,9 @@ VkResult Swapchain::queuePresentWithRetirementFence(
             info.pWaitSemaphores = &materializedWait;
             info.pImageIndices = &materializedIndex;
         }
+        // X3: from here the lower present below receives the application chain and its fence.
+        if (observation.applicationImage)
+            this->applicationChainHandedOff = true;
         // The feedback this lower present requested, for the output record's join to presented_ns.
         uint64_t feedbackId{};
         const auto submit = [&] {

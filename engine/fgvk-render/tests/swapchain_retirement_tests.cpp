@@ -10,6 +10,8 @@
 #include <iostream>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 using namespace fgvk::layer;
 
@@ -156,6 +158,56 @@ namespace {
         recordPresentResult(noResults, 0, VK_SUCCESS);
     }
     }
+
+    // X3: records each empty submit that signals an application present fence.
+    std::vector<std::pair<VkQueue, VkFence>> emptySubmits;
+    VkResult emptySubmitResult{VK_SUCCESS};
+    VkResult VKAPI_CALL recordEmptySubmit(VkQueue queue, uint32_t count,
+            const VkSubmitInfo* info, VkFence fence) {
+        expect(count == 0 && info == nullptr,
+            "an application present fence must be signalled by an empty submit");
+        emptySubmits.emplace_back(queue, fence);
+        return emptySubmitResult;
+    }
+
+    void applicationPresentFenceTests() {
+        const auto queue = std::bit_cast<VkQueue>(uint64_t{0x51});
+        const std::array fences{std::bit_cast<VkFence>(uint64_t{41}), VkFence{VK_NULL_HANDLE}};
+        VkSwapchainPresentFenceInfoEXT fenceInfo{
+            .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_FENCE_INFO_EXT,
+            .swapchainCount = 2, .pFences = fences.data(),
+        };
+        VkPresentInfoKHR present{
+            .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+            .pNext = &fenceInfo, .swapchainCount = 2,
+        };
+        // Index selects pFences[index]. A null entry or an index past swapchainCount has no fence.
+        expect(applicationPresentFence(present, 0) == fences[0] &&
+            applicationPresentFence(present, 1) == VK_NULL_HANDLE &&
+            applicationPresentFence(present, 2) == VK_NULL_HANDLE,
+            "application present fence lookup did not select pFences[index]");
+        fenceInfo.pFences = nullptr;
+        expect(applicationPresentFence(present, 0) == VK_NULL_HANDLE,
+            "a fence chain without an array reported a fence");
+        fenceInfo.pFences = fences.data();
+        present.pNext = nullptr;
+        expect(applicationPresentFence(present, 0) == VK_NULL_HANDLE,
+            "a present without a fence chain reported a fence");
+
+        // Null is a no-op. A fence gets exactly one empty submit on its queue, and its result is returned.
+        emptySubmits.clear();
+        expect(signalUnforwardedPresentFence(recordEmptySubmit, queue, VK_NULL_HANDLE) == VK_SUCCESS &&
+            emptySubmits.empty(),
+            "a null application present fence was submitted");
+        expect(signalUnforwardedPresentFence(recordEmptySubmit, queue, fences[0]) == VK_SUCCESS &&
+            emptySubmits == std::vector{std::pair{queue, fences[0]}},
+            "an application present fence was not signalled exactly once on its queue");
+        emptySubmitResult = VK_ERROR_DEVICE_LOST;
+        expect(signalUnforwardedPresentFence(recordEmptySubmit, queue, fences[0]) == VK_ERROR_DEVICE_LOST &&
+            emptySubmits.size() == 2,
+            "a failed fence signal lost its result");
+        emptySubmitResult = VK_SUCCESS;
+    }
 }
 
 int main() {
@@ -217,6 +269,7 @@ int main() {
     expect(!presentationRetirementRequired(false),
         "An inactive Renderer must not provision presentation fences");
     rejectedPresentTests();
+    applicationPresentFenceTests();
     expect(std::string_view(
             selectSwapchainMaintenance1Extension(true, true, true)
         ) == khrSwapchainMaintenance1ExtensionName,
