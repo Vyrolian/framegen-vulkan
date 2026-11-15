@@ -35,14 +35,14 @@ Graphics and frame-timing work must also account for changing frame rates, GPU p
 
 ## Agent workflow
 
-Repository agents follow [AGENTS.md](AGENTS.md) for ownership, generated files, compatibility, and mutation limits, then use [TESTING.md](TESTING.md) to select proportionate evidence. They preserve unrelated work and report any hardware or runtime coverage not exercised.
+Repository agents follow [AGENTS.md](AGENTS.md) for ownership, generated files, compatibility, and mutation limits, then use [DEVELOPING.md](DEVELOPING.md#build-and-test) to select proportionate evidence. They preserve unrelated work and report any hardware or runtime coverage not exercised.
 
-Local implementation, testing, or packaging does not authorize a branch change, commit, push, deployment, tag, or release. Those actions require an explicit maintainer decision. The separate release process in [HOW_TO_RELEASE.md](HOW_TO_RELEASE.md) requires clean source, an explicit hardware-evidence decision, ordered publication, and final public-package verification.
+Local implementation, testing, or packaging does not authorize a branch change, commit, push, deployment, tag, or release. Those actions require an explicit maintainer decision. The separate release process in [DEVELOPING.md](DEVELOPING.md#release) requires clean source, an explicit hardware-evidence decision, ordered publication, and final public-package verification.
 
 ## Further reading
 
 - [framegen-vulkan repository guide for coding agents](AGENTS.md)
-- [Testing framegen-vulkan](TESTING.md)
-- [How to release framegen-vulkan](HOW_TO_RELEASE.md)
+- [Build and test](DEVELOPING.md#build-and-test)
+- [Release](DEVELOPING.md#release)
 - [Event-Driven Development for AI Agents](https://eugeniosegala.dev/event-driven-development-for-ai-agents/)
 - [Bare-Metal Development for AI Agents](https://eugeniosegala.dev/bare-metal-development-for-ai-agents/)

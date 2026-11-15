@@ -81,9 +81,9 @@ make_flatpak_archive "$test_root/candidates/$flatpak_name"
 "$fixture_repo/scripts/check-release-candidate.sh" "$test_root/candidates/$host_name" > /dev/null
 
 # A later commit outside engine/ does not stale the engine build fingerprint.
-printf 'Release guide changed.\n' > "$fixture_repo/HOW_TO_RELEASE.md"
-git -C "$fixture_repo" add HOW_TO_RELEASE.md
-git -C "$fixture_repo" commit -qm 'Update release guide only'
+printf 'Developer guide changed.\n' > "$fixture_repo/DEVELOPING.md"
+git -C "$fixture_repo" add DEVELOPING.md
+git -C "$fixture_repo" commit -qm 'Update developer guide only'
 git -C "$fixture_repo" push -q origin main
 "$fixture_repo/scripts/check-release-candidate.sh" \
   "$test_root/candidates/$host_name" "$test_root/candidates/$flatpak_name" > /dev/null

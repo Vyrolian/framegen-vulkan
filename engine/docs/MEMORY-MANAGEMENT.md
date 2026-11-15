@@ -120,7 +120,7 @@ Use [diagnostics](COLLECT_DIAGNOSTICS.md) to retain transition and retirement ev
 
 ## Validation and change ownership
 
-[Testing framegen-vulkan](../../TESTING.md) owns the required portable gates and hardware-suite selection. Full Renderer CTest includes the following focused coverage:
+[Build and test](../../DEVELOPING.md#build-and-test) owns the required portable gates and hardware-suite selection. Full Renderer CTest includes the following focused coverage:
 
 | Test | Evidence |
 | --- | --- |
@@ -129,7 +129,7 @@ Use [diagnostics](COLLECT_DIAGNOSTICS.md) to retain transition and retirement ev
 | `profile-update`, `runtime-transition`, `swapchain-retirement` | Deterministic policy and lifetime decisions, including admission and replacement boundaries. |
 | `backend-hot-path`, `command-buffer-submit-storage`, `generated-frame-plan` | Bounded storage and reuse contracts for frame scheduling/submission. These do not prove that every driver or present path is allocation-free. |
 
-For allocator or resource-lifetime code changes, run the full Renderer tests and appropriate sanitizer coverage, then select fgvk Gym evidence in proportion to the boundary: `runtime-overhead` for private allocation and CPU/RSS observations, `sustained-health` for repeated-resource plateaus, `sync-validation` for completion/ownership changes, and the applicable feature, recovery, or compositor suites. Hardware qualification also includes the selected `constraints` cases under [Testing framegen-vulkan](../../TESTING.md). Exercise both FP32 and FP16 for affected AMD Frame Generation paths, and record untested architectures, drivers, runtimes, and rows explicitly. Documentation-only changes do not establish new hardware evidence.
+For allocator or resource-lifetime code changes, run the full Renderer tests and appropriate sanitizer coverage, then select fgvk Gym evidence in proportion to the boundary: `runtime-overhead` for private allocation and CPU/RSS observations, `sustained-health` for repeated-resource plateaus, `sync-validation` for completion/ownership changes, and the applicable feature, recovery, or compositor suites. Hardware qualification also includes the selected `constraints` cases under [Build and test](../../DEVELOPING.md#build-and-test). Exercise both FP32 and FP16 for affected AMD Frame Generation paths, and record untested architectures, drivers, runtimes, and rows explicitly. Documentation-only changes do not establish new hardware evidence.
 
 | Responsibility | Source of truth |
 | --- | --- |

@@ -54,6 +54,7 @@ Subcommands:
   install-hooks                      Enable the commit hook that rejects licensed inputs (Lossless.dll) and binary payloads.
   update-contributors                Update the README contributor gallery from this branch's history.
   check-contributors                 Check that the README contributor gallery matches this branch's history.
+  check-links                        Check every relative Markdown link and #anchor in the tracked Markdown files.
 EOF
 }
 
@@ -179,6 +180,7 @@ main() {
     install-hooks) no_arguments "$@"; ./scripts/install-git-hooks.sh ;;
     update-contributors) no_arguments "$@"; python3 scripts/update-contributors.py ;;
     check-contributors) no_arguments "$@"; python3 scripts/update-contributors.py --check ;;
+    check-links) no_arguments "$@"; python3 scripts/check-markdown-links.py ;;
     *) die "unknown subcommand '$subcommand'; run scripts/dev.sh help" ;;
   esac
 }

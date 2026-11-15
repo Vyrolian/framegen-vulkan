@@ -5,7 +5,7 @@ description: Publish and verify a public framegen-vulkan release. Use for author
 
 # Publish framegen-vulkan
 
-Locate the framegen-vulkan checkout and read its current `AGENTS.md` and [HOW_TO_RELEASE.md](../../../HOW_TO_RELEASE.md). The guide and owning scripts are authoritative; follow their current instructions rather than a copied procedure or a commit SHA stored in this skill.
+Locate the framegen-vulkan checkout and read its current `AGENTS.md` and [DEVELOPING.md](../../../DEVELOPING.md#release). The guide and owning scripts are authoritative; follow their current instructions rather than a copied procedure or a commit SHA stored in this skill.
 
 Execution boundary: the host runs Git, release orchestration, uploads, and published-asset checks. Docker or Podman compiles the portable native Renderer and Flatpak bundles; the Arch package uses a container only when host `makepkg` or `fakeroot` is unavailable. The containers build artifacts, not just caches.
 

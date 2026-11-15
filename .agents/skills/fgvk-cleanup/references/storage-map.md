@@ -14,7 +14,7 @@ Re-read current owning scripts on each run; environment overrides and layouts ca
 | Regular build/test `node_modules`, pnpm/npm stores, shared virtual environments, compiler/download caches, third-party sources and SDKs | Reusable dependencies; dependencies private to a completed disposable experiment are eligible with that environment |
 | Actively used candidates and dependency overrides | Local candidate archives named by an override variable, for example, can point inside `engine/out`; inspect consumers before deletion |
 
-Owners: `engine/docs/BUILDING-FROM-SOURCE.md`, `engine/scripts/package-local.sh`, `engine/scripts/package-flatpaks.sh`, `engine/scripts/build-steamos-dev.sh`, and `HOW_TO_RELEASE.md`. Inspect only relevant environment variables; do not dump the environment or secret-bearing config.
+Owners: `engine/docs/BUILDING-FROM-SOURCE.md`, `engine/scripts/package-local.sh`, `engine/scripts/package-flatpaks.sh`, `engine/scripts/build-steamos-dev.sh`, and `DEVELOPING.md`. Inspect only relevant environment variables; do not dump the environment or secret-bearing config.
 
 **Never use `engine/scripts/prune-build-cache.sh --confirm` or `engine/scripts/prune-steamos-flatpak-cache.sh --confirm` for this workflow. Both delete caches the user wants to keep.** Their default read-only reports do not implement this retention policy.
 

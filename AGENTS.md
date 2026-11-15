@@ -16,12 +16,13 @@ Personal fork of a Vulkan frame-generation layer (lsfg-vk v2 descendant), now na
 
 Placement rules for `engine/fgvk-ui/`: the crate owns only the settings window and the argument routing in `src/launch.rs`. It must not load the renderer or Vulkan, and launch behaviour stays in `engine/scripts/fgvk-launch` (installed privately under `libexec/framegen-vulkan/`, never on `PATH`). Keep it self-contained: `processes.rs` embeds `../fgvk-common/launcher_exclusions.json`, so the crate builds only inside this repository.
 
-Boundary docs (`engine/docs/`): `RENDERER-ARCHITECTURE`, `CONFIGURATION` / `CONFIGURATION-REFERENCE`, `RUNTIME-TRANSITIONS`, `MEMORY-MANAGEMENT`, `ADAPTIVE-VALIDATION`, `WSI-ISOLATION`, `LAYER-CHAINING`, `BUILDING-FROM-SOURCE`. Root: `TESTING.md`, `MAINTENANCE.md` (dependencies and version owners), `CLEANUPS.md` (compatibility paths), `HOW_TO_RELEASE.md`, `INSTALLATION-TRANSACTIONS.md`.
+Boundary docs (`engine/docs/`): `RENDERER-ARCHITECTURE`, `CONFIGURATION` / `CONFIGURATION-REFERENCE`, `RUNTIME-TRANSITIONS`, `MEMORY-MANAGEMENT`, `WSI-ISOLATION`, `LAYER-CHAINING`, `BUILDING-FROM-SOURCE`. Root: `DEVELOPING.md` (build and test, dependencies and version owners, release), `CLEANUPS.md` (compatibility paths), `INSTALLATION-TRANSACTIONS.md`.
 
 ## Build and test
 
 - `scripts/dev.sh help` lists the entry points. C++ changes: `scripts/dev.sh test-engine-portable` (CTest); scheduling/presentation also `scripts/dev.sh test-engine-sanitized`. Settings window and entry point: `scripts/dev.sh test-fgvk-ui` (`cargo test --locked` in `engine/fgvk-ui`).
 - The device is resource-constrained: watch CPU/GPU cost, memory, sync and hot paths. Keep at most two build jobs while the user may be gaming (`FGVK_JOBS=2 scripts/dev.sh <subcommand>`; builds use all cores otherwise).
+- Markdown links and `#anchors` in tracked files: `scripts/dev.sh check-links` (exit 1 lists each broken link).
 - Report what passed and what was not tested (hardware, AMD/FP16, Flatpak). A skipped GPU test is not evidence.
 
 ## Generated files and protected inputs

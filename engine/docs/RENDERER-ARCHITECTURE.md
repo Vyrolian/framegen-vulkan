@@ -1,6 +1,6 @@
 # framegen-vulkan code map
 
-This map identifies code owners and call boundaries. The behavior contracts remain in [Fixed validation](ADAPTIVE-VALIDATION.md), [Runtime transitions](RUNTIME-TRANSITIONS.md), [WSI isolation](WSI-ISOLATION.md), and [Memory management](MEMORY-MANAGEMENT.md).
+This map identifies code owners and call boundaries. The behavior contracts remain in [WSI isolation](WSI-ISOLATION.md) for presentation and scheduling, [Runtime transitions](RUNTIME-TRANSITIONS.md) for transport recovery and live transitions, and [Memory management](MEMORY-MANAGEMENT.md).
 
 ## Ownership from launch to present
 
@@ -33,7 +33,7 @@ Full trace additionally observes instance/device/surface/swapchain setup in `pre
 | `fgvk-render/src/swapchain/present_timing.hpp` | Bounds Renderer-owned Vulkan timing feedback, calibrates supported clocks, and supplies observed queue readiness to the shared ordered timeline. |
 | `fgvk-render/src/swapchain/present/internal.hpp` | Shares only presentation-local diagnostics, timing, and image-barrier helpers. It owns no mutable state or policy. |
 
-Keep new policy decisions in their existing policy or scheduler owner, and let `Swapchain::present()` consume the result. Keep live resource replacement in `swapchain/resources.cpp`, profile transitions in `swapchain/profile.cpp`, and runtime status in `swapchain/status.cpp`. A change that crosses those boundaries needs its corresponding contract test and the validation described in [Testing framegen-vulkan](../../TESTING.md).
+Keep new policy decisions in their existing policy or scheduler owner, and let `Swapchain::present()` consume the result. Keep live resource replacement in `swapchain/resources.cpp`, profile transitions in `swapchain/profile.cpp`, and runtime status in `swapchain/status.cpp`. A change that crosses those boundaries needs its corresponding contract test and the validation described in [Build and test](../../DEVELOPING.md#build-and-test).
 
 ## Deliberate large-file boundaries
 

@@ -1,6 +1,6 @@
 # Arch Linux packaging
 
-Install `framegen-vulkan-bin` for a system-wide framegen-vulkan on writable x86_64 Arch Linux. SteamOS users should use the [user-local archive](../../../README.md#install-and-use).
+Install `framegen-vulkan-bin` for a system-wide framegen-vulkan on writable x86_64 Arch Linux. SteamOS users should use the [user-local archive](../../../README.md).
 
 ## Contents
 

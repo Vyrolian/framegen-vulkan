@@ -1,6 +1,6 @@
 # framegen-vulkan lifecycle
 
-This guide explains how framegen-vulkan discovers its environment, creates and replaces resources, applies settings, paces frames, recovers from pressure, and shuts down. It is a conceptual inventory of lifecycle-affecting probes and policies rather than a source-file map. The exact setting contract remains in the [configuration reference](CONFIGURATION-REFERENCE.md), [Runtime configuration transitions](RUNTIME-TRANSITIONS.md), [Fixed validation](ADAPTIVE-VALIDATION.md), and [WSI isolation](WSI-ISOLATION.md). [Memory management](MEMORY-MANAGEMENT.md) covers allocation, pooling, accounting, and cleanup ownership.
+This guide explains how framegen-vulkan discovers its environment, creates and replaces resources, applies settings, paces frames, recovers from pressure, and shuts down. It is a conceptual inventory of lifecycle-affecting probes and policies rather than a source-file map. The exact setting contract remains in the [configuration reference](CONFIGURATION-REFERENCE.md), [Runtime configuration transitions](RUNTIME-TRANSITIONS.md), and [WSI isolation](WSI-ISOLATION.md). [Memory management](MEMORY-MANAGEMENT.md) covers allocation, pooling, accounting, and cleanup ownership.
 
 ## Safety model
 
@@ -164,7 +164,7 @@ framegen-vulkan separates explicit transitions, direct transport failure, and fe
 
 1. **Pre-admission:** remove synthetic outputs before backend work when headroom, policy, or nonblocking image acquisition says they cannot be delivered.
 2. **Acquire-budget failure:** `VK_TIMEOUT`, `VK_NOT_READY`, exhaustion of the configured cumulative application-present budget, or completing the batch after that cumulative wall-clock budget is reached stops the affected generated delivery. Fixed enters native backoff. The budget is explicit; FPS, cadence, resolution, and shader cost do not derive or change it.
-3. **Bounded retry:** Fixed retries after 250, 500, 1000, 2000, 5000, 15000, then 30000 ms; fresh history precedes one bounded generated-image acquire. A real-only policy frame leaves the retry pending without acquisition or a failure count. [Transport recovery](ADAPTIVE-VALIDATION.md#transport-recovery) owns the detailed rules.
+3. **Bounded retry:** Fixed retries after 250, 500, 1000, 2000, 5000, 15000, then 30000 ms; fresh history precedes one bounded generated-image acquire. A real-only policy frame leaves the retry pending without acquisition or a failure count. [Transport recovery](RUNTIME-TRANSITIONS.md#transport-recovery) owns the detailed rules.
 4. **Transition-scoped recreation:** an explicit live generation-policy change arms one permission. An acquire batch completed within its configured budget consumes it. An acquire-budget failure may consume it by requesting one retirement-protected game-owned recreation; there are no separate event windows, FPS qualifiers, or failure-count thresholds.
 5. **Backend recovery:** a render-fence miss or backend failure switches to real frames while readiness is polled with zero-time waits. This is direct synchronization safety and cannot select a multiplier or request recreation. Recovery resets temporal history before generation resumes.
 

@@ -26,7 +26,7 @@ Profile pictures use each contributor's GitHub avatar. To refresh cached picture
 
 ## Validation
 
-Follow [AGENTS.md](AGENTS.md) and [TESTING.md](TESTING.md) for architecture, formatting, test selection, package verification, and real-hardware evidence. A contribution should state what passed and what was not tested without presenting skipped hardware coverage as evidence.
+Follow [AGENTS.md](AGENTS.md) and [DEVELOPING.md](DEVELOPING.md#build-and-test) for architecture, formatting, test selection, package verification, and real-hardware evidence. A contribution should state what passed and what was not tested without presenting skipped hardware coverage as evidence.
 
 ## Inactive bug reports
 

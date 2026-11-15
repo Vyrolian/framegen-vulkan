@@ -51,7 +51,7 @@ Known launchers and helpers stay inactive while their child games can match. The
 
 HDR10/PQ swapchains (`A2B10G10R10_UNORM_PACK32` or `A2R10G10B10_UNORM_PACK32` with `HDR10_ST2084_EXT`) and linear scRGB swapchains (`R16G16B16A16_SFLOAT` with `EXTENDED_SRGB_LINEAR_EXT`) get frame generation in linear light, with no setting to choose it. Other HDR colour spaces (HLG, Dolby Vision, extended sRGB nonlinear) pass through without frame generation. Under Wine on native Wayland, the same two HDR pairs arrive as `PASS_THROUGH` and get frame generation too.
 
-See [Fixed validation](ADAPTIVE-VALIDATION.md) for pacing details.
+See [Fixed pacing](WSI-ISOLATION.md#fixed-pacing-paths) for pacing details.
 
 ### Swapchain
 

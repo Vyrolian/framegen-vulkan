@@ -36,7 +36,7 @@ MangoHud reads its own configuration, normally `~/.config/MangoHud/MangoHud.conf
 
 Gamescope effects and Vulkan-only mode use different paths. framegen-vulkan runs in a Gamescope session by default as an experimental path, and `FGVK_GAMESCOPE=0` turns it off. Compatibility with glasses is unvalidated.
 
-For Anchor/Follow lag, compare framegen-vulkan alone, XR alone, and both. Record the XR effect off for 30 seconds, on for 30 seconds, then off again, keeping the scene and settings unchanged. Send the actual Breezy runtime archive with [framegen-vulkan diagnostics](../../COLLECT_DIAGNOSTICS.md).
+For Anchor/Follow lag, compare framegen-vulkan alone, XR alone, and both. Record the XR effect off for 30 seconds, on for 30 seconds, then off again, keeping the scene and settings unchanged. Send the actual Breezy runtime archive with [framegen-vulkan diagnostics](COLLECT_DIAGNOSTICS.md).
 
 ## Game-local Proton integrations
 

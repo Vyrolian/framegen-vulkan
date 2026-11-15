@@ -79,4 +79,4 @@ bash engine/scripts/test-fgvk-installer.sh
 
 These use temporary files and synthetic payloads; they do not install into the user's active environment. Permission cases in the standalone script require a non-root test process. The suites exercise specific injected failures, not every syscall, signal timing, or filesystem.
 
-Follow [TESTING.md](TESTING.md) for the broader portable gates and package evidence proportional to an implementation change. When moving this contract, update the owning installer or helper, its file set or packaging generator, focused failure coverage, and this reference together.
+Follow [DEVELOPING.md](DEVELOPING.md#build-and-test) for the broader portable gates and package evidence proportional to an implementation change. When moving this contract, update the owning installer or helper, its file set or packaging generator, focused failure coverage, and this reference together.

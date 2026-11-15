@@ -103,10 +103,10 @@ For host, Flatpak, Arch, or complete local packages, choose an entry point in [B
 - [Configuration](docs/CONFIGURATION.md): profiles, game launch setup, and runtime behaviour.
 - [Advanced configuration](docs/CONFIGURATION-REFERENCE.md): TOML fields, defaults, and environment variables.
 - [Runtime transitions](docs/RUNTIME-TRANSITIONS.md): live, deferred, and restart-required changes.
-- [Fixed validation](docs/ADAPTIVE-VALIDATION.md): Fixed pacing and validation.
+- [WSI isolation](docs/WSI-ISOLATION.md): presentation ownership and Fixed pacing.
 - [Optional graphics integrations](docs/LAYER-CHAINING.md): MangoHud and layer isolation.
 - [Flatpak guide](docs/FLATPAK-GUIDE.md): runtime extensions and application preparation.
-- [Videos with framegen-vulkan](docs/VIDEOS_WITH_FGVK.md): Frame Generation with mpv.
 - [Troubleshooting](docs/TROUBLESHOOTING.md): activation, presentation, and diagnostics.
 - [Collect diagnostics](docs/COLLECT_DIAGNOSTICS.md): create a standalone support report.
 - [Building from source](docs/BUILDING-FROM-SOURCE.md): development and packaging requirements.
+- [Developing framegen-vulkan](../DEVELOPING.md): build and test gates, dependency owners, and the release procedure.
