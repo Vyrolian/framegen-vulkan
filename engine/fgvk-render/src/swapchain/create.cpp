@@ -6,7 +6,6 @@
 #include "layer_role.hpp"
 #include "ordered_acquire_diagnostics.hpp"
 #include "present_diagnostics.hpp"
-#include "frame_content_capture.hpp"
 #include "fgvk-common/helpers/errors.hpp"
 #include "fgvk-common/helpers/file_descriptors.hpp"
 
@@ -106,10 +105,6 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance* backend,
         profile(std::move(profile)), info(std::move(info)) {
     this->presentFeedback.configure(this->info.applicationPresentFeedback);
     this->diagnosticsState.contextId = allocateDiagnosticsContextId();
-    if (vk.frameGenerationInteropEnabled() &&
-            this->profile.multiplier == 2 &&
-            !this->colorPipeline.hdr)
-        this->frameContentCapture = FrameContentCapture::create(this->diagnosticsState.contextId);
     if (present_diagnostics::pacingProfileEnabled()) {
         present_diagnostics::initializePacingProfileLog();
         try {

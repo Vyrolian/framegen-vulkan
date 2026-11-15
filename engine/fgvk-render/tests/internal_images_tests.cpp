@@ -275,12 +275,8 @@ namespace {
 
     InternalImageGateInput eligibleInput() {
         return InternalImageGateInput{
-            .environmentEnabled = true,
-            .nativeSwapchain = false,
-            .contextCreated = true,
             .frameGenerationEnabled = true,
             .deferredPresentQueue = true,
-            .diagnosticCopyPath = false,
             .applicationExtent = {.width = 1920, .height = 1080},
             .lowerExtent = {.width = 1920, .height = 1080},
             .applicationFormat = VK_FORMAT_B8G8R8A8_UNORM,
@@ -306,12 +302,8 @@ namespace {
             std::function<void(InternalImageGateInput&)> mutate;
         };
         const std::vector<Case> cases{
-            {"environment-disabled", [](auto& in) { in.environmentEnabled = false; }},
-            {"native-swapchain", [](auto& in) { in.nativeSwapchain = true; }},
-            {"context-not-created", [](auto& in) { in.contextCreated = false; }},
             {"frame-generation-disabled", [](auto& in) { in.frameGenerationEnabled = false; }},
             {"no-deferred-present-queue", [](auto& in) { in.deferredPresentQueue = false; }},
-            {"diagnostic-copy-path", [](auto& in) { in.diagnosticCopyPath = true; }},
             {"extent-mismatch", [](auto& in) { in.applicationExtent.width = 1280; }},
             {"extent-mismatch", [](auto& in) { in.applicationExtent.height = 720; }},
             {"format-mismatch", [](auto& in) { in.applicationFormat = VK_FORMAT_R8G8B8A8_UNORM; }},
@@ -334,9 +326,10 @@ namespace {
 
     void testFirstFailingReasonWins() {
         auto input = eligibleInput();
-        input.environmentEnabled = false;
+        input.frameGenerationEnabled = false;
+        input.deferredPresentQueue = false;
         input.imageFormatSupported = false;
-        expect(std::string_view(internalImagesIneligibleReason(input)) == "environment-disabled",
+        expect(std::string_view(internalImagesIneligibleReason(input)) == "frame-generation-disabled",
             "the gate did not report the first failing condition");
     }
 
@@ -353,14 +346,6 @@ namespace {
 #endif
         expect(internalImagesEligible(input),
             "the supported present-timing and present-ID create flags refused eligibility");
-    }
-
-    void testEnvironmentSwitch() {
-        expect(internalSwapchainEnvironmentAllows(nullptr), "an unset switch disabled the feature");
-        expect(internalSwapchainEnvironmentAllows("1"), "FGVK_INTERNAL_SWAPCHAIN=1 disabled the feature");
-        expect(internalSwapchainEnvironmentAllows(""), "an empty switch disabled the feature");
-        expect(internalSwapchainEnvironmentAllows("00"), "a non-exact \"0\" disabled the feature");
-        expect(!internalSwapchainEnvironmentAllows("0"), "FGVK_INTERNAL_SWAPCHAIN=0 did not disable the feature");
     }
 
     template<class T> T handleOf(uintptr_t value) {
@@ -458,7 +443,6 @@ int main() {
     testEachFailingConditionAlone();
     testFirstFailingReasonWins();
     testAllowedCreateFlags();
-    testEnvironmentSwitch();
     testImageCountRule();
     testHostAcquireEligibility();
     std::cout << "internal images tests passed\n";

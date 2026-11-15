@@ -1,7 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 
 #include "swapchain/swapchain.hpp"
-#include "frame_content_capture.hpp"
 #include "swapchain/present/internal.hpp"
 #include "swapchain/render_slot_ring.hpp"
 #include "swapchain/retirement.hpp"
@@ -80,7 +79,6 @@ bool Swapchain::recoverBackendIfReady(const vk::Vulkan& vk) {
         try {
             if (!this->pollRenderSlotsIdle(vk))
                 return false;
-            if (this->nativeCopyProfile) this->nativeCopyProfile->completed();
         } catch (const std::exception& error) {
             std::cerr << "framegen-vulkan: render fence recovery poll failed; "
                          "native presentation retained: "
@@ -244,9 +242,7 @@ void Swapchain::collectRenderSplitTimestamps(const vk::Vulkan& vk) {
 
 bool Swapchain::prepareRenderFence(const vk::Vulkan& vk) {
     const size_t next = nextRenderSlot(this->renderSlotIndex, renderSlotDepth);
-    if (!this->frameContentCapture &&
-            !this->nativeCopyProfile &&
-            this->frameState.sourceReleaseTimelineValue != 0) {
+    if (this->frameState.sourceReleaseTimelineValue != 0) {
         // Source-image reuse is ordered on the GPU by the timeline, so only the
         // batch three presents ago must retire before its slot is reused.
         // A worker copy or skip signals that slot's fence only when its submit
@@ -286,12 +282,6 @@ bool Swapchain::prepareRenderFence(const vk::Vulkan& vk) {
             [] { return DiagnosticsClock::now(); },
             waitedForInFlight))
         return false;
-    if (waitedForInFlight) {
-        if (this->frameContentCapture)
-            this->frameContentCapture->completed(vk);
-        if (this->nativeCopyProfile)
-            this->nativeCopyProfile->completed();
-    }
     this->collectRenderSplitTimestamps(vk);
     this->renderSlotIndex = next;
     this->renderSlots.at(next).fence.reset(vk);

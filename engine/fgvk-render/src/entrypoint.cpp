@@ -791,12 +791,11 @@ namespace {
                 newInfo.pNext = &meteringFeatures;
             }
 #endif
-            // Copy-profile and GPU split diagnostics only (FGVK_PACING_PROFILE_COPY=1 or
-            // FGVK_PACING_PROFILE_GPU_SPLIT=1). Negotiate a supported
+            // GPU split diagnostics only (FGVK_PACING_PROFILE_GPU_SPLIT=1). Negotiate a supported
             // calibration alias and known clock domains without adding any feature node.
             std::vector<const char*> copyCalibrationExtensions;
             if (frameGenerationInteropEnabled &&
-                    (present_diagnostics::pacingCopyProfileEnabled() || present_diagnostics::pacingGpuSplitProfileEnabled())) {
+                    present_diagnostics::pacingGpuSplitProfileEnabled()) {
                 const auto supported = lowerDeviceExtensions(physdev);
                 const char* calibrationExtension{};
                 for (const auto* name : {VK_KHR_CALIBRATED_TIMESTAMPS_EXTENSION_NAME, VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME})
@@ -947,7 +946,7 @@ namespace {
                     wrapper->second.df().GetSemaphoreCounterValueKHR != nullptr &&
                     wrapper->second.df().ImportSemaphoreFdKHR != nullptr;
                 std::cerr << "framegen-vulkan: internal acquire queue: internal_prepare="
-                          << (std::getenv("FGVK_INTERNAL_PREPARE") && std::strcmp(std::getenv("FGVK_INTERNAL_PREPARE"), "0") == 0 ? 0 : 1)
+                          << 1
                           << " acquire_tail=" << (privateQueue->tail != VK_NULL_HANDLE ? 1 : 0)
                           << " host_acquire=" << (hostAcquireAvailable ? 1 : 0)
                           << '\n';
@@ -1655,16 +1654,6 @@ namespace {
             ? nullptr : found->second.get();
     }
 
-    // Diagnostic copy paths assume the lower image is the application's image.
-    // FGVK_PACING_PROFILE_COPY=1 selects the native copy profile, and
-    // FGVK_PACING_PROFILE_CONTENT=1 enables frame-content capture (see
-    // FrameContentCapture::create). Either keeps internal images off.
-    bool internalDiagnosticCopyPathConfigured() {
-        const char* content = std::getenv("FGVK_PACING_PROFILE_CONTENT");
-        return present_diagnostics::pacingCopyProfileEnabled() ||
-            (content && std::string_view(content) == "1");
-    }
-
     // F5 gate and creation for one context-backed swapchain. Refusal or any
     // allocation failure keeps the direct lower-image path. The decision is
     // logged once for each swapchain created with a Frame Generation context.
@@ -1680,12 +1669,8 @@ namespace {
             const auto support = queryInternalImageSupport(
                 vk, application.imageFormat, application.imageUsage);
             const InternalImageGateInput gate{
-                .environmentEnabled = internalSwapchainEnvironmentEnabled(),
-                .nativeSwapchain = false,
-                .contextCreated = true,
                 .frameGenerationEnabled = profile.frame_generation_enabled,
                 .deferredPresentQueue = static_cast<bool>(swapchainInfo.deferredPresentQueue),
-                .diagnosticCopyPath = internalDiagnosticCopyPathConfigured(),
                 .applicationExtent = swapchainInfo.applicationExtent,
                 .lowerExtent = swapchainInfo.extent,
                 .applicationFormat = application.imageFormat,

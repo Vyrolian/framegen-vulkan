@@ -1,7 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 
 #include "swapchain/swapchain.hpp"
-#include "frame_content_capture.hpp"
 #include "swapchain/present/internal.hpp"
 #include "swapchain/retirement.hpp"
 #include "fgvk-common/helpers/errors.hpp"
@@ -161,7 +160,6 @@ VkResult Swapchain::presentGeneratedFrames(
         if (deferredTail && invocation.releasedOverlap && i == 0 &&
                 plan.scheduledGeneratedFrames.size() == 1 &&
                 !plan.generatedImagesPreacquired &&
-                !this->frameContentCapture && !this->nativeCopyProfile &&
                 this->deferredPresent &&
                 this->recordGeneratedCopies(invocation.vk, this->currentRenderSlot())) {
             auto& slot = this->currentRenderSlot();
@@ -484,8 +482,6 @@ VkResult Swapchain::presentGeneratedFrames(
         );
         auto& commandBuffer = pass.commandBuffer;
         commandBuffer.begin(invocation.vk);
-        if (this->nativeCopyProfile)
-            this->nativeCopyProfile->beginCopy(commandBuffer.handle(), invocation.vk.queue(), acquiredImageIndex, true, static_cast<uint32_t>(i));
         vk::acquireExternalImage(invocation.vk, commandBuffer.handle(), destinationImage.handle(),
             VK_ACCESS_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
         const std::array preBarriers{
@@ -536,11 +532,6 @@ VkResult Swapchain::presentGeneratedFrames(
             : postCopy.second.handle();
         const std::array signalSemaphores{presentSemaphore.handle(), continuationSemaphore};
 
-        if (i == 0 && this->frameContentCapture)
-            this->frameContentCapture->record(invocation.vk, commandBuffer.handle(),
-                acquiredSwapchainImage, this->info.extent, acquiredImageIndex, true);
-        if (this->nativeCopyProfile)
-            this->nativeCopyProfile->endCopy(commandBuffer.handle(), true, static_cast<uint32_t>(i));
         commandBuffer.end(invocation.vk);
         const auto generatedSubmitStarted = startPresentDiagnostic();
         const auto copyFence = i == plan.scheduledGeneratedFrames.size() - 1

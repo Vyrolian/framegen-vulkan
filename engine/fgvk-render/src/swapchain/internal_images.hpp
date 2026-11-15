@@ -33,15 +33,8 @@ namespace fgvk::layer {
     /// Facts the F5 internal-image gate reads from create-time state. Every
     /// field is plain data so the gate can be unit-tested without Vulkan.
     struct InternalImageGateInput {
-        // FGVK_INTERNAL_SWAPCHAIN is not exactly "0"; read once per process.
-        bool environmentEnabled{true};
-        bool nativeSwapchain{false};
-        bool contextCreated{false};
         bool frameGenerationEnabled{false};
         bool deferredPresentQueue{false};
-        // FGVK_PACING_PROFILE_COPY=1 or frame-content capture is configured:
-        // both replace the copy path with diagnostic work that assumes lower images.
-        bool diagnosticCopyPath{false};
         VkExtent2D applicationExtent{};
         VkExtent2D lowerExtent{};
         VkFormat applicationFormat{VK_FORMAT_UNDEFINED};
@@ -54,12 +47,6 @@ namespace fgvk::layer {
         // Two-dimensional optimal image with the application usage plus TRANSFER_SRC.
         bool imageFormatSupported{false};
     };
-
-    /// Parses FGVK_INTERNAL_SWAPCHAIN. Only the exact value "0" disables the
-    /// feature; unset and every other value leave it on.
-    [[nodiscard]] inline bool internalSwapchainEnvironmentAllows(const char* value) noexcept {
-        return !(value != nullptr && std::string_view(value) == "0");
-    }
 
     /// Create-time flags the application may set while internal images are used.
     [[nodiscard]] constexpr VkSwapchainCreateFlagsKHR internalImageAllowedCreateFlags() noexcept {
@@ -80,12 +67,8 @@ namespace fgvk::layer {
     /// nullptr when internal application images are eligible.
     [[nodiscard]] inline const char* internalImagesIneligibleReason(
             const InternalImageGateInput& input) noexcept {
-        if (!input.environmentEnabled) return "environment-disabled";
-        if (input.nativeSwapchain) return "native-swapchain";
-        if (!input.contextCreated) return "context-not-created";
         if (!input.frameGenerationEnabled) return "frame-generation-disabled";
         if (!input.deferredPresentQueue) return "no-deferred-present-queue";
-        if (input.diagnosticCopyPath) return "diagnostic-copy-path";
         // A variable surface (Wayland: no fixed currentExtent) is not refused.
         // The lower swapchain has the application's extent, which the next
         // check requires.
@@ -458,7 +441,4 @@ namespace fgvk::layer {
     /// Device support queries for the private image format and usage.
     [[nodiscard]] InternalImageDeviceSupport queryInternalImageSupport(
         const vk::Vulkan& vk, VkFormat format, VkImageUsageFlags usage);
-
-    /// FGVK_INTERNAL_SWAPCHAIN, read once for the process.
-    [[nodiscard]] bool internalSwapchainEnvironmentEnabled() noexcept;
 }

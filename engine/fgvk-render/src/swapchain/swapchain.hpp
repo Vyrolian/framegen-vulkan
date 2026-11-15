@@ -18,7 +18,6 @@
 #include "profile_update.hpp"
 #include "presentation_policy.hpp"
 #include "present_diagnostics.hpp"
-#include "native_copy_profile.hpp"
 #include "runtime_health.hpp"
 #include "runtime_transition.hpp"
 #include "present_timing.hpp"
@@ -44,7 +43,6 @@
 namespace fgvk::layer {
 
     class WaylandPresentationFeedback;
-    class FrameContentCapture;
     struct InternalPresentImage;
 
     /// WSI family that created the application's surface. Diagnostics report it
@@ -431,9 +429,6 @@ namespace fgvk::layer {
         RecoveryState recoveryState;
         DiagnosticsState diagnosticsState;
         std::unique_ptr<present_diagnostics::PacingProfile> pacingProfile;
-        std::unique_ptr<present_diagnostics::NativeCopyProfile> nativeCopyProfile;
-        bool nativeCopyProfileInitialized{};
-        std::shared_ptr<FrameContentCapture> frameContentCapture;
         // Diagnostic GPU split timestamps, render and output halves. Created on first use
         // with the split gate on; recent halves wait here for their backend sample.
         std::optional<vk::CalibratedClock> splitRenderClock;

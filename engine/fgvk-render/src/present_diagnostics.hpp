@@ -32,8 +32,6 @@ namespace fgvk::layer::present_diagnostics {
     /// Non-draining split GPU boundaries; active only with FGVK_PACING_PROFILE=1 and FGVK_PACING_PROFILE_GPU_SPLIT=1.
     [[nodiscard]] bool pacingGpuSplitProfileEnabled();
     [[nodiscard]] bool pacingFrameTraceEnabled();
-    /// Native copy timestamps; generated copies move to the present thread. Implies the frame trace.
-    [[nodiscard]] bool pacingCopyProfileEnabled();
     [[nodiscard]] bool pacingWaylandProfileEnabled();
     /// Publish already-buffered, structured observer records to the same bounded sink.
     void writePacingProfileRecords(std::string_view records) noexcept;

@@ -10,7 +10,6 @@ set(LAYER_SOURCES
     "src/instance.cpp"
     "src/present_diagnostics.cpp"
     ${PRESENT_RECORD_SOURCES}
-    "src/frame_content_capture.cpp"
     "src/wayland_presentation_feedback.cpp"
     "src/runtime_health.cpp"
     "src/swapchain/create.cpp"
@@ -190,19 +189,11 @@ if(BUILD_TESTING)
     add_test(NAME library-pin COMMAND fgvk-library-pin-tests $<TARGET_FILE:fgvk-library-pin-module>)
     fgvk_register_portable_policy_test(fgvk-library-pin-tests library-pin)
 
-    add_executable(fgvk-native-copy-profile-tests
-        "tests/native_copy_profile_tests.cpp" "src/present_diagnostics.cpp" ${PRESENT_RECORD_SOURCES})
-    target_include_directories(fgvk-native-copy-profile-tests PRIVATE "src")
-    target_link_libraries(fgvk-native-copy-profile-tests PRIVATE ${CMAKE_DL_LIBS})
-    target_include_directories(fgvk-native-copy-profile-tests PRIVATE "../fgvk-common/include")
-    add_test(NAME native-copy-profile COMMAND fgvk-native-copy-profile-tests)
-    fgvk_register_portable_policy_test(fgvk-native-copy-profile-tests native-copy-profile)
     add_test(NAME pacing-profile-report
         COMMAND "${FGVK_PYTHON3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_pacing_profile_report.py")
     fgvk_register_portable_policy_test(fgvk-pacing-profile-tests pacing-profile-report)
     # The pacing writer runs a thread, so every target that compiles it links the thread library.
-    foreach(fgvk_recorder_test IN ITEMS fgvk-steam-overlay-diagnostics-tests fgvk-pacing-profile-tests
-            fgvk-native-copy-profile-tests)
+    foreach(fgvk_recorder_test IN ITEMS fgvk-steam-overlay-diagnostics-tests fgvk-pacing-profile-tests)
         target_link_libraries(${fgvk_recorder_test} PRIVATE Threads::Threads)
     endforeach()
     add_executable(fgvk-pacing-record-golden-tests

@@ -1,7 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 
 #include "swapchain/swapchain.hpp"
-#include "frame_content_capture.hpp"
 #include "swapchain/create_policy.hpp"
 #include "swapchain/present/internal.hpp"
 #include "swapchain/retirement.hpp"
@@ -809,15 +808,6 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         this->handleRenderFenceBudgetMiss(plan);
         return this->presentNativeFrame(invocation);
     }
-    if (this->nativeCopyProfile)
-        this->nativeCopyProfile->beginSource(this->pacingProfile->sourceOrdinal(),
-            this->pacingProfile->backendGeneration(), invocation.swapchain);
-    if (this->frameContentCapture &&
-            this->profile.multiplier == 2)
-        this->frameContentCapture->beginSource(vk, this->info.format,
-            this->pacingProfile ? this->pacingProfile->sourceOrdinal() : this->frameState.realFrameIndex,
-            this->frameState.backendFrameIndex, queue,
-            this->info.deferredPresentQueue ? this->info.deferredPresentQueue->queue : queue);
 
     if (this->privateOrderedTransport) {
         plan.configuredAcquireTimeout = orderedGeneratedBatchAcquireBudget(

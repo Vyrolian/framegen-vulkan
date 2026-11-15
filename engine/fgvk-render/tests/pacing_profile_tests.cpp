@@ -373,8 +373,7 @@ void fgTimelineThroughProfile() {
         expect(child >= 0, "cannot fork FG timeline regression");
         if (child == 0) {
             for (const char* name : {"FGVK_PACING_PROFILE", "FGVK_PACING_PROFILE_GPU",
-                    "FGVK_PACING_PROFILE_WAYLAND", "FGVK_PACING_PROFILE_TRACE",
-                    "FGVK_PACING_PROFILE_COPY", "FGVK_PACING_PROFILE_CONTENT"})
+                    "FGVK_PACING_PROFILE_WAYLAND", "FGVK_PACING_PROFILE_TRACE"})
                 unsetenv(name);
             if (enabled) setenv("FGVK_PACING_PROFILE", "1", 1);
             const int fd = open(log.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
@@ -428,31 +427,20 @@ void fgTimelineLedgerWrapsAndTagsStaging() {
     expect(ledger.size() == 0 && ledger.describe(0).empty(), "forgetting every context left a probe line");
 }
 
-// Copy profiling implies the frame trace, but the trace alone must not select native
-// copy profiling. Both switches cache per process, so each case runs in its own child.
-void copyProfileSwitches() {
-    for (const bool copyOnly : {true, false}) {
-        const auto child = fork();
-        expect(child >= 0, "cannot fork copy profile switch regression");
-        if (child == 0) {
-            if (copyOnly) {
-                unsetenv("FGVK_PACING_PROFILE_TRACE");
-                setenv("FGVK_PACING_PROFILE_COPY", "1", 1);
-                expect(pacingCopyProfileEnabled() && pacingFrameTraceEnabled() && pacingGpuProfileEnabled(),
-                    "copy profiling must imply the frame trace and GPU timing");
-            } else {
-                unsetenv("FGVK_PACING_PROFILE_COPY");
-                setenv("FGVK_PACING_PROFILE_TRACE", "1", 1);
-                unsetenv("FGVK_PACING_PROFILE_GPU");
-                expect(pacingFrameTraceEnabled() && !pacingCopyProfileEnabled() && !pacingGpuProfileEnabled(),
-                    "the frame trace must not select native copy profiling or GPU timing");
-            }
-            std::exit(0);
-        }
-        int status{};
-        expect(waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 0,
-            "copy profile switch regression failed");
+// The frame trace must not select GPU timing. The switch caches per process, so the case runs in its own child.
+void traceSwitchOnly() {
+    const auto child = fork();
+    expect(child >= 0, "cannot fork trace switch regression");
+    if (child == 0) {
+        setenv("FGVK_PACING_PROFILE_TRACE", "1", 1);
+        unsetenv("FGVK_PACING_PROFILE_GPU");
+        expect(pacingFrameTraceEnabled() && !pacingGpuProfileEnabled(),
+            "the frame trace must not select GPU timing");
+        std::exit(0);
     }
+    int status{};
+    expect(waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 0,
+        "trace switch regression failed");
 }
 // F10: the acquire window counts the emulated acquires that signalled on the host and those that were queued.
 void internalAcquireSplitCounts() {
@@ -473,13 +461,11 @@ void internalAcquireSplitCounts() {
 int main() {
     // Before any gate is read here: the forked profile-on child must read its own environment.
     fgTimelineThroughProfile();
-    // Inherited copy state must not change the isolated cases below.
-    unsetenv("FGVK_PACING_PROFILE_COPY");
     timingObservations();
     internalAcquireSplitCounts();
     outputSequence();
     sourceIdentity();
-    copyProfileSwitches();
+    traceSwitchOnly();
     char directory[] = "/tmp/fgvk-pacing-tests.XXXXXX";
     expect(mkdtemp(directory) != nullptr, "cannot create temporary fixture");
     const std::filesystem::path root{directory};

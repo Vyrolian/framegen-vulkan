@@ -1162,16 +1162,6 @@ private:
             std::chrono::duration_cast<std::chrono::nanoseconds>(duration).count()));
     }
 
-    // F9b/S2 diagnostic switch: FGVK_INTERNAL_PREPARE=0 keeps internal real and
-    // generated worker copies on the at-deadline path. Read once per process.
-    static bool internalPrepareEnabled() noexcept {
-        static const bool enabled = [] {
-            const char* value = std::getenv("FGVK_INTERNAL_PREPARE");
-            return !(value && std::strcmp(value, "0") == 0);
-        }();
-        return enabled;
-    }
-
     // F9b: the outcome of one preparation attempt, kept by the worker until the deadline.
     struct InternalPreparation {
         // A lower image is acquired and its copy submitted: the deadline presents it.
@@ -1520,7 +1510,7 @@ private:
                     const std::lock_guard stopLock(mutex);
                     stopped = stopping;
                 }
-                if (!stopped && internalPrepareEnabled()) {
+                if (!stopped) {
                     // The previous job has already returned its lower image through present.
                     assert(heldLowerImages == 0);
                     assert(heldLowerImages < layerHeldLowerImages);

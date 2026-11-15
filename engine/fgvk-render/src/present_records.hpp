@@ -6,7 +6,6 @@
 // writer thread in present_records.cpp formats them into the text the analysers read. Nothing
 // here formats, allocates or locks on the producer side, except the rare one-off text path.
 
-#include "native_copy_profile.hpp"
 #include "present_diagnostics.hpp"
 #include "trace_recorder.hpp"
 

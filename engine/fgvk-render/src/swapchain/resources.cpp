@@ -55,41 +55,6 @@ namespace {
 
 void Swapchain::ensureFrameGenerationExecutionResources(
         const vk::Vulkan& vk) {
-    if (this->pacingProfile && present_diagnostics::pacingCopyProfileEnabled() &&
-            !this->nativeCopyProfileInitialized) {
-        this->nativeCopyProfileInitialized = true;
-        try {
-            using Copy = present_diagnostics::NativeCopyProfile;
-            const auto get = [&](const char* name) { return vk.fi().GetDeviceProcAddr(vk.dev(), name); };
-            auto calibrate = this->info.copyTimestampCalibration
-                ? reinterpret_cast<PFN_vkGetCalibratedTimestampsKHR>(get("vkGetCalibratedTimestampsKHR")) : nullptr;
-            if (this->info.copyTimestampCalibration && !calibrate)
-                calibrate = reinterpret_cast<PFN_vkGetCalibratedTimestampsKHR>(get("vkGetCalibratedTimestampsEXT"));
-            uint32_t count{};
-            vk.fi().GetPhysicalDeviceQueueFamilyProperties(vk.physdev(), &count, nullptr);
-            std::vector<VkQueueFamilyProperties> families(count);
-            vk.fi().GetPhysicalDeviceQueueFamilyProperties(vk.physdev(), &count, families.data());
-            VkPhysicalDeviceProperties properties{};
-            vk.fi().GetPhysicalDeviceProperties(vk.physdev(), &properties);
-            this->nativeCopyProfile = std::make_unique<Copy>(vk.dev(), Copy::Functions{
-                reinterpret_cast<PFN_vkCreateQueryPool>(get("vkCreateQueryPool")),
-                reinterpret_cast<PFN_vkDestroyQueryPool>(get("vkDestroyQueryPool")),
-                reinterpret_cast<PFN_vkCmdResetQueryPool>(get("vkCmdResetQueryPool")),
-                reinterpret_cast<PFN_vkCmdWriteTimestamp>(get("vkCmdWriteTimestamp")),
-                reinterpret_cast<PFN_vkGetQueryPoolResults>(get("vkGetQueryPoolResults")), calibrate,
-            }, vk.queueFamilyIndex() < families.size() ? families[vk.queueFamilyIndex()].timestampValidBits : 0,
-                properties.limits.timestampPeriod, this->diagnosticsState.contextId);
-            if (!this->nativeCopyProfile->ready()) this->nativeCopyProfile.reset();
-        } catch (...) { this->nativeCopyProfile.reset(); }
-        try {
-            std::ostringstream line;
-            line << "framegen-vulkan: present diagnostics: operation=pacing-profile-copy-gpu-state version=1"
-                 << " context=" << this->diagnosticsState.contextId << " active=" << static_cast<bool>(this->nativeCopyProfile)
-                 << " calibrated=" << (this->nativeCopyProfile && this->nativeCopyProfile->hasCalibration()) << '\n';
-            present_diagnostics::writePacingProfileRecords(line.str());
-        } catch (...) {}
-    }
-
     // These objects are WSI-facing and intentionally remain stable while the
     // full-resolution images and backend context are replaced. Preallocating
     // render slots avoids retiring binary semaphores that may still be
@@ -305,7 +270,6 @@ void Swapchain::commitFrameGenerationResources(
     // An overlapped deferred batch may still wait on the retiring timeline.
     // No batch is open here (replacement precedes this frame's admission).
     static_cast<void>(this->completeDeferredPresent(UINT64_MAX));
-    if (this->nativeCopyProfile) this->nativeCopyProfile->completed();
     FrameGenerationResources retiring;
     retiring.sourceImages = std::move(this->sourceImages);
     retiring.destinationImages = std::move(this->destinationImages);

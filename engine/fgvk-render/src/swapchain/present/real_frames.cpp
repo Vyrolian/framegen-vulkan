@@ -1,7 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 
 #include "swapchain/swapchain.hpp"
-#include "frame_content_capture.hpp"
 #include "swapchain/present/internal.hpp"
 #include "swapchain/retirement.hpp"
 #include "fgvk-common/helpers/errors.hpp"
@@ -210,19 +209,12 @@ void Swapchain::submitSourceCopy(const PresentInvocation& invocation,
     // Diagnostic split boundaries: two queries in the existing copy, no added barrier or wait.
     const bool splitRecorded = this->recordRenderSplitBegin(
         invocation.vk, commandBuffer.handle(), this->currentRenderSlot());
-    if (this->nativeCopyProfile)
-        this->nativeCopyProfile->beginCopy(commandBuffer.handle(), invocation.vk.queue(), invocation.imageIndex, false);
     commandBuffer.blitImage(invocation.vk,
         preBarriers,
         {swapchainImage, sourceImage.handle()},
         sourceImage.getExtent(),
         postBarriers
     );
-    if (this->frameContentCapture)
-        this->frameContentCapture->record(invocation.vk, commandBuffer.handle(),
-            swapchainImage, this->info.extent, invocation.imageIndex, false);
-    if (this->nativeCopyProfile)
-        this->nativeCopyProfile->endCopy(commandBuffer.handle(), false);
     if (splitRecorded)
         this->recordRenderSplitEnd(commandBuffer.handle(), this->currentRenderSlot());
     commandBuffer.end(invocation.vk);

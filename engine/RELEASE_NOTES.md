@@ -9,6 +9,7 @@
 - The `runtime-state` JSON record that the Renderer wrote for each context, and the `fgvk-diagnostics` report helper, are removed; the layer no longer writes `runtime-state/` records.
 - Adaptive frame generation is removed. Every profile runs the Fixed `multiplier`, and Smooth Cadence keeps its Fixed behaviour. Old `conf.toml` files still load: `adaptive`, `adaptive_max_multiplier`, `adaptive_auto_base_fps_cap`, `adaptive_fractional_real_frame_priority`, `adaptive_target_refresh_rate`, `target_fps`, `dynamic_cadence_recovery`, and `dynamic_cadence_probe_interval_seconds` are accepted and ignored, a profile with `adaptive = true` runs Fixed with its `multiplier`, and framegen-vulkan no longer writes them or reads their `FGVK_*` overrides.
 - Generated-frame capacity follows the Fixed multiplier. Profiles with `multiplier = 2` and `adaptive_max_multiplier = 3` now reserve one generated output and one lower swapchain image fewer. Raising the multiplier live goes through the existing private rebuild or recreation request.
+- The `FGVK_INTERNAL_SWAPCHAIN`, `FGVK_INTERNAL_PREPARE`, `FGVK_PACING_PROFILE_COPY`, `FGVK_PACING_PROFILE_CONTENT` and `FGVK_PACING_PROFILE_CONTENT_SOURCES` variables are no longer read; the native copy timestamp profile and frame content capture are removed.
 
 ## What's new in MAKO Renderer v4.6.0
 

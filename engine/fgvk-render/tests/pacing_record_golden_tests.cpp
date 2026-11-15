@@ -4,7 +4,6 @@
 // parent normalises only process and thread identities and compares the rest byte for byte.
 // FGVK_PACING_RECORD_GOLDEN_WRITE=<path> regenerates the golden instead of comparing with it.
 #include "present_diagnostics.hpp"
-#include "native_copy_profile.hpp"
 
 #include <cstdint>
 #include <cstdlib>
@@ -119,16 +118,6 @@ void profileScenario() {
         recordApplicationAcquireDriver(90, VK_NOT_READY, start, start + 1ms, std::nullopt);
         recordApplicationAcquireDriver(0, VK_SUCCESS, start + 1ms, start + 2ms, 3u);
     }
-    NativeCopyProfile::Sample copy{};
-    copy.context = 17; copy.source = 1; copy.generation = 2; copy.swapchain = fakeSwapchain();
-    copy.device = fakeDevice(); copy.queue = fakeQueue(); copy.command = fakeCommand();
-    copy.slot = 1; copy.image = 3; copy.generated = true; copy.available = true;
-    copy.begin = 100; copy.end = 250; copy.validBits = 36; copy.period = 1.5F;
-    copy.queryResult = VK_SUCCESS; copy.collected = start + 3ms; copy.readStarted = start + 4ms;
-    copy.readFinished = start + 5ms;
-    copy.before = {VK_SUCCESS, 11, 12, 13, start, start + 1ms};
-    copy.after = {VK_NOT_READY, 21, 22, 23, start + 2ms, start + 3ms};
-    NativeCopyProfile::publish(copy);
 }
 
 void traceScenario() {
@@ -208,7 +197,7 @@ std::string runScenario(const std::filesystem::path& root, const char* name, boo
     expect(child >= 0, "cannot fork golden scenario");
     if (child == 0) {
         for (const char* gate : {"FGVK_PACING_PROFILE", "FGVK_PACING_PROFILE_GPU", "FGVK_PACING_PROFILE_TRACE",
-                "FGVK_PACING_PROFILE_WAYLAND", "FGVK_PACING_PROFILE_COPY", "FGVK_PACING_PROFILE_CONTENT",
+                "FGVK_PACING_PROFILE_WAYLAND",
                 "FGVK_PACING_PROFILE_GPU_SPLIT", "FGVK_PRESENT_DIAGNOSTICS"})
             unsetenv(gate);
         setenv("FGVK_PACING_PROFILE", profile ? "1" : "0", 1);

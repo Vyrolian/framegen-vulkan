@@ -3336,12 +3336,7 @@ static_assert(realOffsetWindup(true) <= std::chrono::microseconds{270});
 static_assert(realOffsetWindup(true) >= std::chrono::microseconds{200});
 }
 
-int main(int argc, char** argv) {
-    if (argc == 2 && std::strcmp(argv[1], "--no-preparation") == 0) {
-        setenv("FGVK_INTERNAL_PREPARE", "0", 1);
-        generatedPreparationFallbackAndGates(true);
-        return 0;
-    }
+int main([[maybe_unused]] int argc, [[maybe_unused]] char** argv) {
     generatedPreparedOrderAndBudget(); generatedPreparationFallbackAndGates();
     generatedPreparedRetirement(); generatedPreparedStop(); generatedPreparationErrors();
     queueRequest();

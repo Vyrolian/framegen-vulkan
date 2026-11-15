@@ -467,29 +467,6 @@ void formatCopy(const CopySlot& slot, std::ostream& line) {
     line << '\n';
 }
 
-void formatCopyGpu(const present_diagnostics::NativeCopyProfile::Sample& sample, std::ostream& line) {
-    const auto ns = [](auto time) { return std::chrono::duration_cast<std::chrono::nanoseconds>(time.time_since_epoch()).count(); };
-    line << std::setprecision(std::numeric_limits<float>::max_digits10)
-         << "framegen-vulkan: present diagnostics: operation=pacing-profile-copy-gpu version=1"
-         << " pid=" << getpid() << " context=" << sample.context << " source=" << sample.source
-         << " generation=" << sample.generation << " swapchain=" << sample.swapchain
-         << " device=" << sample.device << " queue=" << sample.queue << " command=" << sample.command
-         << " slot=" << sample.slot << " generated=" << sample.generated << " image_index=" << sample.image
-         << " query_result=" << sample.queryResult << " available=" << sample.available
-         << " begin_ticks=" << sample.begin << " end_ticks=" << sample.end
-         << " valid_bits=" << sample.validBits << " period_ns=" << sample.period
-         << " collected_ns=" << ns(sample.collected) << " read_started_ns=" << ns(sample.readStarted)
-         << " read_finished_ns=" << ns(sample.readFinished);
-    const auto calibration = [&](const char* name, const present_diagnostics::NativeCopyProfile::Calibration& value) {
-        line << ' ' << name << "_result=" << value.result << ' ' << name << "_device_ticks=" << value.device
-             << ' ' << name << "_host_ns=" << value.host << ' ' << name << "_deviation_ns=" << value.deviation
-             << ' ' << name << "_started_ns=" << ns(value.started) << ' ' << name << "_finished_ns=" << ns(value.finished);
-    };
-    calibration("before", sample.before);
-    calibration("after", sample.after);
-    line << '\n';
-}
-
 void formatApplicationWindowText(const ApplicationWindowPayload& payload,
         const ApplicationFrameTiming::Window& window, std::ostream& line) {
     const bool present = payload.api == ApplicationFrameApi::Present;
@@ -964,12 +941,6 @@ void handleRecord(Recorder& s, const trace_recorder::TraceRecord& record, const 
         load(payload);
         emit([&](std::ostream& line) { formatCopy(s.pools.copies.at(payload.slot), line); });
         s.pools.copies.release(payload.slot);
-        break;
-    }
-    case RecordKind::PacingCopyGpu: {
-        present_diagnostics::NativeCopyProfile::Sample payload{};
-        load(payload);
-        emit([&](std::ostream& line) { formatCopyGpu(payload, line); });
         break;
     }
     case RecordKind::ApplicationAcquireWindow:

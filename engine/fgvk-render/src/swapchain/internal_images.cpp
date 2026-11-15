@@ -1206,10 +1206,4 @@ namespace fgvk::layer {
             query(vk.physdev(), &formatInfo, &properties) == VK_SUCCESS;
         return support;
     }
-
-    bool internalSwapchainEnvironmentEnabled() noexcept {
-        static const bool enabled = internalSwapchainEnvironmentAllows(
-            std::getenv("FGVK_INTERNAL_SWAPCHAIN"));
-        return enabled;
-    }
 }

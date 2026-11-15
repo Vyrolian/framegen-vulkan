@@ -1,7 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 
 #include "present_diagnostics.hpp"
-#include "native_copy_profile.hpp"
 #include "present_records.hpp"
 #include "trace_recorder.hpp"
 
@@ -85,11 +84,6 @@ size_t insideBucket(const LayerCall call) {
         return 0;
     }
 }
-}
-
-void NativeCopyProfile::publish(const Sample& sample) noexcept {
-    if (!pacingProfileEnabled()) return;
-    present_records::enqueue(trace_recorder::RecordKind::PacingCopyGpu, sample);
 }
 
 void initializePacingProfileLog() noexcept {
@@ -237,19 +231,10 @@ void writeFgTimelineProbe(const int64_t stalledNanoseconds) {
     } catch (...) {}
 }
 
-bool pacingCopyProfileEnabled() {
-    static const bool value = [] {
-        const char* environment = std::getenv("FGVK_PACING_PROFILE_COPY");
-        return environment && std::string_view(environment) == "1";
-    }();
-    return value;
-}
-
 bool pacingFrameTraceEnabled() {
     static const bool value = [] {
         const char* environment = std::getenv("FGVK_PACING_PROFILE_TRACE");
-        // Copy profiling writes its records through the trace sink.
-        return (environment && std::string_view(environment) == "1") || pacingCopyProfileEnabled();
+        return (environment && std::string_view(environment) == "1");
     }();
     return value;
 }
@@ -258,8 +243,8 @@ bool pacingGpuProfileEnabled() {
     static const bool value = [] {
         const char* environment = std::getenv("FGVK_PACING_PROFILE_GPU");
         // Not implied by the trace: backend GPU timing drains every in-flight
-        // batch per source, which changes pacing. Copy profiling keeps it.
-        return (environment && std::string_view(environment) == "1") || pacingCopyProfileEnabled();
+        // batch per source, which changes pacing.
+        return (environment && std::string_view(environment) == "1");
     }();
     return value;
 }
@@ -429,9 +414,7 @@ void traceVulkanSurface(std::string_view role, std::string_view api,
 bool pacingProfileEnabled() {
     static const bool value = [] {
         const char* environment = std::getenv("FGVK_PACING_PROFILE");
-        const char* content = std::getenv("FGVK_PACING_PROFILE_CONTENT");
-        return (environment && std::string_view(environment) == "1") || pacingGpuProfileEnabled() || pacingWaylandProfileEnabled() ||
-            (content && std::string_view(content) == "1");
+        return (environment && std::string_view(environment) == "1") || pacingGpuProfileEnabled() || pacingWaylandProfileEnabled();
     }();
     return value;
 }
