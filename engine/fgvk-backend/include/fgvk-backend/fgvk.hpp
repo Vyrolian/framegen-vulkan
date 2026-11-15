@@ -13,8 +13,6 @@
 #include <utility>
 #include <vector>
 
-namespace vk { class DeviceMemoryAccounting; }
-
 namespace fgvk::backend {
 
     /// Encoding of the images exchanged with the frame-generation backend.
@@ -163,11 +161,6 @@ namespace fgvk::backend {
             uint32_t width, uint32_t height,
             FrameEncoding encoding, float flow, bool perf
         );
-
-        /// Retain read-only atomic memory accounting without retaining or
-        /// calling the private Vulkan device from a diagnostic worker.
-        [[nodiscard]] std::shared_ptr<const vk::DeviceMemoryAccounting>
-        deviceMemoryAccounting() const;
 
         ///
         /// Schedule a new set of generated frames.

@@ -329,19 +329,6 @@ namespace {
         return signalled;
     }
 
-    vk::DeviceMemoryTotals memoryDelta(
-            const vk::DeviceMemoryTotals& after,
-            const vk::DeviceMemoryTotals& before) {
-        return {
-            .bytes = after.bytes >= before.bytes
-                ? after.bytes - before.bytes
-                : 0,
-            .allocations = after.allocations >= before.allocations
-                ? after.allocations - before.allocations
-                : 0,
-        };
-    }
-
     /// The calibrated-timestamp entry point, but only when the backend device can
     /// pair its timestamp counter with CLOCK_MONOTONIC. Null means unavailable.
     PFN_vkGetCalibratedTimestampsKHR splitCalibrationFunction(const vk::Vulkan& vulkan) {
@@ -487,35 +474,11 @@ Context& Instance::openContext(std::pair<int, int> sourceFds, const std::vector<
         );
     }
     const VkExtent2D extent{ width, height };
-    const auto& vulkan = this->m_impl->getVulkan();
-    const auto before = vulkan.deviceMemorySnapshot();
     auto context = std::make_unique<ContextImpl>(*this->m_impl,
         sourceScope, destinationScope, syncScope,
         extent, encoding, flow, perf
     );
-    const auto after = vulkan.deviceMemorySnapshot();
-    const auto contextInternal = memoryDelta(after.internal, before.internal);
-    const auto contextImported = memoryDelta(after.imported, before.imported);
-    const auto contextExported = memoryDelta(after.exported, before.exported);
     auto* result = this->m_contexts.emplace_back(std::move(context)).get();
-    std::clog << "framegen-vulkan: backend-memory operation=context-open"
-        << " width=" << width
-        << " height=" << height
-        << " outputs=" << destFds.size()
-        << " precision="
-        << (this->m_impl->getShaderRegistry().is_fp16 ? "fp16" : "fp32")
-        << " model=" << (perf ? "performance" : "quality")
-        << " context_internal_bytes=" << contextInternal.bytes
-        << " context_internal_allocations=" << contextInternal.allocations
-        << " context_imported_mapped_bytes=" << contextImported.bytes
-        << " context_imported_allocations=" << contextImported.allocations
-        << " context_exported_bytes=" << contextExported.bytes
-        << " context_exported_allocations=" << contextExported.allocations
-        << " live_internal_bytes=" << after.internal.bytes
-        << " live_internal_allocations=" << after.internal.allocations
-        << " peak_internal_bytes=" << after.peakInternal.bytes
-        << " peak_internal_allocations=" << after.peakInternal.allocations
-        << '\n';
     return *result;
 }
 
@@ -1470,11 +1433,6 @@ void Instance::closeContext(const Context& context) {
 }
 
 Instance::~Instance() = default;
-
-std::shared_ptr<const vk::DeviceMemoryAccounting>
-Instance::deviceMemoryAccounting() const {
-    return this->m_impl->getVulkan().deviceMemoryAccounting();
-}
 
 // leaking shenanigans
 

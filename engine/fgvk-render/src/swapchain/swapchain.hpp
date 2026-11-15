@@ -18,7 +18,6 @@
 #include "profile_update.hpp"
 #include "presentation_policy.hpp"
 #include "present_diagnostics.hpp"
-#include "runtime_health.hpp"
 #include "runtime_transition.hpp"
 #include "present_timing.hpp"
 #include "swapchain/deferred_present.hpp"
@@ -245,9 +244,7 @@ namespace fgvk::layer {
         /// Process-wide backend changes wait for restart. The decision reports
         /// every applied and pending boundary.
         [[nodiscard]] ProfileUpdateDecision updateProfile(
-            const ls::GameConf& profile, uint64_t runtimeStateRevision,
-            const ls::GameConf* requestedProfile = nullptr,
-            bool processRestartPending = false);
+            const ls::GameConf& profile, uint64_t runtimeStateRevision);
 
         /// After the lower WSI has consumed this present's wait semaphores,
         /// convert one successful result into VK_ERROR_OUT_OF_DATE_KHR for a
@@ -480,7 +477,6 @@ namespace fgvk::layer {
             frameGenerationTransition;
         std::optional<FrameGenerationResources>
             preparedFrameGenerationResources;
-        ls::GameConf requestedProfile;
         LiveProfileResourceRecreation liveProfileResourceRecreation;
         const char* frameGenerationUnavailableReason{nullptr};
         LiveEnableRecreation liveEnableRecreation;

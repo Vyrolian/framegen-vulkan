@@ -17,7 +17,6 @@
 #include <optional>
 #include <span>
 #include <sstream>
-#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -30,27 +29,6 @@ namespace {
     using DiagnosticsClock = present_diagnostics::Clock;
     constexpr auto privateResourceDrainBudget =
         std::chrono::milliseconds(50);
-
-    void logPrivateFrameGenerationMemory(const vk::Vulkan& vk,
-            const uint64_t contextId, const uint64_t stateRevision,
-            const std::string_view operation) {
-        const auto memory = vk.deviceMemorySnapshot();
-        std::clog << "framegen-vulkan: renderer-memory operation=" << operation
-                  << " context=" << contextId
-                  << " state_revision=" << stateRevision
-                  << " live_internal_bytes=" << memory.internal.bytes
-                  << " live_internal_allocations="
-                  << memory.internal.allocations
-                  << " live_exported_bytes=" << memory.exported.bytes
-                  << " live_exported_allocations="
-                  << memory.exported.allocations
-                  << " peak_internal_bytes=" << memory.peakInternal.bytes
-                  << " peak_internal_allocations="
-                  << memory.peakInternal.allocations
-                  << " peak_exported_bytes=" << memory.peakExported.bytes
-                  << " peak_exported_allocations="
-                  << memory.peakExported.allocations << '\n';
-    }
 }
 
 void Swapchain::ensureFrameGenerationExecutionResources(
@@ -349,11 +327,6 @@ bool Swapchain::applyPendingFrameGenerationResources(
                     this->frameGenerationTransition.value().profile
                 );
             this->frameGenerationTransition.prepared();
-            logPrivateFrameGenerationMemory(
-                vk, this->diagnosticsState.contextId,
-                this->frameGenerationTransition.stateRevision(),
-                "private-context-prepared"
-            );
             if (present_diagnostics::enabled()) {
                 const auto& requested =
                     this->frameGenerationTransition.value().profile;
@@ -422,10 +395,6 @@ bool Swapchain::applyPendingFrameGenerationResources(
     );
     const auto committedRevision =
         this->frameGenerationTransition.committed();
-    logPrivateFrameGenerationMemory(
-        vk, this->diagnosticsState.contextId,
-        committedRevision.value_or(0), "private-context-applied"
-    );
 
     std::cerr << "framegen-vulkan: frame-generation resources changed live: "
               << "generated_capacity=" << this->destinationImages.size()

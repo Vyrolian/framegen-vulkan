@@ -11,7 +11,6 @@ set(LAYER_SOURCES
     "src/present_diagnostics.cpp"
     ${PRESENT_RECORD_SOURCES}
     "src/wayland_presentation_feedback.cpp"
-    "src/runtime_health.cpp"
     "src/swapchain/create.cpp"
     "src/swapchain/internal_images.cpp"
     "src/swapchain/present_marker.cpp"
@@ -215,13 +214,6 @@ if(BUILD_TESTING)
     target_link_libraries(fgvk-pacing-profile-benchmark PRIVATE ${CMAKE_DL_LIBS})
     target_include_directories(fgvk-pacing-profile-benchmark PRIVATE "../fgvk-common/include")
     target_link_libraries(fgvk-pacing-profile-benchmark PRIVATE Threads::Threads)
-
-    add_executable(fgvk-runtime-health-tests
-        "tests/runtime_health_tests.cpp" "src/runtime_health.cpp")
-    target_link_libraries(fgvk-runtime-health-tests PRIVATE fgvk-common Threads::Threads)
-    target_include_directories(fgvk-runtime-health-tests PRIVATE "src")
-    add_test(NAME runtime-health COMMAND fgvk-runtime-health-tests)
-    fgvk_register_portable_policy_test(fgvk-runtime-health-tests runtime-health)
 
     add_executable(fgvk-device-selection-tests
         "tests/device_selection_tests.cpp")

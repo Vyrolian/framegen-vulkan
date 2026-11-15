@@ -5,7 +5,6 @@ import io
 from pathlib import Path
 import subprocess
 import sys
-import struct
 import tempfile
 import unittest
 
@@ -16,9 +15,6 @@ spec.loader.exec_module(report)
 protocol_spec = importlib.util.spec_from_file_location("wayland_pacing_protocol", SCRIPT.with_name("wayland_pacing_protocol.py"))
 protocol = importlib.util.module_from_spec(protocol_spec)
 protocol_spec.loader.exec_module(protocol)
-content_spec = importlib.util.spec_from_file_location("frame_content", SCRIPT.with_name("analyze-frame-content.py"))
-content = importlib.util.module_from_spec(content_spec)
-content_spec.loader.exec_module(content)
 setup_spec = importlib.util.spec_from_file_location("vulkan_setup", SCRIPT.with_name("analyze-vulkan-setup.py"))
 setup = importlib.util.module_from_spec(setup_spec)
 setup_spec.loader.exec_module(setup)
@@ -254,73 +250,6 @@ class FrameTimelineTests(unittest.TestCase):
         _,invalid=self.parse([self.line("pacing-profile-copy-gpu",sample|changes) for changes in
             (dict(period_ns="nan"),dict(valid_bits=0),dict(generated=0),dict(query_result=-4),dict(read_finished_ns=0))])
         self.assertEqual(invalid,5)
-
-
-class FrameContentTests(unittest.TestCase):
-    @staticmethod
-    def record(source=1, generated=0, backend=0, pixels=None):
-        pixels = pixels if pixels is not None else bytes(192*108*4)
-        header=(0x31544e4f434b414d,1,20,source,backend,generated,2,100,1000,2000,30,40,50,192,108,len(pixels),source)
-        return content.HEADER.pack(*header)+pixels
-
-    def test_binary_identity_and_partial_tail_are_preserved(self):
-        with tempfile.TemporaryDirectory() as directory:
-            path=Path(directory)/"content.bin"
-            path.write_bytes(self.record()+self.record(generated=1)+self.record(source=2)[:-10])
-            records,partial=content.read_capture(path)
-        self.assertTrue(partial)
-        self.assertEqual(len(records),2)
-        self.assertEqual([r["generated"] for r in records],[0,1])
-        self.assertEqual(records[0]["caller_queue"],40)
-        self.assertEqual(records[0]["private_queue"],50)
-
-    def test_version_two_accepts_large_batches(self):
-        data=bytearray(self.record())
-        struct.pack_into("<Q",data,8,2)
-        struct.pack_into("<Q",data,16*8,4096)
-        with tempfile.TemporaryDirectory() as directory:
-            path=Path(directory)/"content.bin"
-            path.write_bytes(data)
-            records,partial=content.read_capture(path)
-            self.assertFalse(partial)
-            self.assertEqual([r["batch"] for r in records],[4096])
-            struct.pack_into("<Q",data,8,1)
-            path.write_bytes(data)
-            with self.assertRaises(ValueError):content.read_capture(path)
-
-    def test_unknown_schema_and_unbounded_payload_are_refused(self):
-        data=bytearray(self.record())
-        struct.pack_into("<Q",data,8,3)
-        with tempfile.TemporaryDirectory() as directory:
-            path=Path(directory)/"content.bin"
-            path.write_bytes(data)
-            with self.assertRaises(ValueError):content.read_capture(path)
-            data=bytearray(self.record())
-            struct.pack_into("<Q",data,15*8,2**63)
-            path.write_bytes(data)
-            with self.assertRaises(ValueError):content.read_capture(path)
-
-    def test_motion_midpoint_duplicates_and_missing_history(self):
-        try:
-            import numpy as np
-        except ImportError:
-            self.skipTest("optional offline content motion analysis requires NumPy")
-        rng=np.random.default_rng(42)
-        original=rng.integers(0,256,size=(108,192,4),dtype=np.uint8)
-        original[:,:,3]=255
-        blobs=[]
-        for source,generated,backend,shift in [(1,0,0,0),(1,1,0,0),(2,0,1,8),(2,1,1,4),(3,0,2,16),(3,1,2,16)]:
-            blobs.append(self.record(source,generated,backend,np.roll(original,shift,axis=1).tobytes()))
-        with tempfile.TemporaryDirectory() as directory:
-            path=Path(directory)/"content.bin";path.write_bytes(b"".join(blobs))
-            records,_=content.read_capture(path)
-        result=content.analyze(records)
-        self.assertEqual(result["adjacent_source_pairs"],2)
-        self.assertEqual(result["generated_exact_current"],1)
-        self.assertEqual(result["generated_exact_previous"],0)
-        self.assertAlmostEqual(result["pairs"][0]["estimated_progress"],.5,delta=.08)
-        broken=[r | {"source":r["source"]+1} if r["source"]==3 else r for r in records]
-        self.assertEqual(content.analyze(broken)["adjacent_source_pairs"],1)
 
 
 class WaylandProtocolTests(unittest.TestCase):

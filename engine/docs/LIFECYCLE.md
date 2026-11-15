@@ -52,9 +52,8 @@ Costs are qualitative: **negligible** is cached state, arithmetic, or a nonblock
 | Process identity | Once at startup and again only after a changed configuration parses successfully | Executable/name reads and, for Wine or Proton, a process-map scan, **low to moderate** | An unmatched profile leaves framegen-vulkan dormant and presentation native |
 | Cached display-feedback consumption | At most once every 250 ms on the presentation path | Lock and copy of cached state, **negligible** | Refresh and output geometry can update policy. |
 | Runtime status publication | Only when requested/applied/pending state changes | Atomic small-file replacement, **low but not steady-state work** | Status is observational and cannot block rendering on cleanup errors. The first publisher performs one bounded cleanup of unlocked framegen-vulkan-owned stale entries |
-| Diagnostic runtime health | Every five seconds only with presentation diagnostics enabled; slow collection/output backs off to 30 seconds | Bounded proc/sysfs reads and atomic memory snapshots on a worker, **low to moderate** | No Vulkan calls or policy changes; unavailable fields remain unknown. An outstanding driver read may delay teardown. [Memory evidence](MEMORY-MANAGEMENT.md#reading-memory-evidence) owns the details |
 
-Diagnostic health sampling is opt-in and observational; it cannot change scheduling or recovery. Recovery backoffs are separate from background probes.
+Recovery backoffs are separate from background probes.
 
 ### Event-driven capability and allocation probes
 
@@ -183,7 +182,7 @@ The first two rows affect placement, admission, state confirmation, or lifecycle
 
 ## What framegen-vulkan does not probe
 
-- With diagnostics disabled, framegen-vulkan creates no diagnostic health worker. Vulkan memory budget is queried only for resource admission.
+- Vulkan memory budget is queried only for resource admission.
 - framegen-vulkan does not observe physical scanout timestamps. Present/acquire duration and application cadence remain proxies and cannot prove scanout.
 - framegen-vulkan does not continuously rescan Vulkan capabilities. Device and surface facts are cached for their owning lifetime and current swapchain limits are rechecked at creation.
 - framegen-vulkan does not infer safety from average frame rate. Capability, return-code, queue, fence, and ownership checks remain separate from performance decisions.

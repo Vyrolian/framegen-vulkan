@@ -23,9 +23,7 @@ using namespace fgvk::layer;
 
 ProfileUpdateDecision Swapchain::updateProfile(
         const ls::GameConf& incomingProfile,
-        const uint64_t runtimeStateRevision,
-        const ls::GameConf* requestedProfile,
-        const bool processRestartPending) {
+        const uint64_t runtimeStateRevision) {
     ls::GameConf unavailableProfile;
     if (this->frameGenerationUnavailableReason) {
         unavailableProfile = incomingProfile;
@@ -38,8 +36,6 @@ ProfileUpdateDecision Swapchain::updateProfile(
     }
     const ls::GameConf& nextProfile = this->frameGenerationUnavailableReason
         ? unavailableProfile : incomingProfile;
-    this->requestedProfile = requestedProfile
-        ? *requestedProfile : nextProfile;
     const bool resourcesAvailable = this->sourceImages.size() == 2 &&
         !this->destinationImages.empty() && this->syncSemaphore.has_value();
     const size_t requestedGeneratedFrameCapacity =

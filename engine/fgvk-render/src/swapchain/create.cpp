@@ -4,7 +4,6 @@
 #include "swapchain/create_policy.hpp"
 #include "swapchain/retirement.hpp"
 #include "layer_role.hpp"
-#include "ordered_acquire_diagnostics.hpp"
 #include "present_diagnostics.hpp"
 #include "fgvk-common/helpers/errors.hpp"
 #include "fgvk-common/helpers/file_descriptors.hpp"
@@ -111,7 +110,6 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance* backend,
             this->pacingProfile = std::make_unique<present_diagnostics::PacingProfile>();
         } catch (...) {} // Optional observations cannot prevent swapchain creation.
     }
-    this->requestedProfile = this->profile;
     const DiagnosticsContextScope diagnosticsContext(
         this->diagnosticsState.contextId
     );
@@ -264,26 +262,6 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance* backend,
                       << this->diagnosticsState.contextId
                       << "; slow operation threshold is "
                       << present_diagnostics::thresholdMilliseconds() << " ms\n";
-            if (this->privateOrderedTransport) {
-                const auto recoveryAcquireTimeout =
-                    orderedRecoveryAcquireTimeout(
-                        std::nullopt,
-                        configuredAcquireTimeout
-                    );
-                const auto perImageAcquireTimeout =
-                    orderedGeneratedImageAcquireTimeout(
-                        std::nullopt,
-                        configuredAcquireTimeout
-                    );
-                std::cerr << formatOrderedAcquirePolicy(
-                    this->diagnosticsState.contextId,
-                    configuredAcquireTimeout,
-                    perImageAcquireTimeout,
-                    recoveryAcquireTimeout,
-                    std::chrono::duration<double, std::milli>(
-                        OrderedAcquireRecovery::maximumRetryDelay()
-                    ).count());
-            }
         }
         if (configuredAcquireTimeout) {
             std::cerr << "framegen-vulkan: generated-image acquire timeout requested at "

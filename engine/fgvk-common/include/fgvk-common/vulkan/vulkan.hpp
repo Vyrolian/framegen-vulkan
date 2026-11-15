@@ -303,10 +303,6 @@ namespace vk {
         [[nodiscard]] const auto& deviceMemoryAccounting() const {
             return this->memoryAccounting;
         }
-        /// snapshot framegen-vulkan-owned, imported, and exported Vulkan memory handles
-        [[nodiscard]] DeviceMemorySnapshot deviceMemorySnapshot() const noexcept {
-            return this->memoryAccounting->snapshot();
-        }
     private:
         std::shared_ptr<DeviceMemoryAccounting> memoryAccounting{
             std::make_shared<DeviceMemoryAccounting>()

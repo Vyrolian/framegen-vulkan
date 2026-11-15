@@ -8,7 +8,6 @@
 #include "fgvk-common/helpers/pointers.hpp"
 #include "fgvk-common/vulkan/vulkan.hpp"
 #include "runtime_transition.hpp"
-#include "runtime_health.hpp"
 #include "swapchain/swapchain.hpp"
 
 #include <atomic>
@@ -122,8 +121,6 @@ namespace fgvk::layer {
         /// @param swapchain swapchain handle
         void removeSwapchainContext(VkSwapchainKHR swapchain);
     private:
-        void startRuntimeHealth(const vk::Vulkan& vk) noexcept;
-
         ls::WatchedConfig config;
         std::optional<ls::GameConf> active_profile;
         bool frameGenerationInteropProvisionedAtStartup{false};
@@ -136,11 +133,6 @@ namespace fgvk::layer {
         std::unordered_map<VkSwapchainKHR, Swapchain> swapchains;
         std::optional<std::chrono::steady_clock::time_point> lastConfigurationPoll;
         uint64_t runtimeStateRevision{1};
-        bool healthMonitorLimitReported{false};
-        // Destroy workers first. Counter keys stay alive in their worker, so
-        // recreated devices cannot reuse a stale monitor/GPU association.
-        std::unordered_map<const vk::DeviceMemoryAccounting*,
-            std::unique_ptr<present_diagnostics::RuntimeHealthMonitor>> healthMonitors;
     };
 
 }
