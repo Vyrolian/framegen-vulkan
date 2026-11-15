@@ -159,6 +159,13 @@ if(BUILD_TESTING AND UNIX)
         set_tests_properties(arch-package-release-pin
             arch-package-contract PROPERTIES LABELS "portable-policy")
     endif()
+
+    add_test(NAME embedded-color-conversion-spirv-freshness
+        COMMAND "${FGVK_PYTHON3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/scripts/generate-color-conversion-spirv.py"
+            --check)
+    set_tests_properties(embedded-color-conversion-spirv-freshness PROPERTIES
+        LABELS "portable-policy")
 endif()
 
 set(CMAKE_CXX_STANDARD 20)

@@ -26,6 +26,8 @@ namespace fgvk::backend {
     struct ShaderRegistry {
         vk::Shader mipmaps;
         vk::Shader generate, generate_rgba16f;
+        vk::Shader hdr10_pq_to_scrgb;
+        vk::Shader scrgb_to_hdr10_pq;
         Shaders quality;
         Shaders performance;
 

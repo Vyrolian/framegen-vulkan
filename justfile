@@ -61,6 +61,10 @@ check-arch-package:
     engine/dist/arch/check-release-pin.sh
     engine/dist/arch/test-package-contract.sh
 
+# Reject stale embedded colour-conversion SPIR-V without invoking glslangValidator.
+check-color-conversion-spirv:
+    python3 engine/scripts/generate-color-conversion-spirv.py --check
+
 # Build framegen-vulkan.
 build: build-engine
 

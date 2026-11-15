@@ -39,6 +39,7 @@ namespace fgvk::backend {
         VkExtent2D flowExtent;
 
         bool highPrecision; //!< model output is backed by an rgba16f image
+        bool hdr; //!< model constants select linear HDR/scRGB semantics
         float flow;
         bool perf;
         size_t count;
@@ -60,10 +61,11 @@ namespace fgvk::backend {
     /// get a prefilled constant buffer
     /// @param index timestamp index
     /// @param total total amount of images
+    /// @param hdr whether the model receives linear HDR/scRGB data
     /// @param invFlow inverted flow scale value
     /// @return prefilled constant buffer
     ConstantBuffer getDefaultConstantBuffer(
-        size_t index, size_t total, float invFlow
+        size_t index, size_t total, bool hdr, float invFlow
     );
 
     /// round down a VkExtent2D

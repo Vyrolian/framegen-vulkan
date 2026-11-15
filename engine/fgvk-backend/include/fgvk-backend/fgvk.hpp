@@ -19,6 +19,8 @@ namespace fgvk::backend {
     enum class FrameEncoding : uint8_t {
         Sdr8,
         SdrHighPrecision,
+        ScRgbLinear,
+        Hdr10Pq,
     };
 
     class [[gnu::visibility("default")]] ContextImpl;
@@ -120,7 +122,11 @@ namespace fgvk::backend {
         ///
         /// The VkFormat of the exchanged images is inferred from encoding:
         /// - Sdr8: VK_FORMAT_R8G8B8A8_UNORM
-        /// - SdrHighPrecision: VK_FORMAT_R16G16B16A16_SFLOAT
+        /// - SdrHighPrecision, ScRgbLinear, Hdr10Pq: VK_FORMAT_R16G16B16A16_SFLOAT
+        ///
+        /// Hdr10Pq input is PQ BT.2020 and its output is written back as PQ;
+        /// the model runs on linear scRGB BT.709 (80 nits per unit) in between.
+        /// ScRgbLinear input and output are already linear scRGB.
         ///
         /// The application and library must keep track of the frame index. When the next frame
         /// is ready, signal the syncFd with one increment (with the first trigger being 1).

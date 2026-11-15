@@ -25,7 +25,9 @@ namespace fgvk::layer {
         std::string_view reason{};
     };
 
-    /// Only nonlinear sRGB swapchains support generation.
+    /// Nonlinear sRGB swapchains and the validated HDR pairs (HDR10/PQ on a
+    /// 10-bit packed format, linear scRGB on R16G16B16A16_SFLOAT) support
+    /// generation. Every other colour space and format passes through.
     [[nodiscard]] SwapchainColorPipeline classifySwapchainColor(
         VkFormat format, VkColorSpaceKHR colorSpace);
 

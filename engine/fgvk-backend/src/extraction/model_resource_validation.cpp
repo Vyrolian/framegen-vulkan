@@ -431,7 +431,7 @@ uint32_t fgvk::backend::detail::lsfgStorageImageFormat(const uint32_t logicalId)
         return 15U; // SPIR-V R8
     if (logicalId == 262U || logicalId == 266U || logicalId == 274U)
         return 2U; // SPIR-V Rgba16f
-    return 4U; // SPIR-V Rgba8 (generation's HDR copy is patched by the registry)
+    return 4U; // SPIR-V Rgba8 (generation's rgba16f copy is patched by the registry)
 }
 
 std::span<const fgvk::backend::detail::LsfgShaderSpec>

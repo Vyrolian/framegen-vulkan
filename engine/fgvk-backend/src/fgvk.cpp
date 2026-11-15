@@ -3,6 +3,7 @@
 #include "fence_ring.hpp"
 #include "helpers/temporal_phases.hpp"
 #include "helpers/black_image.hpp"
+#include "helpers/frame_color_policy.hpp"
 #include "fgvk-backend/fgvk.hpp"
 #include "extraction/dll_reader.hpp"
 #include "extraction/shader_registry.hpp"
@@ -26,6 +27,7 @@
 #include "shaderchains/alpha1.hpp"
 #include "shaderchains/beta0.hpp"
 #include "shaderchains/beta1.hpp"
+#include "shaderchains/color_conversion.hpp"
 #include "shaderchains/delta0.hpp"
 #include "shaderchains/delta1.hpp"
 #include "shaderchains/gamma0.hpp"
@@ -235,6 +237,13 @@ namespace fgvk::backend {
         void schedulePrepass(VkFence completionFence);
 
         Ctx ctx;
+
+        // PQ conversion works in private linear scRGB images. Both are absent,
+        // and every conversion stage is skipped, unless requiresPqConversion().
+        std::optional<std::pair<vk::Image, vk::Image>> workingSourceImages;
+        std::optional<std::vector<vk::Image>> workingDestImages;
+        std::optional<ColorConversion> sourceColorConversion;
+        std::optional<ColorConversion> destColorConversion;
 
         Mipmaps mipmaps;
         std::array<Alpha0, 7> alpha0;
@@ -478,6 +487,11 @@ Context& Instance::openContext(std::pair<int, int> sourceFds, const std::vector<
         sourceScope, destinationScope, syncScope,
         extent, encoding, flow, perf
     );
+    if (usesHdrModel(encoding)) {
+        std::clog << "framegen-vulkan: HDR generation: encoding="
+            << (requiresPqConversion(encoding) ? "hdr10-pq" : "scrgb-linear")
+            << " pq_conversion=" << requiresPqConversion(encoding) << '\n';
+    }
     auto* result = this->m_contexts.emplace_back(std::move(context)).get();
     return *result;
 }
@@ -561,6 +575,66 @@ namespace {
         return VK_FORMAT_R16G16B16A16_SFLOAT;
     }
 
+    std::optional<std::pair<vk::Image, vk::Image>> createWorkingSourceImages(
+            const Ctx& ctx, const VkExtent2D extent, const FrameEncoding encoding) {
+        if (!requiresPqConversion(encoding))
+            return std::nullopt;
+
+        return std::make_optional(std::pair{
+            vk::Image(ctx.vk, extent, ctx.imageMemoryPool, VK_FORMAT_R16G16B16A16_SFLOAT),
+            vk::Image(ctx.vk, extent, ctx.imageMemoryPool, VK_FORMAT_R16G16B16A16_SFLOAT)
+        });
+    }
+
+    std::optional<std::vector<vk::Image>> createWorkingDestImages(
+            const Ctx& ctx, const VkExtent2D extent,
+            const FrameEncoding encoding, const size_t count) {
+        if (!requiresPqConversion(encoding))
+            return std::nullopt;
+
+        std::vector<vk::Image> images;
+        images.reserve(count);
+        for (size_t i = 0; i < count; ++i)
+            images.emplace_back(ctx.vk, extent, ctx.imageMemoryPool, VK_FORMAT_R16G16B16A16_SFLOAT);
+        return images;
+    }
+
+    const std::pair<vk::Image, vk::Image>& selectModelSourceImages(
+            const std::pair<vk::Image, vk::Image>& transportImages,
+            const std::optional<std::pair<vk::Image, vk::Image>>& workingImages) {
+        return workingImages ? *workingImages : transportImages;
+    }
+
+    const std::vector<vk::Image>& selectModelDestImages(
+            const std::vector<vk::Image>& transportImages,
+            const std::optional<std::vector<vk::Image>>& workingImages) {
+        return workingImages ? *workingImages : transportImages;
+    }
+
+    std::optional<ColorConversion> createSourceColorConversion(
+            const Ctx& ctx,
+            const std::pair<vk::Image, vk::Image>& transportImages,
+            const std::optional<std::pair<vk::Image, vk::Image>>& workingImages) {
+        if (!workingImages)
+            return std::nullopt;
+        return std::optional<ColorConversion>(std::in_place,
+            ctx, ctx.shaders.get().hdr10_pq_to_scrgb,
+            transportImages, workingImages.value()
+        );
+    }
+
+    std::optional<ColorConversion> createDestColorConversion(
+            const Ctx& ctx,
+            const std::optional<std::vector<vk::Image>>& workingImages,
+            const std::vector<vk::Image>& transportImages) {
+        if (!workingImages)
+            return std::nullopt;
+        return std::optional<ColorConversion>(std::in_place,
+            ctx, ctx.shaders.get().scrgb_to_hdr10_pq,
+            workingImages.value(), transportImages
+        );
+    }
+
     Ctx createCtx(const InstanceImpl& instance, VkExtent2D extent,
             const FrameEncoding encoding, float flow, bool perf, size_t count) {
         const auto& vk = instance.getVulkan();
@@ -573,7 +647,7 @@ namespace {
             for (size_t i = 0; i < count; ++i)
                 constantBuffers.emplace_back(vk,
                     backend::getDefaultConstantBuffer(
-                        i, count, flow
+                        i, count, usesHdrModel(encoding), flow
                     )
                 );
 
@@ -582,10 +656,10 @@ namespace {
                 .shaders = std::ref(shaders),
                 .imageMemoryPool{std::make_shared<vk::ImageMemoryPool>(vk)},
                 .pool{vk, backend::calculateDescriptorPoolLimits(
-                    count, perf
+                    count, perf, requiresPqConversion(encoding)
                 )},
                 .constantBuffer{vk, backend::getDefaultConstantBuffer(
-                    0, 1, flow
+                    0, 1, usesHdrModel(encoding), flow
                 )},
                 .constantBuffers{std::move(constantBuffers)},
                 .bnbSampler{vk, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER, VK_COMPARE_OP_NEVER, false},
@@ -597,6 +671,7 @@ namespace {
                     .height = static_cast<uint32_t>(static_cast<float>(extent.height) / flow)
                 },
                 .highPrecision = usesHighPrecisionModel(encoding),
+                .hdr = usesHdrModel(encoding),
                 .flow = flow,
                 .perf = perf,
                 .count = count
@@ -620,7 +695,17 @@ ContextImpl::ContextImpl(const InstanceImpl& instance,
         cmdbufs(destFds.size() + 1),
         cmdbufFences(createCmdbufFences(instance.getVulkan(), inFlightDepth)),
         ctx(createCtx(instance, extent, encoding, flow, perf, destFds.size())),
-        mipmaps(ctx, sourceImages),
+        workingSourceImages(createWorkingSourceImages(ctx, extent, encoding)),
+        workingDestImages(createWorkingDestImages(
+            ctx, extent, encoding, destImages.size()
+        )),
+        sourceColorConversion(createSourceColorConversion(
+            ctx, sourceImages, workingSourceImages
+        )),
+        destColorConversion(createDestColorConversion(
+            ctx, workingDestImages, destImages
+        )),
+        mipmaps(ctx, selectModelSourceImages(sourceImages, workingSourceImages)),
         alpha0{
             Alpha0(ctx, mipmaps.getImages().at(0)),
             Alpha0(ctx, mipmaps.getImages().at(1)),
@@ -641,6 +726,13 @@ ContextImpl::ContextImpl(const InstanceImpl& instance,
         },
         beta0(ctx, alpha1.at(0).getImages()),
         beta1(ctx, beta0.getImages(), alpha0.at(0).getImages()) {
+    const auto& modelSourceImages = selectModelSourceImages(
+        this->sourceImages, this->workingSourceImages
+    );
+    const auto& modelDestImages = selectModelDestImages(
+        this->destImages, this->workingDestImages
+    );
+
     // Generated outputs run sequentially on the same compute queue. Keep
     // descriptors/uniforms per output, but share the intermediate images.
     // Compute dependencies order the previous readers and writers.
@@ -723,11 +815,11 @@ ContextImpl::ContextImpl(const InstanceImpl& instance,
         }
 
         pass.generate.emplace(ctx, i,
-            sourceImages,
+            modelSourceImages,
             pass.gamma1.at(6).getImage(),
             pass.delta1.at(2).getImage0(),
             pass.delta1.at(2).getImage1(),
-            destImages.at(i)
+            modelDestImages.at(i)
         );
     }
 
@@ -737,6 +829,14 @@ ContextImpl::ContextImpl(const InstanceImpl& instance,
     images.push_back(this->sourceImages.second.handle());
     for (const auto& image : this->destImages)
         images.push_back(image.handle());
+    if (this->workingSourceImages) {
+        images.push_back(this->workingSourceImages->first.handle());
+        images.push_back(this->workingSourceImages->second.handle());
+    }
+    if (this->workingDestImages) {
+        for (const auto& image : *this->workingDestImages)
+            images.push_back(image.handle());
+    }
     mipmaps.prepare(images);
     for (size_t i = 0; i < 7; ++i) {
         alpha0.at(i).prepare(images);
@@ -792,7 +892,7 @@ ContextImpl::ContextImpl(const InstanceImpl& instance,
         this->constantBufferTimestamps.push_back(
             backend::getDefaultConstantBuffer(
                 i, this->ctx.constantBuffers.size(),
-                this->ctx.flow
+                this->ctx.hdr, this->ctx.flow
             ).timestamp
         );
     }
@@ -967,9 +1067,10 @@ FrameProfile Context::readFrameProfile() const {
     auto result = state.timings;
     result.backendFrameIndex = this->fidx - 1;
     result.gpuPrepassUs = state.queries.elapsedMicroseconds(ticks.at(0), ticks.at(2));
-    result.gpuInputConversionUs = 0.0;
+    result.gpuInputConversionUs = this->sourceColorConversion
+        ? state.queries.elapsedMicroseconds(ticks.at(0), ticks.at(1)) : 0.0;
     result.gpuMotionEstimationUs = state.queries.elapsedMicroseconds(
-        ticks.at(0), ticks.at(2));
+        ticks.at(this->sourceColorConversion ? 1 : 0), ticks.at(2));
     result.gpuGeneratedUs.reserve(state.generatedCount);
     result.gpuSynthesisUs.reserve(state.generatedCount);
     result.gpuOutputConversionUs.reserve(state.generatedCount);
@@ -977,8 +1078,9 @@ FrameProfile Context::readFrameProfile() const {
         const size_t begin = 4 + i * 3;
         result.gpuGeneratedUs.push_back(state.queries.elapsedMicroseconds(ticks.at(begin), ticks.at(begin + 2)));
         result.gpuSynthesisUs.push_back(state.queries.elapsedMicroseconds(
-            ticks.at(begin), ticks.at(begin + 2)));
-        result.gpuOutputConversionUs.push_back(0.0);
+            ticks.at(begin), ticks.at(begin + (this->destColorConversion ? 1 : 2))));
+        result.gpuOutputConversionUs.push_back(this->destColorConversion
+            ? state.queries.elapsedMicroseconds(ticks.at(begin + 1), ticks.at(begin + 2)) : 0.0);
     }
     result.gpuSpanUs = state.queries.elapsedMicroseconds(ticks.front(), ticks.at(3));
     result.timestampValidBits = state.queries.timestampValidBits();
@@ -1103,6 +1205,9 @@ const vk::CommandBuffer& Context::recordPrepass() {
             VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
             0, 0, nullptr, 0, nullptr, static_cast<uint32_t>(sourceAcquires.size()), sourceAcquires.data());
 
+        // Recorded once per phase, never per frame: the SDR recording has no stage here.
+        if (this->sourceColorConversion)
+            this->sourceColorConversion->render(ctx.vk, cmdbuf, this->fidx);
         if (this->profiling)
             this->profiling->queries.write(cmdbuf.handle(), VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 1);
         this->mipmaps.render(ctx.vk, cmdbuf, this->fidx);
@@ -1233,7 +1338,7 @@ void Context::scheduleFrames(std::span<const float> timestamps) {
                 this->constantBufferTimestamps, i, timestamps[i],
                 [this, i](const float timestamp) {
                     auto constants = backend::getDefaultConstantBuffer(
-                        0, 1, this->ctx.flow
+                        0, 1, this->ctx.hdr, this->ctx.flow
                     );
                     constants.timestamp = timestamp;
                     this->ctx.constantBuffers.at(i).write(
@@ -1284,6 +1389,8 @@ void Context::scheduleFrames(std::span<const float> timestamps) {
             pass.generate->render(ctx.vk, cmdbuf, this->fidx);
             if (this->profiling)
                 this->profiling->queries.write(cmdbuf.handle(), VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, static_cast<uint32_t>(5 + i * 3));
+            if (this->destColorConversion)
+                this->destColorConversion->render(ctx.vk, cmdbuf, i);
 
             vk::releaseExternalImage(ctx.vk, cmdbuf.handle(), this->destImages.at(i).handle(),
                 VK_ACCESS_SHADER_WRITE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);

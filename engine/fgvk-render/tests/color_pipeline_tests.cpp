@@ -32,9 +32,52 @@ int main() {
             pipeline.encoding == backend::FrameEncoding::SdrHighPrecision &&
             pipeline.exchangeFormat == VK_FORMAT_R16G16B16A16_SFLOAT, "10/16-bit SDR must keep its precision");
     }
+
+    // HDR10/PQ: packed 10-bit formats only. The transport is float RGBA16F and
+    // the model runs in linear light; the same packed pair with sRGB stays SDR.
+    for (const auto format : {VK_FORMAT_A2B10G10R10_UNORM_PACK32,
+            VK_FORMAT_A2R10G10B10_UNORM_PACK32}) {
+        const auto hdr10 = classifySwapchainColor(format, VK_COLOR_SPACE_HDR10_ST2084_EXT);
+        expect(hdr10.generationSupported, "HDR10/PQ on a 10-bit format must support generation");
+        expect(hdr10.encoding == backend::FrameEncoding::Hdr10Pq,
+            "HDR10/PQ must select the PQ conversion encoding");
+        expect(hdr10.exchangeFormat == VK_FORMAT_R16G16B16A16_SFLOAT,
+            "HDR10/PQ must use the float RGBA16F exchange format");
+        expect(hdr10.hdr && hdr10.name == "hdr10-pq",
+            "HDR10/PQ must be classified as HDR with its diagnostic name");
+        expect(transportBytesPerPixel(hdr10.encoding) == 8,
+            "HDR10/PQ transport must be 8 bytes per pixel");
+    }
+    for (const auto format : {VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_SRGB,
+            VK_FORMAT_R16G16B16A16_SFLOAT, VK_FORMAT_UNDEFINED}) {
+        const auto pipeline = classifySwapchainColor(format, VK_COLOR_SPACE_HDR10_ST2084_EXT);
+        expect(!pipeline.generationSupported && pipeline.hdr &&
+            pipeline.name == "unsupported-hdr10-format" &&
+            pipeline.reason == "HDR10/PQ requires an A2R10G10B10 or A2B10G10R10 swapchain",
+            "HDR10/PQ on another format must pass through");
+    }
+
+    // Linear scRGB: float swapchains are already linear and need no PQ stages.
+    const auto scrgb = classifySwapchainColor(VK_FORMAT_R16G16B16A16_SFLOAT,
+        VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT);
+    expect(scrgb.generationSupported && scrgb.hdr &&
+        scrgb.encoding == backend::FrameEncoding::ScRgbLinear &&
+        scrgb.exchangeFormat == VK_FORMAT_R16G16B16A16_SFLOAT &&
+        scrgb.name == "scrgb-linear",
+        "linear scRGB on R16G16B16A16_SFLOAT must use the scRGB model path");
+    expect(transportBytesPerPixel(scrgb.encoding) == 8,
+        "linear scRGB transport must be 8 bytes per pixel");
+    for (const auto format : {VK_FORMAT_A2B10G10R10_UNORM_PACK32,
+            VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_UNDEFINED}) {
+        const auto pipeline = classifySwapchainColor(format, VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT);
+        expect(!pipeline.generationSupported && pipeline.hdr &&
+            pipeline.name == "unsupported-scrgb-format" &&
+            pipeline.reason == "linear scRGB requires an R16G16B16A16_SFLOAT swapchain",
+            "linear scRGB on another format must pass through");
+    }
+
+    // Colour spaces with no validated model stay real-frame passthrough.
     const struct ColorCase { VkColorSpaceKHR space; bool hdr; } colors[]{
-        {VK_COLOR_SPACE_HDR10_ST2084_EXT, true},
-        {VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT, true},
         {VK_COLOR_SPACE_HDR10_HLG_EXT, true},
         {VK_COLOR_SPACE_DOLBYVISION_EXT, true},
         {VK_COLOR_SPACE_EXTENDED_SRGB_NONLINEAR_EXT, true},

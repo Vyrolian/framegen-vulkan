@@ -3,6 +3,7 @@
 #include "shader_registry.hpp"
 #include "spirv_image_format.hpp"
 #include "spirv_output_split.hpp"
+#include "../shaders/color_conversion_spirv.hpp"
 #include "model_resource_validation.hpp"
 #include "lsfg_shader_set.hpp"
 #include "fgvk-common/helpers/errors.hpp"
@@ -114,6 +115,12 @@ ShaderRegistry backend::buildShaderRegistry(const vk::Vulkan& vk, bool fp16,
             shaderSpec(256, PERF).contract.storageImages,
             shaderSpec(256, PERF).contract.uniformBuffers,
             shaderSpec(256, PERF).contract.samplers),
+        .hdr10_pq_to_scrgb = vk::Shader(
+            vk, embedded::hdr10PqToScRgbSpirv, 1, 1, 0, 1
+        ),
+        .scrgb_to_hdr10_pq = vk::Shader(
+            vk, embedded::scRgbToHdr10PqSpirv, 1, 1, 0, 1
+        ),
         .quality = {
             .alpha = {
                 SHADER(267), SHADER(268), SHADER(269), SHADER(270)

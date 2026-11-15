@@ -110,7 +110,7 @@ The report's repeated `--presentation-window START:END` comparisons additionally
 
 Passing report tests cannot prove frame-generation correctness.
 
-`color-pipeline` verifies SDR format precision and passthrough for non-sRGB colour spaces. Real hardware is required to qualify display output and cadence.
+`color-pipeline` verifies SDR format precision, HDR10/PQ and linear scRGB classification, and passthrough for unvalidated colour spaces and formats. Real hardware is required to qualify display output, cadence and HDR colour.
 
 `external-fd-ownership` checks transfer-only images without views and preserves export/cleanup and views for other usages. Its recorded-copy fixture checks that external uploads discard old contents and release after the copy, readback acquires before the copy, and internal images retain local ownership. It does not simulate a driver or prove cross-instance visibility; shared-image changes also need synchronization, temporal reuse and output-repeatability evidence. `descriptor-pool-capacity` covers sparse/empty layouts, exact capacity, destruction and creation failure. Both run in the portable sanitizer lane.
 
