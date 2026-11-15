@@ -11,6 +11,8 @@ set(LAYER_SOURCES
     "src/present_diagnostics.cpp"
     ${PRESENT_RECORD_SOURCES}
     "src/wayland_presentation_feedback.cpp"
+    "src/wayland_output_refresh.cpp"
+    "src/x11_refresh.cpp"
     "src/swapchain/create.cpp"
     "src/swapchain/internal_images.cpp"
     "src/swapchain/present_marker.cpp"
@@ -350,6 +352,13 @@ if(BUILD_TESTING)
     target_include_directories(fgvk-uncapped-auto-cap-tests PRIVATE "src")
     add_test(NAME uncapped-auto-cap COMMAND fgvk-uncapped-auto-cap-tests)
     fgvk_register_portable_policy_test(fgvk-uncapped-auto-cap-tests uncapped-auto-cap)
+
+    # X5 refresh: the RandR mode rate, CRTC choice and Wayland output name match. The X and Wayland
+    # I/O has no seam and is not tested here.
+    add_executable(fgvk-x11-refresh-policy-tests "tests/x11_refresh_policy_tests.cpp")
+    target_include_directories(fgvk-x11-refresh-policy-tests PRIVATE "src")
+    add_test(NAME x11-refresh-policy COMMAND fgvk-x11-refresh-policy-tests)
+    fgvk_register_portable_policy_test(fgvk-x11-refresh-policy-tests x11-refresh-policy)
 
     add_executable(fgvk-present-feedback-probe-tests "tests/present_feedback_probe_tests.cpp")
     target_include_directories(fgvk-present-feedback-probe-tests PRIVATE "src")

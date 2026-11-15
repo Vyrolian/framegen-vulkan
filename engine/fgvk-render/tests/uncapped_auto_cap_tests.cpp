@@ -29,6 +29,17 @@ void refreshFromTiming() {
         "a 0.5 Hz refresh was accepted");
 }
 
+void refreshRangeCheck() {
+    // The range check every refresh source passes (timing, X11 RandR, Wayland output).
+    expect(UncappedAutoCap::refreshHzInRange(59.94) == 59.94, "an in-range 59.94 Hz rate was changed");
+    expect(UncappedAutoCap::refreshHzInRange(20.0) == 20.0, "20 Hz was rejected");
+    expect(UncappedAutoCap::refreshHzInRange(1000.0) == 1000.0, "1000 Hz was rejected");
+    expect(UncappedAutoCap::refreshHzInRange(19.99) == 0.0, "19.99 Hz was accepted");
+    expect(UncappedAutoCap::refreshHzInRange(1000.01) == 0.0, "1000.01 Hz was accepted");
+    expect(UncappedAutoCap::refreshHzInRange(std::numeric_limits<double>::quiet_NaN()) == 0.0,
+        "a NaN refresh rate was accepted");
+}
+
 void refreshQueryCadence() {
     // Rate unknown: the first 64 presents query, then every 8th present does.
     expect(UncappedAutoCap::refreshQueryDue(0, false), "an unknown rate was not queried at present 0");
@@ -51,6 +62,7 @@ void refreshQueryCadence() {
 
 int main() {
     refreshFromTiming();
+    refreshRangeCheck();
     refreshQueryCadence();
     std::cout << "uncapped auto cap tests passed\n";
     return 0;

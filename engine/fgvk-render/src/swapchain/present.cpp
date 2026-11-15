@@ -12,6 +12,7 @@
 #include "present_diagnostics.hpp"
 #include "pnext_chain.hpp"
 #include "wayland_presentation_feedback.hpp"
+#include "x11_refresh.hpp"
 
 #include <algorithm>
 #include <array>
@@ -511,6 +512,18 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
             }
         }
 #endif
+        // X5: an X11 surface whose owned and application timing gave no rate takes the rate its detached
+        // creation-time query has published (x11_refresh.cpp), through the same range check. The hz load
+        // is acquire, so the source stored before it is visible; zero means not yet known.
+        const double x11RefreshHz = this->x11Refresh
+            ? this->x11Refresh->hz.load(std::memory_order_acquire) : 0.0;
+        if (refreshHz <= 0 && x11RefreshHz > 0) {
+            refreshHz = UncappedAutoCap::refreshHzInRange(x11RefreshHz);
+            if (refreshHz > 0) {
+                branch = "x11-randr";
+                refreshSource = this->x11Refresh->source.load(std::memory_order_relaxed);
+            }
+        }
         if (refreshHz <= 0)
             refreshSource = "none";
         const bool feedbackConfirmed = this->presentFeedback.confirmed();

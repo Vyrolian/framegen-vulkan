@@ -83,8 +83,9 @@ namespace {
             uint32_t familyIndex{UINT32_MAX};
         };
         std::unordered_map<VkQueue, QueueIdentity> queueIdentities;
-        std::mutex surfaceStateMutex; // guards surfaceOrigins and waylandPresentation
+        std::mutex surfaceStateMutex; // guards surfaceOrigins, surfaceX11Windows and waylandPresentation
         std::unordered_map<VkSurfaceKHR, SurfaceOrigin> surfaceOrigins;
+        std::unordered_map<VkSurfaceKHR, uint64_t> surfaceX11Windows; // X5: window XID of Xlib/XCB surfaces
         std::unordered_map<VkSurfaceKHR, std::shared_ptr<WaylandPresentationFeedback>> waylandPresentation;
         std::unordered_map<VkSwapchainKHR, ls::R<vk::Vulkan>> swapchains;
         std::unordered_map<VkSwapchainKHR, SwapchainInfo> swapchainInfos;
@@ -1519,13 +1520,41 @@ namespace {
 }
 
 namespace {
+    // Layout mirrors of VkXcbSurfaceCreateInfoKHR (vulkan_xcb.h) and VkXlibSurfaceCreateInfoKHR
+    // (vulkan_xlib.h). The layer keeps the X create-info types opaque, so only the window XID is read,
+    // after the lower driver accepted the create info. Both structs end with the window.
+    struct XcbSurfaceCreateInfoLayout {
+        VkStructureType sType;
+        const void* pNext;
+        VkFlags flags;
+        void* connection;
+        uint32_t window;
+    };
+    struct XlibSurfaceCreateInfoLayout {
+        VkStructureType sType;
+        const void* pNext;
+        VkFlags flags;
+        void* display;
+        unsigned long window;
+    };
+
+    template <typename Layout, typename CreateInfo>
+    [[nodiscard]] uint64_t x11WindowOf(const CreateInfo* createInfo) {
+        return createInfo
+            ? static_cast<uint64_t>(reinterpret_cast<const Layout*>(createInfo)->window)
+            : 0;
+    }
+
     void recordSurfaceOrigin(
             const VkSurfaceKHR surface,
-            const SurfaceOrigin origin) {
+            const SurfaceOrigin origin,
+            const uint64_t x11Window = 0) {
         if (!instance_info || surface == VK_NULL_HANDLE)
             return;
         const std::lock_guard lock(instance_info->surfaceStateMutex);
         instance_info->surfaceOrigins.emplace(surface, origin);
+        if (x11Window != 0)
+            instance_info->surfaceX11Windows.insert_or_assign(surface, x11Window);
     }
 
     [[nodiscard]] SurfaceOrigin surfaceOrigin(
@@ -1536,6 +1565,15 @@ namespace {
         const auto origin = instance_info->surfaceOrigins.find(surface);
         return origin == instance_info->surfaceOrigins.end()
             ? SurfaceOrigin::Unknown : origin->second;
+    }
+
+    [[nodiscard]] uint64_t surfaceX11Window(
+            const VkSurfaceKHR surface) {
+        if (!instance_info)
+            return 0;
+        const std::lock_guard lock(instance_info->surfaceStateMutex);
+        const auto window = instance_info->surfaceX11Windows.find(surface);
+        return window == instance_info->surfaceX11Windows.end() ? 0 : window->second;
     }
 
     void myvkDestroySurfaceKHR(
@@ -1550,6 +1588,7 @@ namespace {
             {
                 const std::lock_guard lock(instance_info->surfaceStateMutex);
                 instance_info->surfaceOrigins.erase(surface);
+                instance_info->surfaceX11Windows.erase(surface);
                 if (const auto feedback = instance_info->waylandPresentation.find(surface);
                         feedback != instance_info->waylandPresentation.end()) {
                     feedback->second->stop();
@@ -1584,7 +1623,8 @@ namespace {
             const VkAllocationCallbacks* alloc,
             VkSurfaceKHR* surface,
             const char* entrypoint,
-            const SurfaceOrigin origin) {
+            const SurfaceOrigin origin,
+            const uint64_t x11Window = 0) {
         const auto lower = reinterpret_cast<CreateSurface>(
             layer_info->GetInstanceProcAddr(instance, entrypoint)
         );
@@ -1594,7 +1634,7 @@ namespace {
         present_diagnostics::traceVulkanSurface(layerRoleName, entrypoint, instance,
             result == VK_SUCCESS && surface ? *surface : VK_NULL_HANDLE, result);
         if (result == VK_SUCCESS && surface)
-            recordSurfaceOrigin(*surface, origin);
+            recordSurfaceOrigin(*surface, origin, x11Window);
         return result;
     }
 
@@ -1631,7 +1671,7 @@ namespace {
         return createSurfaceAndRecord<
             CreateXcbSurface
         >(instance, createInfo, alloc, surface, "vkCreateXcbSurfaceKHR",
-            SurfaceOrigin::Xcb);
+            SurfaceOrigin::Xcb, x11WindowOf<XcbSurfaceCreateInfoLayout>(createInfo));
     }
 
     VkResult myvkCreateXlibSurfaceKHR(
@@ -1642,7 +1682,7 @@ namespace {
         return createSurfaceAndRecord<
             CreateXlibSurface
         >(instance, createInfo, alloc, surface, "vkCreateXlibSurfaceKHR",
-            SurfaceOrigin::Xlib);
+            SurfaceOrigin::Xlib, x11WindowOf<XlibSurfaceCreateInfoLayout>(createInfo));
     }
 
     InternalSwapchainImages* internalImagesFor(const VkSwapchainKHR swapchain) {
@@ -1872,6 +1912,7 @@ namespace {
                 .images = std::move(swapchainImages),
                 .surface = info->surface,
                 .surfaceOrigin = surfaceOrigin(info->surface),
+                .x11Window = surfaceX11Window(info->surface),
                 .waylandPresentation = std::move(waylandPresentation),
                 .deferredPresentQueue = instance_info->deferredPresentQueues.contains(device)
                     ? instance_info->deferredPresentQueues.at(device) : nullptr,

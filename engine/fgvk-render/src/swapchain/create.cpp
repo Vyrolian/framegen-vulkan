@@ -5,6 +5,7 @@
 #include "swapchain/retirement.hpp"
 #include "layer_role.hpp"
 #include "present_diagnostics.hpp"
+#include "x11_refresh.hpp"
 #include "fgvk-common/helpers/errors.hpp"
 #include "fgvk-common/helpers/file_descriptors.hpp"
 
@@ -134,6 +135,14 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance* backend,
                          "a natural swapchain boundary: "
                       << error.what() << '\n';
         }
+    }
+
+    // X5: an X11 surface has no present timing of its own on most drivers, so its monitor's refresh
+    // is queried once per swapchain on a detached thread. The creating thread never waits for it, and
+    // the present path reads the result when it arrives.
+    if (this->info.surfaceOrigin == SurfaceOrigin::Xcb ||
+            this->info.surfaceOrigin == SurfaceOrigin::Xlib) {
+        this->x11Refresh = startX11WindowRefreshQuery(this->info.x11Window);
     }
 
     const bool initialFrameGenerationEnabled = effectiveFrameGenerationEnabled(

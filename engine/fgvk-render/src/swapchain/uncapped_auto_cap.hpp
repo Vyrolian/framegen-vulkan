@@ -11,6 +11,11 @@ namespace fgvk::layer {
 // and never moves with GPU load.
 class UncappedAutoCap {
 public:
+    // Every refresh source (timing, X11 RandR, Wayland output) passes this range; outside it is unknown.
+    [[nodiscard]] static double refreshHzInRange(double hz) {
+        return hz >= 20.0 && hz <= 1000.0 ? hz : 0.0;
+    }
+
     // VK_EXT_present_timing reports nanoseconds; unknown values are all ones.
     [[nodiscard]] static double refreshHzFromTiming(uint64_t refreshDuration, uint64_t refreshInterval) {
         constexpr uint64_t unknown = std::numeric_limits<uint64_t>::max();
@@ -19,7 +24,7 @@ public:
             hz = 1e9 / static_cast<double>(refreshDuration);
         else if (refreshInterval > 0 && refreshInterval < unknown)
             hz = 1e9 / static_cast<double>(refreshInterval);
-        return hz >= 20.0 && hz <= 1000.0 ? hz : 0.0;
+        return refreshHzInRange(hz);
     }
 
     // Whether this present queries the driver's refresh. Until a rate is known

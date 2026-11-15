@@ -46,6 +46,7 @@ namespace fgvk::layer {
 
     class WaylandPresentationFeedback;
     struct InternalPresentImage;
+    struct X11RefreshCell;
 
     /// WSI family that created the application's surface. Diagnostics report it
     /// in the pacing profile.
@@ -76,6 +77,8 @@ namespace fgvk::layer {
         std::vector<VkImage> images;
         VkSurfaceKHR surface;
         SurfaceOrigin surfaceOrigin{SurfaceOrigin::Unknown};
+        // X11 window XID of an Xlib or XCB surface (0 otherwise), read for the X5 refresh query.
+        uint64_t x11Window{0};
         std::shared_ptr<WaylandPresentationFeedback> waylandPresentation;
         std::shared_ptr<DeferredPresentQueue> deferredPresentQueue;
         bool ownedPresentTiming{false};
@@ -517,6 +520,10 @@ namespace fgvk::layer {
         // True when the previous application present used an automatic cap value as baseFpsCap.
         bool uncappedAutoCapApplied{false};
         double applicationRefreshHz{0.0};
+        // X5: refresh of the monitor under an X11 surface. A detached query started at creation fills
+        // the cell (x11_refresh.hpp). The present path reads it only when owned and application timing
+        // gave no rate. Null for other surfaces.
+        std::shared_ptr<X11RefreshCell> x11Refresh;
         uint64_t refreshQuerySource{0};
         int32_t refreshQueryLastResult{INT32_MIN};
         uint64_t refreshQueryLastDuration{UINT64_MAX - 1};
