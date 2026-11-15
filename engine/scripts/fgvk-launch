@@ -170,15 +170,15 @@ case "$1" in
         ;;
 esac
 
-# Gamescope sessions are not supported unless FGVK_GAMESCOPE=1 opts in. Decide
-# before any environment change so the command starts with its environment
+# Gamescope sessions run frame generation by default; FGVK_GAMESCOPE=0 opts out.
+# Decide before any environment change so the command starts with its environment
 # exactly as launched. The renderer makes its own check and stays inactive
-# unless the same opt-in is present.
+# under the same opt-out.
 if [[ -n "${GAMESCOPE_WAYLAND_DISPLAY:-}" &&
         ( -z "${WAYLAND_DISPLAY:-}" ||
           "${WAYLAND_DISPLAY}" == "${GAMESCOPE_WAYLAND_DISPLAY}" ) &&
-        "${FGVK_GAMESCOPE:-}" != "1" ]]; then
-    echo "framegen-vulkan: Gamescope sessions are not supported; starting without frame generation" >&2
+        "${FGVK_GAMESCOPE:-}" == "0" ]]; then
+    echo "framegen-vulkan: Gamescope session: starting without frame generation (FGVK_GAMESCOPE=0)" >&2
     exec "$@"
 fi
 

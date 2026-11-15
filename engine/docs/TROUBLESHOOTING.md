@@ -41,7 +41,7 @@ fgvk-cli validate --config ~/.config/framegen-vulkan/conf.toml
 
 ## Gamescope sessions
 
-Gamescope sessions are unsupported by default: `fgvk` starts the game without frame generation. `FGVK_GAMESCOPE=1` is an experimental opt-in that lets frame generation run in a Gamescope session; it is for testing only and is not a supported setup. Use [supported graphics integrations](LAYER-CHAINING.md) for other setups.
+Gamescope sessions run frame generation by default. This path is experimental and not a supported setup. HDR under Gamescope is not recovered yet: Gamescope's WSI gives framegen-vulkan an sRGB swapchain, so HDR frames are blended as SDR. `FGVK_GAMESCOPE=0` starts the game without frame generation. Use [supported graphics integrations](LAYER-CHAINING.md) for other setups.
 
 ## Collect diagnostics
 

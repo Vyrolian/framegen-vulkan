@@ -28,13 +28,14 @@ int main() {
             !gamescopeSessionBlocked(false, "1") &&
             !gamescopeSessionBlocked(false, "0"),
         "a desktop session must never be blocked by the Gamescope gate");
-    expect(gamescopeSessionBlocked(true, nullptr) &&
-            gamescopeSessionBlocked(true, ""),
-        "a Gamescope session without the opt-in must stay blocked");
+    expect(!gamescopeSessionBlocked(true, nullptr),
+        "a Gamescope session without the opt-out must run frame generation");
     expect(!gamescopeSessionBlocked(true, "1"),
         "FGVK_GAMESCOPE=1 must let a Gamescope session through");
-    for (const char* value : {"0", "true", "yes", "on", "01", "1 ", " 1"}) {
-        expect(gamescopeSessionBlocked(true, value),
-            "only the exact value 1 may opt in to a Gamescope session");
+    expect(gamescopeSessionBlocked(true, "0"),
+        "FGVK_GAMESCOPE=0 must turn the layer off in a Gamescope session");
+    for (const char* value : {"", "false", "no", "00", "0 ", " 0"}) {
+        expect(!gamescopeSessionBlocked(true, value),
+            "only the exact value 0 may turn the layer off in a Gamescope session");
     }
 }

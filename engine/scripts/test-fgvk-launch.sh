@@ -25,7 +25,7 @@ export XDG_CONFIG_HOME="$test_config_home"
 overlay_enabled_config="$test_root/overlay-enabled.conf"
 printf '%s\n' 'version=1' 'disable_steam_overlay=0' > "$overlay_enabled_config"
 # Gamescope sessions are detected from this variable alone. Clear it so every
-# case below is a desktop launch; the early-exit case sets its own. The opt-in
+# case below is a desktop launch; the Gamescope cases set their own. The opt-out
 # is cleared too, so only the cases that set it see it.
 unset GAMESCOPE_WAYLAND_DISPLAY FGVK_GAMESCOPE
 expected_layer_path="$install_prefix/share/framegen-vulkan/vulkan/implicit_layer.d"
@@ -93,8 +93,8 @@ if [[ "$desktop_overlay_output" != "$expected_desktop_overlay" ]]; then
     fail "Desktop Steam overlay was not ordered after framegen-vulkan:\n$desktop_overlay_output"
 fi
 
-# A Gamescope session is not supported. The launcher must print one notice and
-# exec the command with its environment untouched, so no framegen-vulkan
+# FGVK_GAMESCOPE=0 is the Gamescope opt-out. The launcher must print one notice
+# and exec the command with its environment untouched, so no framegen-vulkan
 # setting, layer or preload change reaches the child.
 gamescope_stderr="$test_root/gamescope.stderr"
 gamescope_output="$(
@@ -102,6 +102,7 @@ gamescope_output="$(
     ENABLE_VK_LAYER_VALVE_steam_overlay_1=1 \
         GAMESCOPE_WAYLAND_DISPLAY=gamescope-0 \
         WAYLAND_DISPLAY=gamescope-0 \
+        FGVK_GAMESCOPE=0 \
         XDG_DATA_HOME="$test_data_home" \
         "$launcher" bash -c '
             printf "%s\n" \
@@ -117,13 +118,36 @@ expected_gamescope="$(printf 'unset\nunset\nunset\nunset\n1\n%s' "$overlay_enabl
 if [[ "$gamescope_output" != "$expected_gamescope" ]]; then
     fail "Gamescope session changed the launch environment:\n$gamescope_output"
 fi
-if [[ "$(cat "$gamescope_stderr")" != "framegen-vulkan: Gamescope sessions are not supported; starting without frame generation" ]]; then
+if [[ "$(cat "$gamescope_stderr")" != "framegen-vulkan: Gamescope session: starting without frame generation (FGVK_GAMESCOPE=0)" ]]; then
     fail "Gamescope early-exit notice was not printed exactly once:\n$(cat "$gamescope_stderr")"
 fi
 
-# FGVK_GAMESCOPE=1 is the experimental opt-in. The same Gamescope session then
-# takes the normal launch path with no launcher notice; only the exact value 1
-# opts in, and every other value keeps the early exit above.
+# A Gamescope session runs frame generation by default. With FGVK_GAMESCOPE
+# unset, the launcher takes the normal launch path with no launcher notice.
+gamescope_default_stderr="$test_root/gamescope-default.stderr"
+gamescope_default_output="$(
+    FGVK_LAUNCH_CONFIG="$overlay_enabled_config" \
+        GAMESCOPE_WAYLAND_DISPLAY=gamescope-0 \
+        WAYLAND_DISPLAY=gamescope-0 \
+        XDG_DATA_HOME="$test_data_home" \
+        "$launcher" bash -c '
+            printf "%s\n" \
+                "${ENABLE_FGVK:-unset}" \
+                "${DISABLE_LSFG:-unset}" \
+                "${FGVK_GAMESCOPE:-unset}" \
+                "${GAMESCOPE_WAYLAND_DISPLAY:-unset}" \
+                "${VK_IMPLICIT_LAYER_PATH:-unset}"
+        ' 2> "$gamescope_default_stderr"
+)" || fail "Gamescope default launch failed"
+expected_gamescope_default="$(printf '1\n1\nunset\ngamescope-0\n%s' "$expected_layer_path")"
+if [[ "$gamescope_default_output" != "$expected_gamescope_default" ]]; then
+    fail "Gamescope session without FGVK_GAMESCOPE did not reach the normal launch path:\n$gamescope_default_output"
+fi
+if [[ -s "$gamescope_default_stderr" ]]; then
+    fail "Gamescope default launch printed a launcher notice:\n$(cat "$gamescope_default_stderr")"
+fi
+
+# FGVK_GAMESCOPE=1 takes the same normal launch path as the default.
 gamescope_optin_stderr="$test_root/gamescope-optin.stderr"
 gamescope_optin_output="$(
     FGVK_LAUNCH_CONFIG="$overlay_enabled_config" \
@@ -147,20 +171,24 @@ fi
 if [[ -s "$gamescope_optin_stderr" ]]; then
     fail "Gamescope opt-in printed a launcher notice:\n$(cat "$gamescope_optin_stderr")"
 fi
-for gamescope_optin_value in 0 true yes ''; do
+
+# Only the exact value 0 opts out. Every other value keeps the normal launch path
+# with no launcher notice.
+gamescope_value_stderr="$test_root/gamescope-value.stderr"
+for gamescope_value in '' true yes 00; do
     gamescope_value_output="$(
-        FGVK_GAMESCOPE="$gamescope_optin_value" \
+        FGVK_GAMESCOPE="$gamescope_value" \
             GAMESCOPE_WAYLAND_DISPLAY=gamescope-0 \
             WAYLAND_DISPLAY=gamescope-0 \
             XDG_DATA_HOME="$test_data_home" \
             "$launcher" bash -c 'printf "%s\n" "${ENABLE_FGVK:-unset}"' \
-            2> "$gamescope_stderr"
-    )" || fail "Gamescope early exit failed for FGVK_GAMESCOPE='$gamescope_optin_value'"
-    if [[ "$gamescope_value_output" != "unset" ]]; then
-        fail "FGVK_GAMESCOPE='$gamescope_optin_value' opted in to a Gamescope session"
+            2> "$gamescope_value_stderr"
+    )" || fail "Gamescope launch failed for FGVK_GAMESCOPE='$gamescope_value'"
+    if [[ "$gamescope_value_output" != "1" ]]; then
+        fail "FGVK_GAMESCOPE='$gamescope_value' did not run frame generation in a Gamescope session"
     fi
-    if [[ "$(cat "$gamescope_stderr")" != "framegen-vulkan: Gamescope sessions are not supported; starting without frame generation" ]]; then
-        fail "FGVK_GAMESCOPE='$gamescope_optin_value' changed the early-exit notice:\n$(cat "$gamescope_stderr")"
+    if [[ -s "$gamescope_value_stderr" ]]; then
+        fail "FGVK_GAMESCOPE='$gamescope_value' printed a launcher notice:\n$(cat "$gamescope_value_stderr")"
     fi
 done
 

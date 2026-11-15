@@ -232,12 +232,11 @@ Root::Root() {
     const bool gamescopeSession = gamescopeSessionDetected();
     this->gamescopeSessionAtStartup = gamescopeSession;
     if (gamescopeSessionBlocked(gamescopeSession, std::getenv("FGVK_GAMESCOPE"))) {
-        std::cerr << "framegen-vulkan: Gamescope sessions are not supported; "
-                     "the layer stays inactive\n";
+        std::cerr << "framegen-vulkan: Gamescope session: frame generation off (FGVK_GAMESCOPE=0)\n";
         return;
     }
     if (gamescopeSession) {
-        std::cerr << "framegen-vulkan: gamescope session: opt-in active gamescope_wsi="
+        std::cerr << "framegen-vulkan: gamescope session: active (experimental) gamescope_wsi="
                   << (environmentFlagEnabled(std::getenv("ENABLE_GAMESCOPE_WSI")) ? 1 : 0)
                   << '\n';
     }

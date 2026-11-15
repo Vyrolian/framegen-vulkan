@@ -9,13 +9,12 @@ namespace fgvk::layer {
     inline constexpr std::string_view layerRoleName = "frame-generation";
     inline constexpr std::string_view layerIdentity = "VK_LAYER_FGVK_render";
 
-    /// Gamescope sessions are outside the supported environments, so the layer
-    /// stays inactive in one unless FGVK_GAMESCOPE is exactly "1". That value is
-    /// the experimental opt-in for observing Gamescope's WSI path.
+    /// Gamescope sessions run frame generation by default. They are experimental,
+    /// so the layer stays inactive in one only when FGVK_GAMESCOPE is exactly "0".
     [[nodiscard]] inline bool gamescopeSessionBlocked(const bool sessionDetected,
             const char* fgvkGamescope) noexcept {
-        return sessionDetected &&
-            !(fgvkGamescope && std::string_view(fgvkGamescope) == "1");
+        return sessionDetected && fgvkGamescope &&
+            std::string_view(fgvkGamescope) == "0";
     }
 
 }
