@@ -91,6 +91,8 @@ VkResult Swapchain::completeDeferredPresent(const uint64_t timeoutNs, const bool
                 present_diagnostics::logPacingSkip(this->diagnosticsState.contextId,
                     completion.source, reason, call.scheduled, call.started);
             }
+            if (completion.count && !completion.readinessMiss && completion.justInTime)
+                this->pacingProfile->justInTimeBatch(completion.batchPhaseHold);
             if (completion.count && completion.calls[0].lateReadiness)
                 this->pacingProfile->lateReadinessBatch();
             this->pacingProfile->generatedCompressedPairs(completion.compressedGeneratedPairs());

@@ -2,6 +2,7 @@
 #pragma once
 
 #include "generated_frame_plan.hpp"
+#include "swapchain/batch_phase.hpp"
 #include "swapchain/output_margin.hpp"
 #include "swapchain/present_marker.hpp"
 #include "swapchain/create_policy.hpp"
@@ -334,6 +335,9 @@ public:
         // The batch started at its own readiness (Readiness::justInTime). Its readiness shift is
         // not carried into the planned phase of the next batch.
         bool justInTime{};
+        // Diagnostics only: the batch's start minus its readiness, from the phase lock. Zero for
+        // a batch that did not start just in time and for a readiness miss.
+        Clock::duration batchPhaseHold{};
         // Presented generated outputs whose following real output in the same batch
         // started less than outputInterval/2 after the generated start.
         [[nodiscard]] size_t compressedGeneratedPairs() const {
@@ -376,9 +380,10 @@ public:
         // are skipped only for readiness, stopping, or no lower image at the end of
         // their give-up window. Late readiness gets one bounded extension.
         bool overlap{};
-        // low_latency, released batches only: the first output starts at the batch's own
-        // readiness. Only the previous real output's start plus a quarter interval can hold it
-        // later (see run()). The chain floor from the previous batch's planned phase is not applied.
+        // low_latency, released batches only: the first output starts at a phase-locked time just
+        // after the batch's readiness (BatchPhaseLock). Only the previous real output's start plus a
+        // quarter interval can hold it later (see run()). The chain floor from the previous batch's
+        // planned phase is not applied.
         bool justInTime{};
         Clock::duration outputInterval{};
         // Diagnostics only: limiter arrival of the batch. Set only with the pacing profile.
@@ -1007,6 +1012,9 @@ private:
     bool stopping{};
     // W2, FGVK_REAL_OFFSET_US=auto: worker thread only; the cursor is used under queue->mutex.
     OutputOffsetController outputOffsetController;
+    // L3, low_latency: worker thread only, like outputOffsetController. The phase of consecutive
+    // just-in-time batches.
+    BatchPhaseLock batchPhase;
     uint64_t markerCursor{};
     // Caller holds queue->mutex, right after a worker present was marked.
     void observeOutputOffsetLocked(const uint64_t context) noexcept {
@@ -1386,6 +1394,8 @@ private:
         Clock::duration readinessShift{};
         Clock::time_point readyAt{};
         Clock::duration slack{};
+        // L3: a just-in-time batch's start minus readyAt (diagnostics only).
+        Clock::duration batchPhaseHold{};
         // Shift from the batch's first output to its final deadline. Later
         // outputs of the same batch keep their requested spacing from it.
         Clock::duration batchShift{};
@@ -1412,6 +1422,7 @@ private:
             if (first && (lastBatchFinished != Clock::time_point{} &&
                     Clock::now() - lastBatchFinished > std::chrono::milliseconds{250})) {
                 outputOffsetController.forget();
+                batchPhase.reset();
             }
             const auto ready = batch.readiness;
             const size_t limit = batch.limit;
@@ -1478,6 +1489,9 @@ private:
                 readinessShift = {};
                 readyAt = {};
                 slack = {};
+                batchPhaseHold = {};
+                // L3: only consecutive just-in-time batches share a phase.
+                if (!ready.justInTime) batchPhase.reset();
                 if (!ready.overlap) {
                     outputOffsetController.forget();
                 }
@@ -1521,15 +1535,27 @@ private:
                         }
                     }
                     readinessMiss = readinessResult != VK_SUCCESS;
-                    if (!readinessMiss) {
+                    if (readinessMiss) {
+                        batchPhase.reset();
+                    } else {
                         readyAt = Clock::now();
                         slack = unmovedReady - readyAt;
-                        // L2: a just-in-time batch starts at its readiness. Only the quarter-interval
-                        // guard after the previous real output's actual start can hold it later.
-                        // batchShift below carries that hold to the batch's later outputs.
-                        const auto start = ready.justInTime && havePrevious
-                            ? std::max(readyAt, previousStarted + ready.outputInterval / 4)
-                            : readyAt;
+                        // L3: a just-in-time batch starts at its phase-locked time after its readiness
+                        // (batch_phase.hpp). Only the quarter-interval guard after the previous real
+                        // output's actual start can hold it later, and the lock then follows that start.
+                        // batchShift below carries the start to the batch's later outputs.
+                        auto start = readyAt;
+                        if (ready.justInTime) {
+                            start = batchPhase.start(readyAt, ready.outputInterval * static_cast<int64_t>(limit));
+                            if (havePrevious) {
+                                const auto guard = previousStarted + ready.outputInterval / 4;
+                                if (guard > start) {
+                                    start = guard;
+                                    batchPhase.forceStart(start);
+                                }
+                            }
+                        }
+                        batchPhaseHold = start - readyAt;
                         readinessShift = std::max(Clock::duration{}, start - unmovedReady);
                         unmovedReady += readinessShift;
                         deadline = std::max(deadline, start);
@@ -1837,6 +1863,7 @@ private:
             batch.aggregate.source = ready.source;
             batch.aggregate.outputInterval = ready.outputInterval;
             batch.aggregate.justInTime = ready.justInTime;
+            batch.aggregate.batchPhaseHold = batchPhaseHold;
             batch.aggregate.readinessShift = readinessShift;
             batch.aggregate.readyAt = readyAt;
             batch.aggregate.slack = slack;

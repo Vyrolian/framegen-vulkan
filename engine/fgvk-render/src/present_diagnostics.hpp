@@ -287,6 +287,8 @@ namespace fgvk::layer::present_diagnostics {
             uint32_t lowLatencyKinds{};
             // Released batches start at their own readiness (the setting, as for low_latency).
             bool justInTime{};
+            // L3: each just-in-time batch's start minus its readiness.
+            Samples batchPhaseHold;
         };
         static constexpr std::array<std::string_view, PresentModeSlotCount> presentModeSlotNames{
             "none", "immediate", "mailbox", "fifo", "fifo_relaxed", "fifo_latest_ready", "other"};
@@ -412,6 +414,8 @@ namespace fgvk::layer::present_diagnostics {
             ++window.workerBatches;
             window.workerReadinessMisses += readinessMiss;
         }
+        // L3: one just-in-time batch that became ready, and how far its phase-locked start came after that.
+        void justInTimeBatch(Clock::duration hold) { window.batchPhaseHold.add(hold); }
         void generatedSkipped(GeneratedSkip kind) { ++window.generatedSkips[kind]; }
         void lateReadinessBatch() { ++window.lateReadinessBatches; }
         void generatedCompressedPairs(size_t pairs) { window.generatedCompressed += pairs; }

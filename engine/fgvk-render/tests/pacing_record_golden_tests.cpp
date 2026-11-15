@@ -51,6 +51,7 @@ void profileScenario() {
     profile.gpuMicroseconds(PacingProfile::GpuSpan, 12000);
     profile.gpuMicroseconds(PacingProfile::GpuReadback, 20);
     profile.completedWorkerBatch(true);
+    profile.justInTimeBatch(2ms);
     profile.outputTiming(PacingProfile::ExtTiming, start + 10ms);
     profile.outputTiming(PacingProfile::ExtTiming, start + 25ms);
     profile.generatedSkipped(PacingProfile::SkipReadiness);

@@ -3686,30 +3686,29 @@ DeferredPresent::Clock::time_point chainedFloorAfter(const DeferredPresent::Comp
     const auto& last = previous.calls[previous.count - 1];
     return std::min(last.scheduled, last.started) + interval - interval / 16;
 }
-// L2 (low_latency): a released batch starts at its own readiness. Batch B becomes ready 21 ms after the
-// start, after batch A's real output (about 18 ms: its 10 ms readiness plus one interval). The chain would
-// hold B to A's planned phase plus 7.5 ms (about 25.5 ms); just-in-time starts it at its readiness.
+// L3 (low_latency): a released batch starts 0 to 4 ms after its own readiness, phase-locked to the batch
+// cadence (batch_phase.hpp). Batch A is ready 10 ms after the start and starts at 12 ms. Batch B becomes
+// ready one batch period after A's readiness (2 × 8 ms), the steady cadence, so the lock starts it 2 ms
+// after its readiness.
 void justInTimeBatchStartsAtItsReadiness() {
     const auto interval = 8ms;
-    const auto justInTime = releasedPair(true, 21ms);
+    const auto justInTime = releasedPair(true, 26ms);
     expect(releasedPairCompleted(justInTime), "just-in-time released pair did not complete");
-    const auto readyB = justInTime.start + 21ms;
+    const auto readyB = justInTime.start + 26ms;
     const auto& firstOfB = justInTime.second->calls[0];
-    expect(firstOfB.scheduled >= readyB && firstOfB.scheduled < readyB + 1ms,
-        "just-in-time batch did not start within 1 ms of its own readiness");
-    expect(firstOfB.scheduled < chainedFloorAfter(*justInTime.first, interval),
-        "just-in-time batch was held to the previous batch's planned phase");
+    expect(firstOfB.scheduled >= readyB && firstOfB.scheduled < readyB + 4ms,
+        "just-in-time batch did not start within [0, 4 ms] of its own readiness");
     expect(justInTime.second->calls[1].started >= firstOfB.started + interval - 1ms,
         "just-in-time batch lost its spacing from its first output");
 
     // The same two batches without just-in-time keep the chained start.
-    const auto chained = releasedPair(false, 21ms);
+    const auto chained = releasedPair(false, 26ms);
     expect(releasedPairCompleted(chained), "chained released pair did not complete");
     expect(chained.second->calls[0].scheduled >= chainedFloorAfter(*chained.first, interval),
         "chained batch was not held to the previous batch's planned phase");
 }
 // L2 (low_latency): a batch ready before the previous real output started keeps a quarter interval after
-// that real output's actual start.
+// that real output's actual start. Its phase lock still starts it at or after that bound.
 void justInTimeBatchKeepsQuarterIntervalAfterPreviousReal() {
     const auto interval = 8ms;
     const auto early = releasedPair(true, 12ms);

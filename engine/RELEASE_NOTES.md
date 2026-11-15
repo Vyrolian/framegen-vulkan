@@ -13,7 +13,7 @@
 - Frame generation runs only on swapchains with internal application images. A swapchain created with frame generation off presents real frames only; switching it on live asks the game for one swapchain recreation, and a swapchain that cannot use internal images logs `frame generation unavailable for this swapchain: reason=…`.
 - Frame generation outputs at 3x–5x are paced by the presentation worker like 2x; pacing correction applies at every multiplier.
 - Pacing correction moves each generated output onto its own ideal point between its reals, and real frames are never moved; `FGVK_REAL_OFFSET_US` accepts only `auto`, and any other value turns the correction off.
-- With `low_latency` on (the default), each released output batch starts when its frames are ready instead of after the previous batch's planned output phase; the pacing window line reports it as `just_in_time=`.
+- With `low_latency` on (the default), each released output batch starts about 2 ms after its frames are ready, phase-locked to the batch cadence, instead of after the previous batch's planned output phase; the pacing window line reports it as `just_in_time=` and `batch_phase_hold_ms=`.
 
 ## What's new in MAKO Renderer v4.6.0
 

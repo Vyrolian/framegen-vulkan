@@ -320,6 +320,12 @@ if(BUILD_TESTING)
     add_test(NAME low-latency COMMAND fgvk-low-latency-tests)
     fgvk_register_portable_policy_test(fgvk-low-latency-tests low-latency)
 
+    # Just-in-time batch start: the phase lock that places each released batch after its readiness.
+    add_executable(fgvk-batch-phase-tests "tests/batch_phase_tests.cpp")
+    target_include_directories(fgvk-batch-phase-tests PRIVATE "src")
+    add_test(NAME batch-phase COMMAND fgvk-batch-phase-tests)
+    fgvk_register_portable_policy_test(fgvk-batch-phase-tests batch-phase)
+
     # Reflex frame limit: the pure interval rule and the per-swapchain request state.
     add_executable(fgvk-reflex-frame-limit-tests "tests/reflex_frame_limit_tests.cpp")
     target_include_directories(fgvk-reflex-frame-limit-tests PRIVATE "src")
