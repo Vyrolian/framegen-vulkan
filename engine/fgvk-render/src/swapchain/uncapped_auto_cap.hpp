@@ -21,6 +21,15 @@ public:
             hz = 1e9 / static_cast<double>(refreshInterval);
         return hz >= 20.0 && hz <= 1000.0 ? hz : 0.0;
     }
+
+    // Whether this present queries the driver's refresh. Until a rate is known
+    // (known is false), the first 64 presents query and then every 8th present does.
+    // Once known, a query runs only on multiples of 240 from present 240 on.
+    [[nodiscard]] static bool refreshQueryDue(uint64_t presents, bool known) {
+        if (!known)
+            return presents < 64 || presents % 8 == 0;
+        return presents >= 64 && presents % 240 == 0;
+    }
 };
 
 } // namespace fgvk::layer

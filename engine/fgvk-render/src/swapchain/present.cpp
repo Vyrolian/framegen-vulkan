@@ -476,10 +476,10 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         this->info.deferredPresentQueue && queue == vk.queue();
     double baseFpsCap = effectiveBaseFpsCap(this->profile);
     // Refresh bounds the automatic cap only. Query on each of the first 64
-    // presents until a rate is known, then once per 240 presents, from the
-    // owner that already has it.
-    const bool query = this->refreshQuerySource < 64
-        ? this->applicationRefreshHz <= 0 : this->refreshQuerySource % 240 == 0;
+    // presents, and every 8th after that, until a rate is known; then once per
+    // 240 presents, from the owner that already has it.
+    const bool query = UncappedAutoCap::refreshQueryDue(this->refreshQuerySource,
+        this->applicationRefreshHz > 0);
     ++this->refreshQuerySource;
     if (query) {
         double refreshHz = 0.0;
