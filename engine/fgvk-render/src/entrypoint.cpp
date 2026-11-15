@@ -2592,6 +2592,29 @@ namespace {
 
         if (!native && context && context->presentRetirementEnabled()) {
             if (!alloc) {
+                // C1: a native Wayland lower swapchain must not outlive the
+                // application's destroy (colour-management lifetime). Destroy it
+                // now after its proven retirement; keep the deferred path only
+                // if that bounded wait times out.
+                if (!retainLowerSwapchainAfterDestroy(
+                        surfaceOrigin(surface),
+                        layer_info->root.gamescopeSession())) {
+                    if (context->waitForPresentRetirement(
+                            it->second, 1'000'000'000)) {
+                        static std::atomic_bool synchronousLogged{false};
+                        if (!synchronousLogged.exchange(true,
+                                std::memory_order_relaxed)) {
+                            std::cerr << "framegen-vulkan: native Wayland swapchain "
+                                         "destroyed synchronously (colour-management "
+                                         "lifetime)\n";
+                        }
+                        context.reset();
+                        it->second.df().DestroySwapchainKHR(device, swapchain, alloc);
+                        return;
+                    }
+                    std::cerr << "framegen-vulkan: swapchain retirement timed out "
+                                 "on native Wayland; deferring lower destruction\n";
+                }
                 const auto now = std::chrono::steady_clock::now();
                 bool inserted = false;
                 {

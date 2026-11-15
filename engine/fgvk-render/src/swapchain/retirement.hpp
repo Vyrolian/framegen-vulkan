@@ -3,6 +3,7 @@
 #pragma once
 
 #include "pnext_chain.hpp"
+#include "swapchain/surface_origin.hpp"
 
 #include <algorithm>
 #include <array>
@@ -115,6 +116,18 @@ namespace fgvk::layer {
     // replacement presentation before the retired lower WSI is destroyed.
     inline constexpr auto swapchainRetirementGracePeriod =
         std::chrono::milliseconds(50);
+
+    /// On a native Wayland surface outside gamescope, the lower WSI (NVIDIA)
+    /// and Wine's Wayland driver both attach wp_color_management_surface_v1
+    /// objects to the same wl_surface. A lower swapchain kept past the
+    /// application's destroy keeps the driver's object alive, and the next HDR
+    /// swapchain then fails with a fatal protocol error. Under gamescope the
+    /// upper compositor WSI keeps the deferred path (its deadlock and grace
+    /// reasons stand).
+    [[nodiscard]] constexpr bool retainLowerSwapchainAfterDestroy(
+            const SurfaceOrigin origin, const bool gamescopeSession) noexcept {
+        return !(origin == SurfaceOrigin::Wayland && !gamescopeSession);
+    }
 
     /// Presentation polling must not wait behind a terminal retirement.
     /// Nonzero timeouts belong to destruction boundaries and retain the

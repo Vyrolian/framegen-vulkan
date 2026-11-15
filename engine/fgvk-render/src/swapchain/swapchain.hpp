@@ -27,6 +27,7 @@
 #include "swapchain/present_feedback_probe.hpp"
 #include "swapchain/reflex_frame_limit.hpp"
 #include "swapchain/release_gate.hpp"
+#include "swapchain/surface_origin.hpp"
 #include "swapchain/uncapped_auto_cap.hpp"
 
 #include <array>
@@ -48,30 +49,6 @@ namespace fgvk::layer {
     class WaylandPresentationFeedback;
     struct InternalPresentImage;
     struct X11RefreshCell;
-
-    /// WSI family that created the application's surface. Diagnostics report it
-    /// in the pacing profile.
-    enum class SurfaceOrigin {
-        Unknown,
-        Wayland,
-        Xcb,
-        Xlib,
-    };
-
-    [[nodiscard]] constexpr const char* surfaceOriginName(
-            const SurfaceOrigin origin) noexcept {
-        switch (origin) {
-            case SurfaceOrigin::Unknown:
-                return "unknown";
-            case SurfaceOrigin::Wayland:
-                return "wayland";
-            case SurfaceOrigin::Xcb:
-                return "xcb";
-            case SurfaceOrigin::Xlib:
-                return "xlib";
-        }
-        return "unknown";
-    }
 
     /// swapchain info struct
     struct SwapchainInfo {

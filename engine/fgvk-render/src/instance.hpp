@@ -63,6 +63,11 @@ namespace fgvk::layer {
             return this->fp16AtStartup;
         }
 
+        /// Whether the process was started inside a Gamescope session, detected once at layer init.
+        [[nodiscard]] bool gamescopeSession() const {
+            return this->gamescopeSessionAtStartup;
+        }
+
         /// ensure the layer is up-to-date
         /// @param forceConfigurationPoll bypass the present-path polling
         /// interval at an application-owned swapchain creation boundary
@@ -125,6 +130,7 @@ namespace fgvk::layer {
         std::optional<ls::GameConf> active_profile;
         bool frameGenerationInteropProvisionedAtStartup{false};
         bool fp16AtStartup{true};
+        bool gamescopeSessionAtStartup{false};
         bool swapchainImageCountCompatibilityConfiguredAtStartup{false};
 
         ls::lazy<backend::Instance> backend;

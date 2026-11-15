@@ -224,6 +224,7 @@ Root::Root() {
     std::cerr << fgvkBuildIdentity << '\n';
 
     const bool gamescopeSession = gamescopeSessionDetected();
+    this->gamescopeSessionAtStartup = gamescopeSession;
     if (gamescopeSessionBlocked(gamescopeSession, std::getenv("FGVK_GAMESCOPE"))) {
         std::cerr << "framegen-vulkan: Gamescope sessions are not supported; "
                      "the layer stays inactive\n";

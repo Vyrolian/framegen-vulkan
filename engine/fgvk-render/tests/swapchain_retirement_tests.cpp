@@ -450,6 +450,23 @@ int main() {
             !presentFenceWillSignal(VK_ERROR_DEVICE_LOST),
         "an unqueueable failure retained an unsignalable fence");
 
+    // C1: only native Wayland outside gamescope releases its lower swapchain
+    // with the application's destroy. Gamescope and X11 or unknown origins keep
+    // the deferred retirement.
+    expect(!retainLowerSwapchainAfterDestroy(SurfaceOrigin::Wayland, false),
+        "native Wayland retained its lower swapchain past the application destroy");
+    expect(retainLowerSwapchainAfterDestroy(SurfaceOrigin::Wayland, true),
+        "gamescope Wayland released its lower swapchain without deferred retirement");
+    expect(retainLowerSwapchainAfterDestroy(SurfaceOrigin::Xcb, false) &&
+            retainLowerSwapchainAfterDestroy(SurfaceOrigin::Xcb, true),
+        "Xcb surface released its lower swapchain synchronously");
+    expect(retainLowerSwapchainAfterDestroy(SurfaceOrigin::Xlib, false) &&
+            retainLowerSwapchainAfterDestroy(SurfaceOrigin::Xlib, true),
+        "Xlib surface released its lower swapchain synchronously");
+    expect(retainLowerSwapchainAfterDestroy(SurfaceOrigin::Unknown, false) &&
+            retainLowerSwapchainAfterDestroy(SurfaceOrigin::Unknown, true),
+        "unknown surface origin released its lower swapchain synchronously");
+
     std::cout << "swapchain retirement tests passed\n";
     return 0;
 }
