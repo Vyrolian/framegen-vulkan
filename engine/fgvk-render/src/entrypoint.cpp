@@ -1348,7 +1348,6 @@ namespace {
             present_diagnostics::PresentWaitApi::Khr, presentId, timeout,
             [&] {
                 const auto started = ReleaseGate::Clock::now();
-                DeferredPresent::applicationWait(swapchain, presentId, timeout);
                 const auto result = DeferredPresent::waitForPresent(device, swapchain, presentId, timeout,
                     [&](uint64_t remaining) { return next(device, swapchain, presentId, remaining); });
                 return noteInternalPresentWaitError(swapchain,
@@ -1373,7 +1372,6 @@ namespace {
             present_diagnostics::PresentWaitApi::Khr2, info->presentId, info->timeout,
             [&] {
                 const auto started = ReleaseGate::Clock::now();
-                DeferredPresent::applicationWait(swapchain, info->presentId, info->timeout);
                 const auto result = DeferredPresent::waitForPresent(device, swapchain, info->presentId, info->timeout,
                     [&](uint64_t remaining) {
                         auto adjusted = *info;
@@ -1388,8 +1386,8 @@ namespace {
 
     // get optional function pointer override
     PFN_vkVoidFunction getProcAddr(const std::string& name) {
-        // The application role also observes actual serialized completion
-        // pacing when diagnostics are off.
+        // The application role also joins its present waits for completion pacing
+        // when diagnostics are off.
         auto it = layer_info->map.find(name);
         if (it == layer_info->map.end()) return nullptr;
 

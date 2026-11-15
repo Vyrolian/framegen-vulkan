@@ -19,7 +19,6 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
-#include <iostream>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -363,7 +362,6 @@ public:
         uint64_t value{};
         PFN_vkWaitSemaphoresKHR wait{};
         Clock::time_point deadline{Clock::time_point::max()};
-        bool capOwned{};
         // Release-gated batches only (see release_gate.hpp): the producing
         // thread is free during the batch, and its next present or blocking
         // acquire must not sleep through output spacing. No output is
@@ -407,7 +405,6 @@ public:
     };
     struct CompletionWait {
         Clock::duration waited{};
-        bool capOwned{};
         Clock::time_point finished{};
     };
     // The generated image is acquired by the worker before its output. Eligible
@@ -496,33 +493,6 @@ public:
         }
     }
 
-    // A blocking wait on the latest retained real ID on the producing thread
-    // serializes source production with this output clock. Retain ordinary
-    // FIFO delivery for that client instead of learning our own output delay
-    // as a progressively slower source period. Enabled features, zero-time
-    // polls, older IDs and waits on other threads do not establish this case.
-    // X4: the target is thread-local, so only the thread whose last admitted job carries this ID
-    // latches. clearSerialWait ends the latch on a mode change.
-    static void applicationWait(VkSwapchainKHR swapchain, uint64_t id, uint64_t timeout) {
-        const auto& target = waitTarget();
-        if (timeout && id && target.swapchain == swapchain &&
-                (target.id == id || target.id2 == id)) {
-            if (auto state = target.serial.lock()) latchSerialWait(*state, "application-wait", target.context);
-        }
-    }
-    [[nodiscard]] bool serialWaitObserved() const {
-        return serialWait->load(std::memory_order_relaxed);
-    }
-    void completionPacingBlocksSource() { latchSerialWait(*serialWait, "completion", diagnosticsContext); }
-    // X4: the application's per-present mode changed, so the serialized-producer episode learned in
-    // the old mode ends. The next latch is learned again in the new mode.
-    void clearSerialWait() {
-        if (serialWait->exchange(false, std::memory_order_relaxed))
-            std::cerr << "framegen-vulkan: serial wait latch: state=cleared cause=present-mode\n";
-    }
-    // X4: the owning swapchain's diagnostics context, written on latch records.
-    void setDiagnosticsContext(const uint64_t context) { this->diagnosticsContext = context; }
-
     // A successful application present may still be retained by this worker.
     // The lower wait API may only see an ID after its lower present returned.
     // Join that handoff on any calling thread, then let the driver perform
@@ -596,13 +566,7 @@ public:
         if (!delivery->waitObserved || !delivery->waitFinished || delivery->acquiredBeforeWait || delivery->delayTaken)
             return {};
         delivery->delayTaken = true;
-        return {delivery->completionDelay, delivery->capOwned, delivery->waitFinishedAt};
-    }
-    // X4: a present that changes the application's mode drops the newest record's completion
-    // evidence even if its wait is still in flight. The delayTaken mark also blocks a later take.
-    void discardCompletionPacingWait() {
-        const std::lock_guard lock(delivery->mutex);
-        delivery->delayTaken = true;
+        return {delivery->completionDelay, delivery->waitFinishedAt};
     }
 
     // Open one source batch, or a newer one while every pending batch is sealed and
@@ -805,7 +769,6 @@ private:
         // Completion pacing (takeCompletionPacingWait, applicationAcquire) follows the
         // newest record only: the latest real.
         bool waitObserved{}, waitFinished{}, acquiredBeforeWait{}, delayTaken{};
-        bool capOwned{};
         Clock::duration completionDelay{};
         Clock::time_point waitFinishedAt{};
         // Index of the record whose id or id2 is presentId, or recordCount when none.
@@ -848,25 +811,6 @@ private:
     VkSwapchainKHR registeredSwapchain{};
     const uint64_t* ownedIdStorage{};
     std::shared_ptr<Delivery> delivery = std::make_shared<Delivery>();
-    struct WaitTarget {
-        std::weak_ptr<std::atomic_bool> serial;
-        VkSwapchainKHR swapchain{};
-        uint64_t id{}, id2{};
-        // X4: the owning context, for the latch record.
-        uint64_t context{};
-    };
-    static WaitTarget& waitTarget() {
-        static thread_local WaitTarget target;
-        return target;
-    }
-    // X4: one stderr record per latch transition, not per present.
-    static void latchSerialWait(std::atomic_bool& state, const char* cause, const uint64_t context) {
-        if (!state.exchange(true, std::memory_order_relaxed))
-            std::cerr << "framegen-vulkan: serial wait latch: state=set cause=" << cause
-                      << " context=" << context << '\n';
-    }
-    std::shared_ptr<std::atomic_bool> serialWait = std::make_shared<std::atomic_bool>(false);
-    uint64_t diagnosticsContext{};
     struct Metadata {
         VkFence fence{};
         uint64_t id{}, id2{};
@@ -999,7 +943,7 @@ private:
             }
             if (implicit) openSlotLocked(1, Readiness{}, false);
             Batch& batch = batches[slotAt(count - 1)];
-            if (identified && !registerDeliveryLocked(*metadata, info.pSwapchains[0], batch.readiness.capOwned)) {
+            if (identified && !registerDeliveryLocked(*metadata, info.pSwapchains[0])) {
                 if (implicit) --count;
                 return false;
             }
@@ -1013,10 +957,6 @@ private:
             job.phase = identity.phase;
             batch.jobs[batch.produced++] = std::move(job);
         }
-        waitTarget() = {serialWait, info.pSwapchains[0],
-            metadata->hasId ? metadata->id : 0,
-            metadata->hasId2 && !metadata->ownedId2 ? metadata->id2 : 0,
-            this->diagnosticsContext};
         changed.notify_all();
         return true;
     }
@@ -1129,7 +1069,7 @@ private:
     // Each identified batch appends a record. A full list drops its oldest submitted
     // record, and refuses the batch while every record is still unsubmitted. Waiters
     // retain shared state without acquiring the Swapchain owner or the queue lock.
-    bool registerDeliveryLocked(const Metadata& metadata, VkSwapchainKHR swapchain, bool capOwned) {
+    bool registerDeliveryLocked(const Metadata& metadata, VkSwapchainKHR swapchain) {
         if (registeredSwapchain && registeredSwapchain != swapchain) return false;
         const std::lock_guard deliveryLock(delivery->mutex);
         if (delivery->recordCount == slots) {
@@ -1152,7 +1092,6 @@ private:
         delivery->waitObserved = delivery->waitFinished = delivery->acquiredBeforeWait = delivery->delayTaken = false;
         delivery->completionDelay = {};
         delivery->waitFinishedAt = {};
-        delivery->capOwned = capOwned;
         return true;
     }
 

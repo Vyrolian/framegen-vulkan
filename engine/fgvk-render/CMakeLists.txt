@@ -360,6 +360,13 @@ if(BUILD_TESTING)
     add_test(NAME x11-refresh-policy COMMAND fgvk-x11-refresh-policy-tests)
     fgvk_register_portable_policy_test(fgvk-x11-refresh-policy-tests x11-refresh-policy)
 
+    # Completion spiral: the log-only rule over one-second windows of source presents. It
+    # never changes pacing, so it has no pacing fixture.
+    add_executable(fgvk-completion-spiral-tests "tests/completion_spiral_tests.cpp")
+    target_include_directories(fgvk-completion-spiral-tests PRIVATE "src")
+    add_test(NAME completion-spiral COMMAND fgvk-completion-spiral-tests)
+    fgvk_register_portable_policy_test(fgvk-completion-spiral-tests completion-spiral)
+
     add_executable(fgvk-present-feedback-probe-tests "tests/present_feedback_probe_tests.cpp")
     target_include_directories(fgvk-present-feedback-probe-tests PRIVATE "src")
     add_test(NAME present-feedback-probe COMMAND fgvk-present-feedback-probe-tests)

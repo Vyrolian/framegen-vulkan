@@ -435,19 +435,6 @@ void lifecycle() {
     expect(worker.finish(UINT64_MAX)->result == VK_SUCCESS && observedId2 == 777,
         "worker lost or borrowed caller ID2");
 #endif
-#if defined(VK_KHR_present_id2)
-    constexpr uint64_t latestId = 777;
-#else
-    constexpr uint64_t latestId = 101;
-#endif
-    expect(!worker.serialWaitObserved(), "enabled IDs alone marked a serialized producer");
-    DeferredPresent::applicationWait(swapchain, latestId, 0);
-    DeferredPresent::applicationWait(swapchain, 1, UINT64_MAX);
-    std::thread asynchronous([&] { DeferredPresent::applicationWait(swapchain, latestId, UINT64_MAX); });
-    asynchronous.join();
-    expect(!worker.serialWaitObserved(), "poll, older ID or asynchronous wait disabled overlap");
-    DeferredPresent::applicationWait(swapchain, latestId, UINT64_MAX);
-    expect(worker.serialWaitObserved(), "serialized latest-ID completion was not detected");
     info.pNext = nullptr;
     VkResult callerResult{};
     info.pResults = &callerResult;
@@ -535,19 +522,19 @@ void waitForRetainedId() {
             expect(worker.takeCompletionPacingWait().waited == 0ns,
                 "a completed delivery attributed worker delay already spent before a successful wait");
             ++id;
-            expect(worker.beginBatch(1, {.capOwned = true}) &&
+            expect(worker.beginBatch(1) &&
                     worker.enqueue(info, DeferredPresent::Clock::now() + 10ms),
-                "cap-owned delivery could not retain its real ID");
+                "delivery could not retain its real ID");
             worker.closeBatch();
             expect(DeferredPresent::waitForPresent(device, swapchain, id, UINT64_MAX, lowerWait) == VK_SUCCESS,
                 "completion-paced source could not join its pending real ID");
-            expect(worker.finish(UINT64_MAX).has_value(), "cap-owned delivery did not complete");
+            expect(worker.finish(UINT64_MAX).has_value(), "delivery did not complete");
             const auto completedBeforePoll = DeferredPresent::Clock::now();
             expect(DeferredPresent::waitForPresent(device, swapchain, id, 0,
                     [](uint64_t) { return VK_SUCCESS; }) == VK_SUCCESS,
                 "completed real-ID poll changed driver completion");
             const auto capWait = worker.takeCompletionPacingWait();
-            expect(capWait.waited > 0ns && capWait.capOwned && worker.takeCompletionPacingWait().waited == 0ns,
+            expect(capWait.waited > 0ns && worker.takeCompletionPacingWait().waited == 0ns,
                 "completion-paced source did not consume the worker's measured wait exactly once");
             expect(capWait.finished <= completedBeforePoll,
                 "repeated successful polls refreshed a stale source-completion timestamp");
@@ -3924,76 +3911,6 @@ void skippedGeneratedCopySignalsItsFenceOnce() {
     copyAcquireResult = VK_SUCCESS;
 }
 
-// (X4) A per-present mode change clears the serialized-producer latch, from either cause, so the
-// next mode learns it again. Cross-thread waits are covered by the lifecycle test.
-void serialLatchClearsOnModeChange() {
-    auto queue = std::make_shared<DeferredPresentQueue>();
-    queue->queue = handle<VkQueue>(7);
-    const auto swapchain = handle<VkSwapchainKHR>(0x51);
-    const auto semaphore = handle<VkSemaphore>(0x52);
-    uint64_t id = 0x500;
-    VkPresentIdKHR ids{.sType = VK_STRUCTURE_TYPE_PRESENT_ID_KHR,
-        .swapchainCount = 1, .pPresentIds = &id};
-    uint32_t image = 1;
-    const VkPresentInfoKHR info{.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
-        .pNext = &ids,
-        .waitSemaphoreCount = 1, .pWaitSemaphores = &semaphore,
-        .swapchainCount = 1, .pSwapchains = &swapchain, .pImageIndices = &image};
-    DeferredPresent worker(queue, present);
-    worker.setDiagnosticsContext(0x77);
-    expect(worker.enqueue(info, DeferredPresent::Clock::now()), "serial latch test admission failed");
-    DeferredPresent::applicationWait(swapchain, id, UINT64_MAX);
-    expect(worker.serialWaitObserved(), "a blocking wait on the newest ID did not latch");
-    worker.clearSerialWait();
-    expect(!worker.serialWaitObserved(), "a per-present mode change did not clear the application-wait latch");
-    DeferredPresent::applicationWait(swapchain, id, UINT64_MAX);
-    expect(worker.serialWaitObserved(), "the latch was not learned again in the new mode");
-    worker.clearSerialWait();
-    worker.completionPacingBlocksSource();
-    expect(worker.serialWaitObserved(), "completion pacing did not latch the serialized producer");
-    worker.clearSerialWait();
-    expect(!worker.serialWaitObserved(), "a per-present mode change did not clear the completion latch");
-    expect(worker.finish(UINT64_MAX).has_value(), "serial latch test presentation did not complete");
-}
-
-// (X4) Completion evidence of the newest record after a delivered, observed wait. The optional discard
-// stands for a present that changed the application's mode.
-DeferredPresent::CompletionWait completionEvidenceAfterDelivery(const bool discard) {
-    auto queue = std::make_shared<DeferredPresentQueue>();
-    queue->queue = handle<VkQueue>(7);
-    const auto device = handle<VkDevice>(42);
-    const auto swapchain = handle<VkSwapchainKHR>(0x61);
-    const auto semaphore = handle<VkSemaphore>(0x62);
-    uint64_t id = 0x610;
-    VkPresentIdKHR ids{.sType = VK_STRUCTURE_TYPE_PRESENT_ID_KHR,
-        .swapchainCount = 1, .pPresentIds = &id};
-    uint32_t image = 1;
-    const VkPresentInfoKHR info{.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
-        .pNext = &ids,
-        .waitSemaphoreCount = 1, .pWaitSemaphores = &semaphore,
-        .swapchainCount = 1, .pSwapchains = &swapchain, .pImageIndices = &image};
-    DeferredPresent worker(queue, present, device);
-    expect(worker.beginBatch(1, {.capOwned = true}) && worker.enqueue(info, DeferredPresent::Clock::now() + 10ms),
-        "completion evidence test admission failed");
-    worker.closeBatch();
-    std::thread waiter([&] {
-        expect(DeferredPresent::waitForPresent(device, swapchain, id, UINT64_MAX,
-            [](uint64_t) { return VK_SUCCESS; }) == VK_SUCCESS, "completion evidence wait failed");
-    });
-    std::this_thread::sleep_for(10ms);
-    expect(worker.finish(UINT64_MAX).has_value(), "completion evidence presentation did not complete");
-    waiter.join();
-    if (discard) worker.discardCompletionPacingWait();
-    return worker.takeCompletionPacingWait();
-}
-void discardedCompletionEvidenceIsNotTaken() {
-    lowerResult = VK_SUCCESS;
-    expect(completionEvidenceAfterDelivery(false).finished != DeferredPresent::Clock::time_point{},
-        "a finished, observed completion wait was not takeable (test precondition)");
-    expect(completionEvidenceAfterDelivery(true).finished == DeferredPresent::Clock::time_point{},
-        "a mode change did not discard the newest record's completion wait");
-}
-
 int main([[maybe_unused]] int argc, [[maybe_unused]] char** argv) {
     generatedPreparedOrderAndBudget(); generatedPreparationFallbackAndGates();
     generatedChainOutputOffsetsMoveEachOutput();
@@ -4034,5 +3951,4 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char** argv) {
     // counts calls for the earlier lifecycle test.
     skippedInternalRealSignalsItsFenceOnce(); stoppedInternalRealSignalsItsFenceOnce();
     presentedJobsKeepTheirFenceForTheLowerPresent(); skippedGeneratedCopySignalsItsFenceOnce();
-    serialLatchClearsOnModeChange(); discardedCompletionEvidenceIsNotTaken();
 }

@@ -14,6 +14,7 @@
 #include "fgvk-common/vulkan/timestamp_query_pool.hpp"
 #include "fgvk-common/vulkan/vulkan.hpp"
 #include "color_pipeline.hpp"
+#include "completion_spiral.hpp"
 #include "generated_frame_delivery.hpp"
 #include "profile_update.hpp"
 #include "presentation_policy.hpp"
@@ -175,7 +176,7 @@ namespace fgvk::layer {
             if (deferredPresent) deferredPresent->applicationAcquire();
         }
         [[nodiscard]] bool beginDeferredPresentBatch(const vk::Vulkan& vk, size_t limit,
-            uint64_t readyValue, std::chrono::steady_clock::time_point readyDeadline, bool capOwned,
+            uint64_t readyValue, std::chrono::steady_clock::time_point readyDeadline,
             std::optional<std::chrono::steady_clock::time_point> releasedOutputLimit = std::nullopt,
             std::chrono::steady_clock::duration releasedJoinTolerance = {},
             bool overlap = false, bool justInTime = false,
@@ -486,10 +487,10 @@ namespace fgvk::layer {
         VkPresentModeKHR currentPresentMode{VK_PRESENT_MODE_FIFO_KHR};
         // Last per-present modes printed to stderr (-2 = nothing printed yet).
         int64_t loggedApplicationPresentMode{-2}, loggedRealPresentMode{-2};
-        // X4: the application's per-present mode of the previous present (-2 = no present yet).
-        int64_t previousApplicationPresentMode{-2};
         FixedRefreshBudget fixedRefreshBudget;
         RealFramePacer realFramePacer;
+        // Log-only completion spiral check. It reads pacing values and never changes them.
+        CompletionSpiralDetector completionSpiral;
         // Source-cap deadline moved to the application's own release wait;
         // see release_gate.hpp. Learns per context; holds presents until then.
         ReleaseGateOwner releaseGate;

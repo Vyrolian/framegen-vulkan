@@ -894,12 +894,6 @@ namespace fgvk::layer {
                 return;
             const auto elapsed = now - *previous;
             const auto work = std::max(Clock::duration{}, elapsed - wait);
-            const bool completionBlocksSource = completionPaced && this->sourcePeriod > Clock::duration{} &&
-                elapsed <= std::chrono::milliseconds{250} && elapsed <= 2 * this->sourcePeriod &&
-                elapsed > this->sourcePeriod + this->sourcePeriod /
-                    static_cast<int64_t>(2 * std::clamp(outputCount, size_t{2}, GeneratedFramePlan::capacity + 1));
-            this->completionBlockedSamples = completionBlocksSource
-                ? std::min(size_t{2}, this->completionBlockedSamples + 1) : 0;
             if (elapsed <= Clock::duration::zero() || elapsed > std::chrono::milliseconds{250}) {
                 this->sourceInterrupted = true;
                 this->sourcePacedPeriod = this->sourceWorkPeriod = Clock::duration{};
@@ -1108,10 +1102,9 @@ namespace fgvk::layer {
             this->sourceOutputWait += wait;
             this->sourceCompletionPaced = wait > Clock::duration::zero();
         }
-        [[nodiscard]] bool completionPacingBlocksSource() const { return this->completionBlockedSamples >= 2; }
-        /// X4: an application present-mode change starts a new output clock. Completion samples taken
-        /// in the old mode no longer establish completion pacing; the new mode must observe them again.
-        void resetCompletionBlockedSamples() { this->completionBlockedSamples = 0; }
+        /// Learned source period, zero until qualified. Read-only: the log-only completion
+        /// spiral check (completion_spiral.hpp) reads it and changes no pacing.
+        [[nodiscard]] Clock::duration learnedSourcePeriod() const { return this->sourcePeriod; }
 
         /// No fallback delay on a missed source interval or when preparation
         /// has already consumed a whole interval. GPU readiness shares this
@@ -1415,7 +1408,6 @@ namespace fgvk::layer {
             this->sourceDetachedSamples = 0;
             this->sourceDetachedOutput = false;
             this->sourceCompletionPaced = false;
-            this->completionBlockedSamples = 0;
             this->sourceInterrupted = false;
             this->sourceReleased = false;
         }
@@ -1433,7 +1425,6 @@ namespace fgvk::layer {
         bool sourceReleased{};
         bool sourceDetachedOutput{};
         bool sourceCompletionPaced{};
-        size_t completionBlockedSamples{};
         bool sourceCapOwnsOutputs{};
         bool sourceHasQualifiedCadence{}, sourceCapBatchUsed{};
         size_t sourceCapBatchRun{};

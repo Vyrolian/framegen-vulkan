@@ -55,7 +55,7 @@ VkResult Swapchain::presentGeneratedFrames(
         this->beginDeferredPresentBatch(invocation.vk,
             plan.scheduledGeneratedFrames.size() + (deferredFirst ? 1 : 0),
             this->frameState.backendTimelineIndex + plan.scheduledGeneratedFrames.size() - 1,
-            invocation.readinessDeadline, invocation.capReadyOutputPacing,
+            invocation.readinessDeadline,
             invocation.releasedOutputLimit, invocation.releasedJoinTolerance,
             invocation.releasedOverlap, invocation.justInTime,
             invocation.pacedOutputs ? invocation.pacedOutputs->interval : DiagnosticsClock::duration{},

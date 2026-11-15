@@ -416,8 +416,6 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
             }
         }
     }
-    // X4: set by the present where the application's per-present mode changes (see below).
-    bool applicationModeChanged = false;
     {
         // -1: no per-present mode, the create-time mode applies.
         const auto chainMode = [](const void* chain) -> int64_t {
@@ -428,15 +426,6 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         };
         const int64_t applicationMode = chainMode(nextChain);
         const int64_t realMode = chainMode(lowerNextChain);
-        // X4: a change of the application's per-present mode ends the serialized-producer latch and
-        // the completion-blocked samples learned in the old mode, before this present's transport
-        // and pacing decisions below.
-        if (applicationMode != this->previousApplicationPresentMode) {
-            this->previousApplicationPresentMode = applicationMode;
-            applicationModeChanged = true;
-            if (this->deferredPresent) this->deferredPresent->clearSerialWait();
-            this->realFramePacer.resetCompletionBlockedSamples();
-        }
         if (this->pacingProfile)
             this->pacingProfile->presentModes(applicationMode, realMode, this->info.presentMode);
         if (applicationMode != this->loggedApplicationPresentMode ||
@@ -462,7 +451,6 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
     auto limiterArrival = DiagnosticsClock::now();
     // Transport half of worker admission; the pacing half is decided below.
     const bool detachedOutputTransport =
-        !(this->deferredPresent && this->deferredPresent->serialWaitObserved()) &&
         detachedOutputModeAdmits(directUnthrottled, this->currentPresentMode) &&
         DeferredPresent::supportsChain(lowerNextChain) &&
         this->info.deferredPresentQueue && queue == vk.queue();
@@ -679,36 +667,29 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
     if (this->pacingProfile) this->pacingProfile->lowLatency(latency.justInTime, releaseDelay,
         this->releaseGate.consumedKinds() | (latency.reflexHolds ? reflexKindBit : 0u),
         latency.justInTime);
-    bool readyOutputPacing = fixedReadyOutputPacingEligible(
+    const bool readyOutputPacing = fixedReadyOutputPacingEligible(
         this->profile, directUnthrottled || nativeFifoOutputPacing,
         compositorOutputTiming || applicationTimingOwner,
         this->recoveryState.orderedAcquireRecovery.active(),
-        detachedOutputTransport) &&
-        !(this->deferredPresent && this->deferredPresent->serialWaitObserved());
-    // X4: on a mode-change present the newest record's completion evidence is from the old mode.
-    // Drop it and take nothing, so it cannot latch here or on a later present.
-    if (this->deferredPresent && applicationModeChanged) this->deferredPresent->discardCompletionPacingWait();
-    const auto completionWait = this->deferredPresent && !applicationModeChanged
+        detachedOutputTransport);
+    const auto completionWait = this->deferredPresent
         ? this->deferredPresent->takeCompletionPacingWait() : DeferredPresent::CompletionWait{};
     const auto completionDelay = completionWait.finished <= limiterArrival
         ? completionWait.waited : DiagnosticsClock::duration{};
-    const bool completionHoldsCap = completionDelay > DiagnosticsClock::duration{} &&
-        baseFpsCap > 0 && completionWait.capOwned &&
-        std::chrono::duration<double>(limiterArrival - completionWait.finished).count() <= 2.0 / baseFpsCap;
     this->realFramePacer.recordCompletionPacingWait(completionDelay);
     this->realFramePacer.observeSource(limiterArrival, readyOutputPacing || releaseGated,
         this->configuredFixedGeneratedFrames + 1, releaseGated);
-    if (this->deferredPresent &&
-            (completionHoldsCap || this->realFramePacer.completionPacingBlocksSource())) {
-        // VKD3D can signal a frame-latency event from a separate wait thread.
-        // Two slower sources with no acquisition overlapping that wait show
-        // that our retained output is gating production through that event.
-        // An established framegen-vulkan cap already supplies the output interval; a
-        // completion-gated producer cannot overlap that worker, including
-        // with Smooth Cadence off. Keep its synchronous cap-owned delivery.
-        this->deferredPresent->completionPacingBlocksSource();
-        readyOutputPacing = false;
-    }
+    // Log only (completion_spiral.hpp): it reads the same completion wait and learned period
+    // that pacing used above and changes nothing.
+    const auto spiral = this->completionSpiral.observeSource(limiterArrival, completionDelay,
+        this->realFramePacer.learnedSourcePeriod());
+    if (spiral.event == CompletionSpiralDetector::Event::suspected)
+        std::cerr << "framegen-vulkan: completion spiral suspected: period_ms=" << spiral.periodMs
+                  << " completion_wait_ms=" << spiral.meanCompletionWaitMs << " windows=" << spiral.windows
+                  << " context=" << this->diagnosticsState.contextId << '\n';
+    else if (spiral.event == CompletionSpiralDetector::Event::cleared)
+        std::cerr << "framegen-vulkan: completion spiral cleared: period_ms=" << spiral.periodMs
+                  << " context=" << this->diagnosticsState.contextId << '\n';
     const bool sourceDeadlinePreparation = !releaseGated && limiterDeadline > limiterArrival &&
         baseCapPacesOutputs(
             this->profile, baseFpsCap,
