@@ -192,7 +192,8 @@ namespace fgvk::layer::present_diagnostics {
             Clock::duration offset{};
         };
         struct OutputSample {
-            size_t ordinal{}, source{};
+            size_t ordinal{};
+            uint64_t source{};
             Clock::time_point started{}, finished{};
             VkResult result{};
             OutputObservation observation;
