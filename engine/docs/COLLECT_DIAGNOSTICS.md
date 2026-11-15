@@ -36,25 +36,17 @@ Replace `your-game-command` with your normal game command.
 
 ## 2. Reproduce the problem
 
-Start the game, reproduce the issue once, note what happened and fully exit. Collect the report before another test run.
+Start the game, reproduce the issue once, note what happened and fully exit. Keep the captured log before another test run.
 
 ## 3. Save the report
 
-In Desktop Mode, open Konsole and run:
+Keep the file written by the terminal capture in section 1, or the pacing log described below. If that file is empty, check the temporary launch settings and repeat the test.
 
-```bash
-fgvk-diagnostics --lines 5000 all > "$HOME/Desktop/framegen-vulkan-diagnostics.txt" 2>&1
-```
+Collect from the original session log, not a filtered copy, which may have omitted error details. The capture does not include the separate compositor system journal; support may request it if the game log is insufficient.
 
-If the command is not found, try `~/.local/bin/fgvk-diagnostics` instead. For the terminal capture above, add `--log "$HOME/Desktop/framegen-vulkan-renderer-session.log"` before `--lines`.
+To check the configuration file for errors, run `fgvk-cli validate`.
 
-The file appears on your Desktop; Konsole normally prints nothing. If no log is found, check the temporary launch settings and repeat the test.
-
-For a slowdown after a long session, replace `--lines 5000` with `--lines 200000`. Collect before starting another game.
-
-Collect from the original session log, not an older filtered report, which may have omitted error details. The report does not include the separate compositor system journal; support may request it if the game log is insufficient.
-
-For comparisons, collect a separate report after each run and note which settings changed. Use the same scene and game settings where possible. For HDR sharpening comparisons, also note the game resolution and display resolution. For VRR comparisons, record the VRR setting, display refresh rate, and session type.
+For comparisons, keep a separate capture after each run and note which settings changed. Use the same scene and game settings where possible. For HDR sharpening comparisons, also note the game resolution and display resolution. For VRR comparisons, record the VRR setting, display refresh rate, and session type.
 
 For timing-field meanings and the limits of log-based comparisons, see [Interpreting presentation records](WSI-ISOLATION.md#interpreting-presentation-records).
 
@@ -64,7 +56,7 @@ Turn off the Logging switches you turned on in the settings window, then restore
 
 ## 5. Send the report
 
-Review `framegen-vulkan-diagnostics.txt` and remove personal information. Upload it through the [diagnostic form](https://docs.google.com/forms/d/e/1FAIpQLScSd9qgkYCq3Kbbc3_52k4_82iTmEqt3_FxOqGuxQ6FsjutgA/viewform), choosing **framegen-vulkan (standalone/direct installation)**. Answer **Unknown** when unsure. Do not post the log publicly or attach `Lossless.dll`.
+Review the captured log and remove personal information. Upload it through the [diagnostic form](https://docs.google.com/forms/d/e/1FAIpQLScSd9qgkYCq3Kbbc3_52k4_82iTmEqt3_FxOqGuxQ6FsjutgA/viewform), choosing **framegen-vulkan (standalone/direct installation)**. Answer **Unknown** when unsure. Do not post the log publicly or attach `Lossless.dll`.
 
 ## Detailed game frame trace
 
@@ -102,13 +94,9 @@ The Wayland companion's optional `--runtime-log /absolute/new-runtime.log` enabl
 
 For games started through `fgvk`, turn on **Pacing log** in the Logging section of the settings window; it sets the same variable. For other launchers, set `FGVK_PACING_PROFILE=1` in the game's existing launch environment and restart it. Keep its working graphics/profile setup. For Prism Launcher, preserve the current Wrapper Command and prefix it with `env FGVK_PACING_PROFILE=1`, for example `env FGVK_PACING_PROFILE=1 mangohud /absolute/path/to/fgvk`. The profiler records CPU boundary/phase timing without enabling the broader presentation diagnostics, health worker, new GPU queries, or per-frame writes. It works with other Vulkan games too.
 
-The Renderer creates a private `fgvk-pacing-<uid>-<pid>-<timestamp>.log` under `${TMPDIR:-/tmp}` at swapchain creation and prints its path once. Only framegen-vulkan timing and process/profile identity records enter this file; arbitrary game/launcher output, Java arguments and account details are not captured. CPU/GPU-only capture retains up to 16 MiB and restarts with a `pacing-profile-log-wrap` marker when full. With `FGVK_PACING_PROFILE_WAYLAND=1`, the file instead preserves its beginning up to 512 MiB, emits `pacing-profile-capture-limit`, and stops writing; earlier FG/settings portions are never overwritten. `${TMPDIR:-/tmp}` is often RAM-backed (tmpfs), so a full 512 MiB capture can hold that much memory until the file is removed. The session header records `capture_limit_bytes` and `retention=stop|wrap`. Concurrent writers use a nonblocking lock; missing/partial records produce a `pacing-profile-capture-gap` marker. No collection worker is added. Find and filter the newest capture with:
+The Renderer creates a private `fgvk-pacing-<uid>-<pid>-<timestamp>.log` under `${TMPDIR:-/tmp}` at swapchain creation and prints its path once. Only framegen-vulkan timing and process/profile identity records enter this file; arbitrary game/launcher output, Java arguments and account details are not captured. CPU/GPU-only capture retains up to 16 MiB and restarts with a `pacing-profile-log-wrap` marker when full. With `FGVK_PACING_PROFILE_WAYLAND=1`, the file instead preserves its beginning up to 512 MiB, emits `pacing-profile-capture-limit`, and stops writing; earlier FG/settings portions are never overwritten. `${TMPDIR:-/tmp}` is often RAM-backed (tmpfs), so a full 512 MiB capture can hold that much memory until the file is removed. The session header records `capture_limit_bytes` and `retention=stop|wrap`. Concurrent writers use a nonblocking lock; missing/partial records produce a `pacing-profile-capture-gap` marker. No collection worker is added.
 
-```bash
-~/.local/bin/fgvk-diagnostics --pacing --lines 5000 performance > /tmp/framegen-vulkan-pacing.txt
-```
-
-Use an explicit installed helper path if `fgvk-diagnostics` is not on PATH. `--log /absolute/path` selects an older capture instead. `FGVK_PACING_PROFILE_LOG=/absolute/new-capture.log` selects a new output file; existing files, symlinks, FIFOs and devices are refused. `FGVK_PACING_PROFILE_LOG=stderr` restores console-only output for launchers that retain it. Minecraft's `latest.log` and Prism's own launcher logs do not necessarily contain the native stderr stream.
+`FGVK_PACING_PROFILE_LOG=/absolute/new-capture.log` selects a new output file; existing files, symlinks, FIFOs and devices are refused. `FGVK_PACING_PROFILE_LOG=stderr` restores console-only output for launchers that retain it. Minecraft's `latest.log` and Prism's own launcher logs do not necessarily contain the native stderr stream.
 
 From a source checkout, generate a readable timing and hitch report with:
 
@@ -116,7 +104,7 @@ From a source checkout, generate a readable timing and hitch report with:
 python3 engine/scripts/analyze-pacing-profile.py /tmp/framegen-vulkan-pacing.txt --top 10
 ```
 
-The report keeps process/context streams separate and rejects malformed or unsupported windows. Add `--skip-seconds 15` to exclude the first 15 seconds of recorded windows when comparing warmed gameplay. Do not silently omit loading when investigating startup hitches. Session, wrap and capture-gap records remain in the filtered capture for evidence review.
+The report keeps process/context streams separate and rejects malformed or unsupported windows. Add `--skip-seconds 15` to exclude the first 15 seconds of recorded windows when comparing warmed gameplay. Do not silently omit loading when investigating startup hitches. Session, wrap and capture-gap records remain in the capture for evidence review.
 
 The **Live** section of the `fgvk` settings window reads this same log while a game runs, once a second. It follows the newest `fgvk-pacing-<uid>-*.log` under `${TMPDIR:-/tmp}` that you own, that is a regular file and that was modified in the last three seconds; without one it says **No game is logging right now**. The section shows the newest complete second, about two seconds behind the game. A reading whose records were not written says `needs` and names the Logging switch that writes them. The window reads only this file: it does not query processes or windows, and its scanout lines are compositor flag shares, not a verdict on tearing.
 

@@ -57,7 +57,6 @@ mkdir -p \
 touch \
     "$package_root/usr/bin/fgvk" \
     "$package_root/usr/bin/fgvk-cli" \
-    "$package_root/usr/bin/fgvk-diagnostics" \
     "$package_root/usr/libexec/framegen-vulkan/fgvk-launch" \
     "$package_root/usr/lib/libfgvk-render.so" \
     "$package_root/usr/lib32/libfgvk-render.so"

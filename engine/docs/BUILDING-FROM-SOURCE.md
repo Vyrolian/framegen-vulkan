@@ -240,7 +240,7 @@ User installation, updates and removal are in the [Arch guide](../dist/arch/READ
 
 The package installs:
 
-- `fgvk` (settings window and `fgvk <command>` entry point), `fgvk-cli`, and `fgvk-diagnostics` into `/usr/bin`.
+- `fgvk` (settings window and `fgvk <command>` entry point) and `fgvk-cli` into `/usr/bin`.
 - the private launch helper `fgvk-launch` into `/usr/libexec/framegen-vulkan`, off `PATH`.
 - the 64-bit Vulkan layers into `/usr/lib` and the 32-bit layers into `/usr/lib32`.
 - the public implicit-layer manifest into `/usr/share/vulkan/implicit_layer.d`, gated by `ENABLE_FGVK`.

@@ -64,8 +64,8 @@ check-arch-package:
 # Build framegen-vulkan.
 build: build-engine
 
-# Run the protected-input, release-candidate, diagnostics, settings-launcher, engine, and trace-producer tests.
-test: test-protected-inputs test-release-candidate test-diagnostics-helper test-fgvk-ui test-engine test-trace-producer
+# Run the protected-input, release-candidate, settings-launcher and engine tests.
+test: test-protected-inputs test-release-candidate test-fgvk-ui test-engine
 
 # Reject licensed inputs and disguised binary/model/archive payloads from Git.
 test-protected-inputs:
@@ -74,14 +74,6 @@ test-protected-inputs:
 # Verify the local release-candidate checker with complete and incomplete ZIP fixtures.
 test-release-candidate:
     ./scripts/test-release-candidate.sh
-
-# Exercise the diagnostics helper's filters and retained-session contract.
-test-diagnostics-helper:
-    python3 -I scripts/tests/test_diagnostics_helper.py
-
-# Exercise the private-archive producer without requiring private evidence.
-test-trace-producer:
-    ./scripts/test-capture-trace.sh
 
 # Configure and build framegen-vulkan in release mode.
 build-engine:

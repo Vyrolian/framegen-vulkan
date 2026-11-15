@@ -161,7 +161,6 @@ for required_entry in \
     .INSTALL \
     usr/bin/fgvk \
     usr/bin/fgvk-cli \
-    usr/bin/fgvk-diagnostics \
     usr/libexec/framegen-vulkan/fgvk-launch \
     usr/lib/libfgvk-render.so \
     usr/lib32/libfgvk-render.so; do

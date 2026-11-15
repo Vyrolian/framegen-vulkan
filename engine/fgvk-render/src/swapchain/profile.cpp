@@ -84,11 +84,8 @@ ProfileUpdateDecision Swapchain::updateProfile(
         const uint64_t runtimeStateRevision,
         const ls::GameConf* requestedProfile,
         const bool processRestartPending) {
-    this->runtimeStatusState.requestedProfile = requestedProfile
+    this->requestedProfile = requestedProfile
         ? *requestedProfile : nextProfile;
-    this->runtimeStatusState.stateRevision = runtimeStateRevision;
-    this->runtimeStatusState.processRestartPending = processRestartPending;
-    this->runtimeStatusState.error.reset();
     const bool resourcesAvailable = this->sourceImages.size() == 2 &&
         !this->destinationImages.empty() && this->syncSemaphore.has_value();
     const size_t requestedGeneratedFrameCapacity =
@@ -217,13 +214,10 @@ ProfileUpdateDecision Swapchain::updateProfile(
                   << '\n';
     };
     logPendingRecreation();
-    this->runtimeStatusState.swapchainRecreationPending =
-        decision.swapchainRecreationDeferred;
 
     if (!this->colorPipeline.generationSupported || !this->instance ||
             !resourcesAvailable) {
         this->profile = std::move(plan.appliedProfile);
-        this->publishRuntimeStatus("configuration-update");
         return decision;
     }
 
@@ -235,7 +229,6 @@ ProfileUpdateDecision Swapchain::updateProfile(
         // Keep harmless metadata and dormant-policy values current even when
         // the active policy itself must wait for a documented boundary.
         this->profile = std::move(plan.appliedProfile);
-        this->publishRuntimeStatus("configuration-update");
         return decision;
     }
 
@@ -407,7 +400,6 @@ ProfileUpdateDecision Swapchain::updateProfile(
                   << '\n';
     }
 
-    this->publishRuntimeStatus("configuration-update");
     return decision;
 }
 
@@ -482,5 +474,4 @@ void Swapchain::disableFrameGeneration() {
     this->recoveryState.orderedAcquireRecovery.reset();
     if (this->adaptiveScheduler)
         this->adaptiveScheduler->cancelHistoryWarmup();
-    this->publishRuntimeStatus("profile-unmatched");
 }

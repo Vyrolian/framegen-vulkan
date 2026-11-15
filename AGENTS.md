@@ -12,7 +12,7 @@ Personal fork of a Vulkan frame-generation layer (lsfg-vk v2 descendant), now na
 | `engine/fgvk-cli/` | Validation and DLL inspection tools |
 | `engine/fgvk-ui/` | Settings window and `fgvk <command>` entry point (Rust, egui); one crate, one binary |
 | `engine/dist/`, `engine/scripts/` | Packaging, Flatpak, Arch, installer, launch wrapper, build scripts |
-| `scripts/` | Diagnostics helper, release and trace scripts (tests in `scripts/tests/`) |
+| `scripts/` | Release scripts and `scanout-watch.sh` |
 
 Placement rules for `engine/fgvk-ui/`: the crate owns only the settings window and the argument routing in `src/launch.rs`. It must not load the renderer or Vulkan, and launch behaviour stays in `engine/scripts/fgvk-launch` (installed privately under `libexec/framegen-vulkan/`, never on `PATH`). Keep it self-contained: `processes.rs` embeds `../fgvk-common/launcher_exclusions.json`, so the crate builds only inside this repository.
 
@@ -20,7 +20,7 @@ Boundary docs (`engine/docs/`): `RENDERER-ARCHITECTURE`, `CONFIGURATION` / `CONF
 
 ## Build and test
 
-- `just --list` shows entry points. C++ changes: `just test-engine-portable` (CTest); scheduling/presentation also `just test-engine-sanitized`. Settings window and entry point: `just test-fgvk-ui` (`cargo test --locked` in `engine/fgvk-ui`). Tooling: `just test-diagnostics-helper`.
+- `just --list` shows entry points. C++ changes: `just test-engine-portable` (CTest); scheduling/presentation also `just test-engine-sanitized`. Settings window and entry point: `just test-fgvk-ui` (`cargo test --locked` in `engine/fgvk-ui`).
 - The device is resource-constrained: watch CPU/GPU cost, memory, sync and hot paths. Keep at most two build jobs while the user may be gaming.
 - Report what passed and what was not tested (hardware, AMD/FP16, Flatpak). A skipped GPU test is not evidence.
 

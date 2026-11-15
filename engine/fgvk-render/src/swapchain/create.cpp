@@ -116,15 +116,11 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance* backend,
             this->pacingProfile = std::make_unique<present_diagnostics::PacingProfile>();
         } catch (...) {} // Optional observations cannot prevent swapchain creation.
     }
-    this->runtimeStatusPublisher = RuntimeStatusPublisher(
-        this->diagnosticsState.contextId, layerRoleName
-    );
-    this->runtimeStatusState.requestedProfile = this->profile;
+    this->requestedProfile = this->profile;
     this->profile.target_fps = adaptiveTargetFpsForDisplay(
         this->profile.target_fps, this->profile.adaptive,
         this->profile.adaptive_target_refresh_rate, std::nullopt
     );
-    this->runtimeStatusState.stateRevision = runtimeStateRevision;
     const DiagnosticsContextScope diagnosticsContext(
         this->diagnosticsState.contextId
     );
@@ -224,7 +220,6 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance* backend,
     if (!this->colorPipeline.generationSupported) {
         std::cerr << "framegen-vulkan: frame generation disabled for this swapchain: "
                   << this->colorPipeline.reason << '\n';
-        this->publishRuntimeStatus("swapchain-create");
         return;
     }
     try {
@@ -376,7 +371,5 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance* backend,
             "frame-generation initialization failed; native presentation retained";
         std::cerr << "framegen-vulkan: " << this->colorPipeline.reason
                   << ": " << e.what() << '\n';
-        this->runtimeStatusState.error = e.what();
     }
-    this->publishRuntimeStatus("swapchain-create");
 }

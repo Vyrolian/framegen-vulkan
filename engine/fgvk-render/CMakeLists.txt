@@ -13,7 +13,6 @@ set(LAYER_SOURCES
     "src/frame_content_capture.cpp"
     "src/wayland_presentation_feedback.cpp"
     "src/runtime_health.cpp"
-    "src/runtime_status.cpp"
     "src/swapchain/create.cpp"
     "src/swapchain/internal_images.cpp"
     "src/swapchain/present_marker.cpp"
@@ -23,8 +22,7 @@ set(LAYER_SOURCES
     "src/swapchain/present/real_frames.cpp"
     "src/swapchain/present/retirement.cpp"
     "src/swapchain/profile.cpp"
-    "src/swapchain/resources.cpp"
-    "src/swapchain/status.cpp")
+    "src/swapchain/resources.cpp")
 
 set(ADAPTIVE_SOURCE "src/adaptive_scheduler.cpp")
 set(COLOR_PIPELINE_SOURCE "src/color_pipeline.cpp")
@@ -294,19 +292,6 @@ if(BUILD_TESTING)
         COMMAND fgvk-runtime-transition-tests)
     fgvk_register_portable_policy_test(
         fgvk-runtime-transition-tests runtime-transition)
-
-    add_executable(fgvk-runtime-status-tests
-        "tests/runtime_status_tests.cpp"
-        "src/runtime_status.cpp")
-    target_include_directories(fgvk-runtime-status-tests
-        PRIVATE "src"
-        PRIVATE "../fgvk-common/include")
-    target_link_libraries(fgvk-runtime-status-tests
-        PRIVATE fgvk-common)
-    add_test(NAME runtime-status
-        COMMAND fgvk-runtime-status-tests)
-    fgvk_register_portable_policy_test(
-        fgvk-runtime-status-tests runtime-status)
 
     add_executable(fgvk-layer-role-tests
         "tests/layer_role_tests.cpp")

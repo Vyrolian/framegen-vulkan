@@ -321,7 +321,7 @@ void Swapchain::commitFrameGenerationResources(
     this->ctx = std::move(resources.context);
     applyFrameGenerationResourceProfile(
         this->profile, resourceProfile,
-        this->runtimeStatusState.requestedProfile, std::nullopt
+        this->requestedProfile, std::nullopt
     );
 
     this->frameState.backendTimelineIndex = 1;
@@ -386,7 +386,6 @@ bool Swapchain::applyPendingFrameGenerationResources(
                 this->frameGenerationTransition.stateRevision(),
                 "private-context-prepared"
             );
-            this->publishRuntimeStatus("frame-generation-resources");
             if (present_diagnostics::enabled()) {
                 const auto& requested =
                     this->frameGenerationTransition.value().profile;
@@ -409,8 +408,6 @@ bool Swapchain::applyPendingFrameGenerationResources(
             this->frameGenerationTransition.failed(
                 std::chrono::seconds(5), now
             );
-            this->runtimeStatusState.error = error.what();
-            this->publishRuntimeStatus("frame-generation-resources");
             std::cerr << "framegen-vulkan: private frame-generation resource "
                          "transition failed; the previous resources remain "
                          "active and retry is scheduled: "
@@ -462,8 +459,6 @@ bool Swapchain::applyPendingFrameGenerationResources(
         vk, this->diagnosticsState.contextId,
         committedRevision.value_or(0), "private-context-applied"
     );
-    this->runtimeStatusState.error.reset();
-    this->publishRuntimeStatus("frame-generation-resources");
 
     std::cerr << "framegen-vulkan: frame-generation resources changed live: "
               << "generated_capacity=" << this->destinationImages.size()

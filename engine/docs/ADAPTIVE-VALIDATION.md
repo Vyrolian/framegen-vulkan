@@ -151,11 +151,11 @@ Portable tests cover full-target capped recovery with and without native headroo
 
 - [ ] **TODO (2026-10-08): evaluate removing only the extra two-second rescue window after stable cadence exits.** Review `adaptiveRescueCollapseWatchDuration` and `rescue.watchUntil` in `adaptive_scheduler.cpp`, which allow a later sustained collapse to start rescue after the immediate exit check did not. This is an open consideration; the current behavior remains enabled.
 
-Earlier long-session observations suggested Steam overlay hooks as a possible contributor, but did not establish causality or independent benefit from the post-exit rescue window. Retain session details and fingerprints in the private evidence archive under [TRACES.md](../../TRACES.md); older captures do not qualify the current bounded implementation.
+Earlier long-session observations suggested Steam overlay hooks as a possible contributor, but did not establish causality or independent benefit from the post-exit rescue window. Older captures do not qualify the current bounded implementation.
 
 Preserve the separate two-second stability qualification before higher-multiplier trials, adjacent-workload and applied-pacing cost checks, the original immediate-collapse rescue, bounded cap restoration, interruption handling, cooldowns, diagnostics, and ordinary stall/focus recovery. The post-exit window is not the promotion guard and does not itself impose a two-second promotion delay.
 
-Before deciding, inspect captures from the current bounded implementation, distinguish immediate-collapse attempts from attempts triggered after exit, and assess independent recovery benefit against unnecessary interruptions of generated output in legitimate heavy scenes. A `restored-policy-recovered` result can coincide with natural scene improvement; portable safety tests alone do not prove real-game benefit or a false-positive rate. If independent benefit remains unsubstantiated, prefer a focused removal of the extra trigger, with corresponding scheduler tests and documentation, while retaining the safeguards above. Update fgvk Gym assertions if their contract changes. Avoid wholesale reverts: `401f3a2` also contains Steam controls and workload validation, while reverting `30bce16` alone would undo bounded cap restoration.
+Before deciding, inspect captures from the current bounded implementation, distinguish immediate-collapse attempts from attempts triggered after exit, and assess independent recovery benefit against unnecessary interruptions of generated output in legitimate heavy scenes. A `restored-policy-recovered` result can coincide with natural scene improvement; portable safety tests alone do not prove real-game benefit or a false-positive rate. If independent benefit remains unsubstantiated, prefer a focused removal of the extra trigger, with corresponding scheduler tests and documentation, while retaining the safeguards above. Avoid wholesale reverts: `401f3a2` also contains Steam controls and workload validation, while reverting `30bce16` alone would undo bounded cap restoration.
 
 #### Lower-load probe retries
 
@@ -167,7 +167,7 @@ Rejected lower-load Smooth Cadence probes retain their 60-, 120-, or 300-second 
 
 A transient source-rate burst above the larger of three times baseline or twice target is treated as native activity and does not advance policy clocks.
 
-Cadence-drop detection holds the proven interval while confirming three consecutive samples at least twice as long. It also accumulates those candidate samples in a shadow smoothed estimate: if the next sample rejects the sustained-drop hypothesis, the estimator incorporates the delayed observations before the current interval. Discarding them instead can lock onto only the fast half of a bursty stream, for example reporting 125 FPS for alternating 8/32 ms intervals whose actual rate is 50 FPS, and suppress useful generated work. Timing resets, impossible fast bursts, and transport backoff discard pending drop evidence. The existing hard-stall, history, delivery, and multiplier bounds still apply. Portable tests cover both recovery policies and Smooth Cadence settings; Gym's `adaptive-bursty-source` row exercises a 75 → noisy 50 → 75 FPS round trip with a 150 FPS target and 240 Hz headless Gamescope. This is source-cadence evidence relevant to mouse-stutter investigation, not a simulation of HID polling, game input, or physical scanout.
+Cadence-drop detection holds the proven interval while confirming three consecutive samples at least twice as long. It also accumulates those candidate samples in a shadow smoothed estimate: if the next sample rejects the sustained-drop hypothesis, the estimator incorporates the delayed observations before the current interval. Discarding them instead can lock onto only the fast half of a bursty stream, for example reporting 125 FPS for alternating 8/32 ms intervals whose actual rate is 50 FPS, and suppress useful generated work. Timing resets, impossible fast bursts, and transport backoff discard pending drop evidence. The existing hard-stall, history, delivery, and multiplier bounds still apply. Portable tests cover both recovery policies and Smooth Cadence settings. They are source-cadence evidence, not a simulation of HID polling, game input, or physical scanout.
 
 ### Dynamic Cadence Recovery
 
@@ -198,12 +198,6 @@ After a Fractional/Steady recovery event, history warm-up and scheduler planning
 Private Flow Scale, model, or generated-capacity changes retain the old policy while replacement resources are prepared. Capacity growth that does not fit the current WSI pool remains pending for game-owned recreation. [Runtime configuration transitions](RUNTIME-TRANSITIONS.md) owns that lifecycle. Ultra Performance is a restart-bound resource policy, not a separate scheduler.
 
 ## Runtime validation
-
-Use the sibling fgvk Gym checkout between portable policy tests and commercial-game testing. Its manifests own current rows, assertions, and thresholds.
-
-Select coverage according to [Testing framegen-vulkan](../../TESTING.md#selecting-fgvk-gym-coverage). Scheduler changes normally begin with `recovery`; pacing-owner changes use `pacing`; external overlay pause/throttle and workload-proven source-return changes use `external-recovery`; construction changes add `vulkan`; translation changes add `proton-e2e` or `proton-compatibility`. A filtered pass proves only its selected rows.
-
-For promotion, retention and downshift under changing GPU load, fgvk Gym's `docs/RENDERER-DELIVERY.md` owns the optional Adaptive GPU-load journey. It reuses the delivery runner's Steady/Fractional, colour and precision controls while measuring real application GPU work and independent compositor completion. Calibrate the load for the tested device and separate ordinary delivery from opt-in Dynamic Cadence Recovery: hidden FIFO headroom with recovery disabled is not proof of a scheduler defect. Preserve pacing costs and discarded frames around intentional lower-workload probes instead of changing their policy to satisfy a test. These synthetic journeys do not replace the commercial-game or physical-display matrix.
 
 The external-recovery inventory pairs unidentified-overlay controls across Adaptive 2x and 3x, Fixed, and Frame Generation-only operation. Pause, covered-throttle, and repeated short/long journeys must independently prove source recovery, target-output recovery, focus sequencing, fresh history, generation suspension where applicable, and context stability. Portable policy tests separately cover Fractional/Smooth mode, automatic base-cap state, 2x–5x ceilings, failed-baseline retention, exact Fixed stability, transition-scoped acquire failure, inert successful transport, and the absence of FPS-authorized recovery so hardware rows do not carry the full combinatorial burden.
 
@@ -244,7 +238,6 @@ An affected candidate is ready for broader testing when:
 | Private-resource transitions | `fgvk-render/src/profile_update.hpp`, `fgvk-render/src/runtime_transition.hpp`, `fgvk-render/src/swapchain/resources.cpp` |
 | Diagnostics | `fgvk-render/src/present_diagnostics.*` |
 | Portable policy tests and matrix | `fgvk-render/tests/`, `scripts/test-adaptive-scheduler.sh` |
-| Real hardware and runtime evidence | Sibling fgvk Gym checkout |
 
 ## Native Fixed output handoff validation
 

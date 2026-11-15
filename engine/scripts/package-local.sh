@@ -291,7 +291,6 @@ fi
 required_paths=(
     "bin/fgvk" \
     "bin/fgvk-cli" \
-    "bin/fgvk-diagnostics" \
     "bin/fgvk-installer" \
     "libexec/framegen-vulkan/fgvk-launch" \
     "lib/libfgvk-render.so" \

@@ -68,11 +68,10 @@ If no profile matches, framegen-vulkan stays inactive.
 
 `%command%` is a Steam placeholder and must not be typed into a terminal. framegen-vulkan operates on Vulkan; Proton games work through DXVK or VKD3D-Proton, while OpenGL applications require the optional Zink setting in `launcher.conf`.
 
-For every field and environment variable, see [Advanced configuration](docs/CONFIGURATION-REFERENCE.md). To validate a configuration or collect a focused report, run:
+For every field and environment variable, see [Advanced configuration](docs/CONFIGURATION-REFERENCE.md). To validate a configuration, run:
 
 ```bash
 ~/.local/bin/fgvk-cli validate
-~/.local/bin/fgvk-diagnostics
 ```
 
 ## In-game considerations

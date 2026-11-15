@@ -121,14 +121,7 @@ Ultra Performance remains a process-start policy: the global FP16 choice, Flow S
 
 ## Runtime status and diagnostics
 
-With diagnostics enabled, `runtime-transition-pending`, `runtime-transition-prepared`, `runtime-transition-failed`, `runtime-transition-applied`, and `runtime-transition-recreation-requested` identify the configuration boundary and result. `ordered-acquire-*` distinguishes explicit acquire failure, bounded retry, and transition-scoped recreation. Swapchain create, replacement, retirement, WSI-prime, backend-stabilization, and memory records provide lifecycle evidence. The diagnostics helper continues to recognize retired slow-acquire, lower-present, and performance-watchdog operation names when collecting logs from older installations.
-
-Each context also publishes an atomic schema-5 requested-versus-applied record under the configuration directory's `runtime-state/`. It includes process identity, transition phase, pending boundaries, requested and applied profile values, and effective generation state. Context teardown removes its own record and lock.
-
-
-Before the first primary context publishes, one process-wide pass removes only unlocked stale framegen-vulkan runtime files from that exact directory. It is non-recursive and best-effort; held locks, unrelated names, symlinks, ownership uncertainty, and failures are preserved and never block startup. Status I/O is observational and cannot change presentation.
-
-Follow [Collect diagnostics](COLLECT_DIAGNOSTICS.md) to capture a session; use `fgvk-diagnostics --list` to select a narrower `config`, `startup`, `recovery`, or `performance` report.
+With diagnostics enabled, `runtime-transition-pending`, `runtime-transition-prepared`, `runtime-transition-failed`, `runtime-transition-applied`, and `runtime-transition-recreation-requested` identify the configuration boundary and result. `ordered-acquire-*` distinguishes explicit acquire failure, bounded retry, and transition-scoped recreation. Swapchain create, replacement, retirement, WSI-prime, backend-stabilization, and memory records provide lifecycle evidence. Follow [Collect diagnostics](COLLECT_DIAGNOSTICS.md) to capture a session.
 
 ## Adding a setting
 
@@ -170,5 +163,5 @@ Exported image-memory and timeline-semaphore descriptors are scoped until the ba
 | Private transitions and live application | `fgvk-render/src/runtime_transition.hpp`, `fgvk-render/src/swapchain/resources.cpp`, `fgvk-render/src/swapchain/profile.cpp` |
 | Real-frame and generated presentation | `fgvk-render/src/swapchain/present.cpp`, `fgvk-render/src/swapchain/present/` |
 | Process-start transport policy | `fgvk-render/src/presentation_policy.hpp`, `scripts/fgvk-launch` |
-| Status and diagnostics | `fgvk-render/src/runtime_status.*`, `fgvk-render/src/present_diagnostics.*` |
-| Deterministic tests | `fgvk-render/tests/profile_update_tests.cpp`, `runtime_transition_tests.cpp`, `runtime_status_tests.cpp` |
+| Status and diagnostics | `fgvk-render/src/present_diagnostics.*` |
+| Deterministic tests | `fgvk-render/tests/profile_update_tests.cpp`, `runtime_transition_tests.cpp` |

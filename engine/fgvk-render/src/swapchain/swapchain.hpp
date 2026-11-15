@@ -20,7 +20,6 @@
 #include "presentation_policy.hpp"
 #include "present_diagnostics.hpp"
 #include "native_copy_profile.hpp"
-#include "runtime_status.hpp"
 #include "runtime_health.hpp"
 #include "runtime_transition.hpp"
 #include "present_timing.hpp"
@@ -370,14 +369,6 @@ namespace fgvk::layer {
             ls::owned_ptr<ls::R<backend::Context>> context;
         };
 
-        struct RuntimeStatusState {
-            ls::GameConf requestedProfile;
-            uint64_t stateRevision{0};
-            bool swapchainRecreationPending{false};
-            bool processRestartPending{false};
-            std::optional<std::string> error;
-        };
-
         std::vector<vk::Image> sourceImages;
         std::vector<vk::Image> destinationImages;
         ls::lazy<vk::TimelineSemaphore> syncSemaphore;
@@ -458,8 +449,7 @@ namespace fgvk::layer {
             frameGenerationTransition;
         std::optional<FrameGenerationResources>
             preparedFrameGenerationResources;
-        RuntimeStatusPublisher runtimeStatusPublisher;
-        RuntimeStatusState runtimeStatusState;
+        ls::GameConf requestedProfile;
         LiveProfileResourceRecreation liveProfileResourceRecreation;
         std::optional<AdaptiveScheduler> adaptiveScheduler;
         // A partial native-first acquisition proves that this exact ordered
@@ -533,7 +523,6 @@ namespace fgvk::layer {
 
         [[nodiscard]] bool applyPendingFrameGenerationResources(
             const vk::Vulkan& vk);
-        void publishRuntimeStatus(std::string_view reason) noexcept;
         [[nodiscard]] static std::optional<uint64_t>
             generatedImageAcquireTimeoutNs();
         void ensureFrameGenerationExecutionResources(const vk::Vulkan& vk);

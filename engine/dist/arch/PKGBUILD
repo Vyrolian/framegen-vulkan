@@ -21,8 +21,8 @@ install="${pkgname}.install"
 
 # Runtime dependencies mapped to the DT_NEEDED entries of the shipped binaries.
 # Both layer sets ship 64-bit and 32-bit libraries, hence the lib32 entries.
-# bash is intentionally not listed even though /usr/libexec/framegen-vulkan/fgvk-launch and
-# /usr/bin/fgvk-diagnostics are bash scripts: bash is guaranteed by base.
+# bash is intentionally not listed even though /usr/libexec/framegen-vulkan/fgvk-launch is a
+# bash script: bash is guaranteed by base.
 depends=(
     # libc.so.6, libm.so.6, ld-linux-x86-64.so.2
     'glibc'
@@ -134,7 +134,6 @@ package() {
     local required_path
     local required_paths=(
         bin/fgvk-cli
-        bin/fgvk-diagnostics
         bin/fgvk-installer
         bin/fgvk
         libexec/framegen-vulkan/fgvk-launch

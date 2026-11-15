@@ -4,7 +4,7 @@ Install `framegen-vulkan-bin` for a system-wide framegen-vulkan on writable x86_
 
 ## Contents
 
-The package includes the `fgvk` settings window and `fgvk <command>` entry point, the CLI, the private launch helper, the diagnostics helper, and 64-bit/32-bit Vulkan layers under `/usr`. Use pacman to manage these files; the user-local archive installer is not included. Maintainers can find the [payload layout and checks](../../docs/BUILDING-FROM-SOURCE.md#arch-package-maintenance) in the build guide.
+The package includes the `fgvk` settings window and `fgvk <command>` entry point, the CLI, the private launch helper, and 64-bit/32-bit Vulkan layers under `/usr`. Use pacman to manage these files; the user-local archive installer is not included. Maintainers can find the [payload layout and checks](../../docs/BUILDING-FROM-SOURCE.md#arch-package-maintenance) in the build guide.
 
 ## Install the release package
 
@@ -82,7 +82,7 @@ Use `/usr/bin/fgvk` explicitly to select this package. Do not export `ENABLE_FGV
 
 ## Profiles and configuration data
 
-Profiles, settings, and runtime state live in `~/.config/framegen-vulkan` (`conf.toml`, `launcher.conf`, and `runtime-state/`). They belong to the user and are never installed, replaced, or removed by this package.
+Profiles and settings live in `~/.config/framegen-vulkan` (`conf.toml` and `launcher.conf`). They belong to the user and are never installed, replaced, or removed by this package.
 
 Because both delivery paths share that directory, do not run two different framegen-vulkan versions against one `~/.config/framegen-vulkan`: a user-local install and this package would migrate the same profiles with different engine versions. Keep one owner per user.
 

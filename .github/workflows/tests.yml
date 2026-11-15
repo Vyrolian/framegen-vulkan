@@ -31,8 +31,6 @@ jobs:
           python-version: "3.10"
       - name: Reject protected licensed inputs and binary payloads
         run: ./scripts/test-protected-inputs.sh
-      - name: Exercise safe capture staging and sanitization
-        run: ./scripts/test-capture-trace.sh
       - name: Check local release-candidate verification
         if: runner.os == 'Linux'
         run: ./scripts/test-release-candidate.sh
@@ -48,9 +46,6 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: "3.11"
-
-      - name: Test diagnostics helper
-        run: python3 -I scripts/tests/test_diagnostics_helper.py
 
       - name: Set up Node.js
         uses: actions/setup-node@v7
@@ -130,7 +125,6 @@ jobs:
           -DFGVK_BUILD_VK_LAYER=ON
           -DFGVK_BUILD_CLI=ON
           -DFGVK_REQUIRE_NATIVE_PACKAGE_HEADERS=ON
-          -DFGVK_GPU_QUALITY_TEST=OFF
 
       - name: Build Renderer and test executables
         run: cmake --build engine/build/ci-${{ matrix.toolchain }}
