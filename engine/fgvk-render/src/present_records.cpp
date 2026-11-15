@@ -672,8 +672,7 @@ void formatPacingWindowBody(const PacingWindowPayload& payload, const PacingProf
          << " frame_generation_enabled=" << window.frameGenerationEnabled
          << " adaptive=" << window.adaptive
          << " configured_multiplier=" << window.configuredMultiplier
-         << " configured_base_cap_fps=" << window.configuredCapFps
-         << " cap_lead_frames=" << window.capLeadFrames;
+         << " configured_base_cap_fps=" << window.configuredCapFps;
     // What each present actually asked for: the per-present mode overrides
     // the swapchain's create-time mode (present_mode is the layer's tracking).
     line << " swapchain_present_mode=" << window.swapchainPresentMode;

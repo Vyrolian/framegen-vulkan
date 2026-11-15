@@ -4,12 +4,10 @@
 #include "atomic_write.hpp"
 #include "fgvk-common/helpers/errors.hpp"
 
-#include <algorithm>
 #include <cstdint>
 #include <cstdlib>
 #include <exception>
 #include <filesystem>
-#include <iostream>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -124,15 +122,6 @@ namespace {
 
         return active_in;
     }
-    /// cap_lead_frames outside 1 to 3 is clamped; the clamp is logged.
-    uint32_t capLeadFramesFromFile(const int64_t value) {
-        const auto clamped = std::clamp<int64_t>(value,
-            GameConfLimits::minimumCapLeadFrames, GameConfLimits::maximumCapLeadFrames);
-        if (clamped != value)
-            std::clog << "framegen-vulkan: cap_lead_frames " << value << " is outside 1 to 3; using "
-                      << clamped << '\n';
-        return static_cast<uint32_t>(clamped);
-    }
     /// parse a pacing method from string
     Pacing parcingFromString(const std::string& str) {
         if (str == "none")
@@ -202,8 +191,6 @@ namespace {
                     GameConfDefaults::swapchainImageCountCompatibility
                 ),
             .base_fps_cap = tbl["base_fps_cap"].value_or(GameConfDefaults::baseFpsCap),
-            .cap_lead_frames = capLeadFramesFromFile(tbl["cap_lead_frames"].value_or<int64_t>(
-                GameConfDefaults::capLeadFrames)),
             .adaptive_stable_cadence = tbl["adaptive_stable_cadence"].value_or(
                 GameConfDefaults::adaptiveStableCadence
             ),
@@ -248,7 +235,6 @@ namespace {
             conf.swapchain_image_count_compatibility
         );
         profile.insert("base_fps_cap", static_cast<int64_t>(conf.base_fps_cap));
-        profile.insert("cap_lead_frames", static_cast<int64_t>(conf.cap_lead_frames));
         profile.insert("adaptive_stable_cadence", conf.adaptive_stable_cadence);
         profile.insert("ultra_performance", conf.ultra_performance);
         profile.insert("flow_scale", conf.flow_scale);

@@ -150,25 +150,20 @@ target_fps = 144
             "A lone retired handheld table must not reject the file");
     }
 
-    // cap_lead_frames is a live profile key of 1 to 3, default 3. A value outside that range is
-    // clamped when the file is read, and a rewrite keeps the clamped value.
-    void testCapLeadFrames(const std::filesystem::path& directory) {
-        const auto path = directory / "cap-lead-frames.toml";
-        const std::pair<const char*, uint32_t> cases[] = {
-            {"", 3}, {"cap_lead_frames = 1\n", 1}, {"cap_lead_frames = 2\n", 2},
-            {"cap_lead_frames = 3\n", 3}, {"cap_lead_frames = 0\n", 1},
-            {"cap_lead_frames = -4\n", 1}, {"cap_lead_frames = 9\n", 3},
-        };
-        for (const auto& [line, expected] : cases) {
-            writeText(path, std::string("version = 2\n[[profile]]\nname = 'game'\n") + line);
-            const ls::ConfigFile parsed(path);
-            expect(parsed.profiles().front().cap_lead_frames == expected,
-                "cap_lead_frames must read 1 to 3 with a default of 3 and clamp outside that range");
-        }
-        writeText(path, "version = 2\n[[profile]]\nname = 'game'\ncap_lead_frames = 2\n");
-        ls::ConfigFile(path).write(path);
-        expect(readText(path).find("cap_lead_frames = 2") != std::string::npos,
-            "Rewriting a configuration must keep cap_lead_frames");
+    // cap_lead_frames is retired. An old file still loads with its other settings, the key is
+    // ignored, and a rewrite drops it, like the other retired keys.
+    void testRetiredCapLeadFrames(const std::filesystem::path& directory) {
+        const auto path = directory / "retired-cap-lead-frames.toml";
+        writeText(path, "version = 2\n[[profile]]\nname = 'game'\nmultiplier = 3\n"
+            "base_fps_cap = 60\ncap_lead_frames = 2\n");
+        const ls::ConfigFile retired(path);
+        expect(retired.profiles().size() == 1 && retired.profiles().front().name == "game" &&
+                retired.profiles().front().multiplier == 3 &&
+                retired.profiles().front().base_fps_cap == 60,
+            "A retired cap_lead_frames key must not reject the file or change the other settings");
+        retired.write(path);
+        expect(readText(path).find("cap_lead_frames") == std::string::npos,
+            "Rewriting a configuration must drop the retired cap_lead_frames key");
     }
 
     // Native Remote Play used to write a root selection key. Files that still
@@ -288,7 +283,6 @@ int main() {
             defaults.swapchain_image_count_compatibility ==
                 ls::GameConfDefaults::swapchainImageCountCompatibility &&
             defaults.base_fps_cap == ls::GameConfDefaults::baseFpsCap &&
-            defaults.cap_lead_frames == ls::GameConfDefaults::capLeadFrames &&
             defaults.adaptive_stable_cadence ==
                 ls::GameConfDefaults::adaptiveStableCadence &&
             defaults.ultra_performance ==
@@ -312,7 +306,7 @@ int main() {
     testRetiredAdaptiveKeys(directory);
     testOptionalLosslessDll(directory);
     testRetiredPowerTables(directory);
-    testCapLeadFrames(directory);
+    testRetiredCapLeadFrames(directory);
     testLegacyRootSelectionIsIgnored(directory);
 
     const auto defaultPath = directory / "default.toml";

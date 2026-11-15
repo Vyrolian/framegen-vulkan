@@ -141,31 +141,23 @@ void presentIdTimeoutKeepsToken() {
         "the kept present ID token was not released by a later wait");
 }
 
-// The catch-up point for a present that arrives too early for the release wait's bound. The bound
-// is the live cap_lead_frames value, 1 to 3 cap intervals.
-void catchUpStartsOnlyAboveTheLeadBound() {
+// The catch-up point for a present that arrives too early for the release wait's bound.
+void catchUpStartsOnlyAboveThreeIntervals() {
     using Clock = ReleaseGate::Clock;
     const auto arrival = Clock::now();
     const auto interval = 10ms;
-    for (const uint32_t lead : {1U, 2U, 3U}) {
-        expect(!releaseGateCatchUp(arrival, arrival + lead * interval, interval, lead),
-            "a lead equal to the cap_lead_frames bound caught up");
-        const auto over = arrival + lead * interval + 1ns;
-        const auto catchUp = releaseGateCatchUp(arrival, over, interval, lead);
-        expect(catchUp && *catchUp == over - lead * interval,
-            "a lead one nanosecond over the cap_lead_frames bound did not catch up to the bound");
-        expect(!releaseGateCatchUp(arrival, arrival + 50ms, Clock::duration::zero(), lead),
-            "a zero cap interval caught up");
-        expect(!releaseGateCatchUp(arrival, arrival + 50ms, -interval, lead),
-            "a negative cap interval caught up");
-        expect(!releaseGateCatchUp(arrival + 50ms, arrival, interval, lead),
-            "a deadline before the arrival caught up");
-    }
-    // Lead 1 holds a deadline two intervals out, which lead 3 would not catch up.
-    expect(releaseGateCatchUp(arrival, arrival + 2 * interval, interval, 1).has_value(),
-        "lead 1 did not catch up a deadline two intervals ahead");
-    expect(!releaseGateCatchUp(arrival, arrival + 2 * interval, interval, 3).has_value(),
-        "lead 3 caught up a deadline two intervals ahead");
+    expect(!releaseGateCatchUp(arrival, arrival + 3 * interval, interval),
+        "a lead equal to three cap intervals caught up");
+    const auto over = arrival + 3 * interval + 1ns;
+    const auto catchUp = releaseGateCatchUp(arrival, over, interval);
+    expect(catchUp && *catchUp == over - 3 * interval,
+        "a lead one nanosecond over three cap intervals did not catch up to the bound");
+    expect(!releaseGateCatchUp(arrival, arrival + 50ms, Clock::duration::zero()),
+        "a zero cap interval caught up");
+    expect(!releaseGateCatchUp(arrival, arrival + 50ms, -interval),
+        "a negative cap interval caught up");
+    expect(!releaseGateCatchUp(arrival + 50ms, arrival, interval),
+        "a deadline before the arrival caught up");
 }
 
 void presentIdAndSemaphoreTokensShareActivation() {
@@ -308,6 +300,6 @@ int main() {
     tokenKindsNeverMatch();
     presentIdTimeoutKeepsToken();
     presentIdAndSemaphoreTokensShareActivation();
-    catchUpStartsOnlyAboveTheLeadBound();
+    catchUpStartsOnlyAboveThreeIntervals();
     std::cout << "release gate tests passed\n";
 }

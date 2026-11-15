@@ -275,7 +275,6 @@ namespace fgvk::layer::present_diagnostics {
             bool frameGenerationEnabled{}, adaptive{};
             size_t configuredMultiplier{};
             double configuredCapFps{};
-            uint32_t capLeadFrames{};
             // Per-present VkSwapchainPresentModeInfoEXT mode, by present
             // kind (slots in presentModeSlotNames), and the lower swapchain's
             // create-time mode, which applies to presents without one.
@@ -380,13 +379,11 @@ namespace fgvk::layer::present_diagnostics {
             window.effectiveCapFps = cap;
             window.fifoCallerTimingSources += fifoCallerTiming;
         }
-        void settings(bool frameGeneration, bool adaptive, size_t multiplier, double configuredCap,
-                uint32_t capLeadFrames) {
+        void settings(bool frameGeneration, bool adaptive, size_t multiplier, double configuredCap) {
             window.frameGenerationEnabled = frameGeneration;
             window.adaptive = adaptive;
             window.configuredMultiplier = multiplier;
             window.configuredCapFps = configuredCap;
-            window.capLeadFrames = capLeadFrames;
         }
         void phaseTiming(const std::array<Clock::duration, 9>& durations) {
             lastPhases = durations;
