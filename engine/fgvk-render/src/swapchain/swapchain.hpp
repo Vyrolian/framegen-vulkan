@@ -376,16 +376,6 @@ namespace fgvk::layer {
         struct RenderPass {
             vk::CommandBuffer commandBuffer;
             vk::Semaphore acquireSemaphore;
-        };
-        // One slot per frame-generation batch. A slot is reused only after the
-        // fence of the batch three presents earlier signals; source-image
-        // reuse is ordered on the GPU by FrameState::sourceReleaseTimelineValue.
-        static constexpr size_t renderSlotDepth = 3;
-        struct RenderSlot {
-            vk::CommandBuffer sourceCopy;
-            vk::Fence fence;
-            std::vector<RenderPass> passes;
-            bool inFlight{false};
             // Staging, its binary signal and its recorded game-queue copy are
             // created with generatedCopies and released with them when the
             // destination images are replaced.
@@ -396,6 +386,19 @@ namespace fgvk::layer {
             // image, recorded lazily and cleared whenever the destination images
             // are replaced.
             std::vector<vk::CommandBuffer> generatedCopies;
+            // Binary signal of this pass's worker copy or skip, waited once by the next
+            // generated pass of the same batch. Created and released with the staged resources.
+            std::optional<vk::Semaphore> copied;
+        };
+        // One slot per frame-generation batch. A slot is reused only after the
+        // fence of the batch three presents earlier signals; source-image
+        // reuse is ordered on the GPU by FrameState::sourceReleaseTimelineValue.
+        static constexpr size_t renderSlotDepth = 3;
+        struct RenderSlot {
+            vk::CommandBuffer sourceCopy;
+            vk::Fence fence;
+            std::vector<RenderPass> passes;
+            bool inFlight{false};
             // Diagnostic split timestamps of this slot's last source copy. Read only
             // after this slot's fence is observed signalled; the copy itself is unchanged.
             std::unique_ptr<vk::TimestampQueryPool> splitQueries;
@@ -557,7 +560,7 @@ namespace fgvk::layer {
         void recordOutputGpuSplit(const vk::Vulkan& vk, const RenderSlot& slot);
         void collectRenderSplitTimestamps(const vk::Vulkan& vk);
         [[nodiscard]] present_diagnostics::SplitRenderHalf findRenderSplitHalf(uint64_t source) const;
-        [[nodiscard]] bool recordGeneratedCopies(const vk::Vulkan& vk, RenderSlot& slot);
+        [[nodiscard]] bool recordGeneratedCopies(const vk::Vulkan& vk, RenderSlot& slot, size_t pass);
         [[nodiscard]] bool renderSlotsInFlight() const;
         [[nodiscard]] bool pollRenderSlotsIdle(const vk::Vulkan& vk);
         void handleRenderFenceBudgetMiss(

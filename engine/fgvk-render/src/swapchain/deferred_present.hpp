@@ -407,7 +407,10 @@ public:
         PFN_vkQueueSubmit submit{};
         VkSemaphore acquireSemaphore{};
         VkSemaphore staged{};
+        // Optional. The signal of the previous generated copy or skip of the same batch; this job's copy or skip waits it exactly once, so copies of one batch execute in order.
+        VkSemaphore preceding{};
         VkSemaphore continuation{};
+        // Optional: only the last generated output of a batch carries the render slot fence.
         VkFence fence{};
         uint32_t imageCount{};
         std::array<VkCommandBuffer, maxCopyImages> copies{};
@@ -623,7 +626,7 @@ public:
     bool enqueueGeneratedCopy(VkSwapchainKHR swapchain, const void* chain,
             Clock::time_point deadline, const GeneratedCopy& copy, OutputIdentity identity = {}) {
         if (copy.imageCount == 0 || copy.imageCount > maxCopyImages || !copy.acquire || !copy.submit ||
-                !copy.staged || !copy.continuation || !copy.fence)
+                !copy.staged || !copy.continuation)
             return false;
         const auto metadata = snapshotChain(chain, this->ownedIdStorage);
         if (!metadata || applicationIdentified(*metadata)) return false;
@@ -1107,29 +1110,35 @@ private:
     }
 
     // Callers hold queue->mutex and never sleep there. Every submit waits the
-    // binary staged semaphore, and the acquire too when it succeeded. A copy
-    // signals that image's present wait and the continuation. A skip signals
-    // only the continuation. Every submit signals the fence. The private queue's
-    // tail is signalled too (F9c, see submitPrivate). D7b: lowerIndex is the lower image of a
+    // binary staged semaphore, the acquire too when it succeeded, and the preceding
+    // copy of the same batch when set. A copy signals that image's present wait and
+    // the continuation. A skip signals only the continuation. Every submit signals
+    // the fence. The private queue's tail is signalled too (F9c, see submitPrivate).
+    // D7b: lowerIndex is the lower image of a
     // copy and UINT32_MAX for a skip, which has no image. D7c: reason is the skip's SkipReason
     // (0 for a copy) and source the batch ordinal; both only label the submit's history record.
     static VkResult submitGeneratedWork(DeferredPresentQueue& queue, const GeneratedCopy& copy,
             const bool acquired, const VkCommandBuffer command, const VkSemaphore presentWait,
             const uint32_t lowerIndex, const uint8_t reason, const uint64_t source) {
-        // The staged wait is always the last wait. Signals: the optional present wait,
+        // Waits, in order: the acquire when acquired, the preceding copy when set, then
+        // staged, which is always the last wait. Signals: the optional present wait,
         // then the continuation.
-        const std::array<VkSemaphore, 2> waits{copy.acquireSemaphore, copy.staged};
-        const std::array<VkPipelineStageFlags, 2> stages{
-            VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT};
+        std::array<VkSemaphore, 3> waits{};
+        uint32_t waitCount = 0;
+        if (acquired) waits[waitCount++] = copy.acquireSemaphore;
+        if (copy.preceding != VK_NULL_HANDLE) waits[waitCount++] = copy.preceding;
+        waits[waitCount++] = copy.staged;
+        const std::array<VkPipelineStageFlags, 3> stages{
+            VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+            VK_PIPELINE_STAGE_ALL_COMMANDS_BIT};
         const std::array<VkSemaphore, 2> signals{presentWait, copy.continuation};
-        const uint32_t waitCount = acquired ? 2u : 1u;
         const uint32_t signalCount = presentWait == VK_NULL_HANDLE ? 1u : 2u;
         const VkSubmitInfo submit{
             .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
             .pNext = nullptr,
             .waitSemaphoreCount = waitCount,
-            .pWaitSemaphores = waits.data() + (2 - waitCount),
-            .pWaitDstStageMask = stages.data() + (2 - waitCount),
+            .pWaitSemaphores = waits.data(),
+            .pWaitDstStageMask = stages.data(),
             .commandBufferCount = command != VK_NULL_HANDLE ? 1u : 0u,
             .pCommandBuffers = command != VK_NULL_HANDLE ? &command : nullptr,
             .signalSemaphoreCount = signalCount,
@@ -1400,6 +1409,7 @@ private:
             }
             const auto ready = batch.readiness;
             const size_t limit = batch.limit;
+            realOffsetController.expectedGenerated = limit > 1 ? static_cast<uint32_t>(limit - 1) : 1;
             const bool copyTail = index > 0 && batch.jobs[index - 1].copyActive &&
                 !batch.aggregate.calls[index - 1].skipped;
             auto deadline = first ? current.deadline :
@@ -1428,7 +1438,8 @@ private:
                 };
                 // S7: the optional real offset, never closer than a quarter interval. S8d: the
                 // applied move is measured after the release limit, and again after the present.
-                if (ready.overlap && batch.jobs[index - 1].copy.internalImages) {
+                // The offset moves only the real output of a batch, at every multiplier.
+                if (ready.overlap && batch.jobs[index - 1].copy.internalImages && !current.generated) {
                     commandedRealOffset = currentRealOffset();
                     unmovedRealDeadline = limitTail(deadline);
                     deadline = limitTail(realDeadlineWithOffset(deadline,

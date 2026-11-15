@@ -82,12 +82,13 @@ inline std::atomic<int64_t> realOffsetAutoNs{0};
 inline std::atomic<uint64_t> realOffsetAutoSamples{0};
 inline std::atomic<uint64_t> realOffsetAutoHeld{0};
 
-/// S8b: integrates the generated output's distance from the midpoint of its two reals,
-/// measured on the private queue's GPU clock, into the real offset. A positive error
-/// (generated late) moves the reals later. Only the mean is corrected: the per-frame
-/// GPU-turn wait is decided after the present call. Worker thread only. S8d: while the
-/// last real could not take the offset (`limited`, its sign), samples pushing further that
-/// way are held: counted in `held`, not integrated, not accepted.
+/// S8b: integrates the mean distance of a source's generated outputs from the midpoint of
+/// its two reals, measured on the private queue's GPU clock, into the real offset. A positive
+/// error (generated late) moves the reals later. For N - 1 evenly placed generated outputs the
+/// mean expected position is the midpoint for every N, so one offset serves every multiplier.
+/// Only the mean is corrected: the per-frame GPU-turn wait is decided after the present call.
+/// Worker thread only. S8d: while the last real could not take the offset (`limited`, its
+/// sign), samples pushing further that way are held: counted in `held`, not integrated, not accepted.
 struct RealOffsetController {
     using Duration = std::chrono::nanoseconds;
     static constexpr Duration limit = std::chrono::microseconds{1000};
@@ -101,24 +102,36 @@ struct RealOffsetController {
     uint64_t accepted{};
     uint64_t held{};
     int limited{};
-    bool haveReal{}, haveGenerated{};
+    // Generated outputs per source of the current batch (multiplier - 1), set by the worker.
+    // A source with a different count gives no sample.
+    uint32_t expectedGenerated{1};
+    bool haveReal{};
     uint64_t realSource{}, generatedSource{};
-    Duration realAt{}, generatedAt{};
+    uint32_t generatedCount{};
+    Duration realAt{}, generatedSum{}, generatedFirst{}, generatedLast{};
 
     /// One finished marker, in present order. Returns true when it completed an accepted sample.
     constexpr bool observe(const bool generated, const uint64_t source, const Duration at) noexcept {
         if (generated) {
-            generatedSource = source;
-            generatedAt = at;
-            haveGenerated = true;
+            if (generatedCount == 0 || generatedSource != source) {
+                generatedSource = source;
+                generatedCount = 1;
+                generatedSum = at;
+                generatedFirst = generatedLast = at;
+            } else {
+                ++generatedCount;
+                generatedSum += at;
+                generatedLast = at;
+            }
             return false;
         }
         bool used = false;
-        if (haveReal && haveGenerated && generatedSource == source && realSource + 1 == source &&
-                realAt < generatedAt && generatedAt < at) {
+        if (haveReal && generatedCount != 0 && generatedCount == expectedGenerated &&
+                generatedSource == source && realSource + 1 == source &&
+                realAt < generatedFirst && generatedLast < at) {
             const auto step = at - realAt;
             if (step >= minStep && step <= maxStep) {
-                const auto error = generatedAt - (realAt + step / 2);
+                const auto error = generatedSum / generatedCount - (realAt + step / 2);
                 if (error <= errorReject && error >= -errorReject) {
                     lastError = error;
                     if ((limited > 0 && error > Duration{}) || (limited < 0 && error < Duration{})) {
@@ -135,11 +148,11 @@ struct RealOffsetController {
         haveReal = true;
         realSource = source;
         realAt = at;
-        haveGenerated = false;
+        generatedCount = 0;
         return used;
     }
     /// Drops the pending markers; the offset and `limited` are kept.
-    constexpr void forget() noexcept { haveReal = haveGenerated = false; }
+    constexpr void forget() noexcept { haveReal = false; generatedCount = 0; }
 };
 
 }

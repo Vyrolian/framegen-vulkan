@@ -85,14 +85,16 @@ void Swapchain::ensureFrameGenerationExecutionResources(
 // and swapchain image set. The slot's staging copy runs on the game queue at
 // present time, before the source copy that releases the next backend batch.
 // The worker therefore copies only staging into each swapchain image.
-bool Swapchain::recordGeneratedCopies(const vk::Vulkan& vk, RenderSlot& slot) {
-    if (slot.staging && slot.generatedCopies.size() == this->info.images.size()) return true;
+bool Swapchain::recordGeneratedCopies(const vk::Vulkan& vk, RenderSlot& slot, size_t pass) {
+    if (pass >= this->destinationImages.size()) return false;
+    RenderPass& renderPass = slot.passes.at(pass);
+    if (renderPass.staging && renderPass.generatedCopies.size() == this->info.images.size()) return true;
     if (this->destinationImages.empty() ||
             this->info.images.size() > DeferredPresent::maxCopyImages)
         return false;
     // Diagnostic output split: two timestamps around each worker copy. Created once per slot.
     // A failure leaves the copies untimed, as they are without the split gate.
-    if (present_diagnostics::pacingGpuSplitProfileEnabled() && this->pacingProfile && !slot.outputQueries) {
+    if (pass == 0 && present_diagnostics::pacingGpuSplitProfileEnabled() && this->pacingProfile && !slot.outputQueries) {
         try {
             slot.outputQueries = std::make_unique<vk::TimestampQueryPool>(vk, 2);
         } catch (const std::exception& error) {
@@ -101,17 +103,18 @@ bool Swapchain::recordGeneratedCopies(const vk::Vulkan& vk, RenderSlot& slot) {
             present_diagnostics::reportPacingGpuSplitUnavailable("output-queries", "unknown error");
         }
     }
-    vk::TimestampQueryPool* const outputTimer = slot.outputQueries.get();
+    vk::TimestampQueryPool* const outputTimer = pass == 0 ? slot.outputQueries.get() : nullptr;
     try {
-        const auto& destinationImage = this->destinationImages.at(0);
+        const auto& destinationImage = this->destinationImages.at(pass);
         const VkExtent2D extent = destinationImage.getExtent();
-        slot.staging.emplace(vk, extent, this->info.format,
+        renderPass.staging.emplace(vk, extent, this->info.format,
             VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
-        const VkImage stagingImage = slot.staging->handle();
-        slot.staged.emplace(vk);
-        slot.stagingCopy.emplace(vk);
+        const VkImage stagingImage = renderPass.staging->handle();
+        renderPass.staged.emplace(vk);
+        renderPass.copied.emplace(vk);
+        renderPass.stagingCopy.emplace(vk);
         {
-            const auto& command = *slot.stagingCopy;
+            const auto& command = *renderPass.stagingCopy;
             command.begin(vk, 0);
             vk::acquireExternalImage(vk, command.handle(), destinationImage.handle(),
                 VK_ACCESS_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
@@ -175,13 +178,14 @@ bool Swapchain::recordGeneratedCopies(const vk::Vulkan& vk, RenderSlot& slot) {
             if (outputTimer) outputTimer->write(command.handle(), VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 1);
             command.end(vk);
         }
-        slot.generatedCopies = std::move(copies);
+        renderPass.generatedCopies = std::move(copies);
         return true;
     } catch (...) {
-        slot.generatedCopies.clear();
-        slot.stagingCopy.reset();
-        slot.staged.reset();
-        slot.staging.reset();
+        renderPass.generatedCopies.clear();
+        renderPass.stagingCopy.reset();
+        renderPass.staged.reset();
+        renderPass.copied.reset();
+        renderPass.staging.reset();
         return false;
     }
 }
@@ -293,10 +297,13 @@ void Swapchain::commitFrameGenerationResources(
         slot.splitPending = false;
         // Recorded copies name the replaced destination and swapchain images.
         // Release them before the staging image they read.
-        slot.generatedCopies.clear();
-        slot.stagingCopy.reset();
-        slot.staged.reset();
-        slot.staging.reset();
+        for (auto& pass : slot.passes) {
+            pass.generatedCopies.clear();
+            pass.stagingCopy.reset();
+            pass.staged.reset();
+            pass.copied.reset();
+            pass.staging.reset();
+        }
         // The output timestamps belong to the copies released above; a pending read is dropped.
         slot.outputPending = false;
         slot.outputQueries.reset();

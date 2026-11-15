@@ -1270,7 +1270,7 @@ struct CopySubmit {
     uint32_t count{};
     VkCommandBuffer command{};
     uint32_t waits{};
-    std::array<VkSemaphore, 2> waitSemaphores{};
+    std::array<VkSemaphore, 3> waitSemaphores{};
     uint32_t signals{};
     std::array<VkSemaphore, 3> signalSemaphores{};
     VkFence fence{};
@@ -1452,6 +1452,109 @@ void generatedCopyNeedsOpenBatch() {
         "generated copy without a staged signal was admitted");
     worker.closeBatch();
     expect(worker.finish(UINT64_MAX).has_value(), "refused generated copy left its batch open");
+}
+// W1: a second generated copy of a batch with `preceding` waits the first copy's signal once,
+// between its acquire and its staged signal, and both copies keep their order. The first copy
+// has no fence, as every copy but the last of a batch.
+void generatedCopyChainWaitsPreceding() {
+    auto queue = std::make_shared<DeferredPresentQueue>();
+    queue->queue = handle<VkQueue>(7);
+    DeferredPresent worker(queue, recordingPresent);
+    copySubmits.clear(); copyPresents.clear(); copyAcquireCalls = 0; copyAcquireResult = VK_SUCCESS;
+    copyAcquireImage = 2;
+    const auto swapchain = handle<VkSwapchainKHR>(11);
+    const auto realWait = handle<VkSemaphore>(12);
+    uint32_t realImage = 4;
+    const VkPresentInfoKHR realInfo{.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+        .waitSemaphoreCount = 1, .pWaitSemaphores = &realWait,
+        .swapchainCount = 1, .pSwapchains = &swapchain, .pImageIndices = &realImage};
+    auto head = generatedCopy();
+    head.continuation = handle<VkSemaphore>(65);
+    head.fence = VK_NULL_HANDLE;
+    auto tail = generatedCopy();
+    tail.acquireSemaphore = handle<VkSemaphore>(66);
+    tail.staged = handle<VkSemaphore>(67);
+    tail.preceding = handle<VkSemaphore>(65);
+    for (uint32_t k = 0; k < tail.imageCount; ++k) {
+        tail.copies.at(k) = handle<VkCommandBuffer>(84 + k);
+        tail.presentWaits.at(k) = handle<VkSemaphore>(74 + k);
+    }
+    const auto deadline = DeferredPresent::Clock::now();
+    expect(worker.beginBatch(3), "generated chain batch rejected");
+    expect(worker.enqueueGeneratedCopy(swapchain, nullptr, deadline, head),
+        "first generated copy of a chain with no fence was rejected");
+    expect(worker.enqueueGeneratedCopy(swapchain, nullptr, deadline + 1ms, tail),
+        "chained generated copy with a preceding signal was rejected");
+    expect(worker.enqueue(realInfo, deadline + 2ms), "real output rejected after the chain");
+    worker.closeBatch();
+    const auto completion = worker.finish(UINT64_MAX);
+    expect(completion && completion->count == 3 && completion->result == VK_SUCCESS &&
+        !completion->calls[0].skipped && !completion->calls[1].skipped && !completion->calls[2].skipped,
+        "chained generated copies were skipped or changed the batch result");
+    expect(copySubmits.size() == 2, "chained generated copies were not submitted exactly once each");
+    const auto& first = copySubmits.front();
+    expect(first.count == 1 && first.command == handle<VkCommandBuffer>(82) && first.fence == VK_NULL_HANDLE &&
+        first.waits == 2 && first.waitSemaphores[0] == handle<VkSemaphore>(61) &&
+        first.waitSemaphores[1] == handle<VkSemaphore>(62) &&
+        first.signals == 2 && first.signalSemaphores[0] == handle<VkSemaphore>(72) &&
+        first.signalSemaphores[1] == handle<VkSemaphore>(65),
+        "first chain copy did not wait acquire and staged, or signal present wait and its copied signal");
+    const auto& second = copySubmits.back();
+    expect(second.count == 1 && second.command == handle<VkCommandBuffer>(86) && second.fence == handle<VkFence>(64) &&
+        second.waits == 3 && second.waitSemaphores[0] == handle<VkSemaphore>(66) &&
+        second.waitSemaphores[1] == handle<VkSemaphore>(65) && second.waitSemaphores[2] == handle<VkSemaphore>(67) &&
+        second.signals == 2 && second.signalSemaphores[0] == handle<VkSemaphore>(76) &&
+        second.signalSemaphores[1] == handle<VkSemaphore>(63),
+        "chained copy did not wait acquire, preceding and staged in order, or signal present wait then continuation");
+    expect(copyPresents.size() == 3 && copyPresents[0] == std::pair{2u, handle<VkSemaphore>(72)} &&
+        copyPresents[1] == std::pair{2u, handle<VkSemaphore>(76)} && copyPresents[2] == std::pair{4u, realWait},
+        "chain did not present its copies in order before the real output");
+}
+// W1: a skipped chain copy waits its preceding signal and then its staged copy, and signals only
+// its continuation. The head skip has no fence.
+void generatedCopyChainSkipWaitsPreceding() {
+    auto queue = std::make_shared<DeferredPresentQueue>();
+    queue->queue = handle<VkQueue>(7);
+    DeferredPresent worker(queue, recordingPresent);
+    copySubmits.clear(); copyPresents.clear(); copyAcquireCalls = 0; copyAcquireResult = VK_NOT_READY;
+    copyAcquireImage = 2;
+    const auto swapchain = handle<VkSwapchainKHR>(11);
+    const auto realWait = handle<VkSemaphore>(12);
+    uint32_t realImage = 4;
+    const VkPresentInfoKHR realInfo{.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+        .waitSemaphoreCount = 1, .pWaitSemaphores = &realWait,
+        .swapchainCount = 1, .pSwapchains = &swapchain, .pImageIndices = &realImage};
+    auto head = generatedCopy();
+    head.continuation = handle<VkSemaphore>(65);
+    head.fence = VK_NULL_HANDLE;
+    auto tail = generatedCopy();
+    tail.acquireSemaphore = handle<VkSemaphore>(66);
+    tail.staged = handle<VkSemaphore>(67);
+    tail.preceding = handle<VkSemaphore>(65);
+    const auto deadline = DeferredPresent::Clock::now();
+    expect(worker.beginBatch(3), "skipped generated chain batch rejected");
+    expect(worker.enqueueGeneratedCopy(swapchain, nullptr, deadline, head), "skipped chain head rejected");
+    expect(worker.enqueueGeneratedCopy(swapchain, nullptr, deadline + 1ms, tail), "skipped chain tail rejected");
+    expect(worker.enqueue(realInfo, deadline + 2ms), "real output rejected after the skipped chain");
+    worker.closeBatch();
+    const auto completion = worker.finish(UINT64_MAX);
+    expect(completion && completion->count == 3 && completion->result == VK_SUCCESS &&
+        completion->calls[0].skipped && completion->calls[1].skipped && !completion->calls[2].skipped,
+        "skipped chain did not skip both generated outputs ahead of the real output");
+    expect(copySubmits.size() == 2, "skipped chain did not signal each output exactly once");
+    const auto& first = copySubmits.front();
+    expect(first.count == 0 && first.fence == VK_NULL_HANDLE && first.waits == 1 &&
+        first.waitSemaphores[0] == handle<VkSemaphore>(62) && first.signals == 1 &&
+        first.signalSemaphores[0] == handle<VkSemaphore>(65),
+        "skipped chain head did not wait staged and signal only its continuation");
+    const auto& second = copySubmits.back();
+    expect(second.count == 0 && second.fence == handle<VkFence>(64) && second.waits == 2 &&
+        second.waitSemaphores[0] == handle<VkSemaphore>(65) && second.waitSemaphores[1] == handle<VkSemaphore>(67) &&
+        second.signals == 1 && second.signalSemaphores[0] == handle<VkSemaphore>(63),
+        "skipped chain tail did not wait preceding and staged, or signal only its continuation");
+    expect(copyPresents.size() == 1 && copyPresents[0] == std::pair{4u, realWait},
+        "skipped chain presented a generated image or lost the real output");
+    copyAcquireResult = VK_SUCCESS;
 }
 VkResult VKAPI_CALL copyReadinessTimeout(VkDevice, const VkSemaphoreWaitInfo*, uint64_t) {
     return VK_TIMEOUT;
@@ -2066,6 +2169,10 @@ struct DeferredPresentTestAccess {
             worker.stopping = true;
         }
         worker.changed.notify_all();
+    }
+    // Sets the automatic real offset before a batch is admitted; the worker reads it only after admission.
+    static void setRealOffset(DeferredPresent& worker, std::chrono::nanoseconds offset) {
+        worker.realOffsetController.offset = offset;
     }
 };
 }
@@ -3097,6 +3204,43 @@ void generatedPreparedOrderAndBudget() {
             "prepared generated work was submitted more than once");
     }
 }
+// W1: in a three-output batch the automatic real offset moves only the real output. The second
+// generated output keeps its spacing after the first (its move is under 1 ms), and the real starts
+// at least a full offset (1 ms) after it, plus the real's own spacing of 10 ms.
+void generatedChainRealOffsetMovesOnlyTheReal() {
+    auto pool = std::make_shared<PreparedPool>();
+    preparedPool = pool.get();
+    copySubmits.clear();
+    realOffsetAutoConfigured.store(true);
+    auto queue = std::make_shared<DeferredPresentQueue>();
+    queue->queue = handle<VkQueue>(7);
+    DeferredPresent worker(queue, preparedPresent);
+    DeferredPresentTestAccess::setRealOffset(worker, std::chrono::microseconds{1000});
+    const auto swapchain = handle<VkSwapchainKHR>(11);
+    const auto wait = handle<VkSemaphore>(12);
+    const uint32_t image = 4;
+    const VkPresentInfoKHR real{.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+        .waitSemaphoreCount = 1, .pWaitSemaphores = &wait,
+        .swapchainCount = 1, .pSwapchains = &swapchain, .pImageIndices = &image};
+    const auto first = DeferredPresent::Clock::now() + 60ms;
+    expect(worker.beginBatch(3, {.overlap = true, .outputInterval = 10ms}), "offset batch rejected");
+    expect(worker.enqueueGeneratedCopy(swapchain, nullptr, first, preparedCopy()) &&
+        worker.enqueueGeneratedCopy(swapchain, nullptr, first + 10ms, preparedCopy()),
+        "offset batch generated outputs rejected");
+    const DeferredPresent::InternalRealCopy realCopy{.owner = pool, .tryAcquire = poolRealAcquire,
+        .submit = poolRealSubmit, .abandon = poolRealAbandon};
+    expect(worker.enqueueInternalReal(real, first + 20ms, realCopy), "offset batch real rejected");
+    worker.closeBatch();
+    const auto done = worker.finish(UINT64_MAX, false);
+    realOffsetAutoConfigured.store(false);
+    expect(done && done->count == 3 && done->result == VK_SUCCESS &&
+        !done->calls[0].skipped && !done->calls[1].skipped && !done->calls[2].skipped,
+        "offset batch failed");
+    expect(done->calls[1].scheduled - (first + 10ms) < 1ms,
+        "the second generated output was moved by the real offset");
+    expect(done->calls[2].scheduled - done->calls[1].scheduled >= 11ms,
+        "the real output did not take the real offset");
+}
 // A failed early acquire must not consume staged work. The existing deadline
 // acquire then submits exactly once. The direct and non-overlap gates do not try early.
 void generatedPreparationFallbackAndGates(bool disabled = false) {
@@ -3313,6 +3457,46 @@ static_assert([] {
     c.limited = 0;
     return sample(307, 640us) && c.offset == C::Duration{20us} && c.held == 150;
 }());
+// W1: N - 1 generated outputs per source, evenly placed between two reals 12 ms apart. Their mean
+// is the midpoint for every N, so `late` moves the mean by exactly `late`. `dropLast` omits the
+// last generated output of each source.
+constexpr RealOffsetController evenlySpacedReals(uint32_t expected, std::chrono::nanoseconds late,
+        bool dropLast = false) {
+    using namespace std::chrono_literals;
+    RealOffsetController c;
+    c.expectedGenerated = expected;
+    constexpr std::chrono::nanoseconds period = 12ms;
+    const auto step = period / static_cast<int64_t>(expected + 1);
+    (void)c.observe(false, 0, std::chrono::nanoseconds{});
+    for (int k = 1; k <= 20; ++k) {
+        const auto previous = period * (k - 1);
+        for (uint32_t j = 1; j <= expected; ++j)
+            if (!dropLast || j < expected)
+                (void)c.observe(true, static_cast<uint64_t>(k), previous + step * j + late);
+        (void)c.observe(false, static_cast<uint64_t>(k), period * k);
+    }
+    return c;
+}
+static_assert([] {
+    using namespace std::chrono_literals;
+    using C = RealOffsetController;
+    for (const uint32_t expected : {2u, 4u}) {
+        const auto even = evenlySpacedReals(expected, 0ns);
+        if (even.accepted != 20 || even.offset != 0ns || even.lastError != 0ns) return false;
+        const auto late = evenlySpacedReals(expected, 2ms);
+        if (late.accepted != 20 || late.lastError != 2ms || late.offset != 20 * (C::Duration{1ms} / C::gain))
+            return false;
+        const auto fewer = evenlySpacedReals(expected, 2ms, true);
+        if (fewer.accepted != 0 || fewer.offset != 0ns) return false;   // one marker short: no sample
+    }
+    // expectedGenerated 1 is today's rule: a second generated marker of the same source gives no sample.
+    C c;
+    (void)c.observe(false, 0, 0ms);
+    (void)c.observe(true, 1, 4ms);
+    (void)c.observe(true, 1, 8ms);
+    if (c.observe(false, 1, 12ms) || c.accepted != 0) return false;
+    return true;
+}());
 // S8d: the cap-bound windup. The real cannot start later than `reach` after its unmoved slot
 // (the next source present joins), so the error stays at `bias - reach` once the offset passes
 // `reach`. With the hold the offset stops at the reach; without it, it runs to the limit.
@@ -3338,6 +3522,7 @@ static_assert(realOffsetWindup(true) >= std::chrono::microseconds{200});
 
 int main([[maybe_unused]] int argc, [[maybe_unused]] char** argv) {
     generatedPreparedOrderAndBudget(); generatedPreparationFallbackAndGates();
+    generatedChainRealOffsetMovesOnlyTheReal();
     generatedPreparedRetirement(); generatedPreparedStop(); generatedPreparationErrors();
     queueRequest();
     privateSubmitWithoutTailIsUnchanged(); privateSubmitAppendsTail();
@@ -3353,7 +3538,8 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char** argv) {
     timingRequestIsCopiedAndRebuilt(); sixKnownNodesAreAccepted();
     overlappedChainShiftsLaterOutputs(); expeditedOutputAnchorsNextBatch();
     generatedCopyPresentsAcquiredImage(); generatedCopySkipsWithoutImage(); generatedCopySkipsOutOfRangeImage();
-    generatedCopyNeedsOpenBatch(); generatedCopyAddsPrivateTail(); generatedSkipAddsPrivateTail();
+    generatedCopyNeedsOpenBatch(); generatedCopyChainWaitsPreceding(); generatedCopyChainSkipWaitsPreceding();
+    generatedCopyAddsPrivateTail(); generatedSkipAddsPrivateTail();
     generatedCopyUnsafeSpacingModes(); generatedCopyTailSurvivesAJoin();
     lateGeneratedCopyPresentsBeforeLimit(); lateGeneratedCopyPastQuarterSkips();
     generatedCopyTailKeepsSpacingWithoutLimit();

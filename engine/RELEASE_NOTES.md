@@ -11,6 +11,7 @@
 - Generated-frame capacity follows the Fixed multiplier. Profiles with `multiplier = 2` and `adaptive_max_multiplier = 3` now reserve one generated output and one lower swapchain image fewer. Raising the multiplier live goes through the existing private rebuild or recreation request.
 - The `FGVK_INTERNAL_SWAPCHAIN`, `FGVK_INTERNAL_PREPARE`, `FGVK_PACING_PROFILE_COPY`, `FGVK_PACING_PROFILE_CONTENT` and `FGVK_PACING_PROFILE_CONTENT_SOURCES` variables are no longer read; the native copy timestamp profile and frame content capture are removed.
 - Frame generation runs only on swapchains with internal application images. A swapchain created with frame generation off presents real frames only; switching it on live asks the game for one swapchain recreation, and a swapchain that cannot use internal images logs `frame generation unavailable for this swapchain: reason=…`.
+- Frame generation outputs at 3x–5x are paced by the presentation worker like 2x; pacing correction applies at every multiplier.
 
 ## What's new in MAKO Renderer v4.6.0
 

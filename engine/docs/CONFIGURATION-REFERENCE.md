@@ -35,7 +35,7 @@ Known launchers and helpers stay inactive while their child games can match. The
 | --- | --- | --- |
 | `dll` | Automatic | Optional absolute path to `Lossless.dll`. Frame Generation requires it. |
 | `allow_fp16` | `true` | Selects FP16 for supported LSFG models; `false` selects FP32. If a model lacks native FP16, select FP32. Requires restart; Ultra Performance respects this choice. [Experimental source builds](BUILDING-FROM-SOURCE.md#experimental-forced-lsfg-fp16) have separate limits. |
-| `pacing_correction` | `true` | Fixed Frame Generation with internal images: a GPU timestamp after each output's present measures when the private present queue next runs, and the real frames are moved (at most ±1 ms) so each generated frame lands on the midpoint of its two reals. Corrects only the mean difference; no target times, no waits. Requires restart. `FGVK_REAL_OFFSET_US` overrides it: `auto` turns it on, `0` turns it off, another number from −1000 to 1000 sets a fixed offset in microseconds. |
+| `pacing_correction` | `true` | Fixed Frame Generation with internal images: a GPU timestamp after each output's present measures when the private present queue next runs, and the real frames are moved (at most ±1 ms) so the mean of the generated frames between two reals lands on the midpoint of those reals, at every multiplier. Corrects only the mean difference; no target times, no waits. Requires restart. `FGVK_REAL_OFFSET_US` overrides it: `auto` turns it on, `0` turns it off, another number from −1000 to 1000 sets a fixed offset in microseconds. |
 
 ## Profile settings
 

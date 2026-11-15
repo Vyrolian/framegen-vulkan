@@ -148,6 +148,14 @@ VkResult Swapchain::presentGeneratedFrames(
         }
     };
 
+    // A released native batch lets the worker acquire, copy and present every generated
+    // output at its deadline. Every output's copies are recorded before the first is
+    // submitted; a failure keeps the whole batch on the path below.
+    bool workerCopies = deferredTail && invocation.releasedOverlap &&
+        !plan.generatedImagesPreacquired && this->deferredPresent;
+    for (size_t i = 0; workerCopies && i < plan.scheduledGeneratedFrames.size(); ++i)
+        workerCopies = this->recordGeneratedCopies(invocation.vk, this->currentRenderSlot(), i);
+
     for (size_t i = 0; i < plan.scheduledGeneratedFrames.size(); ++i) {
         auto& postCopy = this->postCopySemaphores.at(
             this->frameState.sequenceIndex % this->postCopySemaphores.size()
@@ -155,18 +163,14 @@ VkResult Swapchain::presentGeneratedFrames(
         auto& destinationImage = this->destinationImages.at(i);
         auto& pass = this->currentRenderSlot().passes.at(i);
 
-        // A released native batch with one generated image lets the worker acquire,
-        // copy and present it at its deadline. Any refusal keeps the path below.
-        if (deferredTail && invocation.releasedOverlap && i == 0 &&
-                plan.scheduledGeneratedFrames.size() == 1 &&
-                !plan.generatedImagesPreacquired &&
-                this->deferredPresent &&
-                this->recordGeneratedCopies(invocation.vk, this->currentRenderSlot())) {
+        // Any refusal keeps the path below.
+        if (workerCopies && deferredTail) {
+            const bool last = i + 1 == plan.scheduledGeneratedFrames.size();
             auto& slot = this->currentRenderSlot();
             // The staging copy stays on the game queue, ahead of the source copy
             // that releases the next backend batch. Its signal is consumed below.
-            slot.stagingCopy->submit(invocation.vk, {}, this->syncSemaphore->handle(),
-                this->frameState.backendTimelineIndex, std::array{slot.staged->handle()},
+            pass.stagingCopy->submit(invocation.vk, {}, this->syncSemaphore->handle(),
+                this->frameState.backendTimelineIndex, std::array{pass.staged->handle()},
                 VK_NULL_HANDLE, 0);
             if (present_diagnostics::pacingProfileEnabled()) {
                 // D7c: the generated value this staging copy waits, before its increment below.
@@ -178,16 +182,18 @@ VkResult Swapchain::presentGeneratedFrames(
                 .acquire = invocation.vk.df().AcquireNextImageKHR,
                 .submit = invocation.vk.df().QueueSubmit,
                 .acquireSemaphore = pass.acquireSemaphore.handle(),
-                .staged = slot.staged->handle(),
-                .continuation = this->postCopySemaphores.at(
-                    this->presentationSlotFor(invocation.imageIndex)).first.handle(),
-                .fence = slot.fence.handle(),
+                .staged = pass.staged->handle(),
+                .preceding = i ? slot.passes.at(i - 1).copied->handle() : VK_NULL_HANDLE,
+                .continuation = last ? this->postCopySemaphores.at(
+                    this->presentationSlotFor(invocation.imageIndex)).first.handle()
+                    : pass.copied->handle(),
+                .fence = last ? slot.fence.handle() : VK_NULL_HANDLE,
                 .imageCount = static_cast<uint32_t>(this->info.images.size()),
                 .giveUp = invocation.pacedOutputs->interval / 2,
                 .internalImages = this->internalPresent != nullptr,
             };
             for (uint32_t k = 0; k < copy.imageCount; ++k) {
-                copy.copies.at(k) = slot.generatedCopies.at(k).handle();
+                copy.copies.at(k) = pass.generatedCopies.at(k).handle();
                 copy.presentWaits.at(k) = this->postCopySemaphores.at(k).first.handle();
             }
             if (this->deferredPresent->enqueueGeneratedCopy(invocation.swapchain, generatedChain.head(),
@@ -195,8 +201,8 @@ VkResult Swapchain::presentGeneratedFrames(
                     DeferredPresent::OutputIdentity{this->frameState.backendFrameIndex - 1, plan.scheduledGeneratedFrames[i]})) {
                 this->deferredOutputQueuedThisFrame = true;
                 if (this->pacingProfile) this->pacingProfile->generatedPresentMode(generatedMode);
-                slot.inFlight = true;
-                if (slot.outputQueries && this->pacingProfile) {
+                if (last) slot.inFlight = true;
+                if (i == 0 && slot.outputQueries && this->pacingProfile) {
                     // The worker's pacing-profile-output record carries this batch's source, which
                     // beginDeferredPresentBatch set from the same ordinal in this present.
                     slot.outputSource = this->pacingProfile->sourceOrdinal();
@@ -209,13 +215,23 @@ VkResult Swapchain::presentGeneratedFrames(
                 continue;
             }
             // Refused: no worker copy or skip will wait the staged signal, so
-            // consume it here before the present-thread path.
-            const VkSemaphore stagedWait = slot.staged->handle();
-            const VkPipelineStageFlags stagedStage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+            // consume it here before the present-thread path. For i > 0 the
+            // previous pass's copied signal is consumed too, and the inter-copy
+            // signal that the present-thread path waits for i > 0 is signalled.
+            workerCopies = false;
+            const VkSemaphore stagedWait = pass.staged->handle();
+            const std::array<VkSemaphore, 2> releaseWaits{
+                stagedWait, i ? slot.passes.at(i - 1).copied->handle() : VK_NULL_HANDLE};
+            const std::array<VkPipelineStageFlags, 2> releaseStages{
+                VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT};
+            const VkSemaphore interCopy = i ? this->postCopySemaphores.at(
+                (this->frameState.sequenceIndex - 1) % this->postCopySemaphores.size()).second.handle()
+                : VK_NULL_HANDLE;
             const VkSubmitInfo release{
                 .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
-                .waitSemaphoreCount = 1, .pWaitSemaphores = &stagedWait,
-                .pWaitDstStageMask = &stagedStage,
+                .waitSemaphoreCount = i ? 2u : 1u, .pWaitSemaphores = releaseWaits.data(),
+                .pWaitDstStageMask = releaseStages.data(),
+                .signalSemaphoreCount = i ? 1u : 0u, .pSignalSemaphores = i ? &interCopy : nullptr,
             };
             const auto released = invocation.vk.df().QueueSubmit(
                 invocation.vk.queue(), 1, &release, VK_NULL_HANDLE);
