@@ -62,7 +62,7 @@ def generated_files(root: Path) -> dict[Path, str]:
         )
         outputs[MATRIX_DIRECTORY / f"{MANIFEST_PREFIX}{entry['version']}.yml"] = (
             GENERATED_HEADER
-            + "# Regenerate: just generate-flatpak-runtimes\n"
+            + "# Regenerate: scripts/dev.sh generate-flatpak-runtimes\n"
             + manifest
         )
     return outputs
@@ -104,7 +104,7 @@ def main() -> int:
         if args.check and stale:
             print("Flatpak runtime outputs are stale: " + ", ".join(map(str, stale)),
                   file=sys.stderr)
-            print("Run: just generate-flatpak-runtimes", file=sys.stderr)
+            print("Run: scripts/dev.sh generate-flatpak-runtimes", file=sys.stderr)
             return 1
     except (OSError, ValueError) as error:
         print(f"Flatpak runtimes: {error}", file=sys.stderr)

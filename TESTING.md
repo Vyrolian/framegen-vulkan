@@ -29,7 +29,6 @@ Use [How to release framegen-vulkan](HOW_TO_RELEASE.md) for release validation a
 
 The `Tests` workflow runs on every pull request and push to `main`:
 
-- repository tooling checks: Markdown formatting;
 - the `fgvk` settings window crate (`engine/fgvk-ui`): `cargo test --locked` and `cargo build --locked`, including the argument routing that hands `fgvk <command>` to the launch helper without opening a window;
 - framegen-vulkan CTest with GCC and Clang using the [native package Vulkan-Headers revision](engine/vulkan-headers-revision.txt) and its required-header check, including synthetic model inspection, launch policy, generated-SPIR-V freshness, and shared Flatpak-header module freshness/mutation checks;
 - the Arch package release-pin, alternative-package identity, non-mutating lifecycle-hook, automated release-sync, and exact-release build-wrapper contracts;
@@ -40,22 +39,23 @@ The owning component tests remain authoritative for their detailed invariants.
 
 `steamos-build-tools` exercises the prerequisite installer with temporary host files and stubbed commands. It covers the nonzero `disabled` status from SteamOS, preservation/restoration of the initial read-only state, transaction/restoration failures, and rejection of invalid status results before mutation. It does not install system packages or change the real root filesystem.
 
-The `fgvk` settings-window crate tests (`just test-fgvk-ui`) cover profile and games-list parsing, the process picker, and argument routing. Routing tests check that no argument opens the window, that every argument reaches the launch helper unchanged, and that a missing helper exits with status 127. They do not open the window or start a game.
+The `fgvk` settings-window crate tests (`scripts/dev.sh test-fgvk-ui`) cover profile and games-list parsing, the process picker, and argument routing. Routing tests check that no argument opens the window, that every argument reaches the launch helper unchanged, and that a missing helper exits with status 127. They do not open the window or start a game.
 
 When testing the optional forced-FP16 native build, configure `BUILD_TESTING=ON` and `FGVK_EXPERIMENTAL_LSFG_FP16=ON` with the pinned sources described in [Building from source](engine/docs/BUILDING-FROM-SOURCE.md#experimental-forced-lsfg-fp16). Its additional `backend-experimental-lsfg-fp16` test uses original synthetic SPIR-V to check half arithmetic, preserved bindings, FP32 sampling and bit-pattern calculations through memory stores/loads, byte-identical FP32 image preparation/reconstruction, native FP16 priority, FP16-off isolation, selected modes, cache replacement, and validation failures. Run ordinary CTest as well to retain strict-build coverage. GPU quality and synchronization evidence must distinguish forced conversion from native FP16, preserve failing image-quality results, and state which actual DLL branches were available. Add warmed throughput evidence when precision protection changes the amount of half arithmetic; stage counts alone do not establish performance.
 
 Default and Vulkan-layer Renderer builds and portable policy CTest check that every production `fgvk-render/src/**/*.cpp` file is registered with its CMake target. This catches a newly split file even when an existing build tree does not reconfigure. The complete local release-shaped package build then verifies the host archive, Flatpak bundles, Arch package, direct ELF dependencies, and checksums; a successful direct 64-bit build alone does not establish those package contracts.
 
-Launcher exclusion freshness runs in Renderer CTest; `just check-launcher-exclusions` runs it directly. The shared registry is `engine/fgvk-common/launcher_exclusions.json`; regenerate both component bindings with `just generate-launcher-exclusions`. Portable tests validate registry entries, reject stale or missing bindings without rewriting them, and cover exclusion and child activation for the registered executables. New exclusions also need focused real-launcher evidence; moving the unchanged list does not establish new compatibility evidence.
+Launcher exclusion freshness runs in Renderer CTest; `scripts/dev.sh check-launcher-exclusions` runs it directly. The shared registry is `engine/fgvk-common/launcher_exclusions.json`; regenerate both component bindings with `scripts/dev.sh generate-launcher-exclusions`. Portable tests validate registry entries, reject stale or missing bindings without rewriting them, and cover exclusion and child activation for the registered executables. New exclusions also need focused real-launcher evidence; moving the unchanged list does not establish new compatibility evidence.
 
-Flatpak catalogue freshness runs in Renderer CTest and Renderer packaging; `just check-flatpak-runtimes` checks it directly. `engine/dist/flatpak/fgvk-render/runtime-versions.json` and the adjacent common manifest template generate every Renderer manifest and the shell matrix. Portable regression tests exercise adding and retiring a branch, missing/stale/foreign manifests, read-only failures, invalid catalogues, direct and inherited runtime detection, extension refresh, and 26.08 install/update/removal actions. Package checks require a bundle for every generated branch; actual package builds must qualify both architectures.
+Flatpak catalogue freshness runs in Renderer CTest and Renderer packaging; `scripts/dev.sh check-flatpak-runtimes` checks it directly. `engine/dist/flatpak/fgvk-render/runtime-versions.json` and the adjacent common manifest template generate every Renderer manifest and the shell matrix. Portable regression tests exercise adding and retiring a branch, missing/stale/foreign manifests, read-only failures, invalid catalogues, direct and inherited runtime detection, extension refresh, and 26.08 install/update/removal actions. Package checks require a bundle for every generated branch; actual package builds must qualify both architectures.
 
-Run `just test` for protected-input and local release-candidate contracts, the `fgvk` settings-window crate tests, and Renderer CTest. Add the checks below for the complete local portable gate:
+`scripts/dev.sh install-hooks` enables a commit hook that runs the protected-input check (rejects `Lossless.dll` and binary payloads) before every commit.
+
+Run `scripts/dev.sh test` for protected-input and local release-candidate contracts, the `fgvk` settings-window crate tests, and Renderer CTest. Add the checks below for the complete local portable gate:
 
 ```bash
-just check-markdown-format
-just test
-just test-engine-sanitized
+scripts/dev.sh test
+scripts/dev.sh test-engine-sanitized
 ```
 
 The focused Renderer policy script compiles Vulkan-facing policies, so it needs Vulkan, X11, and XCB headers even though it does not need a Vulkan device, compositor, or Wayland development package. The full Renderer suite additionally needs the Vulkan loader:

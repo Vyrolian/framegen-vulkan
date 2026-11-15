@@ -20,13 +20,13 @@ Boundary docs (`engine/docs/`): `RENDERER-ARCHITECTURE`, `CONFIGURATION` / `CONF
 
 ## Build and test
 
-- `just --list` shows entry points. C++ changes: `just test-engine-portable` (CTest); scheduling/presentation also `just test-engine-sanitized`. Settings window and entry point: `just test-fgvk-ui` (`cargo test --locked` in `engine/fgvk-ui`).
-- The device is resource-constrained: watch CPU/GPU cost, memory, sync and hot paths. Keep at most two build jobs while the user may be gaming.
+- `scripts/dev.sh help` lists the entry points. C++ changes: `scripts/dev.sh test-engine-portable` (CTest); scheduling/presentation also `scripts/dev.sh test-engine-sanitized`. Settings window and entry point: `scripts/dev.sh test-fgvk-ui` (`cargo test --locked` in `engine/fgvk-ui`).
+- The device is resource-constrained: watch CPU/GPU cost, memory, sync and hot paths. Keep at most two build jobs while the user may be gaming (`FGVK_JOBS=2 scripts/dev.sh <subcommand>`; builds use all cores otherwise).
 - Report what passed and what was not tested (hardware, AMD/FP16, Flatpak). A skipped GPU test is not evidence.
 
 ## Generated files and protected inputs
 
-- Never hand-edit generated output; change the source and run its generator, then the `just check-*` gate: SPIR-V headers (`engine/scripts/generate-*-spirv.py`), launcher exclusions (`just generate-launcher-exclusions`), Flatpak runtimes/headers (`just generate-flatpak-runtimes`, `just generate-flatpak-headers`), Arch pin (`just sync-arch-package`).
+- Never hand-edit generated output; change the source and run its generator, then the `scripts/dev.sh check-*` gate: SPIR-V headers (`engine/scripts/generate-*-spirv.py`), launcher exclusions (`scripts/dev.sh generate-launcher-exclusions`), Flatpak runtimes/headers (`scripts/dev.sh generate-flatpak-runtimes`, `scripts/dev.sh generate-flatpak-headers`), Arch pin (`scripts/dev.sh sync-arch-package`).
 - Build dirs (`engine/build/`, `engine/out/`, `target/`) are local data; never commit them.
 - `Lossless.dll` is a licensed user input: never commit, package or upload it.
 - The lsfg-vk repository relaunched on 27 August 2026 is CC BY-NC-ND 4.0: never copy its code, docs or assets here. Keep copyright and licence lines intact.

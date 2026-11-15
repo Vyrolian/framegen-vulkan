@@ -1,5 +1,5 @@
 # Generated from engine/dist/flatpak/fgvk-render/runtime-versions.json and engine/dist/flatpak/fgvk-render/org.freedesktop.Platform.VulkanLayer.fgvkrender.yml.in; do not edit.
-# Regenerate: just generate-flatpak-runtimes
+# Regenerate: scripts/dev.sh generate-flatpak-runtimes
 id: org.freedesktop.Platform.VulkanLayer.fgvkrender
 default-branch: develop
 

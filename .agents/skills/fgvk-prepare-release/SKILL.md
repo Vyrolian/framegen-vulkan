@@ -40,7 +40,6 @@ Replace `X.Y.Z` below with the intended version, then run the existing read-only
 
 ```bash
 node scripts/read-release-notes.mjs engine/RELEASE_NOTES.md "framegen-vulkan" X.Y.Z >/dev/null
-npm run format:markdown:check
 ```
 
 Confirm the heading version, codename capitalization, shared local artwork, the flavor quote, valid links, and the final image's size and appearance. Review the complete diff for unintended edits and intermediate assets. Actual package versions, pins, downloadable asset URLs, checksums, and README/website download links remain owned by the release scripts. A future-version note heading may differ from current package metadata during preparation; do not hand-edit package versions or weaken build checks to hide it.

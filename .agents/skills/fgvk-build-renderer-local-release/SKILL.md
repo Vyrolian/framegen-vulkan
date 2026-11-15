@@ -11,15 +11,15 @@ Execution boundary: the host runs the aggregate script and checksums. Docker or 
 
 ## Workflow
 
-1. Locate the framegen-vulkan repository root and confirm it contains `AGENTS.md`, `justfile`, and `engine/scripts/package-local-release.sh`. Read the current `AGENTS.md` and `engine/docs/BUILDING-FROM-SOURCE.md`; they remain authoritative if this skill becomes stale.
+1. Locate the framegen-vulkan repository root and confirm it contains `AGENTS.md`, `scripts/dev.sh`, and `engine/scripts/package-local-release.sh`. Read the current `AGENTS.md` and `engine/docs/BUILDING-FROM-SOURCE.md`; they remain authoritative if this skill becomes stale.
 2. Inspect the branch and worktree and preserve all user changes. Tell the user the portable build is starting and may take several minutes.
-3. Run the build and container-runtime checks on the actual host (`exec_command` with `sandbox_permissions: "require_escalated"` in Codex); the default isolated shell may not access host Podman/Docker or `just`. From the repository root run:
+3. Run the build and container-runtime checks on the actual host (`exec_command` with `sandbox_permissions: "require_escalated"` in Codex); the default isolated shell may not access host Podman/Docker or the host build tools. From the repository root run:
 
    ```bash
-   just package-renderer-local-release
+   scripts/dev.sh package-renderer-local-release
    ```
 
-   If `just` is missing on the host, run its direct recipe command, `./engine/scripts/package-local-release.sh`, instead. Both invoke the same canonical aggregate script, which owns the portable host build, every declared Flatpak runtime, the disposable locally synchronized Arch recipe, and the checksum manifest.
+   The subcommand invokes `./engine/scripts/package-local-release.sh`, the canonical aggregate script, which owns the portable host build, every declared Flatpak runtime, the disposable locally synchronized Arch recipe, and the checksum manifest.
 4. Do not set `FGVK_RELEASE_SKIP_TESTS` unless the user explicitly requests the documented maintainer exception. Request execution approval when container or network access requires it.
 5. On success, run `sha256sum --check engine/out/SHA256SUMS`. Inspect the Arch package's `.PKGINFO` with `bsdtar`, confirm the expected dual-bitness host contents and declared Flatpak bundles, and report sizes plus clickable absolute links for all artifacts and `SHA256SUMS`.
 

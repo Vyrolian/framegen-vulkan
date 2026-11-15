@@ -55,7 +55,7 @@ makepkg -si
 From the repository root, build release-shaped host, Flatpak, and Arch artifacts from the current checkout with:
 
 ```bash
-just package-renderer-local-release
+scripts/dev.sh package-renderer-local-release
 ```
 
 The equivalent component command is `engine/scripts/package-local-release.sh`. It writes all three artifacts and `SHA256SUMS` under `engine/out/`, uses the same portable builders as publication, and verifies the pacman package against the newly built host archive. It synchronizes a disposable copy of this recipe, so the tracked public archive checksum, Renderer release pin, tags, and releases remain unchanged.

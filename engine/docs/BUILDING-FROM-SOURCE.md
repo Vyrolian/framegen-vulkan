@@ -4,7 +4,6 @@ This guide covers local development, source installation, and distributable Rend
 
 Once cloned, run build and packaging commands from `engine/` unless a section says otherwise. Paths in the build-path table are relative to the repository root.
 
-<!-- prettier-ignore -->
 > [!IMPORTANT]
 > If you are planning on compiling framegen-vulkan on SteamOS, check the direct-build prerequisites from the repository root, then run the installer if anything is missing:
 >
@@ -31,7 +30,7 @@ Install:
 - X11 and XCB headers (`libx11`, `libxcb`, and `xorgproto` on Arch/SteamOS)
 - Python 3 when building the registered tests
 - A multilib C++ toolchain when building the 32-bit Vulkan layer
-- A current stable Rust toolchain with `cargo` for the `engine/fgvk-ui` settings window and `fgvk <command>` entry point (`just fgvk-ui` builds it, `just test-fgvk-ui` tests it); the packagers need it too
+- A current stable Rust toolchain with `cargo` for the `engine/fgvk-ui` settings window and `fgvk <command>` entry point (`scripts/dev.sh fgvk-ui` builds it, `scripts/dev.sh test-fgvk-ui` tests it); the packagers need it too
 
 Package names vary by distribution. These commands cover common Debian/Ubuntu and Arch installations:
 
@@ -138,11 +137,11 @@ The script verifies both Renderer roles for 64-bit and 32-bit processes on every
 [`runtime-versions.json`](../dist/flatpak/fgvk-render/runtime-versions.json) owns the ordered Freedesktop branches and LLVM SDK versions; the adjacent `org.freedesktop.Platform.VulkanLayer.fgvkrender.yml.in` owns the common manifest. After adding or retiring a branch, run from the monorepo root:
 
 ```bash
-just generate-flatpak-runtimes
-just check-flatpak-runtimes
+scripts/dev.sh generate-flatpak-runtimes
+scripts/dev.sh check-flatpak-runtimes
 ```
 
-Without `just`, run `python3 scripts/generate-flatpak-runtimes.py`; validate with `python3 scripts/generate-flatpak-runtimes.py --check`.
+The subcommands run `python3 scripts/generate-flatpak-runtimes.py` and its `--check` mode.
 
 Generation updates Renderer manifests and the shell matrix, and removes retired generated manifests. Never edit generated outputs independently. Packaging and Renderer CTest reject stale outputs without rewriting them.
 
@@ -261,7 +260,7 @@ The publisher pins the verified host archive in `engine/renderer-release.json`, 
 
 The verifier checks every ELF's architecture and direct `DT_NEEDED` dependencies against `.PKGINFO`; a new shared-library dependency requires a reviewed package dependency and soname mapping. Dynamically opened libraries still need Arch launch testing.
 
-For a packaging-only fix, leave `pkgver` and `sha256sums` unchanged and increment `pkgrel`. Run `just check-arch-package` from the repository root before committing. `check-release-pin.sh` also runs in portable Renderer CTest and fails when `pkgver`, the source URL, or `sha256sums` drifts from `engine/renderer-release.json`.
+For a packaging-only fix, leave `pkgver` and `sha256sums` unchanged and increment `pkgrel`. Run `scripts/dev.sh check-arch-package` from the repository root before committing. `check-release-pin.sh` also runs in portable Renderer CTest and fails when `pkgver`, the source URL, or `sha256sums` drifts from `engine/renderer-release.json`.
 
 ### AUR publication
 

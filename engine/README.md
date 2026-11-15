@@ -91,7 +91,7 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-The settings window and `fgvk <command>` entry point are a separate Rust crate in `fgvk-ui/`. Build and test it with `cargo build --release --locked --manifest-path fgvk-ui/Cargo.toml` and `cargo test --locked --manifest-path fgvk-ui/Cargo.toml`, or use `just fgvk-ui` and `just test-fgvk-ui` from the repository root.
+The settings window and `fgvk <command>` entry point are a separate Rust crate in `fgvk-ui/`. Build and test it with `cargo build --release --locked --manifest-path fgvk-ui/Cargo.toml` and `cargo test --locked --manifest-path fgvk-ui/Cargo.toml`, or use `scripts/dev.sh fgvk-ui` and `scripts/dev.sh test-fgvk-ui` from the repository root.
 
 See [Building from source](docs/BUILDING-FROM-SOURCE.md) for prerequisites, SteamOS builds, 32-bit layers, and installation prefixes.
 

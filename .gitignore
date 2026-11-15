@@ -57,6 +57,5 @@ htmlcov/
 /engine/out/
 /engine/.flatpak-builder/
 
-# Repository Markdown tooling (npm dependencies)
-/node_modules/
+# framegen-vulkan settings window (Cargo)
 /engine/fgvk-ui/target/
