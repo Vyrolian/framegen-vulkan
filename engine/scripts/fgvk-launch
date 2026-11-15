@@ -596,7 +596,7 @@ unset fgvk_existing_instance_layers
 unset fgvk_steam_overlay_layer_dir fgvk_steam_overlay_layer
 unset fgvk_steam_overlay_layers fgvk_flatpak_launch
 
-unset DXVK_HDR
+# The game's own DXVK_HDR passes through: HDR swapchains get frame generation (H1).
 if [[ -n "${VK_INSTANCE_LAYERS:-}" &&
         ":${VK_INSTANCE_LAYERS}:" == *":VK_LAYER_FGVK_render:"* ]]; then
     unset ENABLE_FGVK

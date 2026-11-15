@@ -252,7 +252,7 @@ allow_output="$({
         '
 } 2>&1)" || fail "advanced opt-out launch failed: $allow_output"
 
-expected_allow="$(printf '1\nunset\nunset\nunset\n%s\nunset\nunset' "$expected_layer_path")"
+expected_allow="$(printf '1\nunset\nunset\n1\n%s\nunset\nunset' "$expected_layer_path")"
 if [[ "$allow_output" != "$expected_allow" ]]; then
     fail "advanced opt-out did not remove only the conflict guards:\n$allow_output"
 fi
@@ -352,7 +352,7 @@ for disable_hdr in 0 1; do
     printf '%s\n' 'version=1' "disable_hdr_exposure=$disable_hdr" > "$launch_config"
     hdr_output="$(FGVK_LAUNCH_CONFIG="$launch_config" DXVK_HDR=1 "$launcher" bash -c \
         'printf "%s" "${DXVK_HDR:-unset}"')"
-    expected_hdr="unset"
+    expected_hdr="1"
     [[ "$hdr_output" == "$expected_hdr" ]] || fail "retired HDR key changed DXVK_HDR ownership: $hdr_output"
 done
 
