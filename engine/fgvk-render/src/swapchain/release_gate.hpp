@@ -300,4 +300,18 @@ private:
     std::shared_ptr<ReleaseGate::Owner> owner;
 };
 
+// A present whose cap deadline lies more than three cap intervals after its
+// arrival cannot be held by the release wait's lead bound. It sleeps until
+// three intervals before the deadline and then counts as arriving at that wake
+// time. Returns that point, or nothing when the lead is within the bound or the
+// cap interval is not positive.
+[[nodiscard]] inline std::optional<ReleaseGate::Clock::time_point> releaseGateCatchUp(
+        ReleaseGate::Clock::time_point arrival, ReleaseGate::Clock::time_point deadline,
+        ReleaseGate::Clock::duration capInterval) {
+    if (capInterval <= ReleaseGate::Clock::duration::zero() ||
+            deadline - arrival <= 3 * capInterval)
+        return std::nullopt;
+    return deadline - 3 * capInterval;
+}
+
 }

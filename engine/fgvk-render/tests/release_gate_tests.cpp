@@ -141,6 +141,25 @@ void presentIdTimeoutKeepsToken() {
         "the kept present ID token was not released by a later wait");
 }
 
+// The catch-up point for a present that arrives too early for the release wait's bound.
+void catchUpStartsOnlyAboveThreeIntervals() {
+    using Clock = ReleaseGate::Clock;
+    const auto arrival = Clock::now();
+    const auto interval = 10ms;
+    expect(!releaseGateCatchUp(arrival, arrival + 3 * interval, interval),
+        "a lead equal to three cap intervals caught up");
+    const auto over = arrival + 3 * interval + 1ns;
+    const auto catchUp = releaseGateCatchUp(arrival, over, interval);
+    expect(catchUp && *catchUp == over - 3 * interval,
+        "a lead one nanosecond over three cap intervals did not catch up to the bound");
+    expect(!releaseGateCatchUp(arrival, arrival + 50ms, Clock::duration::zero()),
+        "a zero cap interval caught up");
+    expect(!releaseGateCatchUp(arrival, arrival + 50ms, -interval),
+        "a negative cap interval caught up");
+    expect(!releaseGateCatchUp(arrival + 50ms, arrival, interval),
+        "a deadline before the arrival caught up");
+}
+
 void presentIdAndSemaphoreTokensShareActivation() {
     using Clock = ReleaseGate::Clock;
     const auto now = Clock::now();
@@ -281,5 +300,6 @@ int main() {
     tokenKindsNeverMatch();
     presentIdTimeoutKeepsToken();
     presentIdAndSemaphoreTokensShareActivation();
+    catchUpStartsOnlyAboveThreeIntervals();
     std::cout << "release gate tests passed\n";
 }

@@ -377,7 +377,9 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
     this->presentTiming.observePresentMode(lowerNextChain);
 #endif
 
-    const auto limiterArrival = DiagnosticsClock::now();
+    // Moved to the wake time by the release-gate catch-up below; the clock
+    // (realFramePacer.schedule) still sees the arrival.
+    auto limiterArrival = DiagnosticsClock::now();
     // Transport half of worker admission; the pacing half is decided below.
     const bool detachedOutputTransport =
         !(this->deferredPresent && this->deferredPresent->serialWaitObserved()) &&
@@ -527,11 +529,28 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
     // ID). Apply the cap there instead of holding its queue-submission
     // thread. With a cap the release wait enforces it. Without one the
     // present still returns without joining the worker, and the release wait
-    // is not delayed. A deadline far ahead means the producer is not throttled
-    // by that wait; keep the ordinary hold so the cap clock cannot run away.
-    const bool releaseGated = this->releaseGate.active() &&
+    // is not delayed. The release wait holds only a deadline within three cap
+    // intervals of the present. A present arriving earlier sleeps until three
+    // intervals before its deadline and then counts as arriving at that wake
+    // time, so every later read of limiterArrival sees the wake time. The clock
+    // and the gate's deadline are unchanged, and the gate is still armed at the
+    // deadline.
+    const bool releaseGateHolds = this->releaseGate.active() &&
         detachedOutputTransport &&
-        !this->recoveryState.orderedAcquireRecovery.active() &&
+        !this->recoveryState.orderedAcquireRecovery.active();
+    if (releaseGateHolds) {
+        if (const auto catchUp = releaseGateCatchUp(limiterArrival, limiterDeadline, capInterval)) {
+            const auto waitStarted = DiagnosticsClock::now();
+            std::this_thread::sleep_until(*catchUp);
+            limiterArrival = DiagnosticsClock::now();
+            if (this->pacingProfile) {
+                this->pacingProfile->wait(PacingProfile::SourceCapWait, limiterArrival - waitStarted);
+                this->pacingProfile->wait(PacingProfile::SourceCapWakeLateness,
+                    limiterArrival - std::max(*catchUp, waitStarted));
+            }
+        }
+    }
+    const bool releaseGated = releaseGateHolds &&
         limiterDeadline - limiterArrival <= 3 * capInterval;
     bool readyOutputPacing = fixedReadyOutputPacingEligible(
         this->profile, directUnthrottled || nativeFifoOutputPacing,
