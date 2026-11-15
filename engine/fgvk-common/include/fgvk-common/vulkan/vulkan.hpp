@@ -4,7 +4,6 @@
 
 #include "../helpers/pointers.hpp"
 #include "device_features.hpp"
-#include "device_memory_accounting.hpp"
 
 #include <bitset>
 #include <cstdint>
@@ -299,14 +298,7 @@ namespace vk {
         /// get optional setLoaderData function
         /// @return the setLoaderData function
         [[nodiscard]] const auto& loaderdatafunc() const { return this->setLoaderData; }
-        /// get process-local accounting for device-memory handles created by framegen-vulkan
-        [[nodiscard]] const auto& deviceMemoryAccounting() const {
-            return this->memoryAccounting;
-        }
     private:
-        std::shared_ptr<DeviceMemoryAccounting> memoryAccounting{
-            std::make_shared<DeviceMemoryAccounting>()
-        };
         ls::owned_ptr<VkInstance> instance;
         VulkanInstanceFuncs instance_funcs;
 

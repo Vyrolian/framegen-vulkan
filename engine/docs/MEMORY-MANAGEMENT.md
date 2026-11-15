@@ -2,20 +2,20 @@
 
 framegen-vulkan allocates private Vulkan resources when a swapchain or processing context is constructed, reuses them during presentation, and releases them after the owning GPU work completes. Live resource changes can temporarily keep both the active and replacement contexts allocated. Frame Generation `0x` retains startup-provisioned resources for live reactivation, while disabling Frame Generation provisioning before launch omits LSFG interop and backend ownership. Once created, the layer deliberately retains its private backend Vulkan device until process exit.
 
-This guide owns the allocation, ownership, and accounting overview. [Runtime transitions](RUNTIME-TRANSITIONS.md) owns replacement decisions, [lifecycle](LIFECYCLE.md#destruction-and-retirement) owns swapchain retirement. Those policies remain authoritative for their thresholds and compatibility rules.
+This guide owns the allocation and ownership overview. [Runtime transitions](RUNTIME-TRANSITIONS.md) owns replacement decisions, [lifecycle](LIFECYCLE.md#destruction-and-retirement) owns swapchain retirement. Those policies remain authoritative for their thresholds and compatibility rules.
 
 ## Resource owners
 
 | Resource | Owner and lifetime |
 | --- | --- |
-| Application device and lower WSI swapchain images | The application and Vulkan WSI own their creation/destruction contract. framegen-vulkan may defer lower-swapchain destruction under the retirement policy; these image allocations are outside its private memory counters. |
+| Application device and lower WSI swapchain images | The application and Vulkan WSI own their creation/destruction contract. framegen-vulkan may defer lower-swapchain destruction under the retirement policy; these image allocations are not part of its private memory. |
 | Exported real-frame and generated-output images, shared synchronization, and presentation resources | One `Swapchain` in `fgvk-render/src/swapchain/`; a private replacement may retire a subset before the game recreates its swapchain. |
 | Worker staging images for generated outputs: one staging image per generated output per render slot, created on first use: (multiplier − 1) × 3 images of the swapchain extent at most | One `RenderPass` per generated output in each `RenderSlot` (`fgvk-render/src/swapchain/swapchain.hpp`), created by `recordGeneratedCopies` with its staged signal, staging copy and per-image copies, and released with the destination images when they are replaced. |
 | Internal application images (F5): private application-rendered images, dedicated device-local allocations, and copy/synchronization objects | One `InternalSwapchainImages` per eligible swapchain, owned by the instance registry and released with its swapchain (see [Internal application images](RENDERER-ARCHITECTURE.md#internal-application-images-f5)); the private count is `min(8, max(minImageCount, 3) + 2)` (see [Internal application images](RENDERER-ARCHITECTURE.md#internal-application-images-f5)), and each image adds one device-local allocation. |
 | Imported exchange images, model intermediates, constant buffers, and backend command resources | A backend `ContextImpl` in `fgvk-backend/src/fgvk.cpp`; closed through `backend::Instance` after its work completes, or retained for later retirement. |
 | Internal model-image blocks | One `vk::ImageMemoryPool` per backend context, shared by the LSFG shader chains that explicitly request pooled images. Bound images also retain their block owner. |
 | Backend Vulkan device and shader registry | The lazily constructed process-wide backend instance. The layer enables the device-retention exception described below. |
-| Host containers and setup data | Their C++ owners. These allocations are not counted by Vulkan device-memory accounting. Licensed model inputs and translated resources remain subject to the process-local boundary in the [Renderer README](../README.md). |
+| Host containers and setup data | Their C++ owners. These are host allocations, not Vulkan device memory. Licensed model inputs and translated resources remain subject to the process-local boundary in the [Renderer README](../README.md). |
 
 The application-facing device and private backend device can differ. Export/import connects their exchange images; it does not create two independent copies of the same image payload. A source, format, or synchronization change must preserve that cross-device contract.
 
@@ -44,7 +44,7 @@ The default minimum block size is 4 MiB. With that default, a request up to 8 Mi
 
 There is no free-list, compaction, or individual range reuse. Destroying an image does not rewind the cursor. A failed Vulkan bind after range reservation also leaves that range consumed until the block is released. The pool retains its blocks, and each successfully bound image retains its block independently; a block is freed only when the pool and all image references to it are gone. This favors context-wide construction and retirement rather than repeated individual image allocation/deallocation.
 
-Pooling is opt-in, not a global allocator for all Renderer images. The LSFG shader chains use the context pool, while exchange images, host-visible buffers, and other images constructed without a pool keep their separate allocations. Pooling reduces allocation count; it does not reduce image dimensions or alias model intermediates. Unused block capacity and alignment padding remain allocated and appear in memory accounting.
+Pooling is opt-in, not a global allocator for all Renderer images. The LSFG shader chains use the context pool, while exchange images, host-visible buffers, and other images constructed without a pool keep their separate allocations. Pooling reduces allocation count; it does not reduce image dimensions or alias model intermediates. Unused block capacity and alignment padding remain allocated.
 
 ### Model scratch lifetimes
 
@@ -96,7 +96,7 @@ Shared image contents also cross Vulkan instance ownership. `fgvk-common/vulkan/
 
 Admission is an estimate, not an allocation reservation, performance guarantee, or continuously enforced memory cap. Driver requirements, pool padding, other processes, and the separate backend device can affect allocation success. Budget queries occur at admission boundaries. Gameplay FPS alone cannot authorize recreation.
 
-Steady-state usage and replacement peaks answer different questions. A live Flow Scale, model, or capacity change constructs a complete candidate while the current resources remain usable. Until drain and handoff finish, both sets contribute to the live counters. Deferred backend contexts and lower WSI swapchains can extend that overlap. Do not interpret the cold graph estimate as an exact prediction of this transient peak.
+Steady-state usage and replacement peaks answer different questions. A live Flow Scale, model, or capacity change constructs a complete candidate while the current resources remain usable. Until drain and handoff finish, both sets remain allocated. Deferred backend contexts and lower WSI swapchains can extend that overlap. Do not interpret the cold graph estimate as an exact prediction of this transient peak.
 
 Frame Generation `0x` stops generation work while retaining resources when provisioning succeeded, so selecting it is not a request to reclaim memory. FP16 arithmetic also does not imply that SDR image allocation sizes are halved; image formats, geometry, graph selection, and output capacity determine the allocation demand.
 
@@ -116,19 +116,7 @@ The layer calls `backend::makeLeaking()` after provisioning Frame Generation to 
 
 One-second private-present phase windows maintain a small fixed set of statistics on the frame path; they add no GPU queries and complement the existing application-boundary timers. Validate the complete enabled log path with fgvk Gym's paired diagnostics-overhead mode.
 
-`DeviceMemoryAccounting` tracks `VkDeviceMemory` allocations made through framegen-vulkan's wrappers and image pools. Each `vk::Vulkan` owner has its accounting state; application-device and backend-device records must be read with their device/context scope in mind.
-
-| Counter category | Meaning |
-| --- | --- |
-| `internal` | Non-external allocations, including full pool blocks and host-visible buffers. This is not exclusively VRAM. |
-| `exported` | framegen-vulkan allocations exported for sharing with another Vulkan device. |
-| `imported` | Imported memory handles and their mapped sizes. These are tracked separately because their backing storage has already been allocated by the exporter. |
-| `peak*` | Historical high-water marks for live bytes and allocation count in each category. Freeing resources reduces current totals, not these peaks. |
-
-Count each shared payload once when estimating framegen-vulkan-owned memory: combine the relevant internal and exported allocations, and report imported mappings separately. Adding imported bytes to the corresponding export double-counts that payload. A pool block counts as one allocation regardless of how many images use it.
-
-These counters do not measure total process RSS, all driver allocations, physical residency, WSI image storage, or exact free GPU memory. Per-field atomic snapshots are observations, not an atomic transaction across every counter; byte and allocation peaks can occur at different times.
-The layer does not log these counters. Use [diagnostics](COLLECT_DIAGNOSTICS.md) to retain transition and retirement evidence. Compare repeated equivalent states after warmup and completed retirement. A temporary overlap, pool slack, retained Off state, or unchanged high-water mark alone is not evidence of a leak. Repeated growth in settled live allocations, descriptor counts, or process memory needs investigation against the owning lifetime.
+Use [diagnostics](COLLECT_DIAGNOSTICS.md) to retain transition and retirement evidence. Compare repeated equivalent states after warmup and completed retirement. A temporary overlap, pool slack, or retained Off state alone is not evidence of a leak. Repeated growth in settled live allocations, descriptor counts, or process memory needs investigation against the owning lifetime.
 
 ## Validation and change ownership
 
@@ -137,7 +125,6 @@ The layer does not log these counters. Use [diagnostics](COLLECT_DIAGNOSTICS.md)
 | Test | Evidence |
 | --- | --- |
 | `image-memory-pool` | Linear-cursor alignment, capacity rejection, and invalid-alignment behavior; it does not exercise real Vulkan block allocation/binding. |
-| `device-memory-accounting` | Separate ownership categories, balanced allocation/free totals, and retained high-water marks. |
 | `external-fd-ownership` | Partial export/import failures, descriptor-number reuse, and recorded external-image upload/readback handoffs with internal-image isolation. |
 | `profile-update`, `runtime-transition`, `swapchain-retirement` | Deterministic policy and lifetime decisions, including admission and replacement boundaries. |
 | `backend-hot-path`, `command-buffer-submit-storage`, `generated-frame-plan` | Bounded storage and reuse contracts for frame scheduling/submission. These do not prove that every driver or present path is allocation-free. |
@@ -148,7 +135,6 @@ For allocator or resource-lifetime code changes, run the full Renderer tests and
 | --- | --- |
 | Image pool and cursor | [`image_memory_pool.hpp`](../fgvk-common/include/fgvk-common/vulkan/image_memory_pool.hpp), [`image_memory_pool.cpp`](../fgvk-common/src/vulkan/image_memory_pool.cpp) |
 | Allocation, memory-type selection, and handle ownership | [`image.cpp`](../fgvk-common/src/vulkan/image.cpp), [`buffer.cpp`](../fgvk-common/src/vulkan/buffer.cpp), [`vulkan.cpp`](../fgvk-common/src/vulkan/vulkan.cpp), [`pointers.hpp`](../fgvk-common/include/fgvk-common/helpers/pointers.hpp) |
-| Allocation counters | [`device_memory_accounting.hpp`](../fgvk-common/include/fgvk-common/vulkan/device_memory_accounting.hpp), [`device_memory_accounting.cpp`](../fgvk-common/src/vulkan/device_memory_accounting.cpp) |
 | Swapchain resource groups and replacement | [`swapchain.hpp`](../fgvk-render/src/swapchain/swapchain.hpp), [`resources.cpp`](../fgvk-render/src/swapchain/resources.cpp), [`create.cpp`](../fgvk-render/src/swapchain/create.cpp) |
 | Backend construction, pools, and deferred context close | [`fgvk.cpp`](../fgvk-backend/src/fgvk.cpp), [`utils.hpp`](../fgvk-backend/src/helpers/utils.hpp), [`shaderchains/`](../fgvk-backend/src/shaderchains/) |
-Extend these owners when changing memory behavior. Keep the allocator, accounting, failure cleanup, focused tests, and owning boundary guide aligned; do not add a second allocator or treat a policy estimate as completion or allocation proof.
+Extend these owners when changing memory behavior. Keep the allocator, failure cleanup, focused tests, and owning boundary guide aligned; do not add a second allocator or treat a policy estimate as completion or allocation proof.

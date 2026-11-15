@@ -106,20 +106,10 @@ namespace {
             throw ls::vulkan_error(VK_ERROR_OUT_OF_DEVICE_MEMORY,
                 "vkAllocateMemory() succeeded but returned a null handle");
 
-        const auto memoryKind = importFd.has_value()
-            ? DeviceMemoryKind::Imported
-            : exportable
-                ? DeviceMemoryKind::Exported
-                : DeviceMemoryKind::Internal;
-        const auto memoryAccounting = vk.deviceMemoryAccounting();
-        memoryAccounting->recordAllocation(memoryKind, reqs.size);
         auto memory = ls::owned_ptr<VkDeviceMemory>(
             new VkDeviceMemory(handle),
-            [dev = vk.dev(), defunc = vk.df().FreeMemory,
-             memoryAccounting, memoryKind,
-             allocationSize = reqs.size](VkDeviceMemory& value) {
+            [dev = vk.dev(), defunc = vk.df().FreeMemory](VkDeviceMemory& value) {
                 defunc(dev, value, VK_NULL_HANDLE);
-                memoryAccounting->recordFree(memoryKind, allocationSize);
             }
         );
 

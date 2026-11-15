@@ -8,7 +8,6 @@ set(COMMON_SOURCES
     "src/vulkan/command_buffer.cpp"
     "src/vulkan/descriptor_pool.cpp"
     "src/vulkan/descriptor_set.cpp"
-    "src/vulkan/device_memory_accounting.cpp"
     "src/vulkan/fence.cpp"
     "src/vulkan/image.cpp"
     "src/vulkan/image_memory_pool.cpp"
@@ -79,13 +78,6 @@ if(BUILD_TESTING)
         PRIVATE fgvk-common)
     add_test(NAME optional-device-features
         COMMAND fgvk-device-feature-tests)
-
-    add_executable(fgvk-device-memory-accounting-tests
-        "tests/device_memory_accounting_tests.cpp")
-    target_link_libraries(fgvk-device-memory-accounting-tests
-        PRIVATE fgvk-common)
-    add_test(NAME device-memory-accounting
-        COMMAND fgvk-device-memory-accounting-tests)
 
     add_executable(fgvk-image-memory-pool-tests
         "tests/image_memory_pool_tests.cpp")

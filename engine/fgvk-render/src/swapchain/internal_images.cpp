@@ -7,7 +7,6 @@
 #include "present_diagnostics.hpp"
 #include "fgvk-common/helpers/errors.hpp"
 #include "fgvk-common/vulkan/command_buffer.hpp"
-#include "fgvk-common/vulkan/device_memory_accounting.hpp"
 #include "fgvk-common/vulkan/gpu_clock.hpp"
 #include "fgvk-common/vulkan/timestamp_query_pool.hpp"
 #include "fgvk-common/vulkan/semaphore.hpp"
@@ -77,7 +76,6 @@ namespace fgvk::layer {
     struct InternalSwapchainImages::Impl {
         VkDevice device{VK_NULL_HANDLE};
         vk::VulkanDeviceFuncs funcs{};
-        std::shared_ptr<vk::DeviceMemoryAccounting> accounting;
         std::shared_ptr<DeferredPresentQueue> queue;
         VkSwapchainKHR lowerSwapchain{VK_NULL_HANDLE};
         VkExtent2D extent{};
@@ -85,7 +83,6 @@ namespace fgvk::layer {
 
         std::vector<VkImage> images;
         std::vector<VkDeviceMemory> memories;
-        std::vector<VkDeviceSize> memorySizes;
         std::vector<VkImage> lowerImages;
 
         std::optional<vk::TimelineSemaphore> release;
@@ -137,7 +134,6 @@ namespace fgvk::layer {
         Impl(const vk::Vulkan& vk, const VkSwapchainKHR lower, const uint32_t imageCount,
                 std::shared_ptr<DeferredPresentQueue> presentQueue)
             : device(vk.dev()), funcs(vk.df()),
-              accounting(vk.deviceMemoryAccounting()),
               queue(std::move(presentQueue)), lowerSwapchain(lower),
               ring(imageCount) {}
 
@@ -212,7 +208,6 @@ namespace fgvk::layer {
             const VkSwapchainCreateInfoKHR& application, const uint32_t imageCount) {
         images.reserve(imageCount);
         memories.reserve(imageCount);
-        memorySizes.reserve(imageCount);
         for (uint32_t i = 0; i < imageCount; ++i) {
             const VkImageCreateInfo imageInfo{
                 .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
@@ -254,8 +249,6 @@ namespace fgvk::layer {
                     memory == VK_NULL_HANDLE)
                 return false;
             memories.push_back(memory);
-            memorySizes.push_back(requirements.size);
-            accounting->recordAllocation(vk::DeviceMemoryKind::Internal, requirements.size);
             if (funcs.BindImageMemory(device, image, memory, 0) != VK_SUCCESS)
                 return false;
         }
@@ -398,10 +391,8 @@ namespace fgvk::layer {
             if (memories[i] == VK_NULL_HANDLE)
                 continue;
             funcs.FreeMemory(device, memories[i], nullptr);
-            accounting->recordFree(vk::DeviceMemoryKind::Internal, memorySizes[i]);
         }
         memories.clear();
-        memorySizes.clear();
     }
 
     std::shared_ptr<InternalSwapchainImages> InternalSwapchainImages::create(

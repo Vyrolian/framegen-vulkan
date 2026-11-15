@@ -3,7 +3,6 @@
 #include "fgvk-common/vulkan/image_memory_pool.hpp"
 
 #include "fgvk-common/helpers/errors.hpp"
-#include "fgvk-common/vulkan/device_memory_accounting.hpp"
 #include "fgvk-common/vulkan/vulkan.hpp"
 
 #include <algorithm>
@@ -74,7 +73,7 @@ public:
     struct Block {
         Block(const Vulkan& vk, const uint32_t memoryTypeIndex,
                 const VkDeviceSize size)
-            : vk(vk), memoryTypeIndex(memoryTypeIndex), cursor(size), size(size) {
+            : vk(vk), memoryTypeIndex(memoryTypeIndex), cursor(size) {
             const VkMemoryAllocateInfo allocationInfo{
                 .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
                 .allocationSize = size,
@@ -90,8 +89,6 @@ public:
                     VK_ERROR_OUT_OF_DEVICE_MEMORY,
                     "internal image pool allocation returned a null handle"
                 );
-            this->accounting = vk.deviceMemoryAccounting();
-            this->accounting->recordAllocation(DeviceMemoryKind::Internal, size);
         }
 
         ~Block() {
@@ -99,16 +96,13 @@ public:
                 this->vk.df().FreeMemory(
                     this->vk.dev(), this->memory, VK_NULL_HANDLE
                 );
-                this->accounting->recordFree(DeviceMemoryKind::Internal, this->size);
             }
         }
 
         const Vulkan& vk;
         uint32_t memoryTypeIndex{};
         detail::ImageMemoryBlockCursor cursor;
-        VkDeviceSize size{};
         VkDeviceMemory memory{VK_NULL_HANDLE};
-        std::shared_ptr<DeviceMemoryAccounting> accounting;
     };
 
     std::shared_ptr<void> bind(const VkImage image) {
