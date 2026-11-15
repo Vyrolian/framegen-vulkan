@@ -696,10 +696,11 @@ void formatPacingWindowBody(const PacingWindowPayload& payload, const PacingProf
         line << " timing_" << timingNames[i] << "_attempts=" << window.timingAttempts[i];
     line << " present_target_discontinuities=" << window.targetDiscontinuities;
     // low_latency: the setting, the mean release delay of the capped sources, and which
-    // release-token kinds the application has used, in ReleaseGate::kindBit order and then
-    // the acquire fallback (none when it has used none).
+    // release-token kinds the application has used, in ReleaseGate::kindBit order, then the
+    // acquire fallback, then reflex (bit 4: Reflex stepped the release delay aside in the
+    // window; low_latency.hpp reflexKindBit). None when there is none.
     {
-        constexpr std::array<std::string_view, 4> holdNames{"vkd3d", "present-id", "dxvk", "acquire"};
+        constexpr std::array<std::string_view, 5> holdNames{"vkd3d", "present-id", "dxvk", "acquire", "reflex"};
         line << " low_latency=" << (window.lowLatency ? 1 : 0)
              << " low_latency_extra_ms=" << window.lowLatencyExtra.mean() << " low_latency_hold=";
         bool any = false;

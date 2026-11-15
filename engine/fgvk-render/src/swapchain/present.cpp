@@ -566,23 +566,25 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         limiterDeadline - limiterArrival <= 3 * capInterval;
     // Just-in-time release (low_latency; low_latency.hpp). A capped source present sets the
     // delay of its release point from its lead after the catch-up above. The cap clock and
-    // limiterDeadline do not move. Off, or without a cap or frame generation, the delay is zero.
-    const bool lowLatencyOn = this->profile.low_latency && baseFpsCap > 0 &&
-        effectiveFrameGenerationEnabled(this->profile);
-    if (lowLatencyOn) this->lowLatencyRelease.observe(limiterDeadline - limiterArrival, capInterval);
-    else this->lowLatencyRelease.reset();
-    const auto releaseDelay = lowLatencyOn
-        ? this->lowLatencyRelease.delay() : LowLatencyRelease::Duration{};
+    // limiterDeadline do not move. The delay is zero, and every hold it adds is off, without a
+    // cap or frame generation and while the application's Reflex limiter holds the game. The
+    // just-in-time batch start stays on with Reflex (latency.justInTime).
+    const auto latency = lowLatencyPlan(this->profile.low_latency, baseFpsCap > 0,
+        effectiveFrameGenerationEnabled(this->profile),
+        this->reflexFrameLimit(swapchain).reflexLowLatency());
+    const auto releaseDelay = this->lowLatencyRelease.update(latency.releaseDelay,
+        limiterDeadline - limiterArrival, capInterval);
     const auto releasePoint = limiterDeadline + releaseDelay;
     // The native acquire fallback holds the application's next acquire until this point, one
     // cap interval before this present's release point (entrypoint.cpp).
-    this->releaseGate.setAcquireRelease(lowLatencyOn
+    this->releaseGate.setAcquireRelease(latency.releaseDelay
         ? std::optional{releasePoint - capInterval} : std::nullopt);
     // Recorded before the sleeps below: a game wait for this submit may complete during them.
-    if (lowLatencyOn && lastSubmit)
+    if (latency.releaseDelay && lastSubmit)
         this->releaseGate.recordLastSubmit(lastSubmit->semaphore, lastSubmit->value, releasePoint);
-    if (this->pacingProfile) this->pacingProfile->lowLatency(lowLatencyOn, releaseDelay,
-        this->releaseGate.consumedKinds(), lowLatencyOn);
+    if (this->pacingProfile) this->pacingProfile->lowLatency(latency.justInTime, releaseDelay,
+        this->releaseGate.consumedKinds() | (latency.reflexHolds ? reflexKindBit : 0u),
+        latency.justInTime);
     bool readyOutputPacing = fixedReadyOutputPacingEligible(
         this->profile, directUnthrottled || nativeFifoOutputPacing,
         compositorOutputTiming || applicationTimingOwner,
@@ -636,11 +638,11 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
 #if defined(VK_KHR_present_id2)
     applicationPresentId = applicationIds.id;
 #endif
-    // With low_latency, an ID on an immediate or mailbox present is not one the application
-    // waits on (DXVK attaches an ID to every present but waits on it only in FIFO modes). It
-    // would only fill the gate's backlog, so the present is released through its submit
-    // like a present without an ID.
-    if (lowLatencyOn && (this->currentPresentMode == VK_PRESENT_MODE_IMMEDIATE_KHR ||
+    // With the release delay on, an ID on an immediate or mailbox present is not one the
+    // application waits on (DXVK attaches an ID to every present but waits on it only in FIFO
+    // modes). It would only fill the gate's backlog, so the present is released through its
+    // submit like a present without an ID.
+    if (latency.releaseDelay && (this->currentPresentMode == VK_PRESENT_MODE_IMMEDIATE_KHR ||
             this->currentPresentMode == VK_PRESENT_MODE_MAILBOX_KHR))
         applicationPresentId.reset();
     // Destroyed after the return-deadline sleep below. Arm on every capped
@@ -1063,7 +1065,7 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         // is slower, while the game continues; the release wait owns the cap.
         const auto count = plan.scheduledGeneratedFrames.size() + 1;
         invocation.pacedOutputs = this->realFramePacer.scheduleReleasedOutputs(
-            DiagnosticsClock::now(), capInterval, count, lowLatencyOn);
+            DiagnosticsClock::now(), capInterval, count, latency.justInTime);
         if (invocation.pacedOutputs) {
             const auto batchPeriod = invocation.pacedOutputs->interval * static_cast<int64_t>(count);
             invocation.readyOutputPacing = true;
@@ -1078,7 +1080,8 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
             invocation.releasedOverlap = true;
             // With low_latency the worker starts this batch at its own readiness (see
             // RealFramePacer::scheduleReleasedOutputs and the worker's justInTime rule).
-            invocation.justInTime = lowLatencyOn;
+            // Reflex does not change this.
+            invocation.justInTime = latency.justInTime;
             invocation.releasedJoinTolerance = invocation.pacedOutputs->interval / 4;
             invocation.releasedOutputLimit = limiterArrival + 3 * batchPeriod +
                 invocation.pacedOutputs->interval / 8;

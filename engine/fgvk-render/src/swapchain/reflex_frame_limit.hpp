@@ -86,6 +86,13 @@ public:
         this->forwardLocked(swapchain, std::move(forward), send);
     }
 
+    // Whether the application's last sleep mode asks for low latency mode, so the game's own
+    // limiter holds its frames. Read per present under the same lock as the requests.
+    [[nodiscard]] bool reflexLowLatency() const {
+        const std::lock_guard lock(this->mutex);
+        return this->request && this->request->lowLatencyMode;
+    }
+
 private:
     template<typename Send>
     VkResult forwardLocked(const VkSwapchainKHR swapchain, Forward forward, Send& send) {
@@ -103,7 +110,7 @@ private:
         return result;
     }
 
-    std::mutex mutex;
+    mutable std::mutex mutex;
     std::optional<VkLatencySleepModeInfoNV> request;
     bool frameGeneration{false};
     double capFps{0.0};

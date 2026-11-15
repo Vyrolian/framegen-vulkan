@@ -140,6 +140,21 @@ void driverResultIsReturned() {
         "the application request did not return the driver's result");
 }
 
+// The present path reads whether the last request asks for low latency mode. A present does not change it.
+void lowLatencyStateFollowsTheLastRequest() {
+    ReflexFrameLimit limit;
+    Recorder driver;
+    expect(!limit.reflexLowLatency(), "a swapchain with no Reflex request reported low latency");
+    limit.applicationRequest(swapchain, request(true, 0), driver.send());
+    expect(limit.reflexLowLatency(), "a Reflex-on request was not reported");
+    limit.observe(swapchain, true, 60.0, driver.send());
+    expect(limit.reflexLowLatency(), "a present changed the reported Reflex state");
+    limit.applicationRequest(swapchain, request(false, 0), driver.send());
+    expect(!limit.reflexLowLatency(), "a Reflex-off request was still reported as on");
+    limit.applicationRequest(swapchain, request(true, 0), driver.send());
+    expect(limit.reflexLowLatency(), "a second Reflex-on request was not reported");
+}
+
 // The application calls from another thread while presents observe the cap. Every driver call
 // happens under the lock, so the final driver state matches the last decision.
 void concurrentRequestsKeepDriverState() {
@@ -167,6 +182,7 @@ int main() {
     forwardsOnlyChanges();
     reSendDropsPNext();
     driverResultIsReturned();
+    lowLatencyStateFollowsTheLastRequest();
     concurrentRequestsKeepDriverState();
     std::cout << "reflex frame limit tests passed\n";
 }

@@ -281,7 +281,8 @@ namespace fgvk::layer::present_diagnostics {
             std::array<size_t, PresentModeSlotCount> applicationModes{}, realModes{}, generatedModes{};
             int64_t swapchainPresentMode{-1};
             // low_latency: whether the setting was on, the release delay of each capped source,
-            // and the release-token kinds the application has used (ReleaseGate::kindBit).
+            // and the release-token kinds the application has used (ReleaseGate::kindBit, the
+            // acquire bit, and bit 4 for a window where Reflex stepped the release delay aside).
             bool lowLatency{};
             Samples lowLatencyExtra;
             uint32_t lowLatencyKinds{};

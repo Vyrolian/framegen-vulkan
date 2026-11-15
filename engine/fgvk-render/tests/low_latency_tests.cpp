@@ -58,6 +58,44 @@ void noCapResetsDelay() {
     expect(release.delay() == Duration::zero(), "reset did not clear the delay");
 }
 
+// The setting's parts for one present. The release delay steps aside while Reflex holds the game, and
+// the just-in-time batch start stays on.
+void lowLatencyPlanFollowsSettingCapFrameGenerationAndReflex() {
+    const auto on = lowLatencyPlan(true, true, true, false);
+    expect(on.justInTime && on.releaseDelay && !on.reflexHolds,
+        "the setting on, Reflex off, did not run every part");
+    expect(!lowLatencyPlan(false, true, true, false).justInTime, "the setting off left low latency on");
+    expect(!lowLatencyPlan(false, true, true, true).reflexHolds, "the setting off reported Reflex holding the game");
+    expect(!lowLatencyPlan(true, false, true, false).justInTime, "no cap left low latency on");
+    expect(!lowLatencyPlan(true, true, false, false).justInTime, "frame generation off left low latency on");
+    expect(!lowLatencyPlan(true, false, false, true).reflexHolds, "no cap or frame generation reported Reflex holding");
+}
+
+void reflexKeepsJustInTimeBatchesAndStepsReleaseDelayAside() {
+    const auto plan = lowLatencyPlan(true, true, true, true);
+    expect(plan.justInTime, "Reflex on turned off the just-in-time batch start");
+    expect(!plan.releaseDelay, "Reflex on left the release delay running");
+    expect(plan.reflexHolds, "Reflex on was not reported as holding the game");
+}
+
+// Reflex on forces the delay to zero on every present and resets the controller. Reflex off resumes
+// from zero, as a fresh controller would.
+void reflexOnForcesZeroAndReflexOffResumesFromZero() {
+    const auto off = lowLatencyPlan(true, true, true, false);
+    const auto on = lowLatencyPlan(true, true, true, true);
+    LowLatencyRelease release;
+    Duration delay{};
+    for (int i = 0; i < 20; ++i) delay = release.update(off.releaseDelay, 17ms, 100ms);
+    expect(delay > Duration::zero(), "setup: early presents with Reflex off did not raise the delay");
+    for (int i = 0; i < 20; ++i)
+        expect(release.update(on.releaseDelay, 17ms, 100ms) == Duration::zero(),
+            "Reflex on did not force the delay to zero");
+    expect(release.margin() == 1ms && release.delay() == Duration::zero(),
+        "Reflex on did not reset the controller");
+    expect(release.update(off.releaseDelay, 9ms, 20ms) == 1ms,
+        "Reflex off did not resume the delay from zero");
+}
+
 // Native acquire model: the next frame starts at the previous release point less one interval
 // (not before the previous present returned at its deadline), renders for `render`, and
 // presents at its own deadline. A steady game settles at the base margin.
@@ -118,6 +156,9 @@ int main() {
     jitterWidensMargin();
     delayStaysWithinThreeCapIntervals();
     noCapResetsDelay();
+    lowLatencyPlanFollowsSettingCapFrameGenerationAndReflex();
+    reflexKeepsJustInTimeBatchesAndStepsReleaseDelayAside();
+    reflexOnForcesZeroAndReflexOffResumesFromZero();
     nativeAcquireModelSettlesAtMargin();
     threeFrameQueueSettlesAtMargin();
     acquireHoldIsBoundedByTheTimeout();
