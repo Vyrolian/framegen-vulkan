@@ -701,6 +701,46 @@ int main() {
     expect(fixedGeneratedFrameCount(5, 4) == 4,
         "Fixed 5x must use four reserved outputs");
 
+    {
+        using Clock = LiveEnableRecreation::Clock;
+        const Clock::time_point start{};
+        const auto quiet = recreatedProfileResourceQuietPeriod();
+        LiveEnableRecreation enable;
+        expect(!enable.armed(), "Live enable must not be armed initially");
+        expect(!enable.update(false, start) && !enable.armed(),
+            "Generation staying off must not arm a live-enable recreation");
+        expect(enable.update(true, start) && enable.armed(),
+            "Enabling generation must arm one live-enable recreation");
+        expect(!enable.update(true, start + std::chrono::seconds(1)) && enable.armed(),
+            "A repeated enable must not arm again");
+        expect(!enable.signalAfterSuccessfulPresent(
+                true, start + quiet - std::chrono::milliseconds(1)),
+            "Live enable must not signal before the quiet period");
+        expect(!enable.signalAfterSuccessfulPresent(false, start + quiet),
+            "Live enable must not signal on an unprotected present");
+        expect(enable.signalAfterSuccessfulPresent(true, start + quiet),
+            "Live enable must signal on a protected present after the quiet period, "
+            "measured from the first enable");
+        expect(!enable.signalAfterSuccessfulPresent(true, start + quiet * 2),
+            "Live enable must signal exactly once");
+        expect(!enable.armed(), "Live enable must not stay armed after its signal");
+        expect(!enable.update(true, start + quiet * 3) && !enable.armed(),
+            "Live enable must not arm again after its signal");
+
+        LiveEnableRecreation rearmed;
+        expect(rearmed.update(true, start), "Enabling generation must arm");
+        expect(!rearmed.update(false, start + quiet) && !rearmed.armed(),
+            "Disabling generation before the signal must disarm");
+        expect(!rearmed.signalAfterSuccessfulPresent(true, start + quiet * 2),
+            "A disarmed live enable must not signal");
+        expect(rearmed.update(true, start + quiet * 2) && rearmed.armed(),
+            "Enabling again must arm again");
+        expect(!rearmed.signalAfterSuccessfulPresent(true, start + quiet * 2),
+            "A re-armed live enable must wait for its new deadline");
+        expect(rearmed.signalAfterSuccessfulPresent(true, start + quiet * 3),
+            "A re-armed live enable must signal at its new deadline");
+    }
+
     std::cout << "profile update tests passed\n";
     return 0;
 }

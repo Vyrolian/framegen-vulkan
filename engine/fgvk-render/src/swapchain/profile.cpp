@@ -22,10 +22,22 @@ using namespace fgvk;
 using namespace fgvk::layer;
 
 ProfileUpdateDecision Swapchain::updateProfile(
-        const ls::GameConf& nextProfile,
+        const ls::GameConf& incomingProfile,
         const uint64_t runtimeStateRevision,
         const ls::GameConf* requestedProfile,
         const bool processRestartPending) {
+    ls::GameConf unavailableProfile;
+    if (this->frameGenerationUnavailableReason) {
+        unavailableProfile = incomingProfile;
+        unavailableProfile.frame_generation_enabled = false;
+        if (std::string_view(this->frameGenerationUnavailableReason) == "frame-generation-disabled" &&
+                this->liveEnableRecreation.update(effectiveFrameGenerationEnabled(incomingProfile))) {
+            std::cerr << "framegen-vulkan: frame generation was enabled live on a swapchain created "
+                         "without it; requesting one game-owned swapchain recreation\n";
+        }
+    }
+    const ls::GameConf& nextProfile = this->frameGenerationUnavailableReason
+        ? unavailableProfile : incomingProfile;
     this->requestedProfile = requestedProfile
         ? *requestedProfile : nextProfile;
     const bool resourcesAvailable = this->sourceImages.size() == 2 &&
@@ -275,6 +287,19 @@ bool Swapchain::requestLiveProfileResourceRecreationAfterPresent(
             lowerPresentResult != VK_SUBOPTIMAL_KHR) {
         return false;
     }
+    if (this->liveEnableRecreation.armed()) {
+        if (this->liveEnableRecreation.signalAfterSuccessfulPresent(
+                this->lastLowerPresentRetirementProtected)) {
+            std::cerr << "framegen-vulkan: requested a game-owned swapchain recreation so frame "
+                         "generation can start with internal images\n";
+            return true;
+        }
+        if (!this->lastLowerPresentRetirementProtected && !this->liveEnableRecreationWaitLogged) {
+            this->liveEnableRecreationWaitLogged = true;
+            std::cerr << "framegen-vulkan: no retirement-fenced present yet; frame generation starts "
+                         "at the game's next swapchain recreation\n";
+        }
+    }
     if (!this->lastLowerPresentRetirementProtected)
         return false;
     const auto runtimeStateRevision =
@@ -326,6 +351,15 @@ bool Swapchain::requestOrderedAcquireRecreationAfterPresent(
                   << " delivery=one-shot-per-context-after-retirement-fence-attachment\n";
     }
     return true;
+}
+
+void Swapchain::setFrameGenerationUnavailable(const char* const reason) {
+    this->frameGenerationUnavailableReason = reason;
+    if (std::string_view(reason) != "frame-generation-disabled") {
+        std::cerr << "framegen-vulkan: frame generation unavailable for this swapchain: reason="
+                  << reason << '\n';
+    }
+    this->disableFrameGeneration();
 }
 
 void Swapchain::disableFrameGeneration() {

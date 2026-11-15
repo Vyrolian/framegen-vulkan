@@ -1654,8 +1654,8 @@ namespace {
             ? nullptr : found->second.get();
     }
 
-    // F5 gate and creation for one context-backed swapchain. Refusal or any
-    // allocation failure keeps the direct lower-image path. The decision is
+    // F5 gate and creation for one context-backed swapchain. A swapchain
+    // without internal images presents real frames only. The decision is
     // logged once for each swapchain created with a Frame Generation context.
     void installInternalSwapchainImages(vk::Vulkan& vk,
             const VkSwapchainCreateInfoKHR& application,
@@ -1664,7 +1664,7 @@ namespace {
         uint32_t imageCount = 0;
         std::shared_ptr<InternalSwapchainImages> images;
         try {
-            const auto& context = layer_info->root.getSwapchainContext(swapchain, vk);
+            auto& context = layer_info->root.getSwapchainContext(swapchain, vk);
             const auto& profile = context.appliedProfile();
             const auto support = queryInternalImageSupport(
                 vk, application.imageFormat, application.imageUsage);
@@ -1692,6 +1692,8 @@ namespace {
                     reason = "allocation-failed";
                 }
             }
+            if (!images)
+                context.setFrameGenerationUnavailable(reason);
         } catch (const std::exception&) {
             images.reset();
             reason = "context-not-created";

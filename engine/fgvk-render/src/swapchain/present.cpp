@@ -700,7 +700,7 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
     // scaling-engine process may still attach its preallocated WSI-retirement
     // fence so natural resolution changes remain safe.
     if (!effectiveFrameGenerationEnabled(this->profile) ||
-            !this->colorPipeline.generationSupported) {
+            !this->colorPipeline.generationSupported || !internal) {
         return this->presentNativeFrame(invocation);
     }
     const auto replacementStabilization =

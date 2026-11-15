@@ -99,6 +99,7 @@ Release-gated overlapped batches (`Readiness::overlap`, the uncapped VKD3D path)
 Reset only state whose assumptions changed:
 
 - enable/disable clears affected pacing, admission, acquire recovery, and history state;
+- enabling Frame Generation live on a swapchain created without it requests one game-owned swapchain recreation (one `VK_ERROR_OUT_OF_DATE_KHR` after a retirement-fenced present, 500 ms after the change), so the replacement gets internal application images; without a retirement-fenced present, generation starts at the game's next swapchain recreation;
 - mode, multiplier, cap, or Smooth Cadence changes rebuild the affected real-frame pacing;
 - configured cap changes reset the real-frame pacer and scheduler observations; a bounded scheduler rescue changes only its effective automatic cap and output clock, with rollback owned by the same rescue;
 - probe-interval-only changes update only the timer;

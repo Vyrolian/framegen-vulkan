@@ -204,6 +204,48 @@ namespace fgvk::layer {
         std::optional<Request> request;
     };
 
+    /// A swapchain created while frame generation was off has no internal
+    /// application images and presents real frames only. When generation is
+    /// switched on live, ask the game for one swapchain recreation (the same
+    /// one-shot VK_ERROR_OUT_OF_DATE_KHR as LiveProfileResourceRecreation)
+    /// so the replacement is created with internal images.
+    class LiveEnableRecreation {
+    public:
+        using Clock = std::chrono::steady_clock;
+
+        /// @param generationWanted the requested profile has generation provisioned and enabled
+        /// @return true when this call armed the request
+        bool update(const bool generationWanted, const Clock::time_point now = Clock::now()) {
+            if (this->signaled)
+                return false;
+            if (!generationWanted) {
+                this->signalAfter.reset();
+                return false;
+            }
+            if (this->signalAfter)
+                return false;
+            this->signalAfter = now + recreatedProfileResourceQuietPeriod();
+            return true;
+        }
+
+        [[nodiscard]] bool armed() const {
+            return this->signalAfter.has_value() && !this->signaled;
+        }
+
+        /// Call after a successful lower present. Signals at most once per swapchain.
+        [[nodiscard]] bool signalAfterSuccessfulPresent(const bool retirementProtected,
+                const Clock::time_point now = Clock::now()) {
+            if (!this->armed() || !retirementProtected || now < *this->signalAfter)
+                return false;
+            this->signaled = true;
+            return true;
+        }
+
+    private:
+        std::optional<Clock::time_point> signalAfter;
+        bool signaled{false};
+    };
+
     /// Flow Scale and Lighter FG Model require the process to have
     /// retained its frame-generation device interop and private context.
     [[nodiscard]] inline bool liveProfileResourceRecreationAvailable(

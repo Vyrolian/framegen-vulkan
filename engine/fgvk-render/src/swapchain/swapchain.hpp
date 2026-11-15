@@ -206,6 +206,9 @@ namespace fgvk::layer {
         [[nodiscard]] const ls::GameConf& appliedProfile() const {
             return this->profile;
         }
+        /// The swapchain has no internal application images (reason from the F5 gate,
+        /// a string literal). It presents real frames only from now on.
+        void setFrameGenerationUnavailable(const char* reason);
         /// Apply configuration that is safe for an already-created context.
         /// Flow Scale and model changes rebuild framegen-vulkan's private
         /// frame-generation context at the next presentation boundary.
@@ -442,6 +445,9 @@ namespace fgvk::layer {
             preparedFrameGenerationResources;
         ls::GameConf requestedProfile;
         LiveProfileResourceRecreation liveProfileResourceRecreation;
+        const char* frameGenerationUnavailableReason{nullptr};
+        LiveEnableRecreation liveEnableRecreation;
+        bool liveEnableRecreationWaitLogged{false};
         size_t configuredFixedGeneratedFrames{0};
         // Set after a safety timeout; later generated acquires poll with
         // timeout 0 until one succeeds, so a hidden window costs at most one
