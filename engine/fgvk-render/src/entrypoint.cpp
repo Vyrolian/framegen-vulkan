@@ -1645,11 +1645,11 @@ namespace {
             CreateWaylandSurface
         >(instance, createInfo, alloc, surface, "vkCreateWaylandSurfaceKHR",
             SurfaceOrigin::Wayland);
-        // FGVK_PACING_PROFILE_DISPLAY=0 keeps the profile but leaves the display probe out (A/B run).
+        // Every native Wayland surface gets the observer (X6 refresh source). diagnostics only decides
+        // whether its records are kept; FGVK_PACING_PROFILE_DISPLAY=0 keeps the profile but leaves the display probe out (A/B run).
         const bool diagnostics = present_diagnostics::pacingWaylandProfileEnabled() ||
             present_diagnostics::pacingDisplayProbeEnabled();
-        if (result == VK_SUCCESS && createInfo && surface && instance_info &&
-                diagnostics) {
+        if (result == VK_SUCCESS && createInfo && surface && instance_info) {
             try {
                 auto observer = WaylandPresentationFeedback::create(createInfo->display, createInfo->surface, diagnostics);
                 if (observer) {

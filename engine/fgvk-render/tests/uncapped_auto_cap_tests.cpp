@@ -58,12 +58,40 @@ void refreshQueryCadence() {
     expect(UncappedAutoCap::refreshQueryDue(240, true), "a known rate was not queried at present 240");
     expect(UncappedAutoCap::refreshQueryDue(480, true), "a known rate was not queried at present 480");
 }
+
+void refreshFromWaylandNs() {
+    expect(UncappedAutoCap::refreshHzFromWaylandNs(0) == 0.0,
+        "an unknown wp_presentation refresh was not reported as unknown");
+    expect(UncappedAutoCap::refreshHzFromWaylandNs(8'000'000) == 125.0,
+        "an 8 000 000 ns wp_presentation refresh is not 125 Hz");
+    expect(near(UncappedAutoCap::refreshHzFromWaylandNs(4'167'500), 239.95, 0.01),
+        "a 4 167 500 ns wp_presentation refresh is not about 239.95 Hz");
+    expect(UncappedAutoCap::refreshHzFromWaylandNs(1'000'000) == 1000.0,
+        "a 1000 Hz wp_presentation refresh was rejected");
+    expect(UncappedAutoCap::refreshHzFromWaylandNs(60'000'000) == 0.0,
+        "a 16.7 Hz wp_presentation refresh was accepted");
+}
+
+void waylandFeedbackCadence() {
+    // Rate unknown: every 8th present asks for feedback.
+    expect(UncappedAutoCap::waylandFeedbackDue(0, false), "an unknown rate did not ask at present 0");
+    expect(!UncappedAutoCap::waylandFeedbackDue(7, false), "an unknown rate asked at present 7");
+    expect(UncappedAutoCap::waylandFeedbackDue(8, false), "an unknown rate did not ask at present 8");
+    expect(UncappedAutoCap::waylandFeedbackDue(16, false), "an unknown rate did not ask at present 16");
+    // Rate known: every 240th present asks.
+    expect(UncappedAutoCap::waylandFeedbackDue(0, true), "a known rate did not ask at present 0");
+    expect(!UncappedAutoCap::waylandFeedbackDue(239, true), "a known rate asked at present 239");
+    expect(UncappedAutoCap::waylandFeedbackDue(240, true), "a known rate did not ask at present 240");
+    expect(UncappedAutoCap::waylandFeedbackDue(480, true), "a known rate did not ask at present 480");
+}
 }
 
 int main() {
     refreshFromTiming();
     refreshRangeCheck();
     refreshQueryCadence();
+    refreshFromWaylandNs();
+    waylandFeedbackCadence();
     std::cout << "uncapped auto cap tests passed\n";
     return 0;
 }

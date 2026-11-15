@@ -512,6 +512,15 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
                 refreshSource = this->x11Refresh->source.load(std::memory_order_relaxed);
             }
         }
+        // X6: a native Wayland surface with no Vulkan rate takes the output refresh its wp_presentation
+        // feedback reported (the observer's lock-free value; 0 until the first presented event).
+        if (refreshHz <= 0 && this->info.waylandPresentation) {
+            refreshHz = UncappedAutoCap::refreshHzFromWaylandNs(this->info.waylandPresentation->refreshNs());
+            if (refreshHz > 0) {
+                branch = "wayland-presentation";
+                refreshSource = "wp-presentation";
+            }
+        }
         if (refreshHz <= 0)
             refreshSource = "none";
         const bool feedbackConfirmed = this->presentFeedback.confirmed();

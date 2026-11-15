@@ -3,8 +3,10 @@
 #include "wayland_presentation_feedback.hpp"
 #include "wayland_client_abi.hpp"
 #include "present_diagnostics.hpp"
+#include "swapchain/uncapped_auto_cap.hpp"
 
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
@@ -84,6 +86,10 @@ struct WaylandPresentationFeedback::Impl {
     // as a gap before the next sample that is queued.
     uint64_t dropped{};
     uint64_t requestedId{};
+    // X6: the output refresh from the last presented event (0 unknown or variable). Written under
+    // mutex by presented(), read lock-free by the present path's refresh query.
+    std::atomic<uint32_t> refreshNs{0};
+    uint64_t presents{};
 
     void record(const Sample& sample) noexcept {
         if (!diagnostics) return;
@@ -132,6 +138,8 @@ struct WaylandPresentationFeedback::Impl {
     static void presented(void* data, wl_proxy*, uint32_t hi, uint32_t lo, uint32_t nsec,
             uint32_t refresh, uint32_t seqHi, uint32_t seqLo, uint32_t flags) noexcept {
         auto& item = *static_cast<Pending*>(data);
+        // Every presented event, diagnostics or not; 0 (unknown or variable refresh) clears the rate.
+        item.owner->refreshNs.store(refresh, std::memory_order_release);
         auto sample = item.sample;
         sample.event = Event::Presented;
         sample.received = hostNow();
@@ -200,6 +208,11 @@ struct WaylandPresentationFeedback::Impl {
         if (stopped) return 0;
         if (dispatchPending(display, queue) < 0) { cleanup(); return 0; }
         requestedId = 0;
+        // Without diagnostics only the refresh source asks, on the UncappedAutoCap cadence.
+        const uint64_t presentIndex = presents++;
+        if (!diagnostics && !UncappedAutoCap::waylandFeedbackDue(presentIndex,
+                refreshNs.load(std::memory_order_relaxed) != 0))
+            return 0;
         Sample sample{.event = Event::Request, .id = ++nextId, .context = context,
             .source = source, .image = image, .generated = generated, .requested = hostNow(), .clock = clockId};
         uint32_t reason = !presentation ? (discovered ? 2u : 1u) : clockId == UINT32_MAX ? 3u : 0u;
@@ -264,6 +277,10 @@ struct WaylandPresentationFeedback::Impl {
 
 WaylandPresentationFeedback::WaylandPresentationFeedback() : impl(std::make_unique<Impl>()) {}
 WaylandPresentationFeedback::~WaylandPresentationFeedback() = default;
+
+uint32_t WaylandPresentationFeedback::refreshNs() const noexcept {
+    return impl->refreshNs.load(std::memory_order_acquire);
+}
 
 std::shared_ptr<WaylandPresentationFeedback> WaylandPresentationFeedback::create(
         wl_display* display, wl_surface* surface, bool diagnostics) noexcept {

@@ -19,6 +19,8 @@ public:
     static std::shared_ptr<WaylandPresentationFeedback> create(wl_display*, wl_surface*, bool diagnostics) noexcept;
     ~WaylandPresentationFeedback();
     void stop() noexcept;
+    // The output refresh in nanoseconds from the last presented feedback; 0 when unknown or variable. Lock-free.
+    [[nodiscard]] uint32_t refreshNs() const noexcept;
     // feedbackId, when given, receives the feedback this present requested (0 if none).
     static VkResult observe(void* owner, PFN_vkQueuePresentKHR lower, VkQueue queue,
         const VkPresentInfoKHR& info, uint64_t context, uint64_t source, bool generated,

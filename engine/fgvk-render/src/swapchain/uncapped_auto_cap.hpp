@@ -11,7 +11,7 @@ namespace fgvk::layer {
 // and never moves with GPU load.
 class UncappedAutoCap {
 public:
-    // Every refresh source (timing, X11 RandR, Wayland output) passes this range; outside it is unknown.
+    // Every refresh source (timing, X11 RandR, Wayland output, wp_presentation) passes this range; outside it is unknown.
     [[nodiscard]] static double refreshHzInRange(double hz) {
         return hz >= 20.0 && hz <= 1000.0 ? hz : 0.0;
     }
@@ -25,6 +25,17 @@ public:
         else if (refreshInterval > 0 && refreshInterval < unknown)
             hz = 1e9 / static_cast<double>(refreshInterval);
         return refreshHzInRange(hz);
+    }
+
+    // wp_presentation's presented event reports the output's refresh in nanoseconds; 0 is unknown or variable.
+    [[nodiscard]] static double refreshHzFromWaylandNs(uint32_t refreshNs) {
+        return refreshNs ? refreshHzInRange(1e9 / static_cast<double>(refreshNs)) : 0.0;
+    }
+
+    // Whether a native Wayland present asks for presentation feedback. Until a refresh is known every
+    // 8th present does; once known, every 240th does.
+    [[nodiscard]] static bool waylandFeedbackDue(uint64_t presents, bool known) {
+        return known ? presents % 240 == 0 : presents % 8 == 0;
     }
 
     // Whether this present queries the driver's refresh. Until a rate is known

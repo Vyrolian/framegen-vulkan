@@ -61,6 +61,27 @@ int main() {
         observer.reset();
         expect(fgvk_test_wayland_objects()==0);
     }
+    // X6: without diagnostics the observer still reports the output refresh, and asks for feedback only on the cadence.
+    fgvk_test_wayland_mode(0);
+    {
+        auto observer=WaylandPresentationFeedback::create(fgvk_test_wayland_display(),fgvk_test_wayland_surface(),false);
+        expect(static_cast<bool>(observer));
+        expect(observer->refreshNs()==0);
+        lowerResult=VK_SUCCESS;
+        const int calls=lowerCalls;
+        for (int i=0;i<480;++i) {
+            expect(WaylandPresentationFeedback::observe(observer.get(),lower,VK_NULL_HANDLE,info,7,7,false)==VK_SUCCESS);
+            // Present 0's feedback is dispatched by present 1, so the refresh is known from present 1 on.
+            expect(observer->refreshNs()==(i==0 ? 0u : 8'000'000u));
+        }
+        expect(lowerCalls==calls+480);
+        expect(fgvk_test_wayland_feedbacks()==2); // presents 0 and 240 only
+        observer->stop();
+        expect(observer->refreshNs()==8'000'000u); // stop keeps the last value
+        expect(fgvk_test_wayland_objects()==0);
+        observer.reset();
+        expect(fgvk_test_wayland_objects()==0);
+    }
     // Records reach the file through the writer; the test reads it now, so flush first.
     fgvk::layer::present_diagnostics::flushPacingProfileForTests();
     std::ifstream file(path);
