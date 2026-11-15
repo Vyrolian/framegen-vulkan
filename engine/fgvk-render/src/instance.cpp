@@ -223,6 +223,12 @@ Root::Root() {
         std::memory_order_relaxed);
     std::cerr << fgvkBuildIdentity << '\n';
 
+    // H3: read for every process, before the gamescope and profile gates. A Wine
+    // process has a mapped Windows executable; the native Wayland colour mapping reads this flag.
+    const auto identification = ls::identify();
+    this->wineProcessAtStartup = identification.wine_executable.has_value() &&
+        !identification.wine_executable->empty();
+
     const bool gamescopeSession = gamescopeSessionDetected();
     this->gamescopeSessionAtStartup = gamescopeSession;
     if (gamescopeSessionBlocked(gamescopeSession, std::getenv("FGVK_GAMESCOPE"))) {
@@ -237,7 +243,6 @@ Root::Root() {
     }
 
     // find active profile
-    const auto identification = ls::identify();
     const auto& profile = findProfile(this->config.get(), identification);
     if (present_diagnostics::pacingProfileEnabled()) {
         const auto overlayLibraries = present_diagnostics::steamOverlayLibraries();
@@ -589,6 +594,7 @@ void Root::modifyDeviceCreateInfo(VkDeviceCreateInfo& createInfo,
 
 SwapchainCreateModification Root::modifySwapchainCreateInfo(const vk::Vulkan& vk,
         VkSwapchainCreateInfoKHR& createInfo,
+        const bool winePassThroughHdr,
         const std::function<void(void)>& finish) const {
     SwapchainCreateModification modification{
         .applicationExtent = createInfo.imageExtent,
@@ -614,6 +620,7 @@ SwapchainCreateModification Root::modifySwapchainCreateInfo(const vk::Vulkan& vk
         caps.maxImageCount,
         prospectiveCreateInfo,
         vk.frameGenerationInteropEnabled(),
+        winePassThroughHdr,
         caps.minImageCount
     ));
 
@@ -624,6 +631,7 @@ SwapchainCreateModification Root::modifySwapchainCreateInfo(const vk::Vulkan& vk
         caps.maxImageCount,
         createInfo,
         vk.frameGenerationInteropEnabled(),
+        winePassThroughHdr,
         caps.minImageCount
     );
 

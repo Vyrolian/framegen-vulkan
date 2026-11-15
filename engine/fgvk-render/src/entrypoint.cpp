@@ -1814,9 +1814,12 @@ namespace {
                 }
                 retiredNullOldReplacement = true;
             }
+            // H3: Wine maps HDR10/PQ and scRGB to PASS_THROUGH on a native Wayland surface.
+            const bool winePassThroughHdr = layer_info->root.wineProcess() &&
+                surfaceOrigin(info->surface) == SurfaceOrigin::Wayland;
             auto modification =
                 layer_info->root.modifySwapchainCreateInfo(
-                    it->second, newInfo,
+                    it->second, newInfo, winePassThroughHdr,
                     [&, newInfo = &newInfo]() {
                         auto driverInfo = *newInfo;
 #if defined(VK_EXT_present_timing) && defined(VK_KHR_present_id2)
@@ -1911,6 +1914,7 @@ namespace {
                 .surface = info->surface,
                 .surfaceOrigin = surfaceOrigin(info->surface),
                 .x11Window = surfaceX11Window(info->surface),
+                .winePassThroughHdr = winePassThroughHdr,
                 .waylandPresentation = std::move(waylandPresentation),
                 .deferredPresentQueue = instance_info->deferredPresentQueues.contains(device)
                     ? instance_info->deferredPresentQueues.at(device) : nullptr,

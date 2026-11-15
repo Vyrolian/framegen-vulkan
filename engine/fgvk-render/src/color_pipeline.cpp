@@ -40,7 +40,36 @@ namespace {
 }
 
 layer::SwapchainColorPipeline layer::classifySwapchainColor(
-        const VkFormat format, const VkColorSpaceKHR colorSpace) {
+        const VkFormat format, const VkColorSpaceKHR colorSpace,
+        const bool winePassThroughHdr) {
+    if (colorSpace == VK_COLOR_SPACE_PASS_THROUGH_EXT && winePassThroughHdr) {
+        if (isHdr10Format(format)) {
+            return {
+                .encoding = backend::FrameEncoding::Hdr10Pq,
+                .exchangeFormat = VK_FORMAT_R16G16B16A16_SFLOAT,
+                .generationSupported = true,
+                .hdr = true,
+                .name = "wine-hdr10-pq",
+            };
+        }
+        if (format == VK_FORMAT_R16G16B16A16_SFLOAT) {
+            return {
+                .encoding = backend::FrameEncoding::ScRgbLinear,
+                .exchangeFormat = VK_FORMAT_R16G16B16A16_SFLOAT,
+                .generationSupported = true,
+                .hdr = true,
+                .name = "wine-scrgb-linear",
+            };
+        }
+        return {
+            .generationSupported = false,
+            .hdr = true,
+            .name = "unsupported-wine-hdr-format",
+            .reason = "Wine PASS_THROUGH HDR requires an A2R10G10B10 or A2B10G10R10 "
+                "(HDR10/PQ) or R16G16B16A16_SFLOAT (linear scRGB) swapchain",
+        };
+    }
+
     if (colorSpace == VK_COLOR_SPACE_HDR10_ST2084_EXT) {
         if (isHdr10Format(format)) {
             return {

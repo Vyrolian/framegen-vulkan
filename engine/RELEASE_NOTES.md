@@ -20,6 +20,7 @@
 - Native Wayland surfaces whose application reports no present timing (for example Minecraft in IMMEDIATE) take the monitor refresh from `wp_presentation` feedback, so the uncapped automatic cap (refresh divided by the multiplier) applies to them as well; the layer requests feedback only every 8th present until a rate is known, then every 240th.
 - Native Wayland under VRR: the automatic cap uses the output's mode rate when `wp_presentation` reports refresh 0.
 - HDR10/PQ and linear scRGB swapchains on native surfaces get frame generation in linear light again; other HDR transfer functions still pass through.
+- Wine's HDR on native Wayland (PASS_THROUGH with HDR10/PQ or scRGB) gets frame generation too, reported as `wine-hdr10-pq` or `wine-scrgb-linear` in the colour pipeline line.
 - Native Wayland outside gamescope: the lower swapchain is destroyed with the application's destroy call after its retirement fences complete, so an SDR to HDR switch under Wine no longer fails with a colour-management protocol error.
 
 ## What's new in MAKO Renderer v4.6.0

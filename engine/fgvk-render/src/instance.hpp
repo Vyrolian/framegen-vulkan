@@ -68,6 +68,12 @@ namespace fgvk::layer {
             return this->gamescopeSessionAtStartup;
         }
 
+        /// Whether the process runs under Wine: the identification found a mapped Windows
+        /// executable, detected once at layer init and independent of profile matching.
+        [[nodiscard]] bool wineProcess() const {
+            return this->wineProcessAtStartup;
+        }
+
         /// ensure the layer is up-to-date
         /// @param forceConfigurationPoll bypass the present-path polling
         /// interval at an application-owned swapchain creation boundary
@@ -90,10 +96,11 @@ namespace fgvk::layer {
         /// modify swapchain create info
         /// @param vk vulkan instance
         /// @param createInfo original create info
+        /// @param winePassThroughHdr native Wayland surface in a Wine process (H3)
         /// @param finish function to call after modification
         [[nodiscard]] SwapchainCreateModification modifySwapchainCreateInfo(
             const vk::Vulkan& vk, VkSwapchainCreateInfoKHR& createInfo,
-            const std::function<void(void)>& finish) const;
+            bool winePassThroughHdr, const std::function<void(void)>& finish) const;
         /// create swapchain context
         /// @param vk vulkan instance
         /// @param swapchain swapchain handle
@@ -131,6 +138,7 @@ namespace fgvk::layer {
         bool frameGenerationInteropProvisionedAtStartup{false};
         bool fp16AtStartup{true};
         bool gamescopeSessionAtStartup{false};
+        bool wineProcessAtStartup{false};
         bool swapchainImageCountCompatibilityConfiguredAtStartup{false};
 
         ls::lazy<backend::Instance> backend;

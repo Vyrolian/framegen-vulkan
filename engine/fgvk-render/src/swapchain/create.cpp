@@ -66,9 +66,10 @@ bool layer::context_ModifySwapchainCreateInfo(const ls::GameConf& profile,
         uint32_t maxImages,
         VkSwapchainCreateInfoKHR& createInfo,
         const bool frameGenerationInteropEnabled,
+        const bool winePassThroughHdr,
         const uint32_t surfaceMinImages) {
     const auto colorPipeline = classifySwapchainColor(
-        createInfo.imageFormat, createInfo.imageColorSpace
+        createInfo.imageFormat, createInfo.imageColorSpace, winePassThroughHdr
     );
     const bool frameGenerationProvisioned =
         frameGenerationInteropEnabled && colorPipeline.generationSupported;
@@ -99,7 +100,7 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance* backend,
         instance(backend),
         privateOrderedTransport(info.privateOrderedTransport),
         currentPresentMode(info.presentMode),
-        colorPipeline(classifySwapchainColor(info.format, info.colorSpace)),
+        colorPipeline(classifySwapchainColor(info.format, info.colorSpace, info.winePassThroughHdr)),
         fp16Requested(fp16Requested),
         profile(std::move(profile)), info(std::move(info)) {
     this->presentFeedback.configure(this->info.applicationPresentFeedback);

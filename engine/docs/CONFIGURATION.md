@@ -93,7 +93,7 @@ Older files can still contain `adaptive`, `adaptive_max_multiplier`, `adaptive_a
 
 Keep the defaults unless a game needs a change.
 
-HDR10/PQ swapchains (A2B10G10R10 or A2R10G10B10) and linear scRGB swapchains (R16G16B16A16_SFLOAT) get frame generation in linear light; other HDR transfer functions pass through without it. `disable_hdr_exposure` in old launcher files is ignored.
+HDR10/PQ swapchains (A2B10G10R10 or A2R10G10B10) and linear scRGB swapchains (R16G16B16A16_SFLOAT) get frame generation in linear light; other HDR transfer functions pass through without it. Under Wine on native Wayland, Wine reports the same HDR pairs as `PASS_THROUGH` and sets the HDR description on the surface itself, so those swapchains get the same frame generation. `disable_hdr_exposure` in old launcher files is ignored.
 
 `[profile.handheld]` and `[profile.docked]` tables in old files are accepted and ignored.
 

@@ -57,6 +57,8 @@ namespace fgvk::layer {
         SurfaceOrigin surfaceOrigin{SurfaceOrigin::Unknown};
         // X11 window XID of an Xlib or XCB surface (0 otherwise), read for the X5 refresh query.
         uint64_t x11Window{0};
+        // H3: a native Wayland surface in a Wine process, where PASS_THROUGH carries Wine's HDR pairs.
+        bool winePassThroughHdr{false};
         std::shared_ptr<WaylandPresentationFeedback> waylandPresentation;
         std::shared_ptr<DeferredPresentQueue> deferredPresentQueue;
         bool ownedPresentTiming{false};
@@ -105,11 +107,13 @@ namespace fgvk::layer {
     /// @param profile active game profile
     /// @param maxImages maximum number of images supported by the surface
     /// @param createInfo swapchain create info to modify
+    /// @param winePassThroughHdr native Wayland surface in a Wine process (H3 PASS_THROUGH HDR)
     /// @param surfaceMinImages surface minImageCount for the layer-needs floor (0 = none)
     [[nodiscard]] bool context_ModifySwapchainCreateInfo(
         const ls::GameConf& profile, uint32_t maxImages,
         VkSwapchainCreateInfoKHR& createInfo,
         bool frameGenerationInteropEnabled,
+        bool winePassThroughHdr,
         uint32_t surfaceMinImages = 0);
 
     /// swapchain context for a layer instance

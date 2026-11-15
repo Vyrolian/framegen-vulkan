@@ -4,6 +4,8 @@
 
 #include <cstdlib>
 #include <iostream>
+#include <string_view>
+#include <utility>
 
 using namespace fgvk;
 using namespace fgvk::layer;
@@ -75,6 +77,55 @@ int main() {
             pipeline.reason == "linear scRGB requires an R16G16B16A16_SFLOAT swapchain",
             "linear scRGB on another format must pass through");
     }
+
+    // Wine's winewayland maps HDR10/PQ and linear scRGB to PASS_THROUGH on a
+    // native Wayland surface and sets the HDR description itself. With the flag
+    // the same validated pairs run frame generation; without it PASS_THROUGH
+    // stays real-frame passthrough.
+    const auto winePassThroughCases = {
+        std::pair{VK_FORMAT_A2B10G10R10_UNORM_PACK32, std::string_view{"wine-hdr10-pq"}},
+        std::pair{VK_FORMAT_A2R10G10B10_UNORM_PACK32, std::string_view{"wine-hdr10-pq"}},
+        std::pair{VK_FORMAT_R16G16B16A16_SFLOAT, std::string_view{"wine-scrgb-linear"}},
+    };
+    for (const auto& [format, name] : winePassThroughCases) {
+        const auto pipeline = classifySwapchainColor(format, VK_COLOR_SPACE_PASS_THROUGH_EXT, true);
+        expect(pipeline.generationSupported && pipeline.hdr && pipeline.name == name,
+            "Wine PASS_THROUGH HDR pairs must support generation with their diagnostic name");
+        expect(pipeline.exchangeFormat == VK_FORMAT_R16G16B16A16_SFLOAT &&
+            transportBytesPerPixel(pipeline.encoding) == 8,
+            "Wine PASS_THROUGH HDR must use the float RGBA16F exchange path");
+    }
+    expect(classifySwapchainColor(VK_FORMAT_A2B10G10R10_UNORM_PACK32,
+            VK_COLOR_SPACE_PASS_THROUGH_EXT, true).encoding == backend::FrameEncoding::Hdr10Pq &&
+        classifySwapchainColor(VK_FORMAT_A2R10G10B10_UNORM_PACK32,
+            VK_COLOR_SPACE_PASS_THROUGH_EXT, true).encoding == backend::FrameEncoding::Hdr10Pq &&
+        classifySwapchainColor(VK_FORMAT_R16G16B16A16_SFLOAT,
+            VK_COLOR_SPACE_PASS_THROUGH_EXT, true).encoding == backend::FrameEncoding::ScRgbLinear,
+        "Wine PASS_THROUGH must select the HDR10/PQ and scRGB encodings");
+    {
+        const auto unsupported = classifySwapchainColor(VK_FORMAT_B8G8R8A8_UNORM,
+            VK_COLOR_SPACE_PASS_THROUGH_EXT, true);
+        expect(!unsupported.generationSupported && unsupported.hdr &&
+            unsupported.name == "unsupported-wine-hdr-format" && !unsupported.reason.empty(),
+            "Wine PASS_THROUGH on another format must pass through as unsupported HDR");
+    }
+    for (const auto format : {VK_FORMAT_A2B10G10R10_UNORM_PACK32,
+            VK_FORMAT_A2R10G10B10_UNORM_PACK32, VK_FORMAT_R16G16B16A16_SFLOAT,
+            VK_FORMAT_B8G8R8A8_UNORM}) {
+        const auto pipeline = classifySwapchainColor(format, VK_COLOR_SPACE_PASS_THROUGH_EXT, false);
+        expect(!pipeline.generationSupported && !pipeline.hdr &&
+            pipeline.name == "hdr-passthrough" &&
+            pipeline.reason == "HDR is not supported; frame generation passes through",
+            "PASS_THROUGH without the Wine flag must stay real-frame passthrough");
+    }
+    // The flag only ever selects PASS_THROUGH; other colour spaces are unchanged.
+    expect(classifySwapchainColor(VK_FORMAT_A2B10G10R10_UNORM_PACK32,
+            VK_COLOR_SPACE_SRGB_NONLINEAR_KHR, true).name == "sdr-high-precision" &&
+        classifySwapchainColor(VK_FORMAT_R16G16B16A16_SFLOAT,
+            VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT, true).name == "scrgb-linear" &&
+        classifySwapchainColor(VK_FORMAT_A2B10G10R10_UNORM_PACK32,
+            VK_COLOR_SPACE_HDR10_ST2084_EXT, true).name == "hdr10-pq",
+        "the Wine flag must not change non-PASS_THROUGH colour spaces");
 
     // Colour spaces with no validated model stay real-frame passthrough.
     const struct ColorCase { VkColorSpaceKHR space; bool hdr; } colors[]{
