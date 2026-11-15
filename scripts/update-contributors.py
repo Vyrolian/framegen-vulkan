@@ -44,7 +44,9 @@ def render():
             if name in name_to_login and name_to_login[name] != login:
                 raise ValueError(f"Commit name {alias!r} maps to multiple GitHub logins")
             name_to_login[name] = login
-    names = git_names()
+    # AI co-author trailers (for example "Claude Opus 5.5") are not GitHub accounts; see AI_USE.md.
+    ignored = tuple(prefix.casefold() for prefix in config.get("ignored_name_prefixes", []))
+    names = {name for name in git_names() if not (ignored and name.startswith(ignored))}
     missing = names - name_to_login.keys()
     if missing:
         raise ValueError(

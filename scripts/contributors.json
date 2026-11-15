@@ -8,8 +8,10 @@
     "rosakodu": ["rosakodu", "Mickhail Vorontsov"],
     "Tak-attack": ["Tak-attack"],
     "w169q169": ["senhtry"],
-    "WowOne987": ["WowOne987"]
+    "WowOne987": ["WowOne987"],
+    "Vyrolian": ["Vyrolian"]
   },
   "additional_logins": [],
+  "ignored_name_prefixes": ["claude"],
   "avatar_revision": 20261004
 }
