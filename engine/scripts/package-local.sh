@@ -22,6 +22,8 @@ Usage: scripts/package-local.sh [--64-bit-only] [output-path]
 
 Build and verify a local Linux engine archive. --64-bit-only omits the 32-bit
 layer and manifest for faster native 64-bit Deck/Steam Machine test builds.
+The archive is reproducible for a given commit: SOURCE_DATE_EPOCH (default: the
+commit time of HEAD) sets every archive timestamp.
 EOF
 }
 
@@ -60,6 +62,23 @@ if [[ -z "$version" ]]; then
     exit 1
 fi
 
+# Archive timestamps come from the source commit, never from the wall clock, so two builds of one
+# commit match byte for byte. Sources without git history have no commit time: they warn and use
+# the current time, because nothing else identifies the source.
+source_date_epoch="${SOURCE_DATE_EPOCH:-}"
+if [[ -z "$source_date_epoch" ]]; then
+    source_date_epoch="$(git -C "$repo_root" log -1 --format=%ct HEAD 2>/dev/null || true)"
+fi
+if [[ -z "$source_date_epoch" ]]; then
+    echo "framegen-vulkan: no git history and no SOURCE_DATE_EPOCH; archive timestamps will vary." >&2
+    source_date_epoch="$(date +%s)"
+fi
+if [[ ! "$source_date_epoch" =~ ^[0-9]+$ ]]; then
+    echo "SOURCE_DATE_EPOCH must be a Unix time in seconds: $source_date_epoch" >&2
+    exit 2
+fi
+export SOURCE_DATE_EPOCH="$source_date_epoch"
+
 vulkan_headers_revision="$(< "$repo_root/vulkan-headers-revision.txt")"
 if [[ ! "$vulkan_headers_revision" =~ ^(vulkan-sdk-|v)[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
     echo "vulkan-headers-revision.txt must contain a Vulkan-Headers SDK branch (vulkan-sdk-X.Y.Z) or release tag (vX.Y.Z)." >&2
@@ -81,7 +100,27 @@ build_fgvk_ui() {
     fgvk_ui_target_dir="$build_work_root/fgvk-ui-target"
     mkdir -p "$fgvk_ui_target_dir"
     echo "Building fgvk with host cargo..."
-    cargo build --release --locked \
+    # Rust panic locations, dependency paths and the standard-library source paths embedded from the
+    # toolchain sysroot must not name this checkout, the Cargo home or a rustup directory. Cargo
+    # reads CARGO_ENCODED_RUSTFLAGS as 0x1f-separated arguments, so checkout paths with spaces stay
+    # whole. RUSTFLAGS already set in the environment is kept ahead of the remaps.
+    cargo_home="${CARGO_HOME:-${HOME:-}/.cargo}"
+    rust_sysroot="$(rustc --print sysroot)"
+    rust_flags=()
+    if [[ -n "${RUSTFLAGS:-}" ]]; then
+        read -r -a rust_flags <<< "$RUSTFLAGS"
+    fi
+    rust_flags+=(
+        "--remap-path-prefix=$monorepo_root=."
+        "--remap-path-prefix=$cargo_home=cargo-home"
+        "--remap-path-prefix=$rust_sysroot=rust-sysroot"
+    )
+    encoded_rustflags=""
+    for rust_flag in "${rust_flags[@]}"; do
+        encoded_rustflags+="$rust_flag"$'\x1f'
+    done
+    CARGO_ENCODED_RUSTFLAGS="${encoded_rustflags%$'\x1f'}" \
+        cargo build --release --locked \
         --manifest-path "$repo_root/fgvk-ui/Cargo.toml" \
         --target-dir "$fgvk_ui_target_dir"
     fgvk_ui_binary="$fgvk_ui_target_dir/release/fgvk"
@@ -162,7 +201,7 @@ if [[ "$containerized_build" != "1" && ( "$(uname -s)" != "Linux" || "$portable_
         '
 fi
 
-for command in cmake ninja clang++ nm python3 readelf strings strip tar sha256sum; do
+for command in cmake ninja clang++ nm python3 readelf strings strip tar xz sha256sum; do
     if ! command -v "$command" >/dev/null 2>&1; then
         echo "Required command not found: $command" >&2
         exit 1
@@ -231,10 +270,14 @@ if [[ "${FGVK_RELEASE_SKIP_TESTS:-0}" == "1" ]]; then
     build_testing=OFF
     echo "Automated tests skipped by maintainer request; package verification remains enabled."
 fi
+# The C++ compile maps the checkout root to "." so __FILE__, assertions and any debug paths in the
+# binaries name no host directory. The project is C++ only, so no C flags are needed.
+source_prefix_map_flag="-ffile-prefix-map=$monorepo_root=."
 cmake -S "$repo_root" -B "$build64_dir" -G Ninja \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_INSTALL_PREFIX="$install_dir" \
     -DCMAKE_CXX_COMPILER=clang++ \
+    "-DCMAKE_CXX_FLAGS=$source_prefix_map_flag" \
     -DCMAKE_INSTALL_LIBDIR=lib \
     -DBUILD_TESTING="$build_testing" \
     -DFGVK_REQUIRE_NATIVE_PACKAGE_HEADERS=ON \
@@ -262,7 +305,7 @@ if [[ "$build_32_bit" == true ]]; then
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_INSTALL_PREFIX="$install_dir" \
         -DCMAKE_CXX_COMPILER=clang++ \
-        -DCMAKE_CXX_FLAGS=-m32 \
+        "-DCMAKE_CXX_FLAGS=-m32 $source_prefix_map_flag" \
         -DCMAKE_SHARED_LINKER_FLAGS=-m32 \
         -DCMAKE_INSTALL_LIBDIR=lib32 \
         -DBUILD_TESTING=OFF \
@@ -456,8 +499,18 @@ for layer_binary in "${layer_binaries[@]}"; do
     fi
 done
 
-tar -C "$install_dir" -cJf "$output_path" .
+# Modes follow the builder's umask unless normalized, so normalize them before archiving:
+# directories and executables are 0755, every other file is 0644.
+find "$install_dir" -type d -exec chmod 0755 {} +
+find "$install_dir" -type f -perm -u+x -exec chmod 0755 {} +
+find "$install_dir" -type f ! -perm -u+x -exec chmod 0644 {} +
+# Archive bytes depend only on the payload: sorted members, one timestamp, root ownership, no
+# access or change times in member headers, and one xz thread for a stable compressed stream.
+tar --sort=name --mtime="@$SOURCE_DATE_EPOCH" --owner=0 --group=0 --numeric-owner \
+    --pax-option='exthdr.name=%d/PaxHeaders/%f,delete=atime,delete=ctime' \
+    -C "$install_dir" -cf - . | xz -T1 -c > "$output_path"
 
 echo "Created and verified: $output_path"
 echo "Version: $version"
 echo "Architectures: $([[ "$build_32_bit" == true ]] && printf '64,32' || printf '64')"
+echo "SHA-256: $(sha256sum "$output_path" | awk '{print $1}')"

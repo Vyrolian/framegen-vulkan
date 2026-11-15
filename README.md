@@ -8,32 +8,32 @@ framegen-vulkan does not include Lossless Scaling. You need a lawful copy of [Lo
 
 - Linux on x86_64 with a Vulkan 1.2 GPU driver (tested on NVIDIA; AMD and Intel are not regularly tested).
 - Lossless Scaling installed through Steam (the default public version).
-- To build: a C++20 compiler, CMake 3.15 or newer, Ninja, Python 3, git, Vulkan, X11 and XCB development files, and Rust 1.78 or newer with `cargo`.
+- To build: Clang with C++20 support, CMake 3.15 or newer, Ninja, Python 3, git, Vulkan, X11 and XCB development files, and Rust 1.78 or newer with `cargo`.
 
 ## Build dependencies
 
 Arch Linux (and SteamOS with a writable root):
 
 ```bash
-sudo pacman -S --needed base-devel cmake ninja git python vulkan-headers vulkan-icd-loader libx11 libxcb xorgproto rust
+sudo pacman -S --needed base-devel clang cmake ninja git python vulkan-headers vulkan-icd-loader libx11 libxcb xorgproto rust
 ```
 
 Debian and Ubuntu:
 
 ```bash
-sudo apt install build-essential cmake ninja-build git python3 libvulkan-dev libx11-dev libxcb1-dev cargo
+sudo apt install build-essential clang cmake ninja-build git python3 libvulkan-dev libx11-dev libxcb1-dev cargo
 ```
 
 Fedora:
 
 ```bash
-sudo dnf install gcc-c++ cmake ninja-build git python3 vulkan-loader-devel vulkan-headers libX11-devel libxcb-devel cargo
+sudo dnf install gcc-c++ clang cmake ninja-build git python3 vulkan-loader-devel vulkan-headers libX11-devel libxcb-devel cargo
 ```
 
 openSUSE:
 
 ```bash
-sudo zypper install gcc-c++ cmake ninja git python3 vulkan-devel vulkan-headers libX11-devel libxcb-devel cargo
+sudo zypper install gcc-c++ clang cmake ninja git python3 vulkan-devel vulkan-headers libX11-devel libxcb-devel cargo
 ```
 
 Only the Arch line is tested by the maintainer. If your distribution's Rust is older than 1.78 (Ubuntu 22.04, for example), install Rust with [rustup](https://rustup.rs/) instead of the `cargo` package. The build fetches the pinned Vulkan-Headers revision itself.

@@ -1,0 +1,81 @@
+name: Release build
+
+# Manual only. Builds the Linux framegen-vulkan release archive natively on the Ubuntu 22.04
+# baseline and uploads the archive and its SHA-256 file as a workflow artifact. It never creates a
+# tag, a release, or a published asset.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-build-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release-archive:
+    name: framegen-vulkan Linux release archive (Ubuntu 22.04)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+        with:
+          # Full history: the build fingerprint reads the last commit that touched engine/, and the
+          # archive timestamp reads the HEAD commit time. A shallow clone can change either one.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential binutils clang g++-multilib \
+            cmake ninja-build git python3 pkg-config xz-utils \
+            libvulkan-dev libx11-dev libxcb1-dev \
+            libwayland-dev libxkbcommon-dev libgl-dev libegl-dev
+
+      - name: Show toolchain versions
+        run: |
+          uname -srm
+          ldd --version | head -n 1
+          clang++ --version | head -n 1
+          g++ --version | head -n 1
+          cmake --version | head -n 1
+          ninja --version
+          python3 --version
+          cargo --version
+          rustc --version
+
+      - name: Run repository gates
+        run: scripts/dev.sh test-all
+
+      - name: Build the release archive natively
+        env:
+          FGVK_PORTABLE_PACKAGE: "0"
+        run: scripts/dev.sh package-engine
+
+      - name: Write and verify the SHA-256 file
+        id: archive
+        run: |
+          version="$(tr -d '[:space:]' < engine/VERSION)"
+          archive="framegen-vulkan-v${version}-linux.tar.xz"
+          test -s "engine/out/$archive"
+          (
+            cd engine/out
+            sha256sum "$archive" > "$archive.sha256"
+            sha256sum --check "$archive.sha256"
+          )
+          cat "engine/out/$archive.sha256"
+          echo "archive=$archive" >> "$GITHUB_OUTPUT"
+
+      - name: Upload the archive and its SHA-256 file
+        uses: actions/upload-artifact@v7
+        with:
+          name: framegen-vulkan-linux
+          path: |
+            engine/out/${{ steps.archive.outputs.archive }}
+            engine/out/${{ steps.archive.outputs.archive }}.sha256
+          if-no-files-found: error
+          retention-days: 30

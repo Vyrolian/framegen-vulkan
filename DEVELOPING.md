@@ -240,7 +240,7 @@ A release ships framegen-vulkan as one `X.Y.Z` version. Reuse a version only to 
 | Stage | Command | Result |
 | --- | --- | --- |
 | Focused local iteration | `engine/scripts/build-steamos-dev.sh` | Incremental development build; no package or release |
-| Complete local archives | `engine/scripts/package-local-release.sh` | Host archive, Flatpak archive, Arch package, and `SHA256SUMS` in `engine/out/`; no tag or release |
+| Complete local archives (legacy container builders) | `engine/scripts/package-local-release.sh` | Host archive, Flatpak archive, Arch package, and `SHA256SUMS` in `engine/out/`; no tag or release; needs Docker or Podman |
 | Release-candidate check | `./scripts/check-release-candidate.sh engine/out/framegen-vulkan-vX.Y.Z-linux.tar.xz engine/out/framegen-vulkan-vX.Y.Z-flatpaks.tar.xz` | Checks the already-built archives against the clean pushed source commit, install manifest, both native bitnesses, and the Flatpak runtime list; no rebuild or installation |
 | Publication | `./scripts/publish-release.sh X.Y.Z` | Publishes the Renderer archives, records immutable checksums in `engine/renderer-release.json`, and updates the release links |
 | Public-asset check | Download the released host archive and run its **Install framegen-vulkan** file | Verifies the actual public artifact and installation path |
@@ -254,16 +254,20 @@ Fast native-only packages and direct installations are intentionally incomplete 
 - Confirm `origin` targets this repository and the worktree is clean.
 - Prepare the SteamOS test machine and complete any affected manual game checks described in [Build and test](#build-and-test). A compatible fgvk Gym checkout is needed only for hardware suites you choose to run.
 
-Published host archives use the portable native builder in `engine/scripts/package-local.sh`: Ubuntu 22.04, Clang 14, and the Vulkan headers pinned in [`engine/vulkan-headers-revision.txt`](engine/vulkan-headers-revision.txt). This keeps the released toolchain independent of the host SDK. Use that builder for the complete local candidate too. Docker or Podman is required for native publication on Linux as well as other hosts. Flatpak extensions use the same Vulkan-Headers pin while retaining their separate runtime-specific compilers, libraries, and verification.
+The release archive is built natively by the `release-build` GitHub Actions workflow ([`.github/workflows/release-build.yml`](.github/workflows/release-build.yml)) on `ubuntu-22.04`, with `engine/scripts/package-local.sh`, Clang 14 from Ubuntu, and the Vulkan headers pinned in [`engine/vulkan-headers-revision.txt`](engine/vulkan-headers-revision.txt). This keeps the released toolchain independent of the host SDK and needs no container. The workflow is manual, runs `scripts/dev.sh test-all` and `scripts/dev.sh package-engine`, and uploads the archive and its `.sha256` file as a workflow artifact; it never creates a tag or a release.
+
+The container builders (`FGVK_PORTABLE_PACKAGE=1`, Docker or Podman) are legacy. `engine/scripts/package-local-release.sh`, `engine/scripts/publish-package.sh` and the Flatpak fallback still use them, and they are kept until the maintainer decides whether to remove them and switch publication to the workflow artifact. Flatpak extensions use the same Vulkan-Headers pin while retaining their separate runtime-specific compilers, libraries, and verification.
+
+Local native builds of one clean commit are reproducible with the same toolchain. `engine/scripts/package-local.sh` sets `SOURCE_DATE_EPOCH` to the commit time of `HEAD` unless you set it, so every archive timestamp follows the commit. To verify, run `engine/scripts/package-local.sh --64-bit-only` on the same commit in two different directories (for example two `git worktree add --detach <dir> HEAD` checkouts), with the same compiler, Rust toolchain and `FGVK_VULKAN_HEADERS_INCLUDE_DIR`, and compare the two `sha256sum` values. The details are in [Building from source](engine/docs/BUILDING-FROM-SOURCE.md).
 
 ### Keep tester and release builds aligned
 
 Source identity alone is insufficient: Vulkan extension macros can change compiled presentation handling. In 3.2.0, older native build headers omitted `VkPresentId2KHR` support that was present in the earlier tester binary. The 3.2.1 hotfix restored the tester's native build setup; the exact cause of every reported game failure was not confirmed.
 
-- Build complete local archives with `engine/scripts/package-local-release.sh`, which always uses the portable builders. A changed container image, external SDK, or compiler package can still alter output without changing framegen-vulkan source; remove the matching cached archives before rebuilding after such a change. Publication rebuilds native archives independently.
+- Build complete local archives with `engine/scripts/package-local-release.sh`, which uses the legacy container builders for the host and Flatpak archives. A changed container image, external SDK, or compiler package can still alter output without changing framegen-vulkan source; remove the matching cached archives before rebuilding after such a change. Publication rebuilds native archives independently.
 - Keep the shared package header check enabled for both 64-bit and 32-bit native and Flatpak builds. `FGVK_REQUIRE_NATIVE_PACKAGE_HEADERS=ON` requires headers at least as new as [`engine/vulkan-headers-revision.txt`](engine/vulkan-headers-revision.txt), with `VK_KHR_present_id2` and `VK_EXT_present_timing`, even when tests are skipped. It checks build-time declarations and does not raise the game's Vulkan runtime requirement. Do not turn required compatibility support into an optional compile-time path without an equivalent fallback or a package failure.
 - Retain the exact archives, their SHA-256 checksums, the embedded binary fingerprint, source commit and dirty state, build log, compiler and Vulkan header versions, and Flatpak SDK/runtime identities. Record the devices, driver, Proton version, games, and results against that artifact. After changing the header pin, regenerate the shared Flatpak module with `scripts/dev.sh generate-flatpak-headers`. Package and portable gates reject stale generated modules. Do not identify tested content by filename or source commit alone.
-- Treat any builder, header, compiler, build-option, or runtime SDK change as a new candidate requiring affected compatibility coverage. The container recipe fixes the baseline but still receives distribution package updates; it does not guarantee reproducible bytes. Record the resolved versions from each build.
+- Treat any builder, header, compiler, build-option, or runtime SDK change as a new candidate requiring affected compatibility coverage. The `release-build` runner image and its apt packages still change over time, so the workflow log prints the resolved toolchain versions; record them with each build.
 - After publication, download and verify the actual public assets and complete the public installation and affected-game checks below. A successful build or checksum check does not establish game compatibility.
 
 ### Prepare the release
@@ -292,7 +296,7 @@ Review affected dependencies and upstream changes using the [dependency and vers
 
 Commit the notes and the artwork with the release changes when authorized. The release builds validate the note heading, content, version, and codename.
 
-Push the candidate commit and wait for the normal portable `Tests` workflow. Reuse an existing complete set of local archives from that exact clean commit, or build one on the SteamOS test machine with the same portable builders used by publication:
+Push the candidate commit and wait for the normal portable `Tests` workflow. Reuse an existing complete set of local archives from that exact clean commit, or build one on the SteamOS test machine with the legacy container builders used by `package-local-release.sh` (Docker or Podman required):
 
 ```bash
 engine/scripts/package-local-release.sh
@@ -326,7 +330,7 @@ Do not manually edit generated version links or pins.
 
 Only when the maintainer explicitly requests skipping automated validation, run the publisher with `FGVK_RELEASE_SKIP_TESTS=1`. This omits Renderer CTest and launcher tests, and adds `[skip ci]` to release-owned commits. Build, ABI, archive-layout, package-contract, and checksum verification still run. Record the skipped validation in the release evidence; this path does not establish game or hardware validation.
 
-The publisher still uses the mandatory portable native builder and header checks on this path. Match the tester evidence as described above; a new release has new version metadata and binaries, so matching runtime source and toolchain is not a claim of byte-identical artifacts.
+The publisher still uses the legacy portable container builder (`FGVK_PORTABLE_PACKAGE=1`) and header checks on this path. Match the tester evidence as described above; a new release has new version metadata and binaries, so matching runtime source and toolchain is not a claim of byte-identical artifacts.
 
 ### Resume an interrupted release
 
