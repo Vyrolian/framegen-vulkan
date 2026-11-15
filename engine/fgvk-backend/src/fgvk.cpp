@@ -170,6 +170,7 @@ namespace fgvk::backend {
             return this->split && !this->split->failed ? this->split->latest : std::nullopt;
         }
         [[nodiscard]] std::optional<bool> previousBatchPending() const;
+        void pollSplitProfiles();
 
         /// schedule a variable number of frames at explicit timestamps
         void scheduleFrames(std::span<const float> timestamps);
@@ -890,6 +891,10 @@ std::optional<bool> Instance::previousBatchPending(const Context& context) const
     return context.previousBatchPending();
 }
 
+void Instance::pollSplitProfiles(Context& context) { // NOLINT (static)
+    context.pollSplitProfiles();
+}
+
 void Context::enableSplitProfile(const bool retainCompleted) {
     if (this->fidx != 0 || this->hasScheduledWork() || this->split)
         throw backend::error("Split profiling requires a fresh unscheduled context");
@@ -1398,6 +1403,18 @@ bool Context::waitForIdle(const uint64_t timeoutNs) const {
         [this](const size_t slot, uint64_t& remainingNs) {
             return waitWithBudget(this->cmdbufFences.at(slot), this->ctx.vk, remainingNs);
         });
+}
+
+void Context::pollSplitProfiles() {
+    if (!this->split || this->split->failed)
+        return;
+    // prepareWork observes only the slot it reuses (three batches back). One non-blocking
+    // status query per scheduled slot finds newer completed batches; nothing waits.
+    std::array<bool, inFlightDepth> signalled{};
+    for (size_t slot = 0; slot < inFlightDepth; ++slot)
+        signalled.at(slot) = this->fenceScheduled.at(slot) && this->splitBatches.at(slot).valid
+            && this->cmdbufFences.at(slot).signalled(this->ctx.vk);
+    this->collectSplitProfiles(signalled);
 }
 
 std::optional<bool> Context::previousBatchPending() const {

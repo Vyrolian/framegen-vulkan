@@ -219,6 +219,29 @@ void predictorPeriodConvergesOnSaturatedFrames() {
     expect(std::abs(milliseconds(predictor.cpuEstimate()) - 6.0) < 0.5, "the CPU estimate did not learn the release to arrival time");
 }
 
+// Anti-windup: frames released without an armed prediction report their error but do not move the
+// bias, which would otherwise integrate a queue it cannot affect up to its clamp.
+void unheldFramesDoNotWindUpTheBias() {
+    const Duration frame = msd(16.67);
+    GpuReleasePredictor predictor(msd(16.67));
+    const Clock::time_point epoch{};
+    for (uint64_t source = 0; source < 100; ++source) {
+        const auto end = epoch + static_cast<int64_t>(source + 1) * msd(16.67);
+        // A deep queue: each frame arrives 20 ms before the previous batch ends.
+        const auto arrived = epoch + static_cast<int64_t>(source) * msd(16.67) - 20ms;
+        predictor.observeArrival(source, arrived - 6ms, arrived, frame, false);
+        predictor.observeBatchEnd(source, end, frame);
+    }
+    expect(predictor.biasEstimate() == Duration::zero(), "unheld frames wound up the bias");
+    for (uint64_t source = 100; source < 104; ++source) {
+        const auto end = epoch + static_cast<int64_t>(source + 1) * msd(16.67);
+        const auto arrived = epoch + static_cast<int64_t>(source) * msd(16.67) - 20ms;
+        predictor.observeArrival(source, arrived - 6ms, arrived, frame, true);
+        predictor.observeBatchEnd(source, end, frame);
+    }
+    expect(predictor.biasEstimate() > Duration::zero(), "held frames did not move the bias");
+}
+
 // Unsaturated frames (the batch ended before the frame arrived) do not measure the period.
 void unsaturatedFramesDoNotMoveThePeriod() {
     const Duration frame = msd(16.67);
@@ -522,6 +545,7 @@ void closedLoopLightSceneIsUnchanged() {
 
 int main() {
     steadyLeadMovesDelayByAnEighthOfTheExcess();
+    unheldFramesDoNotWindUpTheBias();
     earlyThenLateMovesDelayBothWays();
     jitterWidensMargin();
     delayStaysWithinThreeCapIntervals();

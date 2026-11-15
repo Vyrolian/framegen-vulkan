@@ -69,7 +69,8 @@ private:
 // Off, a token's release point is only its deadline (plus the L1 delay). Predicted: the backend's
 // batch ends time the release (GpuReleasePredictor). Fence: the backend has no split timestamps, so
 // a stepping hold runs on a non-blocking fence status query (GpuSteppingHold).
-enum class GpuReleaseMode : uint8_t { Off, Predicted, Fence };
+// Waiting: predicted mode, but no batch end recent enough to predict from, so nothing is armed.
+enum class GpuReleaseMode : uint8_t { Off, Predicted, Fence, Waiting };
 
 // Predicted release of the game's next frame (L5). The backend reports a batch's GPU end once that
 // batch's fence has signalled, so the newest known end is a few batches old. Model: the batch of a
@@ -123,7 +124,7 @@ public:
         lastSource = source;
         lastEnd = end;
         hasEnd = true;
-        if (const Arrival* next = find(source + 1)) return resolve(next->arrived, frame);
+        if (const Arrival* next = find(source + 1)) return resolve(next->arrived, next->held, frame);
         return std::nullopt;
     }
 
@@ -131,14 +132,14 @@ public:
     // Updates the CPU estimate. Its bias sample resolves here when the previous batch end is
     // already known, and otherwise when that end is observed. Returns the sample, or nothing.
     constexpr std::optional<Duration> observeArrival(const uint64_t source, const TimePoint released,
-            const TimePoint arrived, const Duration frame) noexcept {
+            const TimePoint arrived, const Duration frame, const bool held = true) noexcept {
         if (frame <= Duration::zero()) return std::nullopt;
         const Duration sample = arrived - released;
         const Duration deviation = sample > cpu ? sample - cpu : cpu - sample;
         cpuDeviation += (deviation - cpuDeviation) / 16;
         cpu += (sample - cpu) / 8;
-        record(source, arrived);
-        if (hasEnd && source == lastSource + 1) return resolve(arrived, frame);
+        record(source, arrived, held);
+        if (hasEnd && source == lastSource + 1) return resolve(arrived, held, frame);
         return std::nullopt;
     }
 
@@ -160,6 +161,7 @@ private:
     struct Arrival {
         uint64_t source{};
         TimePoint arrived{};
+        bool held{};
         bool valid{};
     };
 
@@ -167,17 +169,20 @@ private:
         return std::min(std::max(value, low), high);
     }
     // The error of the source whose previous batch end is `lastEnd`, which the bias moves toward gpuDev.
-    constexpr Duration resolve(const TimePoint arrived, const Duration frame) noexcept {
+    // Only a frame that was released by a predicted release moves the bias (anti-windup): while
+    // nothing is armed the error does not depend on the bias, which would otherwise run to its clamp.
+    constexpr Duration resolve(const TimePoint arrived, const bool held, const Duration frame) noexcept {
         const Duration error = lastEnd - arrived;
+        if (!held) return error;
         bias += (error - gpuDeviation) / 8;
         bias = clampTo(bias, -3 * frame, 3 * frame);
         return error;
     }
-    constexpr void record(const uint64_t source, const TimePoint arrived) noexcept {
+    constexpr void record(const uint64_t source, const TimePoint arrived, const bool held) noexcept {
         for (auto& entry : arrivals) {
             if (entry.valid && entry.source == source) entry.valid = false;
         }
-        arrivals[nextArrival] = Arrival{source, arrived, true};
+        arrivals[nextArrival] = Arrival{source, arrived, held, true};
         nextArrival = (nextArrival + 1) % arrivalCapacity;
     }
     [[nodiscard]] constexpr const Arrival* find(const uint64_t source) const noexcept {

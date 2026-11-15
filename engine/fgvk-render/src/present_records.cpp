@@ -715,7 +715,8 @@ void formatPacingWindowBody(const PacingWindowPayload& payload, const PacingProf
         // of the resolved previous-batch-end leads (negative: the frame came after the GPU freed its
         // batch). gpu_release: off, pred or fence, the latest present's mode (low_latency.hpp).
         const std::string_view gpuMode = window.gpuReleaseMode == GpuReleaseMode::Predicted ? "pred"
-            : window.gpuReleaseMode == GpuReleaseMode::Fence ? "fence" : "off";
+            : window.gpuReleaseMode == GpuReleaseMode::Fence ? "fence"
+            : window.gpuReleaseMode == GpuReleaseMode::Waiting ? "wait" : "off";
         line << " gpu_release_ms=" << window.gpuReleaseHold.mean()
              << " gpu_prev_end_ms=" << (window.gpuPrevEndCount
                     ? window.gpuPrevEndSumMs / static_cast<double>(window.gpuPrevEndCount) : 0.0)

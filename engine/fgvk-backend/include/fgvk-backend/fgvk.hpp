@@ -218,6 +218,12 @@ namespace fgvk::backend {
         /// Observes no completion, so it changes no state.
         [[nodiscard]] std::optional<bool> previousBatchPending(const Context& context) const;
 
+        /// Read the split boundaries of every in-flight batch that has already completed,
+        /// from one non-blocking fence status query per scheduled slot (prepareWork itself
+        /// observes only the slot it reuses, three batches back). Waits for nothing.
+        /// @throws ls::vulkan_error when a status query fails
+        void pollSplitProfiles(Context& context);
+
         ///
         /// Schedule generated frames at explicit interpolation timestamps.
         ///

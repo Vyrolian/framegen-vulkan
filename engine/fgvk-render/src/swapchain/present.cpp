@@ -138,9 +138,15 @@ Swapchain::GpuRelease Swapchain::stepGpuRelease(const bool active,
         std::optional<Clock::duration> hold;
         if (timed) {
             if (armed) hold = std::max(*armed - *returned, Clock::duration::zero());
-            if (const auto lead = predictor.observeArrival(batch, *returned, arrival, capInterval);
+            if (const auto lead = predictor.observeArrival(batch, *returned, arrival, capInterval,
+                    armed.has_value());
                     lead && this->pacingProfile)
                 this->pacingProfile->gpuPrevEnd(*lead);
+        }
+        try {
+            this->instance->pollSplitProfiles(this->ctx.get());
+        } catch (const std::exception&) {
+            // A failed status query is no observation; the next present polls again.
         }
         if (const auto end = this->instance->latestBatchEnd(this->ctx.get())) {
             const Clock::time_point endAt{Clock::duration{end->batchEndNs}};
@@ -151,8 +157,10 @@ Swapchain::GpuRelease Swapchain::stepGpuRelease(const bool active,
         // The next frame's source takes the batch after this one, if this present schedules one.
         const auto release = predictor.release(batch + 1);
         this->gpuArmed = release;
-        if (this->pacingProfile) this->pacingProfile->gpuRelease(GpuReleaseMode::Predicted, hold);
-        return {GpuReleaseMode::Predicted, GpuHold{release, Clock::duration::zero()}};
+        // Without a fresh enough batch end nothing is armed: the log says so instead of `pred`.
+        const auto mode = release ? GpuReleaseMode::Predicted : GpuReleaseMode::Waiting;
+        if (this->pacingProfile) this->pacingProfile->gpuRelease(mode, hold);
+        return {mode, GpuHold{release, Clock::duration::zero()}};
     }
     this->gpuPredictor.reset();
     if (const auto busy = this->previousBatchBusy()) this->gpuStepping.observe(*busy, capInterval);
