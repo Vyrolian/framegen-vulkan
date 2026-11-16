@@ -190,6 +190,9 @@ namespace fgvk::layer::present_diagnostics {
             Clock::duration slack{};
             // W2: the effective pacing correction of a generated output; zero otherwise.
             Clock::duration offset{};
+            // GP1: the application's own present ID for a real output (0 otherwise). present_id above
+            // is the lower ID the output was presented with.
+            uint64_t appPresentId{};
         };
         struct OutputSample {
             size_t ordinal{};

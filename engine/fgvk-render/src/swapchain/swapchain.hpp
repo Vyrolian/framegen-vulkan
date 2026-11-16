@@ -24,6 +24,7 @@
 #include "swapchain/deferred_present.hpp"
 #include "swapchain/internal_images.hpp"
 #include "swapchain/low_latency.hpp"
+#include "swapchain/onscreen_watch.hpp"
 #include "swapchain/present_feedback_probe.hpp"
 #include "swapchain/reflex_frame_limit.hpp"
 #include "swapchain/release_gate.hpp"
@@ -254,7 +255,19 @@ namespace fgvk::layer {
         }
         /// Stop generation in place when the active profile disappears.
         void disableFrameGeneration();
+#if defined(VK_KHR_present_wait2) && defined(VK_KHR_present_id2)
+        /// GP1: starts this lower swapchain's on-screen profile (the gate was active at creation). `waitForPresent2`
+        /// is the next layer's vkWaitForPresent2KHR. Nothing starts without the gate.
+        void startOnScreenProfile(VkDevice device, VkSwapchainKHR swapchain,
+            PFN_vkWaitForPresent2KHR waitForPresent2);
+        /// GP1: unregisters the on-screen owner and joins its watcher. Call before the lower swapchain is destroyed.
+        void stopOnScreenProfile() noexcept;
+#endif
     private:
+#if defined(VK_KHR_present_wait2) && defined(VK_KHR_present_id2)
+        /// GP1: gives the deferred worker the on-screen owner and watcher, when the gate is active.
+        void attachDeferredOnScreen();
+#endif
         struct PresentInvocation {
             const vk::Vulkan& vk;
             VkQueue queue;
@@ -635,6 +648,9 @@ namespace fgvk::layer {
             std::span<const VkSemaphore> applicationWaitSemaphores,
             std::span<const uint32_t> acquiredImageIndices,
             VkImage originalImage);
+        // GP1: the on-screen profile of this lower swapchain, when its gate is active. Declared before
+        // deferredPresent, so the worker is joined before the owner and watcher are destroyed.
+        std::unique_ptr<OnScreenProfile> onScreen;
         // Declared last: join before any semaphore, fence, image or backend
         // context can be destroyed, including moved retirement contexts.
         std::unique_ptr<DeferredPresent> deferredPresent;

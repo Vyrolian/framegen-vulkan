@@ -55,7 +55,7 @@ void clearPresentLog() {
 // A driver wait that succeeds only once the worker has presented the ID, so a
 // wait that returned before its own real would report VK_ERROR_UNKNOWN.
 auto awaitedPresent(uint64_t id) {
-    return [id](uint64_t) { return presentedContains(id) ? VK_SUCCESS : VK_ERROR_UNKNOWN; };
+    return [id](uint64_t, uint64_t) { return presentedContains(id) ? VK_SUCCESS : VK_ERROR_UNKNOWN; };
 }
 VkResult VKAPI_CALL present(VkQueue queue, const VkPresentInfoKHR* info) {
     expect(queue == handle<VkQueue>(7), "worker borrowed an application queue");
@@ -492,7 +492,7 @@ void waitForRetainedId() {
             DeferredPresent worker(queue, present, device);
             expect(worker.enqueue(info, DeferredPresent::Clock::now() + 30ms),
                 "retained caller ID was not admitted");
-            const auto lowerWait = [&](uint64_t) { ++lowerWaits; return VK_SUCCESS; };
+            const auto lowerWait = [&](uint64_t, uint64_t) { ++lowerWaits; return VK_SUCCESS; };
             expect(DeferredPresent::waitForPresent(device, swapchain, id, 0, lowerWait) == VK_TIMEOUT && !lowerWaits,
                 "poll forwarded a retained ID that the driver has not received");
             expect(DeferredPresent::waitForPresent(device, swapchain, id, 1'000'000, lowerWait) == VK_TIMEOUT && !lowerWaits,
@@ -500,7 +500,7 @@ void waitForRetainedId() {
             VkResult result = VK_ERROR_UNKNOWN;
             std::thread waiter([&] {
                 result = DeferredPresent::waitForPresent(device, swapchain, id, 200'000'000,
-                    [&](uint64_t remaining) {
+                    [&](uint64_t, uint64_t remaining) {
                         ++lowerWaits;
                         expect((id2 ? observedId2 : observedId) == id,
                             "wait2 on another thread reached the driver before the real ID's present returned");
@@ -514,7 +514,7 @@ void waitForRetainedId() {
             expect(result == VK_TIMEOUT && lowerWaits == 1,
                 "lower presentation completion/result was replaced by worker submission");
             expect(DeferredPresent::waitForPresent(device, swapchain, id, UINT64_MAX,
-                    [&](uint64_t remaining) {
+                    [&](uint64_t, uint64_t remaining) {
                         expect(remaining == UINT64_MAX, "infinite driver wait became finite");
                         return VK_SUBOPTIMAL_KHR;
                     }) == VK_SUBOPTIMAL_KHR,
@@ -531,7 +531,7 @@ void waitForRetainedId() {
             expect(worker.finish(UINT64_MAX).has_value(), "delivery did not complete");
             const auto completedBeforePoll = DeferredPresent::Clock::now();
             expect(DeferredPresent::waitForPresent(device, swapchain, id, 0,
-                    [](uint64_t) { return VK_SUCCESS; }) == VK_SUCCESS,
+                    [](uint64_t, uint64_t) { return VK_SUCCESS; }) == VK_SUCCESS,
                 "completed real-ID poll changed driver completion");
             const auto capWait = worker.takeCompletionPacingWait();
             expect(capWait.waited > 0ns && worker.takeCompletionPacingWait().waited == 0ns,
@@ -557,7 +557,7 @@ void waitForRetainedId() {
             lowerResult = VK_SUCCESS;
         }
         expect(DeferredPresent::waitForPresent(device, swapchain, id, 0,
-                [&](uint64_t timeout) { expect(timeout == 0, "unmanaged poll timeout changed"); return VK_SUCCESS; }) == VK_SUCCESS,
+                [&](uint64_t, uint64_t timeout) { expect(timeout == 0, "unmanaged poll timeout changed"); return VK_SUCCESS; }) == VK_SUCCESS,
             "destroyed worker left a stale caller-ID registry entry");
     }
 }
@@ -968,7 +968,7 @@ void twoIdentifiedBatchesJoinTheirOwnRecords() {
     expect(worker.retainable() && presentedIds().empty(), "overlapping identified batches presented before a join");
 
     std::atomic_int driverCalls{};
-    const auto driver = [&driverCalls](uint64_t) { ++driverCalls; return VK_SUCCESS; };
+    const auto driver = [&driverCalls](uint64_t, uint64_t) { ++driverCalls; return VK_SUCCESS; };
     expect(DeferredPresent::waitForPresent(device, swapchain, ids[1], 0, driver) == VK_TIMEOUT && driverCalls == 0,
         "a poll for an undelivered record reached the driver");
     expect(DeferredPresent::waitForPresent(device, swapchain, 999, 0, driver) == VK_SUCCESS && driverCalls == 1,
@@ -1041,9 +1041,9 @@ void threeIdentifiedBatchesJoinInAnyOrder() {
     // The oldest record is not the newest, so its wait leaves completion pacing alone.
     expect(worker.takeCompletionPacingWait().finished == DeferredPresent::Clock::time_point{},
         "a wait on an older record set the newest record's completion pacing");
-    expect(DeferredPresent::waitForPresent(device, swapchain, ids[2], 0, [](uint64_t) { return VK_SUCCESS; }) == VK_TIMEOUT,
+    expect(DeferredPresent::waitForPresent(device, swapchain, ids[2], 0, [](uint64_t, uint64_t) { return VK_SUCCESS; }) == VK_TIMEOUT,
         "a poll for the newest undelivered record reached the driver");
-    expect(DeferredPresent::waitForPresent(device, swapchain, ids[0], 0, [](uint64_t) { return VK_SUCCESS; }) == VK_SUCCESS,
+    expect(DeferredPresent::waitForPresent(device, swapchain, ids[0], 0, [](uint64_t, uint64_t) { return VK_SUCCESS; }) == VK_SUCCESS,
         "a poll for the joined record did not reach the driver");
 
     // The two newer waits block until their joins; presentation then keeps batch order.
@@ -1080,7 +1080,7 @@ void threeIdentifiedBatchesJoinInAnyOrder() {
     expect(worker.beginBatch(1, {.overlap = true}) && worker.enqueue(fourthInfo, DeferredPresent::Clock::now()),
         "an identified batch was refused after the earlier records were delivered");
     worker.closeBatch();
-    expect(DeferredPresent::waitForPresent(device, swapchain, ids[0], 0, [](uint64_t) { return VK_SUCCESS; }) == VK_SUCCESS,
+    expect(DeferredPresent::waitForPresent(device, swapchain, ids[0], 0, [](uint64_t, uint64_t) { return VK_SUCCESS; }) == VK_SUCCESS,
         "a dropped record did not go straight to the driver");
     expect(worker.finish(UINT64_MAX).has_value(), "the later identified batch did not complete");
 }

@@ -3,6 +3,8 @@
 
 #include "generated_frame_plan.hpp"
 #include "swapchain/batch_phase.hpp"
+#include "swapchain/onscreen_ids.hpp"
+#include "swapchain/onscreen_watch.hpp"
 #include "swapchain/output_margin.hpp"
 #include "swapchain/present_marker.hpp"
 #include "swapchain/create_policy.hpp"
@@ -19,6 +21,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <iostream>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -321,6 +324,8 @@ public:
         uint64_t lockAcquireNs{}, lockSubmitNs{}, lockPresentNs{};
         // Diagnostics only (pacing profile): the output's identity and the lower present it made.
         uint64_t backendFrame{}, presentId{}, feedback{};
+        // GP1, diagnostics only: the application's own present ID for a real (0 otherwise).
+        uint64_t appPresentId{};
         double phase{};
     };
     struct Completion : Call {
@@ -499,17 +504,27 @@ public:
     // the actual presentation wait with the remainder of the caller's budget.
     // completionPacing false (framegen-vulkan's own probe polls) leaves the
     // newest record's completion pacing to the application's waits.
+    // GP1: `wait` takes (lower ID, timeout). Outside the on-screen gate the lower ID is `id`
+    // itself; with the gate it is the translation of `id` (see resolveOnScreenId).
     template<typename Wait>
     static VkResult waitForPresent(VkDevice device, VkSwapchainKHR swapchain,
             uint64_t id, uint64_t timeout, Wait&& wait, const bool completionPacing = true) {
         const auto started = Clock::now();
+        const uint64_t budget = timeout;
         std::shared_ptr<Delivery> delivery;
         {
             const std::lock_guard lock(deliveriesMutex());
             const auto found = deliveries().find({device, swapchain});
             if (found != deliveries().end()) delivery = found->second;
         }
-        if (!delivery || !id) return wait(timeout);
+        std::shared_ptr<OnScreenIds> onScreen = id && OnScreenRegistry::anyActive()
+            ? OnScreenRegistry::find({handleBits(device), handleBits(swapchain)}) : nullptr;
+        if (!delivery || !id) {
+            uint64_t lowerId = id;
+            if (onScreen && !resolveOnScreenId(*onScreen, delivery.get(), id, started, budget, lowerId))
+                return VK_TIMEOUT;
+            return wait(lowerId, timeout);
+        }
         bool waitedForDelivery{};
         {
             std::unique_lock lock(delivery->mutex);
@@ -538,7 +553,10 @@ public:
             const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - started).count();
             timeout -= std::min(timeout, static_cast<uint64_t>(std::max<int64_t>(0, elapsed)));
         }
-        const auto result = wait(timeout);
+        uint64_t lowerId = id;
+        if (onScreen && !resolveOnScreenId(*onScreen, delivery.get(), id, started, budget, lowerId))
+            return VK_TIMEOUT;
+        const auto result = wait(lowerId, timeout);
         if (completionPacing && (result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR)) {
             const std::lock_guard lock(delivery->mutex);
             const size_t index = delivery->indexOf(id);
@@ -598,6 +616,12 @@ public:
     // Storage of framegen-vulkan's own present-ID value. A node that points here is
     // forwarded to the lower present but is not an application wait.
     void setOwnedPresentIdStorage(const uint64_t* storage) { this->ownedIdStorage = storage; }
+    // GP1: the lower ID owner and watcher of an active on-screen gate; both null otherwise. Set once,
+    // before the first job is admitted (the admission lock orders it before the worker reads it).
+    void setOnScreen(OnScreenIds* ids, OnScreenWatch* watch) {
+        this->onScreenIds = ids;
+        this->onScreenWatch = watch;
+    }
     // Only fixed-size metadata is admitted. Copy every scalar before returning
     // to the application; unknown nodes and caller-owned result arrays stay
     // synchronous. The same parser is used for policy and actual admission.
@@ -810,6 +834,9 @@ private:
     VkDevice device{};
     VkSwapchainKHR registeredSwapchain{};
     const uint64_t* ownedIdStorage{};
+    // GP1: the on-screen gate's owner and watcher (see setOnScreen). Null when the gate is inactive.
+    OnScreenIds* onScreenIds{};
+    OnScreenWatch* onScreenWatch{};
     std::shared_ptr<Delivery> delivery = std::make_shared<Delivery>();
     struct Metadata {
         VkFence fence{};
@@ -1065,6 +1092,46 @@ private:
             --count;
         }
     }
+    // GP1: the application's own present ID of a real output (the ID the application waits on), or 0.
+    static uint64_t applicationIdOf(const Metadata& metadata) {
+        if (metadata.hasId && metadata.id) return metadata.id;
+        if (metadata.hasId2 && metadata.id2 && !metadata.ownedId2) return metadata.id2;
+        return 0;
+    }
+    // GP1: the lower ID of an application ID after its delivery wait (present-wait semantics, see
+    // OnScreenIds::translate). A miss is logged once and retried in 1 ms steps, on the delivery
+    // condition when there is one, until the ID is recorded or the budget ends. A zero budget polls
+    // once. Returns false when the budget ended first.
+    static bool resolveOnScreenId(OnScreenIds& ids, Delivery* const delivery, const uint64_t appId,
+            const Clock::time_point started, const uint64_t budget, uint64_t& lowerId) {
+        const bool bounded = budget != UINT64_MAX;
+        const auto deadline = started + std::chrono::nanoseconds(std::min<uint64_t>(budget, INT64_MAX));
+        for (;;) {
+            if (const auto found = ids.translate(appId)) {
+                lowerId = *found;
+                return true;
+            }
+            if (ids.firstMiss())
+                std::clog << "framegen-vulkan: gamescope on-screen profile: translation miss app_id="
+                          << appId << '\n';
+            if (bounded && Clock::now() >= deadline) return false;
+            if (delivery) {
+                std::unique_lock lock(delivery->mutex);
+                delivery->changed.wait_for(lock, std::chrono::milliseconds{1});
+            } else {
+                std::this_thread::sleep_for(std::chrono::milliseconds{1});
+            }
+        }
+    }
+    // GP1, caller holds queue->mutex: a successful present with an on-screen lower ID records a
+    // real's application ID for translation and pushes the ID to the watcher. Inactive: nothing.
+    void noteOnScreenLocked(const Job& job, const Readiness& ready, const uint64_t lowerId,
+            const VkResult result) noexcept {
+        if (!onScreenIds || !lowerId || result < 0) return;
+        if (!job.generated) onScreenIds->record(applicationIdOf(job.metadata), lowerId);
+        onScreenWatch->push(lowerId, ready.context);
+    }
+
     // One registry entry per live worker, shared by all of its identified batches.
     // Each identified batch appends a record. A full list drops its oldest submitted
     // record, and refuses the batch while every record is still unsubmitted. Waiters
@@ -1257,8 +1324,10 @@ private:
     // The present half of an internal real, shared by the prepared and the at-deadline
     // paths, so the chain, observer and copy status are the same on both. Callers hold
     // queue->mutex. presentWait is the signal of the copy into lowerIndex.
+    // onScreenId is the chain's on-screen ID node value when the gate is active (see run()), else null.
     void presentLower(const Job& job, const Readiness& ready, const void* chain,
-            const uint32_t lowerIndex, const VkSemaphore presentWait, Completion& result) {
+            const uint32_t lowerIndex, const VkSemaphore presentWait, Completion& result,
+            uint64_t* const onScreenId) {
         const VkPresentInfoKHR info{
             .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
             .pNext = chain,
@@ -1269,6 +1338,8 @@ private:
         result.imageIndex = lowerIndex;
         result.presentWait = presentWait;
         result.started = Clock::now();
+        // GP1: the lower ID is handed out here, under queue->mutex, in the order the presents are made.
+        if (onScreenIds) *onScreenId = onScreenIds->allocate();
         queue->beginCall(lowerOpPresentReal, lowerIndex);
         result.presentId = present_diagnostics::lowerPresentId(chain);
         result.result = ready.observer && ready.observe
@@ -1279,6 +1350,7 @@ private:
         result.finished = Clock::now();
         queue->markPresentLocked(ready.context, ready.source, result.feedback, job.generated);
         observeOutputOffsetLocked(ready.context);
+        if (onScreenIds) noteOnScreenLocked(job, ready, *onScreenId, result.result);
         // D7d: the lower present is noted with its source, only when history is set.
         if (queue->history)
             queue->noteLower(lowerOpPresentReal, job.swapchain, lowerIndex, result.result, ready.source,
@@ -1297,7 +1369,8 @@ private:
     // or skips: the loop ends when a lower image is copied and presented, or when the
     // application image is abandoned on a lower error or while stopping. Each attempt
     // holds queue->mutex for tryAcquire and the copy/present only, and sleeps outside it.
-    void presentInternalReal(Job& job, const Readiness& ready, const void* chain, Completion& result) {
+    void presentInternalReal(Job& job, const Readiness& ready, const void* chain, Completion& result,
+            uint64_t* const onScreenId) {
         const InternalRealCopy& copy = job.internal;
         void* const owner = copy.owner.get();
         result.workerCopy = true;
@@ -1337,7 +1410,7 @@ private:
                             result.result = submitted;
                             return;
                         }
-                        presentLower(job, ready, chain, lowerIndex, presentWait, result);
+                        presentLower(job, ready, chain, lowerIndex, presentWait, result, onScreenId);
                         return;
                     }
                     if (acquired < 0) {
@@ -1597,17 +1670,25 @@ private:
                 .swapchainCount = 1, .pFences = &metadata.fence,
             };
             if (metadata.hasFence) { fences.pNext = chain; chain = &fences; }
+            // GP1: with the on-screen gate the application's ID nodes are not forwarded. One node
+            // carries the lower ID instead; its value is written under queue->mutex at the present.
+            uint64_t onScreenLowerId{};
             VkPresentIdKHR id{
                 .sType = VK_STRUCTURE_TYPE_PRESENT_ID_KHR,
                 .pNext = chain, .swapchainCount = 1, .pPresentIds = &metadata.id,
             };
-            if (metadata.hasId) chain = &id;
+            if (metadata.hasId && !onScreenIds) chain = &id;
 #if defined(VK_KHR_present_id2)
             VkPresentId2KHR id2{
                 .sType = VK_STRUCTURE_TYPE_PRESENT_ID_2_KHR,
                 .pNext = chain, .swapchainCount = 1, .pPresentIds = &metadata.id2,
             };
-            if (metadata.hasId2) chain = &id2;
+            if (metadata.hasId2 && !onScreenIds) chain = &id2;
+            VkPresentId2KHR onScreenNode{
+                .sType = VK_STRUCTURE_TYPE_PRESENT_ID_2_KHR,
+                .pNext = chain, .swapchainCount = 1, .pPresentIds = &onScreenLowerId,
+            };
+            if (onScreenIds) chain = &onScreenNode;
 #endif
             VkSwapchainPresentModeInfoEXT mode{
                 .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_MODE_INFO_EXT,
@@ -1633,6 +1714,7 @@ private:
             result.scheduled = deadline;
             result.swapchain = job.swapchain;
             result.generated = job.generated;
+            result.appPresentId = job.generated ? 0 : applicationIdOf(metadata);
             result.backendFrame = current.backendFrame;
             result.phase = current.phase;
             result.workerCopy = job.copyActive;
@@ -1661,9 +1743,9 @@ private:
                 if (ready.trace) result.queueLockStarted = Clock::now();
                 const std::lock_guard queueLock(queue->mutex);
                 if (ready.trace) result.queueLockAcquired = Clock::now();
-                presentLower(job, ready, chain, prep.lowerIndex, prep.presentWait, result);
+                presentLower(job, ready, chain, prep.lowerIndex, prep.presentWait, result, &onScreenLowerId);
             } else if (job.internalActive) {
-                presentInternalReal(job, ready, chain, result);
+                presentInternalReal(job, ready, chain, result, &onScreenLowerId);
             } else {
                 VkResult skipResult = earlyGenerated && prep.settled ? prep.error : VK_SUCCESS;
                 bool acquired = earlyGenerated && prep.acquired;
@@ -1783,6 +1865,8 @@ private:
                     }
                     if (presentOutput) {
                         result.started = Clock::now();
+                        // GP1: the lower ID of this present, handed out under queue->mutex.
+                        if (onScreenIds) onScreenLowerId = onScreenIds->allocate();
                         queue->beginCall(lowerOpPresentGenerated, job.image);
                         result.presentId = present_diagnostics::lowerPresentId(chain);
                         result.result = ready.observer && ready.observe
@@ -1793,6 +1877,7 @@ private:
                         result.finished = Clock::now();
                         queue->markPresentLocked(ready.context, ready.source, result.feedback, job.generated);
                         observeOutputOffsetLocked(ready.context);
+                        if (onScreenIds) noteOnScreenLocked(job, ready, onScreenLowerId, result.result);
                         // D7d: the generated lower present, noted only with history.
                         if (queue->history)
                             queue->noteLower(lowerOpPresentGenerated, job.swapchain, job.image, result.result,

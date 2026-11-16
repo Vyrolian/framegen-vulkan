@@ -305,14 +305,27 @@ namespace fgvk::layer {
     /// unknowable and copying only VkBaseInStructure would truncate it.
     class FilteredPresentPNextChain {
     public:
+        // GP1: removePresentIds also drops every VkPresentIdKHR and VkPresentId2KHR node, so the
+        // on-screen gate can put its own lower ID node in their place.
         FilteredPresentPNextChain(const void* original,
-                const bool removePresentMode) : filteredHead(original) {
-            if (!removePresentMode)
+                const bool removePresentMode, const bool removePresentIds = false) :
+                filteredHead(original) {
+            if (!removePresentMode && !removePresentIds)
                 return;
 
             const auto selectedForRemoval = [=](
                     const VkStructureType type) {
-                return type == VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_MODE_INFO_EXT;
+                if (removePresentMode && type == VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_MODE_INFO_EXT)
+                    return true;
+                if (!removePresentIds)
+                    return false;
+                if (type == VK_STRUCTURE_TYPE_PRESENT_ID_KHR)
+                    return true;
+#if defined(VK_KHR_present_id2)
+                if (type == VK_STRUCTURE_TYPE_PRESENT_ID_2_KHR)
+                    return true;
+#endif
+                return false;
             };
 
             const VkBaseInStructure* finalRemoved = nullptr;

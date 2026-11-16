@@ -359,13 +359,14 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
                         vk.fi().GetDeviceProcAddr(vk.dev(), "vkWaitForPresentKHR"));
                 polled = id2 ? this->presentWait2 != nullptr : this->presentWait1 != nullptr;
                 if (polled)
+                    // GP1: the lower ID of the application's present (the translation under the on-screen gate).
                     waited = DeferredPresent::waitForPresent(vk.dev(), swapchain, *target, 0,
-                        [&](const uint64_t timeout) {
+                        [&](const uint64_t lowerId, const uint64_t timeout) {
                             if (id2) {
-                                const VkPresentWait2InfoKHR wait{.sType = VK_STRUCTURE_TYPE_PRESENT_WAIT_2_INFO_KHR, .presentId = *target, .timeout = timeout};
+                                const VkPresentWait2InfoKHR wait{.sType = VK_STRUCTURE_TYPE_PRESENT_WAIT_2_INFO_KHR, .presentId = lowerId, .timeout = timeout};
                                 return this->presentWait2(vk.dev(), swapchain, &wait);
                             }
-                            return this->presentWait1(vk.dev(), swapchain, *target, timeout);
+                            return this->presentWait1(vk.dev(), swapchain, lowerId, timeout);
                         }, false);
             } else {
                 if (!this->presentWait2)
@@ -391,7 +392,8 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         // An application ID node of any value keeps this present untagged:
         // the deferred worker rejects a second ID node in one chain.
         std::optional<uint64_t> tag;
-        if (!applicationIds.node)
+        // GP1: with the on-screen gate the lower IDs belong to the layer's owner, so the probe never tags.
+        if (!applicationIds.node && !this->onScreen)
             tag = this->presentFeedback.nextTag();
         if (tag) {
             if (firstTag)
@@ -493,7 +495,7 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
                 // The driver reports refresh only after presentation feedback
                 // was requested; keep the reported timing but distrust it until
                 // timeout-0 polls have succeeded.
-                if (!this->presentFeedback.confirmed()) {
+                if (!this->presentFeedback.confirmed() && !(this->onScreen && this->onScreen->watch().confirmed())) {
                     refreshHz = 0.0;
                     refreshSource = "application-unconfirmed";
                 }
@@ -532,7 +534,9 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         }
         if (refreshHz <= 0)
             refreshSource = "none";
-        const bool feedbackConfirmed = this->presentFeedback.confirmed();
+        // GP1: under the on-screen gate the probe does not tag; the watcher's waits confirm instead.
+        const bool feedbackConfirmed = this->presentFeedback.confirmed() ||
+            (this->onScreen && this->onScreen->watch().confirmed());
         if (!this->refreshQueryPrinted || timingResult != this->refreshQueryLastResult ||
                 timingDuration != this->refreshQueryLastDuration ||
                 timingInterval != this->refreshQueryLastInterval ||

@@ -327,6 +327,8 @@ void appendPacingOutput(std::ostream& line, const uint64_t context, const VkSwap
          << " ready_ns=" << ns(observed.readyAt)
          << " slack_ns=" << std::chrono::duration_cast<std::chrono::nanoseconds>(observed.slack).count()
          << " offset_ns=" << std::chrono::duration_cast<std::chrono::nanoseconds>(observed.offset).count();
+    // GP1: the application's own ID, last so the fields above keep their positions.
+    line << " app_present_id=" << observed.appPresentId;
     line << '\n';
 }
 

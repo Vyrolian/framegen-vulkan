@@ -118,7 +118,7 @@ VkResult Swapchain::completeDeferredPresent(const uint64_t timeoutNs, const bool
                     .backendFrame = call.backendFrame, .phase = call.phase, .presentId = call.presentId,
                     .readyAt = i == 0 ? completion.readyAt : DiagnosticsClock::time_point{},
                     .slack = i == 0 ? completion.slack : DiagnosticsClock::duration{},
-                    .offset = call.offset,
+                    .offset = call.offset, .appPresentId = call.appPresentId,
                 });
                 present_diagnostics::logPacingOutput(this->diagnosticsState.contextId, call.swapchain, sample);
             }
@@ -147,6 +147,7 @@ bool Swapchain::beginDeferredPresentBatch(const vk::Vulkan& vk, const size_t lim
             this->deferredPresent = std::make_unique<DeferredPresent>(
                 this->info.deferredPresentQueue, vk.df().QueuePresentKHR, vk.dev(), vk.df().QueueSubmit);
             this->deferredPresent->setOwnedPresentIdStorage(&this->presentFeedbackTag);
+            this->attachDeferredOnScreen();
         } catch (const std::exception&) { return false; }
     }
     return this->deferredPresent->beginBatch(limit, {
@@ -329,6 +330,7 @@ VkResult Swapchain::queuePresentWithRetirementFence(
                     this->deferredPresent = std::make_unique<DeferredPresent>(
                         this->info.deferredPresentQueue, vk.df().QueuePresentKHR, vk.dev(), vk.df().QueueSubmit);
                     this->deferredPresent->setOwnedPresentIdStorage(&this->presentFeedbackTag);
+                    this->attachDeferredOnScreen();
                 } catch (const std::exception&) {
                     // Thread/resource exhaustion retains synchronous delivery.
                 }
@@ -376,9 +378,45 @@ VkResult Swapchain::queuePresentWithRetirementFence(
         // X3: from here the lower present below receives the application chain and its fence.
         if (observation.applicationImage)
             this->applicationChainHandedOff = true;
+        // GP1, on-screen gate only: the synchronous lower present carries the lower ID in place of the
+        // application's ID nodes. The application's own ID is kept for the translation record.
+        uint64_t applicationId{};
+        uint64_t onScreenLowerId{};
+#if defined(VK_KHR_present_id2)
+        std::optional<FilteredPresentPNextChain> onScreenChain;
+        VkPresentId2KHR onScreenNode{
+            .sType = VK_STRUCTURE_TYPE_PRESENT_ID_2_KHR,
+            .swapchainCount = 1, .pPresentIds = &onScreenLowerId,
+        };
+        if (this->onScreen) {
+            applicationId = observation.generated ? 0 : present_diagnostics::lowerPresentId(incomingPresentInfo.pNext);
+            // A chain without a present-ID node (a generated output, say) is forwarded as it is, below the lower ID.
+            onScreenNode.pNext = info.pNext;
+            bool hasPresentIds = false;
+            for (auto* node = static_cast<const VkBaseInStructure*>(info.pNext); node && !hasPresentIds;
+                    node = node->pNext)
+                hasPresentIds = node->sType == VK_STRUCTURE_TYPE_PRESENT_ID_KHR ||
+                    node->sType == VK_STRUCTURE_TYPE_PRESENT_ID_2_KHR;
+            if (hasPresentIds) {
+                onScreenChain.emplace(info.pNext, false, true);
+                if (!onScreenChain->valid())
+                    throw ls::vulkan_error(VK_ERROR_UNKNOWN,
+                        "cannot safely filter the present ID nodes for the on-screen lower ID");
+                onScreenNode.pNext = onScreenChain->head();
+            }
+            info.pNext = &onScreenNode;
+        }
+#endif
         // The feedback this lower present requested, for the output record's join to presented_ns.
         uint64_t feedbackId{};
-        const auto submit = [&] {
+        // GP1: the lower ID is handed out right before the lower present, inside the private queue's
+        // lock when there is one, so it orders against the worker's IDs (which it takes under the same lock).
+        const auto allocateOnScreen = [&] {
+#if defined(VK_KHR_present_id2)
+            if (this->onScreen) onScreenLowerId = this->onScreen->lowerIds().allocate();
+#endif
+        };
+        const auto submitPresent = [&]() -> VkResult {
             this->realFramePacer.synchronousOutput();
             const auto observedPresent = [&](VkQueue selectedQueue, const VkPresentInfoKHR& selectedInfo) {
                 if (this->info.waylandPresentation)
@@ -398,6 +436,7 @@ VkResult Swapchain::queuePresentWithRetirementFence(
                     const std::lock_guard lock(this->info.deferredPresentQueue->mutex);
                     // D7d: noted as a synchronous lower present only when the pacing profile keeps history.
                     const VkResult presented = this->info.deferredPresentQueue->presentSyncLocked(info, [&] {
+                        allocateOnScreen();
                         return observedPresent(this->info.deferredPresentQueue->queue, info);
                     });
                     // T4: the private queue marker, outside the timed present bracket.
@@ -406,9 +445,28 @@ VkResult Swapchain::queuePresentWithRetirementFence(
                         observation.generated);
                     return presented;
                 }
+                if (this->onScreen) {
+                    const std::lock_guard lock(this->info.deferredPresentQueue->mutex);
+                    return this->info.deferredPresentQueue->presentSyncLocked(info, [&] {
+                        allocateOnScreen();
+                        return vk.df().QueuePresentKHR(this->info.deferredPresentQueue->queue, &info);
+                    });
+                }
                 return this->info.deferredPresentQueue->presentNow(vk.df().QueuePresentKHR, info);
             }
+            // No private queue: no worker presents to this swapchain, so nothing can interleave.
+            allocateOnScreen();
             return observedPresent(queue, info);
+        };
+        const auto submit = [&]() -> VkResult {
+            const VkResult presented = submitPresent();
+#if defined(VK_KHR_present_id2)
+            if (presented >= 0 && this->onScreen && onScreenLowerId) {
+                this->onScreen->lowerIds().record(applicationId, onScreenLowerId);
+                this->onScreen->watch().push(onScreenLowerId, this->diagnosticsState.contextId);
+            }
+#endif
+            return presented;
         };
         if (!this->pacingProfile) return submit();
         auto observed = observation;
@@ -424,6 +482,7 @@ VkResult Swapchain::queuePresentWithRetirementFence(
         const auto finished = DiagnosticsClock::now();
         observed.feedback = feedbackId;
         observed.presentId = present_diagnostics::lowerPresentId(info.pNext);
+        observed.appPresentId = applicationId;
         if (observed.copyExpected && present_diagnostics::pacingGpuProfileEnabled() && !this->renderSlots.empty()) {
             observed.copyChecked = true;
             observed.copyStatus = vk.df().GetFenceStatus(vk.dev(), this->currentRenderSlot().fence.handle());

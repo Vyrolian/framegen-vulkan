@@ -271,3 +271,33 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance* backend,
                   << ": " << e.what() << '\n';
     }
 }
+
+#if defined(VK_KHR_present_wait2) && defined(VK_KHR_present_id2)
+// GP1: the on-screen profile of this lower swapchain. The watcher waits each lower ID through the next
+// layer's vkWaitForPresent2KHR and emits its completion through the pacing recorder.
+void Swapchain::startOnScreenProfile(const VkDevice device, const VkSwapchainKHR swapchain,
+        const PFN_vkWaitForPresent2KHR waitForPresent2) {
+    const auto wait = [waitForPresent2, device, swapchain](const uint64_t lowerId, const uint64_t timeoutNs) {
+        const VkPresentWait2InfoKHR info{
+            .sType = VK_STRUCTURE_TYPE_PRESENT_WAIT_2_INFO_KHR,
+            .presentId = lowerId, .timeout = timeoutNs,
+        };
+        return waitForPresent2(device, swapchain, &info);
+    };
+    const auto emit = [](const OnScreenRecord& record) {
+        present_diagnostics::writePacingProfileRecords(
+            formatOnScreenRecord(record, static_cast<long>(getpid())));
+    };
+    this->onScreen = std::make_unique<OnScreenProfile>(handleBits(device), handleBits(swapchain),
+        this->diagnosticsState.contextId, wait, emit);
+}
+
+void Swapchain::stopOnScreenProfile() noexcept {
+    if (this->onScreen) this->onScreen->stop();
+}
+
+void Swapchain::attachDeferredOnScreen() {
+    if (this->onScreen && this->deferredPresent)
+        this->deferredPresent->setOnScreen(&this->onScreen->lowerIds(), &this->onScreen->watch());
+}
+#endif

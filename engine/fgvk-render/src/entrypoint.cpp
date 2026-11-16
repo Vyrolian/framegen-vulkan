@@ -146,6 +146,8 @@ namespace {
 
         auto node = instance_info->retiredSwapchains.extract(retired);
         auto& state = node.mapped();
+        // GP1: the on-screen watcher is joined before the lower swapchain is destroyed.
+        if (state.context) state.context->stopOnScreenProfile();
         state.context.reset();
         state.vk.get().df().DestroySwapchainKHR(
             state.device, swapchain, VK_NULL_HANDLE
@@ -280,6 +282,8 @@ namespace {
             auto& state = node.mapped();
             std::cerr << "framegen-vulkan: forcing pending swapchain retirement "
                          "during device destruction\n";
+            // GP1: the on-screen watcher is joined before the lower swapchain is destroyed.
+            if (state.context) state.context->stopOnScreenProfile();
             state.context.reset();
             state.vk.get().df().DestroySwapchainKHR(
                 state.device, swapchain, VK_NULL_HANDLE
@@ -1415,8 +1419,9 @@ namespace {
             present_diagnostics::PresentWaitApi::Khr, presentId, timeout,
             [&] {
                 const auto started = ReleaseGate::Clock::now();
+                // GP1: the lower ID (the application's own ID outside the on-screen gate).
                 const auto result = DeferredPresent::waitForPresent(device, swapchain, presentId, timeout,
-                    [&](uint64_t remaining) { return next(device, swapchain, presentId, remaining); });
+                    [&](uint64_t lowerId, uint64_t remaining) { return next(device, swapchain, lowerId, remaining); });
                 return noteInternalPresentWaitError(swapchain,
                     holdPresentRelease(swapchain, presentId, timeout, started, result));
             });
@@ -1440,8 +1445,10 @@ namespace {
             [&] {
                 const auto started = ReleaseGate::Clock::now();
                 const auto result = DeferredPresent::waitForPresent(device, swapchain, info->presentId, info->timeout,
-                    [&](uint64_t remaining) {
+                    [&](uint64_t lowerId, uint64_t remaining) {
+                        // GP1: the lower ID (the application's own ID outside the on-screen gate).
                         auto adjusted = *info;
+                        adjusted.presentId = lowerId;
                         adjusted.timeout = remaining;
                         return next(device, swapchain, &adjusted);
                     });
@@ -1831,6 +1838,9 @@ namespace {
             instance_info->nativeSwapchains.erase(createdSwapchain);
             instance_info->internalSwapchains.erase(createdSwapchain);
             try {
+                // GP1: the on-screen watcher is joined before the lower swapchain is destroyed below.
+                if (auto* context = layer_info->root.findSwapchainContext(createdSwapchain))
+                    context->stopOnScreenProfile();
                 layer_info->root.removeSwapchainContext(createdSwapchain);
             } catch (const std::exception& e) {
                 std::cerr << "framegen-vulkan: failed to retire a partially-created "
@@ -2058,6 +2068,38 @@ namespace {
                 return res;
             }
 
+#if defined(VK_KHR_present_wait2) && defined(VK_KHR_present_id2)
+            // GP1: the gamescope on-screen gate, decided once per lower swapchain from the application's own
+            // create flags. Owned present timing already adds a VkPresentId2KHR node of its own, so that
+            // case stays unavailable until its ID is owned too (see the GP1 report).
+            {
+                const auto nextWaitForPresent2 = reinterpret_cast<PFN_vkWaitForPresent2KHR>(
+                    instance_info->funcs.GetDeviceProcAddr(device, "vkWaitForPresent2KHR"));
+                const bool profiling = present_diagnostics::pacingProfileEnabled();
+                auto gate = gamescopeOnScreenProfile(profiling, layer_info->root.gamescopeSession(),
+                    (newInfo.flags & VK_SWAPCHAIN_CREATE_PRESENT_ID_2_BIT_KHR) != 0,
+                    (newInfo.flags & VK_SWAPCHAIN_CREATE_PRESENT_WAIT_2_BIT_KHR) != 0,
+                    nextWaitForPresent2 != nullptr);
+                if (gate.active && ownedPresentTiming) gate = {false, "owned-present-timing"};
+                if (gate.active) {
+                    try {
+                        if (auto* context = layer_info->root.findSwapchainContext(*swapchain))
+                            context->startOnScreenProfile(device, *swapchain, nextWaitForPresent2);
+                    } catch (const std::exception& e) {
+                        gate = {false, "watcher-thread"};
+                        std::cerr << "framegen-vulkan: gamescope on-screen watcher could not start: "
+                                  << e.what() << '\n';
+                    }
+                }
+                if (profiling) {
+                    if (gate.active)
+                        std::clog << "framegen-vulkan: gamescope on-screen profile: state=active\n";
+                    else
+                        std::clog << "framegen-vulkan: gamescope on-screen profile: state=unavailable reason="
+                                  << gate.reason << '\n';
+                }
+            }
+#endif
             installInternalSwapchainImages(it->second, *info, *swapchain,
                 swapchainInfo);
 
@@ -2680,6 +2722,8 @@ namespace {
                                          "destroyed synchronously (colour-management "
                                          "lifetime)\n";
                         }
+                        // GP1: the on-screen watcher is joined before the lower swapchain is destroyed.
+                        if (context) context->stopOnScreenProfile();
                         context.reset();
                         it->second.df().DestroySwapchainKHR(device, swapchain, alloc);
                         return;
@@ -2730,6 +2774,8 @@ namespace {
                          "failed; forwarding lower destruction without a "
                          "completed layer-owned fence\n";
         }
+        // GP1: the on-screen watcher is joined before the lower swapchain is destroyed.
+        if (context) context->stopOnScreenProfile();
         context.reset();
         it->second.df().DestroySwapchainKHR(device, swapchain, alloc);
     }

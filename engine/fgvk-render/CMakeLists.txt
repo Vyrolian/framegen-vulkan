@@ -14,6 +14,7 @@ set(LAYER_SOURCES
     "src/wayland_output_refresh.cpp"
     "src/x11_refresh.cpp"
     "src/swapchain/create.cpp"
+    "src/swapchain/onscreen_watch.cpp"
     "src/swapchain/internal_images.cpp"
     "src/swapchain/present_marker.cpp"
     "src/swapchain/present.cpp"
@@ -319,6 +320,13 @@ if(BUILD_TESTING)
     target_include_directories(fgvk-batch-phase-tests PRIVATE "src")
     add_test(NAME batch-phase COMMAND fgvk-batch-phase-tests)
     fgvk_register_portable_policy_test(fgvk-batch-phase-tests batch-phase)
+
+    # GP1: the on-screen gate, the lower present ID owner and the watcher (fake wait, no driver).
+    add_executable(fgvk-onscreen-profile-tests "tests/onscreen_profile_tests.cpp" "src/swapchain/onscreen_watch.cpp")
+    target_include_directories(fgvk-onscreen-profile-tests PRIVATE "src")
+    target_link_libraries(fgvk-onscreen-profile-tests PRIVATE Threads::Threads)
+    add_test(NAME onscreen-profile COMMAND fgvk-onscreen-profile-tests)
+    fgvk_register_portable_policy_test(fgvk-onscreen-profile-tests onscreen-profile)
 
     # Reflex frame limit: the pure interval rule and the per-swapchain request state.
     add_executable(fgvk-reflex-frame-limit-tests "tests/reflex_frame_limit_tests.cpp")

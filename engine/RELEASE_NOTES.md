@@ -1,5 +1,6 @@
 ## Unreleased: spatial scaling removed
 
+- Gamescope on-screen profile (`FGVK_PACING_PROFILE=1` inside Gamescope): the layer owns the lower present IDs of its swapchain and logs when each lower present completed on screen (`pacing-profile-onscreen`); `engine/scripts/analyze-onscreen.py` reads it. Other sessions are unchanged.
 - The renderer no longer contains spatial scaling, the LS1 and framegen-vulkan Scaler paths, or the Gamescope scaling bridge.
 - Gamescope sessions run frame generation by default as an experimental path; the launcher keeps Gamescope's WSI layer in the chain below framegen-vulkan, so HDR games under Gamescope reach the HDR path (untested on hardware). `FGVK_GAMESCOPE=0` starts the game without frame generation. The Gamescope feedback reader, the VRR lease helper, the compatibility record, and the `gamescope_vrr_mode` and `frame_generation_refresh_threshold` keys and overrides are retired; existing keys are accepted and ignored.
 - The retired scaling keys (`scaling_enabled`, `scaling_method`, `scaling_factor`, `scaling_supersampling`, and `scaling_sharpness`) are accepted and ignored, so old `conf.toml` files still load; framegen-vulkan no longer writes them.
