@@ -1602,14 +1602,16 @@ private:
             } else {
                 deadline = std::min(deadline, ready.latestOutput);
             }
-            // W2: every rule above is unmoved time. A generated output on the worker copy path takes
-            // its own correction last: bounded by the previous output's actual start (the first output
-            // of a stream has no bound), then by the release limit (after a generated output, with its
-            // quarter-interval floor). A real output is never moved. OS2: the first output of a batch
-            // with a readiness wait takes it after that wait instead, from its readiness start.
+            // W2: every rule above is unmoved time. A generated output takes its own correction last: bounded
+            // by the previous output's actual start (the first output of a stream has no bound), then by the
+            // release limit (after a generated output, with its quarter-interval floor). A real output is never
+            // moved. OS1c: a plain deferred generated present (no worker copy, `!copyActive`) takes it too. Its
+            // lower image is already acquired and copied, so a later present holds only that image and changes
+            // no semaphore order. OS2: the first output of a batch with a readiness wait takes it after that wait
+            // instead, from its readiness start.
             const auto unmovedDeadline = deadline;
             Clock::duration commandedOffset{}, appliedOffset{};
-            const bool offsetOutput = current.generated && current.copyActive && current.copy.internalImages &&
+            const bool offsetOutput = current.generated && (!current.copyActive || current.copy.internalImages) &&
                 realOffsetAuto() && index < OutputOffsetController::maxPositions;
             // OS2: the first output of a batch with a readiness wait takes its correction after that wait (in the
             // readiness block below). Its move here would be replaced by the readiness start.

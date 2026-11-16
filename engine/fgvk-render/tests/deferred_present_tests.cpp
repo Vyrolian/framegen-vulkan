@@ -2171,6 +2171,10 @@ struct DeferredPresentTestAccess {
     static uint64_t acceptedOffsetSamples(const DeferredPresent& worker) {
         return worker.outputOffsetController.accepted;
     }
+    // OS1c: a copy of the worker's controller, read only after the batch was finished (see acceptedOffsetSamples).
+    static OutputOffsetController offsetController(const DeferredPresent& worker) {
+        return worker.outputOffsetController;
+    }
 };
 }
 
@@ -4022,6 +4026,102 @@ void nonOverlapPendingRealSurvivesBatches() {
     expect(accepted == 1,
         "a screen sample of the previous non-overlap batch's real was not accepted across the batch boundary");
 }
+
+// OS1c: one worker batch whose first output is a plain deferred generated present (no worker copy: its lower image is
+// acquired and copied before admission), then its real output. Readiness is `ready` after the start, and the batch is
+// just in time with batch_hold on. The generated output takes `generatedOffset`. `expedite` joins the batch at once, as
+// a released batch does (expediteOnJoin is set on released batches only, retirement.cpp). The result holds the batch,
+// the worker's controller read after the batch finished, and every lower present in presentation order.
+struct PlainGeneratedBatch {
+    DeferredPresent::Completion batch;
+    OutputOffsetController controller;
+    std::vector<std::pair<uint32_t, VkSemaphore>> presents;
+};
+PlainGeneratedBatch plainGeneratedBatch(const std::chrono::nanoseconds generatedOffset,
+        const std::chrono::milliseconds ready, const bool overlap, const bool expedite) {
+    auto queue = std::make_shared<DeferredPresentQueue>();
+    queue->queue = handle<VkQueue>(7);
+    VkSwapchainKHR swapchain = handle<VkSwapchainKHR>(11);
+    VkSemaphore generatedWait = handle<VkSemaphore>(71);
+    VkSemaphore realWait = handle<VkSemaphore>(12);
+    uint32_t generatedImage = 2, realImage = 1;
+    VkPresentInfoKHR generatedInfo{.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+        .waitSemaphoreCount = 1, .pWaitSemaphores = &generatedWait,
+        .swapchainCount = 1, .pSwapchains = &swapchain, .pImageIndices = &generatedImage};
+    VkPresentInfoKHR realInfo{.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+        .waitSemaphoreCount = 1, .pWaitSemaphores = &realWait,
+        .swapchainCount = 1, .pSwapchains = &swapchain, .pImageIndices = &realImage};
+    copyPresents.clear();
+    DeferredPresent worker(queue, recordingPresent);
+    const auto start = DeferredPresent::Clock::now();
+    const auto interval = 8ms;
+    simulatedReady[1] = start + ready;
+    realOffsetAutoConfigured.store(true);
+    DeferredPresentTestAccess::setOutputOffsets(worker, 1, {generatedOffset, 0ns, 0ns, 0ns});
+    expect(worker.beginBatch(2, {.device = handle<VkDevice>(21), .semaphore = handle<VkSemaphore>(31),
+            .value = 1, .wait = readyAtInstant, .deadline = start + 1s, .expediteOnJoin = expedite,
+            .overlap = overlap, .justInTime = true, .batchHold = true, .outputInterval = interval}),
+        "plain generated batch rejected");
+    expect(worker.enqueue(generatedInfo, start, true), "plain generated output rejected");
+    expect(worker.enqueue(realInfo, start + interval), "plain batch's real output rejected");
+    worker.closeBatch();
+    auto completion = worker.finish(UINT64_MAX);
+    PlainGeneratedBatch result;
+    result.controller = DeferredPresentTestAccess::offsetController(worker);
+    realOffsetAutoConfigured.store(false);
+    expect(completion && completion->count == 2 && !completion->calls[0].skipped && !completion->calls[1].skipped,
+        "plain generated batch did not complete");
+    result.batch = *completion;
+    result.presents = copyPresents;
+    return result;
+}
+// OS1c: a plain deferred generated present takes the automatic correction in a non-overlap batch. +1 ms moves it 1 ms
+// after its readiness start, and the recorded offset is that 1 ms. The real keeps its unmoved slot. The presents go out
+// in admission order, each with the image and wait it was admitted with.
+void plainGeneratedPresentOffsetMoves() {
+    const auto interval = 8ms;
+    const auto startOf = [](const DeferredPresent::Completion& batch) { return batch.readyAt + batch.batchPhaseHold; };
+    const auto zero = plainGeneratedBatch(0ns, 10ms, false, false);
+    const auto& zeroGenerated = zero.batch.calls[0];
+    expect(zeroGenerated.generated && zeroGenerated.offset == 0ns && zeroGenerated.scheduled == startOf(zero.batch),
+        "a zero correction moved a plain generated present off its readiness start");
+
+    const auto late = plainGeneratedBatch(1ms, 10ms, false, false);
+    const auto& lateGenerated = late.batch.calls[0];
+    expect(lateGenerated.generated && !lateGenerated.skipped && lateGenerated.offset == 1ms &&
+            lateGenerated.scheduled == startOf(late.batch) + 1ms,
+        "a +1 ms correction did not move a plain generated present 1 ms after its readiness start");
+    const auto& lateReal = late.batch.calls[1];
+    expect(!lateReal.generated && lateReal.offset == 0ns && lateReal.scheduled == startOf(late.batch) + interval,
+        "a +1 ms correction moved the real output of a plain generated batch off its unmoved slot");
+    const std::vector<std::pair<uint32_t, VkSemaphore>> admitted{
+        {2, handle<VkSemaphore>(71)}, {1, handle<VkSemaphore>(12)}};
+    expect(late.presents == admitted,
+        "a plain generated present went out with an image or wait other than the one it was admitted with");
+}
+// OS1c: a plain generated move that is cut sets `limited`, so the controller holds further positive integration. The
+// expedite joins the batch before its readiness: the output starts at readiness, before its moved slot, so the
+// correction records only the part taken (zero here) and the limit is set in the direction of the move.
+void plainGeneratedPresentCutLimitsOffset() {
+    const auto cut = plainGeneratedBatch(1ms, 40ms, true, true);
+    const auto& generated = cut.batch.calls[0];
+    expect(generated.generated && !generated.skipped && generated.started < generated.scheduled &&
+            generated.offset < 1ms,
+        "an expedited +1 ms plain generated present kept its whole move");
+    expect(cut.controller.limited[0] == 1, "a cut plain generated move did not set its limit");
+
+    // Further positive integration is held. A generated output landing 0.5 ms before its ideal point (8 ms step,
+    // ideal at 4 ms) would raise the offset, so it is counted as held and the offset stays.
+    OutputOffsetController controller = cut.controller;
+    controller.forget();
+    const auto heldBefore = controller.held;
+    const auto offsetBefore = controller.offset[0];
+    (void)controller.observe(false, 100, 0ns);
+    (void)controller.observe(true, 101, 3500us);
+    (void)controller.observe(false, 101, 8ms);
+    expect(controller.held == heldBefore + 1 && controller.offset[0] == offsetBefore,
+        "a cut plain generated move did not hold further positive integration");
+}
 }
 
 // X3: the empty submits the worker makes to signal an application present fence that no lower
@@ -4407,6 +4507,7 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char** argv) {
     chainedBatchHoldStartsAfterReadiness(); chainedBatchHoldOffStartsAtReadiness(); chainedBatchHoldKeepsItsSchedule();
     offsetAppliesAfterReadinessStart(); chainedPairOffsetsFromItsUnmovedStart();
     nonOverlapBatchOffsetMovesGeneratedOnly(); nonOverlapPendingRealSurvivesBatches();
+    plainGeneratedPresentOffsetMoves(); plainGeneratedPresentCutLimitsOffset();
     generatedCopyPresentsAcquiredImage(); generatedCopySkipsWithoutImage(); generatedCopySkipsOutOfRangeImage();
     generatedCopyNeedsOpenBatch(); generatedCopyChainWaitsPreceding(); generatedCopyChainSkipWaitsPreceding();
     generatedCopyAddsPrivateTail(); generatedSkipAddsPrivateTail();

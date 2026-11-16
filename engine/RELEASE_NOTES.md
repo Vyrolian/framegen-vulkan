@@ -32,7 +32,7 @@
 - Gamescope sessions keep gamescope's WSI layer directly below framegen-vulkan: the layer is named in `VK_INSTANCE_LAYERS` right after framegen-vulkan, and its manifest links sit in one directory that the launcher prepends to `VK_LAYER_PATH` (Steam's pressure-vessel imports only directory entries), so the game's own HDR request reaches framegen-vulkan first; `DISABLE_GAMESCOPE_WSI=1` skips it. HDR under Gamescope is not yet confirmed by a user run.
 - Zink (`enable_zink`, OpenGL through Vulkan): 8-bit swapchains that Mesa creates with a pass-through colour space and a mutable UNORM/sRGB format list are classified as `passthrough-sdr8` and can run frame generation; the private images carry the same mutable format list, so the application's sRGB views stay valid.
 - With `low_latency` or `batch_hold` on, an output batch from a detached ready source (no release gate, for example Zink or MAILBOX) starts at its frames' readiness, on the phase lock with `batch_hold` on, like a released batch, instead of on the previous batch's planned output phase.
-- Worker batches without the release gate (detached ready and cap-scheduled batches, for example Zink or MAILBOX) take the on-screen correction too, as released batches do; the controller no longer forgets its pending real at each such batch.
+- Worker batches without the release gate (detached ready and cap-scheduled batches, for example Zink or MAILBOX) take the on-screen correction too, as released batches do; the controller no longer forgets its pending real at each such batch. Generated outputs presented without a worker copy take the correction as well, and a move that the batch cuts short stops the controller pushing that way further.
 
 ## What's new in MAKO Renderer v4.6.0
 
