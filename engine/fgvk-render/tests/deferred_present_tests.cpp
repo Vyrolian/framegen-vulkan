@@ -3330,6 +3330,22 @@ static_assert(deadlineWithOffset(at(2000), at(0), us(2000), us(-1000)) == at(100
 static_assert(deadlineWithOffset(at(1000), at(0), us(2000), us(-1000)) == at(500));
 // A deadline already inside the bound is not pushed later by a negative offset.
 static_assert(deadlineWithOffset(at(300), at(0), us(2000), us(-1000)) == at(300));
+// OS2: a first output's correction is measured from its readiness start, never before readyAt.
+static_assert(readyDeadlineWithOffset(at(26000), at(28000), at(20000), true, Tp::max(), us(8000), us(0))
+    == at(28000));
+static_assert(readyDeadlineWithOffset(at(26000), at(28000), at(20000), true, Tp::max(), us(8000), us(1000))
+    == at(29000));
+static_assert(readyDeadlineWithOffset(at(26000), at(28000), at(20000), true, Tp::max(), us(8000), us(-1000))
+    == at(27000));
+static_assert(readyDeadlineWithOffset(at(26000), at(28000), at(20000), true, Tp::max(), us(8000), us(-3000))
+    == at(26000));
+static_assert(readyDeadlineWithOffset(at(26000), at(28000), at(0), false, Tp::max(), us(8000), us(-1000))
+    == at(27000));
+// A positive correction stops at the release limit, or at the unmoved start when that is already later.
+static_assert(readyDeadlineWithOffset(at(26000), at(28000), at(20000), true, at(28500), us(8000), us(1000))
+    == at(28500));
+static_assert(readyDeadlineWithOffset(at(26000), at(28000), at(20000), true, at(27000), us(8000), us(1000))
+    == at(28000));
 }
 
 // Errors must consume the staging/continuation contract once without retrying
@@ -3655,8 +3671,11 @@ struct ReleasedPair {
     DeferredPresent::Clock::time_point start{};
 };
 // Two overlapped released batches of two real outputs each, 8 ms apart. Batch A is ready 10 ms after
-// the start and batch B `readyB` after it. B is admitted while A is still outputting.
-ReleasedPair releasedPair(const bool justInTime, const std::chrono::milliseconds readyB) {
+// the start and batch B `readyB` after it. B is admitted while A is still outputting. With
+// `generatedOffset`, B's first output is a generated output (internal images) with that automatic
+// correction, and B's second output is the real one.
+ReleasedPair releasedPair(const bool justInTime, const std::chrono::milliseconds readyB,
+        const std::optional<std::chrono::nanoseconds> generatedOffset = std::nullopt) {
     auto queue = std::make_shared<DeferredPresentQueue>();
     queue->queue = handle<VkQueue>(7);
     VkSwapchainKHR swapchain = handle<VkSwapchainKHR>(11);
@@ -3671,6 +3690,14 @@ ReleasedPair releasedPair(const bool justInTime, const std::chrono::milliseconds
     const auto interval = 8ms;
     simulatedReady[1] = pair.start + 10ms;
     simulatedReady[2] = pair.start + readyB;
+    // OS2: the automatic correction is on for this pair only; the offset is set before B is admitted.
+    if (generatedOffset) {
+        realOffsetAutoConfigured.store(true);
+        copySubmits.clear();
+        copyAcquireResult = VK_SUCCESS;
+        copyAcquireImage = 2;
+        DeferredPresentTestAccess::setOutputOffsets(worker, 1, {*generatedOffset, 0ns, 0ns, 0ns});
+    }
     expect(worker.beginBatch(2, {.device = handle<VkDevice>(21), .semaphore = handle<VkSemaphore>(31),
             .value = 1, .wait = readyAtInstant, .deadline = pair.start + 1s, .overlap = true,
             .justInTime = justInTime, .outputInterval = interval}),
@@ -3683,13 +3710,21 @@ ReleasedPair releasedPair(const bool justInTime, const std::chrono::milliseconds
             .value = 2, .wait = readyAtInstant, .deadline = pair.start + 1s, .overlap = true,
             .justInTime = justInTime, .outputInterval = interval}),
         "second released batch rejected while the first was outputting");
-    image = 2;
-    expect(worker.enqueue(info, pair.start), "second released batch's first output rejected");
+    if (generatedOffset) {
+        auto copy = generatedCopy();
+        copy.internalImages = true;
+        expect(worker.enqueueGeneratedCopy(swapchain, nullptr, pair.start, copy),
+            "second released batch's generated output rejected");
+    } else {
+        image = 2;
+        expect(worker.enqueue(info, pair.start), "second released batch's first output rejected");
+    }
     image = 3;
     expect(worker.enqueue(info, pair.start + interval), "second released batch's second output rejected");
     worker.closeBatch();
     pair.first = worker.finish(UINT64_MAX);
     pair.second = worker.finish(UINT64_MAX);
+    realOffsetAutoConfigured.store(false);
     return pair;
 }
 bool releasedPairCompleted(const ReleasedPair& pair) {
@@ -3737,6 +3772,85 @@ void justInTimeBatchKeepsQuarterIntervalAfterPreviousReal() {
         "a batch ready before the previous real output started did not keep a quarter interval after it");
     expect(firstOfB.scheduled < chainedFloorAfter(*early.first, interval),
         "a batch ready before the previous real output started was held to the planned phase");
+}
+// OS2: a just-in-time batch's first generated output takes its automatic correction after the batch's readiness
+// start (readyAt plus the phase-locked hold, 2 ms here). The start replaces the unmoved deadline, so a correction
+// taken before it was lost. The real after the output keeps its unmoved spacing in every run.
+void offsetAppliesAfterReadinessStart() {
+    const auto interval = 8ms;
+    const auto zero = releasedPair(true, 26ms, 0ns);
+    const auto late = releasedPair(true, 26ms, 1ms);
+    const auto early = releasedPair(true, 26ms, -1ms);
+    const auto deep = releasedPair(true, 26ms, -3ms);
+    for (const auto* pair : {&zero, &late, &early, &deep})
+        expect(releasedPairCompleted(*pair), "offset just-in-time released pair did not complete");
+    const auto startOf = [](const ReleasedPair& pair) {
+        return pair.second->readyAt + pair.second->batchPhaseHold;
+    };
+    // The real is one interval after the generated output's unmoved start, whatever the correction.
+    const auto realFollowsUnmovedStart = [&](const ReleasedPair& pair) {
+        const auto& generated = pair.second->calls[0];
+        return pair.second->calls[1].scheduled == generated.started - generated.offset + interval;
+    };
+    // The -1 ms case needs its start 1 ms or more after readyAt, and the -3 ms case needs it less than 3 ms after.
+    expect(zero.second->batchPhaseHold > 1ms && zero.second->batchPhaseHold < 3ms,
+        "the readiness hold is outside the 1 to 3 ms this test needs");
+
+    // Zero correction: the first generated output starts at its readiness start, as before.
+    const auto& zeroGenerated = zero.second->calls[0];
+    expect(zeroGenerated.generated && !zeroGenerated.skipped && zeroGenerated.offset == 0ns &&
+            zeroGenerated.scheduled == startOf(zero),
+        "a zero correction moved the first generated output off its readiness start");
+    expect(realFollowsUnmovedStart(zero), "a zero correction moved the real output");
+
+    // +1 ms: 1 ms after the readiness start, and the recorded offset is the 1 ms taken.
+    const auto& lateGenerated = late.second->calls[0];
+    expect(!lateGenerated.skipped && lateGenerated.offset == 1ms &&
+            lateGenerated.scheduled == startOf(late) + 1ms,
+        "a +1 ms correction did not move the first generated output 1 ms after its readiness start");
+    expect(realFollowsUnmovedStart(late), "a +1 ms correction moved the real output");
+    const auto lateReal = late.second->calls[1].scheduled - startOf(late);
+    const auto zeroReal = zero.second->calls[1].scheduled - startOf(zero);
+    expect(lateReal - zeroReal < 2ms && zeroReal - lateReal < 2ms,
+        "the real output after a +1 ms correction is not where the zero-correction run puts it");
+
+    // -1 ms: earlier than the start, never before readyAt; the offset is the part taken.
+    const auto& earlyGenerated = early.second->calls[0];
+    expect(!earlyGenerated.skipped && earlyGenerated.offset == -1ms &&
+            earlyGenerated.scheduled == startOf(early) - 1ms &&
+            earlyGenerated.scheduled >= early.second->readyAt,
+        "a -1 ms correction did not move the first generated output 1 ms earlier, not before readyAt");
+    expect(realFollowsUnmovedStart(early), "a -1 ms correction moved the real output");
+
+    // -3 ms, deeper than the hold: the output stops at readyAt and the offset records the 2 ms taken.
+    const auto& deepGenerated = deep.second->calls[0];
+    expect(!deepGenerated.skipped && deepGenerated.scheduled == deep.second->readyAt &&
+            deepGenerated.offset == -deep.second->batchPhaseHold,
+        "a correction deeper than the readiness hold moved the first generated output before readyAt, "
+        "or recorded more than it took");
+    expect(realFollowsUnmovedStart(deep), "a deep correction moved the real output");
+}
+// OS2: the same correction on a non-just-in-time overlap pair. Where its readiness is before the chained floor
+// (chainedFloorAfter: the previous real output's scheduled or actual start, whichever is earlier, plus the interval
+// less a sixteenth), the output is at that floor plus the correction, as before OS2. Where its readiness is after
+// the floor, the output is at its readiness start plus the correction: that start is its unmoved slot.
+void chainedPairOffsetsFromItsUnmovedStart() {
+    const auto interval = 8ms;
+    const auto early = releasedPair(false, 20ms, 1ms);
+    expect(releasedPairCompleted(early), "chained offset pair did not complete");
+    const auto& earlyGenerated = early.second->calls[0];
+    expect(!earlyGenerated.skipped && earlyGenerated.offset == 1ms &&
+            earlyGenerated.scheduled == chainedFloorAfter(*early.first, interval) + 1ms,
+        "a chained batch's correction did not move its chained floor by the correction");
+    expect(early.second->calls[1].scheduled == earlyGenerated.started - earlyGenerated.offset + interval,
+        "a chained batch's real output did not follow its generated output's unmoved start");
+
+    const auto late = releasedPair(false, 30ms, 1ms);
+    expect(releasedPairCompleted(late), "late-ready chained offset pair did not complete");
+    const auto& lateGenerated = late.second->calls[0];
+    expect(!lateGenerated.skipped && lateGenerated.offset == 1ms &&
+            lateGenerated.scheduled == late.second->readyAt + 1ms,
+        "a chained batch ready after its floor did not take its correction after its readiness start");
 }
 }
 
@@ -3960,6 +4074,7 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char** argv) {
     timingRequestIsCopiedAndRebuilt(); sixKnownNodesAreAccepted();
     overlappedChainShiftsLaterOutputs(); expeditedOutputAnchorsNextBatch();
     justInTimeBatchStartsAtItsReadiness(); justInTimeBatchKeepsQuarterIntervalAfterPreviousReal();
+    offsetAppliesAfterReadinessStart(); chainedPairOffsetsFromItsUnmovedStart();
     generatedCopyPresentsAcquiredImage(); generatedCopySkipsWithoutImage(); generatedCopySkipsOutOfRangeImage();
     generatedCopyNeedsOpenBatch(); generatedCopyChainWaitsPreceding(); generatedCopyChainSkipWaitsPreceding();
     generatedCopyAddsPrivateTail(); generatedSkipAddsPrivateTail();

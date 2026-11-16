@@ -1550,13 +1550,17 @@ private:
             // W2: every rule above is unmoved time. A generated output on the worker copy path takes
             // its own correction last: bounded by the previous output's actual start (the first output
             // of a stream has no bound), then by the release limit (after a generated output, with its
-            // quarter-interval floor). A real output is never moved.
+            // quarter-interval floor). A real output is never moved. OS2: the first output of a batch
+            // with a readiness wait takes it after that wait instead, from its readiness start.
             const auto unmovedDeadline = deadline;
             Clock::duration commandedOffset{}, appliedOffset{};
             const bool offsetOutput = current.generated && current.copyActive && current.copy.internalImages &&
                 ready.overlap && realOffsetAuto() && index < OutputOffsetController::maxPositions;
-            if (offsetOutput) {
-                commandedOffset = outputOffsetController.offset[index];
+            // OS2: the first output of a batch with a readiness wait takes its correction after that wait (in the
+            // readiness block below). Its move here would be replaced by the readiness start.
+            const bool offsetAfterReadiness = offsetOutput && first && ready.wait;
+            if (offsetOutput) commandedOffset = outputOffsetController.offset[index];
+            if (offsetOutput && !offsetAfterReadiness) {
                 const bool hasPrevious = index > 0 || havePrevious;
                 const auto previousActual = index > 0 ? batch.aggregate.calls[index - 1].started : previousStarted;
                 const auto moved = hasPrevious
@@ -1646,6 +1650,13 @@ private:
                         readinessShift = std::max(Clock::duration{}, start - unmovedReady);
                         unmovedReady += readinessShift;
                         deadline = std::max(deadline, start);
+                        if (offsetAfterReadiness) {
+                            // OS2: the correction moves the readiness start, never before readyAt. Its
+                            // effective part is measured from unmovedReady (rule 3 below).
+                            deadline = readyDeadlineWithOffset(readyAt, unmovedReady, previousStarted, havePrevious,
+                                ready.latestOutput, ready.outputInterval, commandedOffset);
+                            appliedOffset = deadline - unmovedReady;
+                        }
                     }
                 }
                 batchShift = unmovedReady - current.deadline;
@@ -1943,7 +1954,7 @@ private:
             }
             // W2: a generated output that presented keeps the effective part of its own correction.
             if (offsetOutput && !result.skipped) {
-                result.offset = outputOffsetEffective(appliedOffset, unmovedDeadline, result.scheduled, result.started);
+                result.offset = outputOffsetEffective(appliedOffset, unmovedReady, result.scheduled, result.started);
                 outputOffsetController.limited[index] = outputOffsetLimited(commandedOffset, result.offset);
             }
             // A prepared output follows F9b: its lower present is always issued,

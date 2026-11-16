@@ -22,6 +22,18 @@ template <typename TimePoint, typename Duration>
     return offset == Duration{} ? deadline
         : std::max(deadline + offset, std::min(deadline, previousStarted + interval / 4));
 }
+// OS2: the deadline of a batch's first generated output, with its correction taken after the batch's readiness
+// start. unmovedReady is that start (readyAt plus the phase-locked hold, or the unmoved deadline when later), and
+// the correction is measured from it. The result is never before readyAt. A positive correction stops at the
+// release limit, or at unmovedReady when that is already later. With a zero offset this returns unmovedReady.
+template <typename TimePoint, typename Duration>
+[[nodiscard]] constexpr TimePoint readyDeadlineWithOffset(const TimePoint readyAt, const TimePoint unmovedReady,
+        const TimePoint previousStarted, const bool hasPrevious, const TimePoint latest,
+        const Duration interval, const Duration offset) noexcept {
+    const TimePoint moved = hasPrevious ? deadlineWithOffset(unmovedReady, previousStarted, interval, offset)
+        : unmovedReady + offset;
+    return std::max(readyAt, std::min(moved, std::max(latest, unmovedReady)));
+}
 // W2: the part of a generated output's move that took effect. A later move counts only up to
 // the final scheduled deadline: a join expedite or a late wake can start the output before its
 // moved slot, and the wake itself is ignored. An earlier move (negative) counts only as far as
