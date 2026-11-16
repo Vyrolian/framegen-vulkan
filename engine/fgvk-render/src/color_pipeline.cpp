@@ -70,6 +70,18 @@ layer::SwapchainColorPipeline layer::classifySwapchainColor(
         };
     }
 
+    // Mesa Zink (OpenGL through Vulkan) asks for PASS_THROUGH on Wayland because
+    // OpenGL has no colour space. Its 8-bit SDR swapchains are sRGB-equivalent.
+    if (colorSpace == VK_COLOR_SPACE_PASS_THROUGH_EXT && !winePassThroughHdr &&
+            isEightBitSdrFormat(format)) {
+        return {
+            .encoding = backend::FrameEncoding::Sdr8,
+            .exchangeFormat = VK_FORMAT_R8G8B8A8_UNORM,
+            .generationSupported = true,
+            .name = "passthrough-sdr8",
+        };
+    }
+
     if (colorSpace == VK_COLOR_SPACE_HDR10_ST2084_EXT) {
         if (isHdr10Format(format)) {
             return {

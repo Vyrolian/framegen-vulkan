@@ -32,6 +32,7 @@ If the loader reports `GLIBC_2.43 not found` for `fgvk`, the archive was built a
 - For Frame Generation, install Lossless Scaling's default Steam version and check **Lossless.dll Path**.
 - Clear an unnecessary **GPU** override; Frame Generation must use the game's GPU.
 - Compare V-Sync on/off and test features separately.
+- Zink (`enable_zink`, OpenGL through Vulkan) can run frame generation on its 8-bit swapchains, logged as `mode=passthrough-sdr8`.
 
 To check configuration errors:
 

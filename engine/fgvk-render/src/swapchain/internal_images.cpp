@@ -4,6 +4,7 @@
 
 #include "swapchain/deferred_present.hpp"
 #include "library_pin.hpp"
+#include "pnext_chain.hpp"
 #include "present_diagnostics.hpp"
 #include "fgvk-common/helpers/errors.hpp"
 #include "fgvk-common/vulkan/command_buffer.hpp"
@@ -84,6 +85,9 @@ namespace fgvk::layer {
         std::vector<VkImage> images;
         std::vector<VkDeviceMemory> memories;
         std::vector<VkImage> lowerImages;
+        // Copy of the application's view formats, read by createImages. Owned here: the
+        // caller's create chain is not kept.
+        std::vector<VkFormat> viewFormats;
 
         std::optional<vk::TimelineSemaphore> release;
         // Serialised by queue->mutex: the release value and everything the copy and
@@ -206,11 +210,26 @@ namespace fgvk::layer {
 
     bool InternalSwapchainImages::Impl::createImages(const vk::Vulkan& vk,
             const VkSwapchainCreateInfoKHR& application, const uint32_t imageCount) {
+        // A mutable application swapchain (Zink) lets the application create UNORM and
+        // sRGB views on these images, so they take the bit and the same format list.
+        const auto formats = imageFormatListOf(application.pNext);
+        viewFormats.assign(formats.begin(), formats.end());
+        const VkImageFormatListCreateInfo formatList{
+            .sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO,
+            .pNext = nullptr,
+            .viewFormatCount = static_cast<uint32_t>(viewFormats.size()),
+            .pViewFormats = viewFormats.data(),
+        };
+        const VkImageCreateFlags flags = internalImageCreateFlags(application.flags);
+        const bool chainFormatList = (flags & VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT) != 0 &&
+            !viewFormats.empty();
         images.reserve(imageCount);
         memories.reserve(imageCount);
         for (uint32_t i = 0; i < imageCount; ++i) {
             const VkImageCreateInfo imageInfo{
                 .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                .pNext = chainFormatList ? &formatList : nullptr,
+                .flags = flags,
                 .imageType = VK_IMAGE_TYPE_2D,
                 .format = application.imageFormat,
                 .extent = {.width = extent.width, .height = extent.height, .depth = 1},
@@ -1183,20 +1202,31 @@ namespace fgvk::layer {
     }
 
     InternalImageDeviceSupport queryInternalImageSupport(const vk::Vulkan& vk,
-            const VkFormat format, const VkImageUsageFlags usage) {
+            const VkFormat format, const VkImageUsageFlags usage,
+            const VkImageCreateFlags flags, const std::span<const VkFormat> viewFormats) {
         InternalImageDeviceSupport support{};
         support.formatBlitCapable = vk.supportsOptimalTilingFormatFeatures(
             format, VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_BLIT_DST_BIT);
         const auto query = vk.fi().GetPhysicalDeviceImageFormatProperties2;
         if (!query)
             return support;
+        // The list is queried only with the mutable bit, the same condition createImages uses.
+        const VkImageFormatListCreateInfo formatList{
+            .sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO,
+            .pNext = nullptr,
+            .viewFormatCount = static_cast<uint32_t>(viewFormats.size()),
+            .pViewFormats = viewFormats.data(),
+        };
+        const bool chainFormatList = (flags & VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT) != 0 &&
+            !viewFormats.empty();
         const VkPhysicalDeviceImageFormatInfo2 formatInfo{
             .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2,
+            .pNext = chainFormatList ? &formatList : nullptr,
             .format = format,
             .type = VK_IMAGE_TYPE_2D,
             .tiling = VK_IMAGE_TILING_OPTIMAL,
             .usage = usage | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-            .flags = 0,
+            .flags = flags,
         };
         VkImageFormatProperties2 properties{
             .sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2,

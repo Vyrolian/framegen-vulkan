@@ -109,14 +109,29 @@ int main() {
             unsupported.name == "unsupported-wine-hdr-format" && !unsupported.reason.empty(),
             "Wine PASS_THROUGH on another format must pass through as unsupported HDR");
     }
+    // Mesa Zink asks for PASS_THROUGH with an 8-bit SDR format (OpenGL has no colour
+    // space). Without the Wine flag that swapchain is sRGB 8-bit, named passthrough-sdr8.
+    for (const auto format : {VK_FORMAT_B8G8R8A8_UNORM, VK_FORMAT_B8G8R8A8_SRGB,
+            VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_SRGB}) {
+        const auto pass = classifySwapchainColor(format, VK_COLOR_SPACE_PASS_THROUGH_EXT, false);
+        const auto srgb = classifySwapchainColor(format, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR);
+        expect(pass.generationSupported && !pass.hdr &&
+            pass.encoding == backend::FrameEncoding::Sdr8 &&
+            pass.exchangeFormat == VK_FORMAT_R8G8B8A8_UNORM &&
+            pass.name == "passthrough-sdr8",
+            "PASS_THROUGH with an 8-bit SDR format must support generation as passthrough-sdr8");
+        expect(pass.encoding == srgb.encoding && pass.exchangeFormat == srgb.exchangeFormat &&
+            pass.generationSupported == srgb.generationSupported && pass.hdr == srgb.hdr,
+            "PASS_THROUGH with an 8-bit SDR format must classify exactly like SRGB_NONLINEAR");
+    }
     for (const auto format : {VK_FORMAT_A2B10G10R10_UNORM_PACK32,
             VK_FORMAT_A2R10G10B10_UNORM_PACK32, VK_FORMAT_R16G16B16A16_SFLOAT,
-            VK_FORMAT_B8G8R8A8_UNORM}) {
+            VK_FORMAT_UNDEFINED}) {
         const auto pipeline = classifySwapchainColor(format, VK_COLOR_SPACE_PASS_THROUGH_EXT, false);
         expect(!pipeline.generationSupported && !pipeline.hdr &&
             pipeline.name == "hdr-passthrough" &&
             pipeline.reason == "HDR is not supported; frame generation passes through",
-            "PASS_THROUGH without the Wine flag must stay real-frame passthrough");
+            "PASS_THROUGH without the Wine flag and not an 8-bit SDR format must stay real-frame passthrough");
     }
     // The flag only ever selects PASS_THROUGH; other colour spaces are unchanged.
     expect(classifySwapchainColor(VK_FORMAT_A2B10G10R10_UNORM_PACK32,
@@ -140,10 +155,10 @@ int main() {
         {VK_COLOR_SPACE_BT2020_LINEAR_EXT, false},
         {VK_COLOR_SPACE_ADOBERGB_LINEAR_EXT, false},
         {VK_COLOR_SPACE_ADOBERGB_NONLINEAR_EXT, false},
-        {VK_COLOR_SPACE_PASS_THROUGH_EXT, false},
         {VK_COLOR_SPACE_DISPLAY_NATIVE_AMD, false},
         {VK_COLOR_SPACE_MAX_ENUM_KHR, false},
     };
+    // PASS_THROUGH has its own cases above, because its 8-bit SDR formats are not passthrough.
     for (const auto& row : colors) {
         for (const auto format : {VK_FORMAT_R8G8B8A8_UNORM,
                 VK_FORMAT_A2B10G10R10_UNORM_PACK32, VK_FORMAT_R16G16B16A16_SFLOAT,

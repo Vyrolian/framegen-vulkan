@@ -251,6 +251,59 @@ namespace {
                 unknown.pNext == reinterpret_cast<const VkBaseInStructure*>(&mode),
             "timing support weakened unknown-prefix rejection or input ownership");
     }
+
+    // The view format list of a mutable swapchain create chain: read at the head or
+    // behind other structures, and absent, empty or without an array otherwise.
+    void testImageFormatListOf() {
+        constexpr VkFormat formats[]{VK_FORMAT_B8G8R8A8_UNORM, VK_FORMAT_B8G8R8A8_SRGB};
+        const VkImageFormatListCreateInfo list{
+            .sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO,
+            .pNext = nullptr,
+            .viewFormatCount = 2,
+            .pViewFormats = formats,
+        };
+        publishChainNode(&list);
+        const auto direct = imageFormatListOf(&list);
+        expect(direct.size() == 2 && direct.data() == formats &&
+                direct[0] == VK_FORMAT_B8G8R8A8_UNORM && direct[1] == VK_FORMAT_B8G8R8A8_SRGB,
+            "the format list at the head of a chain was not read");
+
+        const VkDeviceGroupSwapchainCreateInfoKHR group{
+            .sType = VK_STRUCTURE_TYPE_DEVICE_GROUP_SWAPCHAIN_CREATE_INFO_KHR,
+            .pNext = &list,
+            .modes = 0,
+        };
+        publishChainNode(&group);
+        const auto behindOther = imageFormatListOf(&group);
+        expect(behindOther.size() == 2 && behindOther.data() == formats,
+            "the format list behind another structure was not read");
+
+        const VkDeviceGroupSwapchainCreateInfoKHR alone{
+            .sType = VK_STRUCTURE_TYPE_DEVICE_GROUP_SWAPCHAIN_CREATE_INFO_KHR,
+            .pNext = nullptr,
+            .modes = 0,
+        };
+        publishChainNode(&alone);
+        expect(imageFormatListOf(nullptr).empty() && imageFormatListOf(&alone).empty(),
+            "a chain without a format list reported formats");
+
+        const VkImageFormatListCreateInfo emptyList{
+            .sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO,
+            .pNext = nullptr,
+            .viewFormatCount = 0,
+            .pViewFormats = formats,
+        };
+        const VkImageFormatListCreateInfo noArray{
+            .sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO,
+            .pNext = nullptr,
+            .viewFormatCount = 2,
+            .pViewFormats = nullptr,
+        };
+        publishChainNode(&emptyList);
+        publishChainNode(&noArray);
+        expect(imageFormatListOf(&emptyList).empty() && imageFormatListOf(&noArray).empty(),
+            "an empty format list reported formats");
+    }
 }
 
 int main() {
@@ -280,6 +333,7 @@ int main() {
     testPresentId2Wait2Enablement();
 #endif
     testPresentTimingPrefix();
+    testImageFormatListOf();
     const VkBaseInStructure tail{
         .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
         .pNext = nullptr,

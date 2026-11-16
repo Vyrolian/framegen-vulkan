@@ -18,6 +18,7 @@
 #include "swapchain/low_latency.hpp"
 #include "swapchain/internal_images.hpp"
 #include "swapchain/present_marker.hpp"
+#include "pnext_chain.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -1776,8 +1777,10 @@ namespace {
         try {
             auto& context = layer_info->root.getSwapchainContext(swapchain);
             const auto& profile = context.appliedProfile();
+            const auto viewFormats = imageFormatListOf(application.pNext);
             const auto support = queryInternalImageSupport(
-                vk, application.imageFormat, application.imageUsage);
+                vk, application.imageFormat, application.imageUsage,
+                internalImageCreateFlags(application.flags), viewFormats);
             const InternalImageGateInput gate{
                 .frameGenerationEnabled = profile.frame_generation_enabled,
                 .deferredPresentQueue = static_cast<bool>(swapchainInfo.deferredPresentQueue),
@@ -1787,6 +1790,7 @@ namespace {
                 .lowerFormat = swapchainInfo.format,
                 .imageArrayLayers = application.imageArrayLayers,
                 .applicationFlags = application.flags,
+                .applicationViewFormatCount = static_cast<uint32_t>(viewFormats.size()),
                 .lowerImageCount = static_cast<uint32_t>(swapchainInfo.images.size()),
                 .formatBlitCapable = support.formatBlitCapable,
                 .imageFormatSupported = support.imageFormatSupported,

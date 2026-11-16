@@ -27,7 +27,8 @@ namespace fgvk::layer {
 
     /// Nonlinear sRGB swapchains and the validated HDR pairs (HDR10/PQ on a
     /// 10-bit packed format, linear scRGB on R16G16B16A16_SFLOAT) support
-    /// generation. Every other colour space and format passes through.
+    /// generation. Every other colour space and format passes through, except
+    /// PASS_THROUGH with an 8-bit SDR format (Mesa Zink), which is sRGB-equivalent.
     /// `winePassThroughHdr` is set for a native Wayland surface in a Wine process:
     /// winewayland maps those same HDR pairs to PASS_THROUGH and sets the HDR
     /// description on the surface itself, so PASS_THROUGH is then the HDR pair.

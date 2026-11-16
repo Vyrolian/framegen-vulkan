@@ -41,6 +41,8 @@ namespace fgvk::layer {
         VkFormat lowerFormat{VK_FORMAT_UNDEFINED};
         uint32_t imageArrayLayers{1};
         VkSwapchainCreateFlagsKHR applicationFlags{0};
+        // Formats in the application's VkImageFormatListCreateInfo (zero when absent).
+        uint32_t applicationViewFormatCount{0};
         uint32_t lowerImageCount{0};
         // Optimal-tiling BLIT_SRC and BLIT_DST for the application format.
         bool formatBlitCapable{false};
@@ -50,7 +52,7 @@ namespace fgvk::layer {
 
     /// Create-time flags the application may set while internal images are used.
     [[nodiscard]] constexpr VkSwapchainCreateFlagsKHR internalImageAllowedCreateFlags() noexcept {
-        VkSwapchainCreateFlagsKHR allowed = 0;
+        VkSwapchainCreateFlagsKHR allowed = VK_SWAPCHAIN_CREATE_MUTABLE_FORMAT_BIT_KHR;
 #if defined(VK_KHR_present_id2)
         allowed |= VK_SWAPCHAIN_CREATE_PRESENT_ID_2_BIT_KHR;
 #endif
@@ -61,6 +63,15 @@ namespace fgvk::layer {
         allowed |= VK_SWAPCHAIN_CREATE_PRESENT_TIMING_BIT_EXT;
 #endif
         return allowed;
+    }
+
+    /// VkImageCreateFlags of the private images and of their support query. The
+    /// mutable-format bit carries over: the application creates sRGB or UNORM views
+    /// on these images. The other swapchain flags have no image counterpart.
+    [[nodiscard]] constexpr VkImageCreateFlags internalImageCreateFlags(
+            const VkSwapchainCreateFlagsKHR flags) noexcept {
+        return (flags & VK_SWAPCHAIN_CREATE_MUTABLE_FORMAT_BIT_KHR) != 0
+            ? VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT : 0;
     }
 
     /// Returns the first failing gate reason as a stable kebab-case string, or
@@ -80,6 +91,9 @@ namespace fgvk::layer {
         if (input.imageArrayLayers != 1) return "array-layers";
         if (input.lowerImageCount < 2) return "lower-image-count";
         if ((input.applicationFlags & ~internalImageAllowedCreateFlags()) != 0) return "create-flags";
+        // The private images can only take the mutable-format bit with the application's format list.
+        if ((input.applicationFlags & VK_SWAPCHAIN_CREATE_MUTABLE_FORMAT_BIT_KHR) != 0 &&
+                input.applicationViewFormatCount == 0) return "create-flags";
         if (!input.formatBlitCapable) return "format-blit";
         if (!input.imageFormatSupported) return "image-format";
         return nullptr;
@@ -452,7 +466,9 @@ namespace fgvk::layer {
     [[nodiscard]] VkResult internalRealAbandon(void* owner, VkQueue queue,
         uint32_t applicationIndex, VkSemaphore continuation);
 
-    /// Device support queries for the private image format and usage.
+    /// Device support queries for the private image format, usage, create flags and
+    /// view formats. The flags and list must match what the private images are created with.
     [[nodiscard]] InternalImageDeviceSupport queryInternalImageSupport(
-        const vk::Vulkan& vk, VkFormat format, VkImageUsageFlags usage);
+        const vk::Vulkan& vk, VkFormat format, VkImageUsageFlags usage,
+        VkImageCreateFlags flags = 0, std::span<const VkFormat> viewFormats = {});
 }

@@ -357,6 +357,7 @@ namespace {
             {"array-layers", [](auto& in) { in.imageArrayLayers = 2; }},
             {"lower-image-count", [](auto& in) { in.lowerImageCount = 1; }},
             {"create-flags", [](auto& in) { in.applicationFlags = VK_SWAPCHAIN_CREATE_PROTECTED_BIT_KHR; }},
+            {"create-flags", [](auto& in) { in.applicationFlags = VK_SWAPCHAIN_CREATE_MUTABLE_FORMAT_BIT_KHR; }},
             {"format-blit", [](auto& in) { in.formatBlitCapable = false; }},
             {"image-format", [](auto& in) { in.imageFormatSupported = false; }},
         };
@@ -393,6 +394,33 @@ namespace {
 #endif
         expect(internalImagesEligible(input),
             "the supported present-timing and present-ID create flags refused eligibility");
+    }
+
+    // Zink's mutable swapchain: allowed only with the application's view format list, and an
+    // unknown flag next to it is still refused. The private images take the matching image flag.
+    void testMutableFormatNeedsFormatList() {
+        auto withList = eligibleInput();
+        withList.applicationFlags = VK_SWAPCHAIN_CREATE_MUTABLE_FORMAT_BIT_KHR;
+        withList.applicationViewFormatCount = 2;
+        expect(internalImagesEligible(withList),
+            "a mutable swapchain with its view format list was refused");
+
+        auto withoutList = withList;
+        withoutList.applicationViewFormatCount = 0;
+        expect(std::string_view(internalImagesIneligibleReason(withoutList)) == "create-flags",
+            "a mutable swapchain without a view format list was not refused as create-flags");
+
+        auto withUnknown = withList;
+        withUnknown.applicationFlags |= VK_SWAPCHAIN_CREATE_PROTECTED_BIT_KHR;
+        expect(std::string_view(internalImagesIneligibleReason(withUnknown)) == "create-flags",
+            "an unknown flag next to the mutable bit was not refused as create-flags");
+
+        expect(internalImageCreateFlags(VK_SWAPCHAIN_CREATE_MUTABLE_FORMAT_BIT_KHR) ==
+                VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT,
+            "the mutable swapchain bit did not map to the mutable image bit");
+        expect(internalImageCreateFlags(VK_SWAPCHAIN_CREATE_PROTECTED_BIT_KHR) == 0 &&
+                internalImageCreateFlags(0) == 0,
+            "a swapchain flag without an image counterpart leaked into the image flags");
     }
 
     template<class T> T handleOf(uintptr_t value) {
@@ -492,6 +520,7 @@ int main() {
     testEachFailingConditionAlone();
     testFirstFailingReasonWins();
     testAllowedCreateFlags();
+    testMutableFormatNeedsFormatList();
     testImageCountRule();
     testHostAcquireEligibility();
     std::cout << "internal images tests passed\n";

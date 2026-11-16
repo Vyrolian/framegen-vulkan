@@ -5,6 +5,7 @@
 #include <array>
 #include <cstddef>
 #include <cstring>
+#include <span>
 #include <string_view>
 
 #include <vulkan/vulkan_core.h>
@@ -137,6 +138,23 @@ namespace fgvk::layer {
         VkSwapchainPresentModeInfoEXT mode{};
         bool hasMode{};
     };
+
+    /// The view formats of the first VkImageFormatListCreateInfo in a chain, with
+    /// other structure types before it skipped. The span points into caller-owned
+    /// memory. It is empty when the chain has no list or the list has no formats.
+    [[nodiscard]] inline std::span<const VkFormat> imageFormatListOf(
+            const void* chain) noexcept {
+        for (const auto* node = static_cast<const VkBaseInStructure*>(chain); node;
+                node = node->pNext) {
+            if (node->sType != VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO)
+                continue;
+            const auto* list = reinterpret_cast<const VkImageFormatListCreateInfo*>(node);
+            if (!list->pViewFormats || list->viewFormatCount == 0)
+                return {};
+            return {list->pViewFormats, list->viewFormatCount};
+        }
+        return {};
+    }
 
     /// Optional Renderer timing must never share a consuming feedback queue
     /// or present-ID namespace with the application.
