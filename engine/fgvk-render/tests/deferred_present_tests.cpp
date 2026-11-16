@@ -3676,7 +3676,8 @@ struct ReleasedPair {
 // `generatedOffset`, B's first output is a generated output (internal images) with that automatic
 // correction, and B's second output is the real one.
 ReleasedPair releasedPair(const bool justInTime, const std::chrono::milliseconds readyB,
-        const std::optional<std::chrono::nanoseconds> generatedOffset = std::nullopt) {
+        const std::optional<std::chrono::nanoseconds> generatedOffset = std::nullopt,
+        const bool batchHold = true) {
     auto queue = std::make_shared<DeferredPresentQueue>();
     queue->queue = handle<VkQueue>(7);
     VkSwapchainKHR swapchain = handle<VkSwapchainKHR>(11);
@@ -3701,7 +3702,7 @@ ReleasedPair releasedPair(const bool justInTime, const std::chrono::milliseconds
     }
     expect(worker.beginBatch(2, {.device = handle<VkDevice>(21), .semaphore = handle<VkSemaphore>(31),
             .value = 1, .wait = readyAtInstant, .deadline = pair.start + 1s, .overlap = true,
-            .justInTime = justInTime, .outputInterval = interval}),
+            .justInTime = justInTime, .batchHold = batchHold, .outputInterval = interval}),
         "first released batch rejected");
     expect(worker.enqueue(info, pair.start), "first released batch's first output rejected");
     image = 1;
@@ -3709,7 +3710,7 @@ ReleasedPair releasedPair(const bool justInTime, const std::chrono::milliseconds
     worker.closeBatch();
     expect(worker.beginBatch(2, {.device = handle<VkDevice>(21), .semaphore = handle<VkSemaphore>(31),
             .value = 2, .wait = readyAtInstant, .deadline = pair.start + 1s, .overlap = true,
-            .justInTime = justInTime, .outputInterval = interval}),
+            .justInTime = justInTime, .batchHold = batchHold, .outputInterval = interval}),
         "second released batch rejected while the first was outputting");
     if (generatedOffset) {
         auto copy = generatedCopy();
@@ -3773,6 +3774,26 @@ void justInTimeBatchKeepsQuarterIntervalAfterPreviousReal() {
         "a batch ready before the previous real output started did not keep a quarter interval after it");
     expect(firstOfB.scheduled < chainedFloorAfter(*early.first, interval),
         "a batch ready before the previous real output started was held to the planned phase");
+}
+// BH1 (batch_hold): the same just-in-time pair with the hold on and off. On, batch B starts 2 ms after its readiness
+// (the phase lock, as in justInTimeBatchStartsAtItsReadiness). Off, it starts at its readiness with no lock and no
+// margin, and its spacing is kept.
+void justInTimeBatchHoldOffStartsAtReadiness() {
+    const auto interval = 8ms;
+    const auto on = releasedPair(true, 26ms, std::nullopt, true);
+    const auto off = releasedPair(true, 26ms, std::nullopt, false);
+    expect(releasedPairCompleted(on) && releasedPairCompleted(off),
+        "batch hold pair did not complete");
+    expect(on.second->batchPhaseHold > 1ms && on.second->batchPhaseHold < 3ms,
+        "batch hold on did not hold the batch about 2 ms after its readiness");
+    expect(on.second->calls[0].scheduled == on.second->readyAt + on.second->batchPhaseHold,
+        "batch hold on did not start the first output at its readiness plus the hold");
+    expect(off.second->batchPhaseHold == 0ns,
+        "batch hold off still held the batch after its readiness");
+    expect(off.second->calls[0].scheduled == off.second->readyAt,
+        "batch hold off did not start the first output at its readiness");
+    expect(off.second->calls[1].started >= off.second->calls[0].started + interval - 1ms,
+        "batch hold off lost its spacing from its first output");
 }
 // OS2: a just-in-time batch's first generated output takes its automatic correction after the batch's readiness
 // start (readyAt plus the phase-locked hold, 2 ms here). The start replaces the unmoved deadline, so a correction
@@ -4234,6 +4255,7 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char** argv) {
     timingRequestIsCopiedAndRebuilt(); sixKnownNodesAreAccepted();
     overlappedChainShiftsLaterOutputs(); expeditedOutputAnchorsNextBatch();
     justInTimeBatchStartsAtItsReadiness(); justInTimeBatchKeepsQuarterIntervalAfterPreviousReal();
+    justInTimeBatchHoldOffStartsAtReadiness();
     offsetAppliesAfterReadinessStart(); chainedPairOffsetsFromItsUnmovedStart();
     generatedCopyPresentsAcquiredImage(); generatedCopySkipsWithoutImage(); generatedCopySkipsOutOfRangeImage();
     generatedCopyNeedsOpenBatch(); generatedCopyChainWaitsPreceding(); generatedCopyChainSkipWaitsPreceding();

@@ -40,7 +40,7 @@ void profileScenario() {
     profile.settings(true, true, 2, 60);
     // low_latency on, a 3 ms release delay, and the vkd3d, dxvk and acquire kinds used, with Reflex
     // stepping the release delay aside in part of the window (reflexKindBit).
-    profile.lowLatency(true, 3ms, 1u | 4u | 8u | fgvk::layer::reflexKindBit, true);
+    profile.lowLatency(true, 3ms, 1u | 4u | 8u | fgvk::layer::reflexKindBit, true, true);
     // L5: predicted releases armed with 2 and 4 ms holds, and two resolved previous-batch-end leads.
     profile.gpuRelease(fgvk::layer::GpuReleaseMode::Predicted, 2ms);
     profile.gpuRelease(fgvk::layer::GpuReleaseMode::Predicted, 4ms);

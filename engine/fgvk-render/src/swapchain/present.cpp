@@ -695,7 +695,7 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
             gpuRelease.hold);
     if (this->pacingProfile) this->pacingProfile->lowLatency(latency.justInTime, releaseDelay,
         this->releaseGate.consumedKinds() | (latency.reflexHolds ? reflexKindBit : 0u),
-        latency.justInTime);
+        latency.justInTime, this->profile.batch_hold);
     const bool readyOutputPacing = fixedReadyOutputPacingEligible(
         this->profile, directUnthrottled || nativeFifoOutputPacing,
         compositorOutputTiming || applicationTimingOwner,

@@ -56,6 +56,7 @@ namespace {
                 right.swapchain_image_count_compatibility &&
             left.base_fps_cap == right.base_fps_cap &&
             left.low_latency == right.low_latency &&
+            left.batch_hold == right.batch_hold &&
             left.ultra_performance == right.ultra_performance &&
             left.flow_scale == right.flow_scale &&
             left.performance_mode == right.performance_mode &&
@@ -303,6 +304,26 @@ dynamic_cadence_probe_interval_seconds = 0.5
             "Rewriting a configuration must keep low_latency = false");
     }
 
+    // batch_hold defaults on for a profile that omits it, keeps an explicit off across a rewrite, and
+    // sameGameConf tells the two apart.
+    void testBatchHoldKey(const std::filesystem::path& directory) {
+        const auto path = directory / "batch-hold.toml";
+        writeText(path, "version = 2\n[[profile]]\nname = 'game'\n");
+        const ls::ConfigFile omitted(path);
+        expect(omitted.profiles().front().batch_hold,
+            "A profile without batch_hold must read as on");
+        writeText(path, "version = 2\n[[profile]]\nname = 'game'\nbatch_hold = false\n");
+        const ls::ConfigFile off(path);
+        expect(!off.profiles().front().batch_hold, "An explicit batch_hold = false must be read");
+        expect(!sameGameConf(omitted.profiles().front(), off.profiles().front()),
+            "sameGameConf must distinguish batch_hold");
+        off.write(path);
+        expect(readText(path).find("batch_hold = false") != std::string::npos,
+            "Rewriting a configuration must keep batch_hold = false");
+        expect(!ls::ConfigFile(path).profiles().front().batch_hold,
+            "A rewritten batch_hold = false must read back as off");
+    }
+
 int main() {
     const ls::GameConf defaults;
     expect(defaults.multiplier == ls::GameConfDefaults::multiplier &&
@@ -314,6 +335,7 @@ int main() {
                 ls::GameConfDefaults::swapchainImageCountCompatibility &&
             defaults.base_fps_cap == ls::GameConfDefaults::baseFpsCap &&
             defaults.low_latency == ls::GameConfDefaults::lowLatency &&
+            defaults.batch_hold == ls::GameConfDefaults::batchHold &&
             defaults.ultra_performance ==
                 ls::GameConfDefaults::ultraPerformance &&
             defaults.flow_scale == ls::GameConfDefaults::flowScale &&
@@ -333,6 +355,7 @@ int main() {
     testRetiredAdaptiveKeys(directory);
     testRetiredStableCadenceKey(directory);
     testLowLatencyKey(directory);
+    testBatchHoldKey(directory);
     testOptionalLosslessDll(directory);
     testRetiredPowerTables(directory);
     testRetiredCapLeadFrames(directory);

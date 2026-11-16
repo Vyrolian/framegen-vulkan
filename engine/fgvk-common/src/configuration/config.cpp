@@ -42,6 +42,7 @@ frame_generation_enabled = true
 swapchain_image_count_compatibility = false
 base_fps_cap = 0
 low_latency = true # release each capped frame just in time at the cap
+batch_hold = true # with low_latency, start each output batch about 2 ms after its frames are ready
 ultra_performance = false
 flow_scale = 0.85
 performance_mode = true
@@ -78,6 +79,7 @@ ConfigFile::ConfigFile() {
             GameConfDefaults::swapchainImageCountCompatibility,
         .base_fps_cap = GameConfDefaults::baseFpsCap,
         .low_latency = GameConfDefaults::lowLatency,
+        .batch_hold = GameConfDefaults::batchHold,
         .ultra_performance = GameConfDefaults::ultraPerformance,
         .flow_scale = 0.85F,
         .performance_mode = true,
@@ -192,6 +194,7 @@ namespace {
                 ),
             .base_fps_cap = tbl["base_fps_cap"].value_or(GameConfDefaults::baseFpsCap),
             .low_latency = tbl["low_latency"].value_or(GameConfDefaults::lowLatency),
+            .batch_hold = tbl["batch_hold"].value_or(GameConfDefaults::batchHold),
             .ultra_performance = tbl["ultra_performance"].value_or(
                 GameConfDefaults::ultraPerformance
             ),
@@ -234,6 +237,7 @@ namespace {
         );
         profile.insert("base_fps_cap", static_cast<int64_t>(conf.base_fps_cap));
         profile.insert("low_latency", conf.low_latency);
+        profile.insert("batch_hold", conf.batch_hold);
         profile.insert("ultra_performance", conf.ultra_performance);
         profile.insert("flow_scale", conf.flow_scale);
         profile.insert("performance_mode", conf.performance_mode);
@@ -277,6 +281,7 @@ namespace {
                 GameConfDefaults::swapchainImageCountCompatibility,
             .base_fps_cap = GameConfDefaults::baseFpsCap,
             .low_latency = GameConfDefaults::lowLatency,
+            .batch_hold = GameConfDefaults::batchHold,
             .ultra_performance = GameConfDefaults::ultraPerformance,
             .flow_scale = GameConfDefaults::flowScale,
             .performance_mode = GameConfDefaults::performanceMode,

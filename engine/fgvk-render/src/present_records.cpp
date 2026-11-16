@@ -707,8 +707,10 @@ void formatPacingWindowBody(const PacingWindowPayload& payload, const PacingProf
                     ? window.gpuPrevEndSumMs / static_cast<double>(window.gpuPrevEndCount) : 0.0)
              << " gpu_release=" << gpuMode;
         // just_in_time: whether released batches start at their own readiness in this window.
+        // batch_hold: the batch_hold setting (0 starts them at readiness, with no 2 ms hold).
         // batch_phase_hold_ms: the mean of their starts after readiness (BatchPhaseLock), zero with none.
         line << " just_in_time=" << (window.justInTime ? 1 : 0)
+             << " batch_hold=" << (window.batchHold ? 1 : 0)
              << " batch_phase_hold_ms=" << window.batchPhaseHold.mean();
     }
     const auto ms = [](Clock::duration duration) {

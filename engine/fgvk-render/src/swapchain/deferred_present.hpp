@@ -401,6 +401,9 @@ public:
         // quarter interval can hold it later (see run()). The chain floor from the previous batch's
         // planned phase is not applied.
         bool justInTime{};
+        // batch_hold: with justInTime, the phase lock adds its 2 ms margin. Off starts the batch at
+        // its readiness, with no lock; the quarter-interval guard still applies.
+        bool batchHold{true};
         Clock::duration outputInterval{};
         // GT1: the refresh period the cap uses, in nanoseconds (0 when unknown). The tick lock starts from it.
         int64_t refreshNs{};
@@ -1680,14 +1683,20 @@ private:
                         // (batch_phase.hpp). Only the quarter-interval guard after the previous real
                         // output's actual start can hold it later, and the lock then follows that start.
                         // batchShift below carries the start to the batch's later outputs.
+                        // batch_hold off: the start is the readiness itself, with no lock and no margin.
+                        // The lock stays reset, so a later batch_hold on starts from no phase.
                         auto start = readyAt;
                         if (ready.justInTime) {
-                            start = batchPhase.start(readyAt, ready.outputInterval * static_cast<int64_t>(limit));
+                            if (ready.batchHold) {
+                                start = batchPhase.start(readyAt, ready.outputInterval * static_cast<int64_t>(limit));
+                            } else {
+                                batchPhase.reset();
+                            }
                             if (havePrevious) {
                                 const auto guard = previousStarted + ready.outputInterval / 4;
                                 if (guard > start) {
                                     start = guard;
-                                    batchPhase.forceStart(start);
+                                    if (ready.batchHold) batchPhase.forceStart(start);
                                 }
                             }
                         }

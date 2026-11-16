@@ -159,7 +159,9 @@ bool Swapchain::beginDeferredPresentBatch(const vk::Vulkan& vk, const size_t lim
         .latestOutput = releasedOutputLimit.value_or(DiagnosticsClock::time_point::max()),
         .joinTolerance = releasedJoinTolerance,
         .expediteOnJoin = releasedOutputLimit.has_value(),
-        .overlap = overlap, .justInTime = justInTime, .outputInterval = outputInterval,
+        .overlap = overlap, .justInTime = justInTime,
+        // batch_hold is the live profile setting, read where the batch is admitted, as justInTime is.
+        .batchHold = this->profile.batch_hold, .outputInterval = outputInterval,
         // GT1: the refresh period the cap uses; the worker's tick lock starts from it. Variable refresh has no tick
         // grid, so it passes 0 and the lock never snaps.
         .refreshNs = this->applicationRefreshVariable ? 0 : refreshPeriodNs(this->applicationRefreshHz),

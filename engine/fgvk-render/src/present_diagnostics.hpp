@@ -290,6 +290,8 @@ namespace fgvk::layer::present_diagnostics {
             uint32_t lowLatencyKinds{};
             // Released batches start at their own readiness (the setting, as for low_latency).
             bool justInTime{};
+            // batch_hold: the profile's batch_hold setting at the window's latest present (1: the 2 ms hold).
+            bool batchHold{true};
             // L3: each just-in-time batch's start minus its readiness.
             Samples batchPhaseHold;
             // L5: the GPU release mode of the window's latest capped present, the hold its release
@@ -404,11 +406,12 @@ namespace fgvk::layer::present_diagnostics {
             window.configuredCapFps = configuredCap;
         }
         // One call per present; delay samples only the capped sources the setting governs.
-        void lowLatency(bool enabled, Clock::duration delay, uint32_t kinds, bool justInTime) {
+        void lowLatency(bool enabled, Clock::duration delay, uint32_t kinds, bool justInTime, bool batchHold) {
             window.lowLatency = enabled;
             if (enabled) window.lowLatencyExtra.add(delay);
             window.lowLatencyKinds = kinds;
             window.justInTime = justInTime;
+            window.batchHold = batchHold;
         }
         void phaseTiming(const std::array<Clock::duration, 9>& durations) {
             lastPhases = durations;

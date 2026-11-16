@@ -31,6 +31,9 @@ const REMOVE_GAP: f32 = 2.0;
 const NO_GAMES: &str = "No games yet. Add an executable name or pick a running program.";
 const LOW_LATENCY_TIP: &str =
     "starts the game's next frame just in time at the cap; off = up to three frames queued";
+const BATCH_HOLD_HINT: &str =
+    "Waits about 2 ms after frames are ready so GPU timing wobble does not show as uneven frames. \
+    Off: about 2 ms less latency, slightly less even. Only with Low latency on.";
 const MODES: [Mode; 5] = [
     Mode::Off,
     Mode::Fixed(2),
@@ -398,6 +401,7 @@ impl App {
         ui.add_space(6.0);
         self.fps_limit(ui, profile);
         self.low_latency(ui, profile);
+        self.batch_hold(ui, profile);
     }
 
     fn games(&mut self, ui: &mut Ui, profile: &Profile) {
@@ -555,6 +559,21 @@ impl App {
             let result = self.config.set_low_latency(&profile.key, on);
             self.report(result);
         }
+    }
+
+    /// Holds each output batch about 2 ms after its frames are ready. Only with Low latency on: off
+    /// keeps the value but greys the checkbox out. The explanation stays visible under it.
+    fn batch_hold(&mut self, ui: &mut Ui, profile: &Profile) {
+        let mut on = profile.batch_hold;
+        let response = ui.add_enabled(
+            profile.low_latency,
+            egui::Checkbox::new(&mut on, "Batch hold"),
+        );
+        if response.changed() {
+            let result = self.config.set_batch_hold(&profile.key, on);
+            self.report(result);
+        }
+        hint(ui, BATCH_HOLD_HINT);
     }
 
     fn fps_limit(&mut self, ui: &mut Ui, profile: &Profile) {
@@ -1099,6 +1118,7 @@ mod tests {
             base_fps_cap: 0,
             performance_mode: false,
             low_latency: true,
+            batch_hold: true,
         }
     }
 

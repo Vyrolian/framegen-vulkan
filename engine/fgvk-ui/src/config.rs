@@ -38,6 +38,7 @@ const DEFAULT_ALLOW_FP16: bool = true;
 const DEFAULT_PACING_CORRECTION: bool = true;
 const DEFAULT_PERFORMANCE_MODE: bool = false;
 const DEFAULT_LOW_LATENCY: bool = true;
+const DEFAULT_BATCH_HOLD: bool = true;
 
 /// Chooses the configuration path from an environment lookup.
 ///
@@ -123,6 +124,8 @@ pub struct Profile {
     pub performance_mode: bool,
     /// Release each capped frame just in time at its cap deadline. Off queues up to three frames.
     pub low_latency: bool,
+    /// With low latency, start each output batch about 2 ms after its frames are ready. Off starts it at readiness.
+    pub batch_hold: bool,
 }
 
 /// Typed snapshot of the parts of the file the window edits.
@@ -320,6 +323,12 @@ impl Config {
         })
     }
 
+    pub fn set_batch_hold(&mut self, key: &ProfileKey, value: bool) -> Result<(), String> {
+        self.edit_profile(key, |table| {
+            set_value(table, "batch_hold", Value::from(value));
+        })
+    }
+
     /// `None` removes the `dll` key. The `[global]` table is created only when a path is set.
     pub fn set_global_dll(&mut self, dll: Option<&str>) -> Result<(), String> {
         let dll = dll.map(str::trim).filter(|dll| !dll.is_empty());
@@ -489,6 +498,10 @@ fn read_profile(index: usize, table: &Table) -> Profile {
             .get("low_latency")
             .and_then(Item::as_bool)
             .unwrap_or(DEFAULT_LOW_LATENCY),
+        batch_hold: table
+            .get("batch_hold")
+            .and_then(Item::as_bool)
+            .unwrap_or(DEFAULT_BATCH_HOLD),
     }
 }
 
@@ -1034,6 +1047,38 @@ mod tests {
             .set_low_latency(&alpha, true)
             .expect("low latency on saves");
         assert!(ready(&config).profiles[0].low_latency);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn batch_hold_defaults_on_and_round_trips() {
+        let doc = parse("version = 2\n\n[[profile]]\nname = \"Bare\"\n");
+        assert!(
+            profiles(&doc).remove(0).batch_hold,
+            "missing key reads as on"
+        );
+        let doc = parse("version = 2\n\n[[profile]]\nname = \"Bare\"\nbatch_hold = 0\n");
+        assert!(
+            profiles(&doc).remove(0).batch_hold,
+            "non-boolean reads as on"
+        );
+
+        let dir = temp_dir("batch-hold");
+        let path = dir.join(FILE_NAME);
+        fs::write(&path, BASE).expect("write fixture");
+        let mut config = Config::open(Ok(path.clone()));
+        let alpha = key(0, "Alpha");
+        assert!(ready(&config).profiles[0].batch_hold);
+        config
+            .set_batch_hold(&alpha, false)
+            .expect("batch hold off saves");
+        assert!(!ready(&config).profiles[0].batch_hold);
+        let saved = fs::read_to_string(&path).expect("read saved file");
+        assert!(saved.contains("batch_hold = false"), "{saved}");
+        config
+            .set_batch_hold(&alpha, true)
+            .expect("batch hold on saves");
+        assert!(ready(&config).profiles[0].batch_hold);
         fs::remove_dir_all(&dir).ok();
     }
 

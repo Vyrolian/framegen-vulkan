@@ -735,6 +735,20 @@ int main() {
         expect(ls::GameConf{}.low_latency, "low_latency must default to on");
     }
 
+    {
+        // batch_hold is live too: a change alone applies without a transition, a restart or a recreation.
+        auto current = fixedProfile();
+        current.base_fps_cap = 60;
+        auto next = current;
+        next.batch_hold = false;
+        const auto plan = planProfileUpdate(current, next, 3, true);
+        expect(!plan.appliedProfile.batch_hold &&
+                plan.decision.action == ProfileUpdateAction::NoRuntimeChange &&
+                !plan.decision.swapchainRecreationDeferred && !plan.decision.processRestartDeferred,
+            "A batch_hold change must apply live without a recreation or restart");
+        expect(ls::GameConf{}.batch_hold, "batch_hold must default to on");
+    }
+
     std::cout << "profile update tests passed\n";
     return 0;
 }
