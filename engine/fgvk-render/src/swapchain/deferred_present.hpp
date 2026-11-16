@@ -8,6 +8,7 @@
 #include "swapchain/output_margin.hpp"
 #include "swapchain/present_marker.hpp"
 #include "swapchain/screen_samples.hpp"
+#include "swapchain/tick_lock.hpp"
 #include "swapchain/create_policy.hpp"
 #include "swapchain/retirement.hpp"
 #include "present_diagnostics.hpp"
@@ -328,6 +329,15 @@ public:
         // GP1, diagnostics only: the application's own present ID for a real (0 otherwise).
         uint64_t appPresentId{};
         double phase{};
+        // GT1: the tick snap of this output (its snapped deadline minus the deadline before the snap) and its
+        // target tick. Both are zero without the tick lock.
+        Clock::duration tickSnap{};
+        Clock::time_point targetTick{};
+        // GT1: the start in unsnapped time. The bookkeeping (BatchPhaseLock, W2, the chain) reads this, never
+        // the actual start, so the snap is a quantization only. Zero snap: the actual start.
+        [[nodiscard]] Clock::time_point startedUnsnapped() const { return started - tickSnap; }
+        // The start in unmoved time: the unsnapped start less the W2/OS1 correction.
+        [[nodiscard]] Clock::time_point unmovedStart() const { return started - tickSnap - offset; }
     };
     struct Completion : Call {
         uint64_t source{};
@@ -392,6 +402,8 @@ public:
         // planned phase is not applied.
         bool justInTime{};
         Clock::duration outputInterval{};
+        // GT1: the refresh period the cap uses, in nanoseconds (0 when unknown). The tick lock starts from it.
+        int64_t refreshNs{};
         // Diagnostics only: limiter arrival of the batch. Set only with the pacing profile.
         Clock::time_point arrival{};
         // Optional profiling only: observe existing final-copy completion
@@ -629,6 +641,11 @@ public:
     // first job is admitted, like setOnScreen.
     void setScreenSamples(std::shared_ptr<ScreenSampleRing> ring) {
         this->screenRing = std::move(ring);
+    }
+    // GT1: the gamescope tick lock of this swapchain (see tick_lock.hpp). Set once, before the first job is
+    // admitted, like setScreenSamples; with no screen samples the lock never snaps.
+    void setTickLock(const bool enabled) {
+        this->tickLockEnabled = enabled;
     }
     // Only fixed-size metadata is admitted. Copy every scalar before returning
     // to the application; unknown nodes and caller-owned result arrays stay
@@ -1029,6 +1046,10 @@ private:
     std::shared_ptr<ScreenSampleRing> screenRing;
     uint64_t screenCursor{};
     ScreenOffsetMode screenMode;
+    // GT1, worker thread only (like the controller): the gamescope tick grid and lead. tickLockEnabled is set once,
+    // before the first job is admitted (setTickLock).
+    bool tickLockEnabled{};
+    TickLock tickLock;
     // Caller holds queue->mutex, right after a worker present was marked. OS1: the screen samples of this
     // context are read first; while they drive the correction, the marker samples are drained and ignored.
     void observeOutputOffsetLocked(const uint64_t context) noexcept {
@@ -1064,7 +1085,11 @@ private:
             for (size_t i = 0; i < count; ++i) {
                 const ScreenSample& sample = samples[i];
                 if (sample.context != context) continue;
-                if (screenMode.sample(now)) outputOffsetController.forget();
+                if (screenMode.sample(now)) {
+                    outputOffsetController.forget();
+                    tickLock.resetOutputs();
+                }
+                if (tickLockEnabled) observeTickLockLocked(sample);
                 if (outputOffsetController.observe(sample.generated, sample.source,
                         std::chrono::nanoseconds{sample.screenNs})) {
                     realOffsetScreenSamples.fetch_add(1, std::memory_order_relaxed);
@@ -1075,10 +1100,25 @@ private:
             }
             if (count < samples.size()) break;
         }
-        if (screenMode.expire(now)) outputOffsetController.forget();
+        if (screenMode.expire(now)) {
+            outputOffsetController.forget();
+            tickLock.resetOutputs();
+        }
+        if (tickLockEnabled) {
+            tickLockOn.store(tickLock.gridValid(), std::memory_order_relaxed);
+            tickLockPeriodNs.store(tickLock.currentPeriod(), std::memory_order_relaxed);
+            tickLockLeadNs.store(tickLock.currentLead(), std::memory_order_relaxed);
+        }
         realOffsetScreen.store(screenMode.screen(), std::memory_order_relaxed);
         realOffsetScreenDropped.store(screenRing->dropped(), std::memory_order_relaxed);
         return screenMode.screen();
+    }
+    // GT1, caller holds queue->mutex: feeds one screen sample of this context to the tick grid and the lead, and counts
+    // what a snapped output's sample says. Worker thread only; the counts are relaxed atomics read by the summary.
+    void observeTickLockLocked(const ScreenSample& sample) noexcept {
+        const auto verdict = tickLock.observe(TickSample{sample.screenNs, sample.startedNs, sample.targetNs});
+        if (verdict == TickVerdict::miss) tickLockMisses.fetch_add(1, std::memory_order_relaxed);
+        else if (verdict == TickVerdict::early) tickLockEarly.fetch_add(1, std::memory_order_relaxed);
     }
     std::thread worker;
 
@@ -1167,11 +1207,13 @@ private:
     }
     // GP1, caller holds queue->mutex: a successful present with an on-screen lower ID records a
     // real's application ID for translation and pushes the ID to the watcher. Inactive: nothing.
+    // GT1: the watcher also gets the output's start and its target tick (zero when not snapped).
     void noteOnScreenLocked(const Job& job, const Readiness& ready, const uint64_t lowerId,
-            const VkResult result) noexcept {
+            const VkResult result, const Clock::time_point started, const Clock::time_point target) noexcept {
         if (!onScreenIds || !lowerId || result < 0) return;
         if (!job.generated) onScreenIds->record(applicationIdOf(job.metadata), lowerId);
-        onScreenWatch->push(lowerId, ready.context, ready.source, job.generated);
+        onScreenWatch->push(lowerId, ready.context, ready.source, job.generated,
+            steadyNanoseconds(target), steadyNanoseconds(started));
     }
 
     // One registry entry per live worker, shared by all of its identified batches.
@@ -1392,7 +1434,7 @@ private:
         result.finished = Clock::now();
         queue->markPresentLocked(ready.context, ready.source, result.feedback, job.generated);
         observeOutputOffsetLocked(ready.context);
-        if (onScreenIds) noteOnScreenLocked(job, ready, *onScreenId, result.result);
+        if (onScreenIds) noteOnScreenLocked(job, ready, *onScreenId, result.result, result.started, result.targetTick);
         // D7d: the lower present is noted with its source, only when history is set.
         if (queue->history)
             queue->noteLower(lowerOpPresentReal, job.swapchain, lowerIndex, result.result, ready.source,
@@ -1492,8 +1534,9 @@ private:
         VkResult readinessResult{VK_SUCCESS};
         Clock::duration workerWait{};
         Clock::time_point readinessStarted{}, readinessFinished{};
-        // Last output of the previous batch on this worker, for cross-batch spacing.
-        Clock::time_point previousStarted{}, previousFinished{}, previousScheduled{};
+        // Last output of the previous batch on this worker, for cross-batch spacing. previousStarted is the
+        // start in unsnapped time (GT1); previousActualStarted is the actual start, the floor of the tick snap.
+        Clock::time_point previousStarted{}, previousActualStarted{}, previousFinished{}, previousScheduled{};
         bool havePrevious{};
         uint32_t heldLowerImages{};
         Clock::time_point lastBatchFinished{};
@@ -1510,8 +1553,11 @@ private:
                     Clock::now() - lastBatchFinished > std::chrono::milliseconds{250})) {
                 outputOffsetController.forget();
                 batchPhase.reset();
+                tickLock.resetOutputs();
             }
             const auto ready = batch.readiness;
+            // GT1: a new refresh period starts the tick grid again (rule 6). Only the first output of a batch asks.
+            if (first && tickLockEnabled) tickLock.setRefresh(ready.refreshNs);
             const size_t limit = batch.limit;
             outputOffsetController.setExpected(limit > 1 ? static_cast<uint32_t>(limit - 1) : 1);
             const bool copyTail = index > 0 && batch.jobs[index - 1].copyActive &&
@@ -1519,7 +1565,7 @@ private:
             auto deadline = first ? current.deadline :
                 nextOutputDeadline(current.deadline + batchShift,
                     batch.jobs[index - 1].deadline + batchShift,
-                    batch.aggregate.calls[index - 1].started - batch.aggregate.calls[index - 1].offset);
+                    batch.aggregate.calls[index - 1].unmovedStart());
             // A just-in-time batch does not chain from the previous batch's planned phase (see the readiness below).
             if (first && havePrevious && ready.overlap && !ready.justInTime &&
                     ready.outputInterval > Clock::duration::zero() &&
@@ -1528,7 +1574,7 @@ private:
                     ready.outputInterval / 16);
             // The previous output's start in unmoved time: its own correction is taken back.
             const auto unmovedGeneratedStart = copyTail
-                ? batch.aggregate.calls[index - 1].started - batch.aggregate.calls[index - 1].offset
+                ? batch.aggregate.calls[index - 1].unmovedStart()
                 : Clock::time_point{};
             if (copyTail) {
                 // The real after a generated output keeps full spacing, but a release limit
@@ -1537,8 +1583,7 @@ private:
                 // up to a quarter output interval before the batch limit. FIFO still shows
                 // each image at least one refresh.
                 deadline = std::max(deadline,
-                    batch.aggregate.calls[index - 1].started - batch.aggregate.calls[index - 1].offset +
-                        ready.outputInterval);
+                    batch.aggregate.calls[index - 1].unmovedStart() + ready.outputInterval);
                 const auto limitTail = [&](const Clock::time_point at) {
                     return ready.latestOutput == Clock::time_point::max() ? at
                         : std::min(at, std::max(ready.latestOutput, unmovedGeneratedStart + ready.outputInterval / 4));
@@ -1562,7 +1607,7 @@ private:
             if (offsetOutput) commandedOffset = outputOffsetController.offset[index];
             if (offsetOutput && !offsetAfterReadiness) {
                 const bool hasPrevious = index > 0 || havePrevious;
-                const auto previousActual = index > 0 ? batch.aggregate.calls[index - 1].started : previousStarted;
+                const auto previousActual = index > 0 ? batch.aggregate.calls[index - 1].startedUnsnapped() : previousStarted;
                 const auto moved = hasPrevious
                     ? deadlineWithOffset(unmovedDeadline, previousActual, ready.outputInterval, commandedOffset)
                     : unmovedDeadline + commandedOffset;
@@ -1682,6 +1727,23 @@ private:
                     assert(heldLowerImages <= layerHeldLowerImages);
                 }
             }
+            // GT1, rule 4: the snapped deadline is the last rule before the sleep, after OS2 and the W2 move. The deadline
+            // before the snap stays the scheduled time and the bookkeeping reference (Call::unmovedStart). The floor is the
+            // batch's readyAt for its first output and the previous output's actual start plus P/2 for a later one.
+            const auto scheduledDeadline = deadline;
+            Clock::duration tickSnap{};
+            Clock::time_point targetTick{};
+            if (!readinessMiss && !prep.settled && tickLockEnabled && tickLock.snapping() &&
+                    scheduledDeadline != Clock::time_point::max()) {
+                const int64_t floorNs = first ? (ready.wait ? steadyNanoseconds(readyAt) : int64_t{0})
+                    : havePrevious ? steadyNanoseconds(previousActualStarted) + tickLock.currentPeriod() / 2
+                    : int64_t{0};
+                const auto slot = tickLock.snap(steadyNanoseconds(deadline), floorNs);
+                targetTick = Clock::time_point{std::chrono::nanoseconds{slot.target}};
+                deadline = Clock::time_point{std::chrono::nanoseconds{slot.deadline}};
+                tickSnap = deadline - scheduledDeadline;
+                tickLockSnapped.fetch_add(1, std::memory_order_relaxed);
+            }
             if (!readinessMiss && !prep.settled) {
                 const auto waitStarted = Clock::now();
                 if (ready.expediteOnJoin && !copyTail) {
@@ -1764,7 +1826,9 @@ private:
             result.readinessFinished = readinessFinished;
             result.readinessDeadline = ready.deadline;
             result.readinessResult = readinessResult;
-            result.scheduled = deadline;
+            result.scheduled = scheduledDeadline;
+            result.tickSnap = tickSnap;
+            result.targetTick = targetTick;
             result.swapchain = job.swapchain;
             result.generated = job.generated;
             result.appPresentId = job.generated ? 0 : applicationIdOf(metadata);
@@ -1930,7 +1994,8 @@ private:
                         result.finished = Clock::now();
                         queue->markPresentLocked(ready.context, ready.source, result.feedback, job.generated);
                         observeOutputOffsetLocked(ready.context);
-                        if (onScreenIds) noteOnScreenLocked(job, ready, onScreenLowerId, result.result);
+                        if (onScreenIds)
+                            noteOnScreenLocked(job, ready, onScreenLowerId, result.result, result.started, result.targetTick);
                         // D7d: the generated lower present, noted only with history.
                         if (queue->history)
                             queue->noteLower(lowerOpPresentGenerated, job.swapchain, job.image, result.result,
@@ -1954,7 +2019,8 @@ private:
             }
             // W2: a generated output that presented keeps the effective part of its own correction.
             if (offsetOutput && !result.skipped) {
-                result.offset = outputOffsetEffective(appliedOffset, unmovedReady, result.scheduled, result.started);
+                result.offset = outputOffsetEffective(appliedOffset, unmovedReady, result.scheduled,
+                    result.startedUnsnapped());
                 outputOffsetController.limited[index] = outputOffsetLimited(commandedOffset, result.offset);
             }
             // A prepared output follows F9b: its lower present is always issued,
@@ -1996,12 +2062,19 @@ private:
             if (batch.consumed == batch.produced) lastBatchFinished = Clock::now();
             // The worker is done with an internal real job; drop its owner reference.
             batch.jobs[index].internal = {};
+            // GT1: a skipped output presented nothing, so its tick snap is not a start: its bookkeeping stays as today.
+            if (result.skipped) {
+                result.tickSnap = {};
+                result.targetTick = {};
+            }
             if (!result.skipped) {
-                previousStarted = result.started;
+                // GT1: the bookkeeping starts are in unsnapped time; the tick floor reads the actual start.
+                previousStarted = result.startedUnsnapped();
+                previousActualStarted = result.started;
                 previousFinished = result.finished;
                 // An early (expedited) output anchors the next batch at its actual start; late wakes keep the schedule.
                 // W2: the anchor is in unmoved time, so a generated output's own correction is taken back.
-                previousScheduled = std::min(result.scheduled, result.started) - result.offset;
+                previousScheduled = std::min(result.scheduled, result.startedUnsnapped()) - result.offset;
                 havePrevious = true;
             }
             retireFinishedHeadsLocked();

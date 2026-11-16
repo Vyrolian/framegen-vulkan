@@ -131,3 +131,7 @@ Set `FGVK_ENV=1` to build one profile from environment variables instead of TOML
 ## Presentation acquisition timeout
 
 `FGVK_PRESENT_ACQUIRE_TIMEOUT_MS` limits how long framegen-vulkan waits for generated-image availability before native recovery. Constrained Fixed image pools enforce a 50 ms limit when no explicit value is set. For a focused stall reproduction, try `25` and include the log. See [presentation recovery](LIFECYCLE.md) for deadline and fallback rules.
+
+## Gamescope tick lock
+
+`FGVK_GAMESCOPE_TICK_LOCK=0` turns off the gamescope tick lock. The lock runs only inside Gamescope, when the screen source is the on-screen watcher and the automatic real offset is on. Any other value leaves it on, and the variable is read once per process. Under those conditions each generated output starts a lead before one of Gamescope's ticks, and no two consecutive outputs share a tick. Every other path schedules exactly as before, and the refresh and multiplier cap is unchanged. See the [diagnostics](COLLECT_DIAGNOSTICS.md#gamescope-tick-lock-gt1) for the `tick_*` fields.

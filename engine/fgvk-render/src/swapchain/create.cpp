@@ -310,12 +310,22 @@ void Swapchain::attachDeferredOnScreen() {
 }
 #endif
 
-void Swapchain::configureScreenCorrection(const bool watcherActive, const char* gateReason) {
+void Swapchain::configureScreenCorrection(const bool watcherActive, const char* gateReason,
+        const bool gamescopeSession) {
     const auto plan = screenCorrectionSource(realOffsetAuto(), onScreenCorrectionEnvironment(),
         watcherActive, gateReason, static_cast<bool>(this->info.waylandPresentation));
     this->screenSource = plan.source;
     std::clog << "framegen-vulkan: on-screen correction: source=" << screenSourceName(plan.source)
               << " reason=" << plan.reason << '\n';
+    // GT1: the tick lock needs the watcher's samples on a gamescope surface and is logged for gamescope only.
+    const auto tick = tickLockPlan(gamescopeTickLockEnvironment(), gamescopeSession,
+        plan.source == ScreenSource::Watcher, realOffsetAuto());
+    this->screenTickLock = tick.enabled;
+    if (gamescopeSession) {
+        std::clog << "framegen-vulkan: gamescope tick lock: state=" << (tick.enabled ? "on" : "off");
+        if (!tick.enabled) std::clog << " reason=" << tick.reason;
+        std::clog << '\n';
+    }
 }
 
 std::shared_ptr<ScreenSampleRing> Swapchain::screenRing() {
@@ -327,6 +337,7 @@ void Swapchain::attachScreenSamples() {
     if (this->screenSource == ScreenSource::None || !this->deferredPresent) return;
     const auto ring = this->screenRing();
     this->deferredPresent->setScreenSamples(ring);
+    this->deferredPresent->setTickLock(this->screenTickLock);
     if (this->screenSource == ScreenSource::Wayland && this->info.waylandPresentation)
         this->info.waylandPresentation->setScreenSink(ring);
 }

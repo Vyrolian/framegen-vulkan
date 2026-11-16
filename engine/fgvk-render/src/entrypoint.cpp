@@ -2071,6 +2071,8 @@ namespace {
 #if defined(VK_KHR_present_wait2) && defined(VK_KHR_present_id2)
             // OS1: the screen source of the automatic correction is chosen from the gate's result below.
             bool screenWatcher{};
+            // GT1: the gate's session is a gamescope session (the tick lock's session input).
+            bool screenGamescope{};
             const char* screenGateReason{"headers"};
             // GP1: the gamescope on-screen gate, decided once per lower swapchain from the application's own
             // create flags. Owned present timing already adds a VkPresentId2KHR node of its own, so that
@@ -2115,10 +2117,11 @@ namespace {
                 }
                 screenWatcher = gate.active;
                 screenGateReason = gate.reason;
+                screenGamescope = kind == OnScreenKind::Gamescope;
             }
 #endif
             if (auto* context = layer_info->root.findSwapchainContext(*swapchain))
-                context->configureScreenCorrection(screenWatcher, screenGateReason);
+                context->configureScreenCorrection(screenWatcher, screenGateReason, screenGamescope);
             installInternalSwapchainImages(it->second, *info, *swapchain,
                 swapchainInfo);
 

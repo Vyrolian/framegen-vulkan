@@ -17,12 +17,15 @@
 namespace fgvk::layer {
 
 // One output on screen: its batch's context and source, whether it was generated, and when it reached the
-// screen in steady-clock nanoseconds (the clock of the output records' started_ns).
+// screen in steady-clock nanoseconds (the clock of the output records' started_ns). GT1: startedNs is when its
+// lower present started, and targetNs its target tick (0 when it was not snapped). Only the watcher fills them.
 struct ScreenSample {
     uint64_t context{};
     uint64_t source{};
     bool generated{};
     int64_t screenNs{};
+    int64_t targetNs{};
+    int64_t startedNs{};
 };
 
 // Wayland timestamps on CLOCK_MONOTONIC share the steady clock's domain; no other clock gives a sample.

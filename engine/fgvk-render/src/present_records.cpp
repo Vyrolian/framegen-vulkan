@@ -9,6 +9,7 @@
 #include "library_pin.hpp"
 #include "swapchain/output_margin.hpp"
 #include "swapchain/release_gate.hpp"
+#include "swapchain/tick_lock.hpp"
 
 #include <algorithm>
 #include <array>
@@ -327,8 +328,10 @@ void appendPacingOutput(std::ostream& line, const uint64_t context, const VkSwap
          << " ready_ns=" << ns(observed.readyAt)
          << " slack_ns=" << std::chrono::duration_cast<std::chrono::nanoseconds>(observed.slack).count()
          << " offset_ns=" << std::chrono::duration_cast<std::chrono::nanoseconds>(observed.offset).count();
-    // GP1: the application's own ID, last so the fields above keep their positions.
-    line << " app_present_id=" << observed.appPresentId;
+    // GP1: the application's own ID. GT1: the tick snap and target tick, zero without the tick lock.
+    line << " app_present_id=" << observed.appPresentId
+         << " tick_snap_ns=" << std::chrono::duration_cast<std::chrono::nanoseconds>(observed.tickSnap).count()
+         << " target_tick_ns=" << ns(observed.targetTick);
     line << '\n';
 }
 
@@ -756,6 +759,14 @@ void formatPacingWindowBody(const PacingWindowPayload& payload, const PacingProf
     } else {
         line << " real_offset_us=0";
     }
+    // GT1: tick_lock=1 while the grid is valid on a gamescope surface; misses, early catches and snapped outputs
+    // count since the previous summary.
+    line << " tick_lock=" << (fgvk::layer::tickLockOn.load(std::memory_order_relaxed) ? 1 : 0)
+         << " tick_period_us=" << fgvk::layer::tickLockPeriodNs.load(std::memory_order_relaxed) / 1000
+         << " tick_lead_us=" << fgvk::layer::tickLockLeadNs.load(std::memory_order_relaxed) / 1000
+         << " tick_misses=" << fgvk::layer::tickLockMisses.exchange(0, std::memory_order_relaxed)
+         << " tick_early=" << fgvk::layer::tickLockEarly.exchange(0, std::memory_order_relaxed)
+         << " tick_snapped=" << fgvk::layer::tickLockSnapped.exchange(0, std::memory_order_relaxed);
     line << '\n';
     for (size_t i = 0; i < window.outputTraceCount; ++i) {
         const auto& sample = window.outputTrace[i];

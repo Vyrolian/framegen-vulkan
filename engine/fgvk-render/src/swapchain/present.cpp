@@ -23,6 +23,7 @@
 #include <cstdint>
 #include <exception>
 #include <iostream>
+#include <limits>
 #include <locale>
 #include <optional>
 #include <sstream>
@@ -491,6 +492,9 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
             timingResult = static_cast<int32_t>(timingQuery);
             timingDuration = timing.refreshDuration;
             timingInterval = timing.refreshInterval;
+            // GT1: an all-ones refresh interval is variable refresh (gamescope --adaptive-sync); the tick lock stays off.
+            this->applicationRefreshVariable = timingQuery == VK_SUCCESS &&
+                timing.refreshInterval == std::numeric_limits<uint64_t>::max();
             if (timingQuery == VK_SUCCESS) {
                 refreshHz = UncappedAutoCap::refreshHzFromTiming(timing.refreshDuration, timing.refreshInterval);
                 refreshSource = "application";

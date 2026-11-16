@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "swapchain/deferred_present.hpp"
 #include "swapchain/private_present_queue.hpp"
+#include "swapchain/tick_lock.hpp"
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -4056,6 +4057,165 @@ void skippedGeneratedCopySignalsItsFenceOnce() {
     copyAcquireResult = VK_SUCCESS;
 }
 
+namespace {
+// GT1 schedule simulation, in the worker's order (rule 4). The grid learns from each output's screen sample two outputs
+// after it started, as the watcher reports them, and an output snaps once the lock is snapping. The stream is a game
+// frame every 1/115 s: a real output opens the frame's batch, and a generated output follows half an interval later.
+// The real output's floor is its readiness, the generated output's the previous actual start plus P/2. Each start is
+// moved by up to 800 us and by up to 100 us of
+// wake time. The compositor latches an output on the first tick at or after its start plus 0.6 ms and up to 0.3 ms
+// more. The free-latch variant has no ticks at all (VRR-like), so its samples never fit a grid.
+constexpr int64_t gt1Grid = 1'000'000'000'000;
+constexpr int64_t gt1Period = 4'166'667; // 240 Hz, the refresh period the cap uses
+constexpr int64_t gt1Interval = 8'695'652; // 115 frames per second
+constexpr int64_t gt1Jitter = 800'000;
+constexpr int64_t gt1Wake = 100'000;
+constexpr int64_t gt1Latency = 600'000;
+constexpr int64_t gt1Ready = 2'000'000; // a frame's batch is ready this long before its real output
+constexpr int64_t gt1LatchSpan = 300'000;
+constexpr size_t gt1Lag = 2;
+
+uint64_t gt1Mix(uint64_t x) {
+    x ^= x >> 33;
+    x *= 0xff51afd7ed558ccdull;
+    x ^= x >> 33;
+    x *= 0xc4ceb9fe1a85ec53ull;
+    x ^= x >> 33;
+    return x;
+}
+// A deterministic value in [0, span) for output `index`; the salt separates the uses.
+int64_t gt1Spread(const size_t index, const uint64_t salt, const int64_t span) {
+    return static_cast<int64_t>(gt1Mix(index * 2654435761ull + salt) % static_cast<uint64_t>(span));
+}
+int64_t gt1Latch(const int64_t started, const size_t index) {
+    const int64_t ready = started + gt1Latency + gt1Spread(index, 77, gt1LatchSpan);
+    return gt1Grid + ceilDivide(ready - gt1Grid, gt1Period) * gt1Period;
+}
+
+struct GT1Output {
+    int64_t deadline{};
+    int64_t started{};
+    int64_t screen{};
+    int64_t target{};
+    bool snapped{};
+};
+struct GT1Stream {
+    std::vector<GT1Output> outputs;
+    size_t firstSnapped{};
+    size_t misses{};
+    size_t early{};
+    bool valid{};
+};
+
+// tickLock false is today's schedule. tickLatch false is the VRR-like latch.
+GT1Stream gt1Stream(const size_t count, const bool tickLock, const bool tickLatch) {
+    TickLock lock;
+    lock.setRefresh(gt1Period);
+    GT1Stream stream;
+    stream.outputs.reserve(count);
+    stream.firstSnapped = count;
+    int64_t previousStarted = 0;
+    for (size_t i = 0; i < count; ++i) {
+        if (tickLock && i >= gt1Lag) {
+            const GT1Output& seen = stream.outputs[i - gt1Lag];
+            const TickVerdict verdict = lock.observe(TickSample{seen.screen, seen.started, seen.target});
+            if (verdict == TickVerdict::miss) ++stream.misses;
+            else if (verdict == TickVerdict::early) ++stream.early;
+        }
+        const int64_t frame = gt1Grid + 5 * gt1Period + static_cast<int64_t>(i / 2) * gt1Interval +
+            (i % 2 ? gt1Interval / 2 : 0);
+        GT1Output out;
+        out.deadline = frame + gt1Spread(i, 11, gt1Jitter) - gt1Jitter / 2;
+        if (tickLock && lock.snapping()) {
+            // The batch's first output (the real one) floors at its readiness; a later output at the previous start + P/2.
+            const int64_t floorNs = i % 2 == 0 ? frame - gt1Ready : previousStarted + gt1Period / 2;
+            const TickSlot slot = lock.snap(out.deadline, floorNs);
+            out.deadline = slot.deadline;
+            out.target = slot.target;
+            out.snapped = true;
+            if (stream.firstSnapped == count) stream.firstSnapped = i;
+        }
+        out.started = out.deadline + gt1Spread(i, 23, gt1Wake);
+        out.screen = tickLatch ? gt1Latch(out.started, i) : out.started + gt1Latency + gt1Spread(i, 91, gt1Period);
+        previousStarted = out.started;
+        stream.outputs.push_back(out);
+    }
+    stream.valid = lock.gridValid();
+    return stream;
+}
+
+// Consecutive outputs from `from` on that were latched on the same tick.
+size_t gt1SameTickPairs(const GT1Stream& stream, const size_t from) {
+    size_t pairs = 0;
+    for (size_t i = from; i + 1 < stream.outputs.size(); ++i)
+        if (stream.outputs[i].screen == stream.outputs[i + 1].screen) ++pairs;
+    return pairs;
+}
+
+bool gt1SameSchedule(const GT1Stream& a, const GT1Stream& b) {
+    if (a.outputs.size() != b.outputs.size()) return false;
+    for (size_t i = 0; i < a.outputs.size(); ++i) {
+        const GT1Output& x = a.outputs[i];
+        const GT1Output& y = b.outputs[i];
+        if (x.deadline != y.deadline || x.started != y.started || x.screen != y.screen || x.target != y.target ||
+                x.snapped != y.snapped)
+            return false;
+    }
+    return true;
+}
+}
+
+// GT1 rule 4: once the lead is known, the gamescope-gated pair stream at 115 fps with a simulated latch has no
+// same-tick pair, and the same stream without the tick lock has some.
+void gamescopeTickLockRemovesSameTickPairs() {
+    constexpr size_t count = 1600;
+    const GT1Stream locked = gt1Stream(count, true, true);
+    const GT1Stream plain = gt1Stream(count, false, true);
+    expect(locked.firstSnapped < 300 && locked.valid, "the tick lock did not learn its grid and lead early");
+    expect(std::all_of(locked.outputs.begin() + static_cast<std::ptrdiff_t>(locked.firstSnapped), locked.outputs.end(),
+            [](const GT1Output& output) { return output.snapped; }),
+        "an output after the lead was known was not snapped");
+    expect(locked.misses == 0 && locked.early == 0, "a snapped output missed or caught an early tick");
+    expect(gt1SameTickPairs(locked, locked.firstSnapped) == 0, "the tick lock left same-tick pairs");
+    expect(gt1SameTickPairs(plain, locked.firstSnapped) > 0,
+        "the same stream without the tick lock has no same-tick pairs");
+}
+
+// GT1 rule 1: every non-gamescope gate leaves the tick lock off, and the schedule is exactly today's.
+void nonGamescopeGatesScheduleAsToday() {
+    constexpr size_t count = 400;
+    const GT1Stream today = gt1Stream(count, false, true);
+    expect(today.firstSnapped == count, "a stream without the tick lock snapped an output");
+    struct Gate {
+        bool environment;
+        bool gamescope;
+        bool watcher;
+        bool realOffset;
+    };
+    const std::array<Gate, 4> gates{{
+        {false, true, true, true},
+        {true, false, true, true},
+        {true, true, false, true},
+        {true, true, true, false},
+    }};
+    for (const Gate& gate : gates) {
+        const TickLockPlan plan = tickLockPlan(gate.environment, gate.gamescope, gate.watcher, gate.realOffset);
+        expect(!plan.enabled, "a non-gamescope gate enabled the tick lock");
+        const GT1Stream run = gt1Stream(count, plan.enabled, true);
+        expect(run.firstSnapped == count && gt1SameSchedule(run, today),
+            "a non-gamescope gate changed the schedule");
+    }
+}
+
+// GT1 zero snap: a stream whose samples never fit a tick snaps nothing, and its schedule is today's exactly.
+void zeroSnapIsIdentical() {
+    constexpr size_t count = 1600;
+    const GT1Stream today = gt1Stream(count, false, false);
+    const GT1Stream gated = gt1Stream(count, true, false);
+    expect(gated.firstSnapped == count && !gated.valid, "a stream off the tick grid snapped an output");
+    expect(gt1SameSchedule(gated, today), "a zero-snap tick lock changed the schedule");
+}
+
 int main([[maybe_unused]] int argc, [[maybe_unused]] char** argv) {
     generatedPreparedOrderAndBudget(); generatedPreparationFallbackAndGates();
     generatedChainOutputOffsetsMoveEachOutput();
@@ -4097,4 +4257,5 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char** argv) {
     // counts calls for the earlier lifecycle test.
     skippedInternalRealSignalsItsFenceOnce(); stoppedInternalRealSignalsItsFenceOnce();
     presentedJobsKeepTheirFenceForTheLowerPresent(); skippedGeneratedCopySignalsItsFenceOnce();
+    gamescopeTickLockRemovesSameTickPairs(); nonGamescopeGatesScheduleAsToday(); zeroSnapIsIdentical();
 }

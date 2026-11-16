@@ -56,7 +56,8 @@ void OnScreenWatch::run() {
         if (result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR) {
             sawSuccess.store(true, std::memory_order_release);
             // OS1: a completed wait is the output's screen sample, on the steady clock like started_ns.
-            observe(ScreenSample{entry.context, entry.source, entry.generated, nanoseconds(done)});
+            observe(ScreenSample{entry.context, entry.source, entry.generated, nanoseconds(done),
+                entry.targetNs, entry.startedNs});
         }
         emit(OnScreenRecord{entry.context, entry.lowerId, result, nanoseconds(entered), nanoseconds(done),
             droppedCount()});

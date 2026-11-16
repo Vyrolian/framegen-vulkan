@@ -291,7 +291,8 @@ if(BUILD_TESTING)
         fgvk-presentation-policy-tests presentation-policy)
 
     add_executable(fgvk-deferred-present-tests
-        "tests/deferred_present_tests.cpp" "src/present_diagnostics.cpp" ${PRESENT_RECORD_SOURCES})
+        "tests/deferred_present_tests.cpp" "src/present_diagnostics.cpp" "src/swapchain/onscreen_watch.cpp"
+        ${PRESENT_RECORD_SOURCES})
     target_include_directories(fgvk-deferred-present-tests PRIVATE "src")
     target_link_libraries(fgvk-deferred-present-tests PRIVATE ${CMAKE_DL_LIBS} Threads::Threads)
     target_include_directories(fgvk-deferred-present-tests PRIVATE "../fgvk-common/include")
@@ -327,6 +328,12 @@ if(BUILD_TESTING)
     target_link_libraries(fgvk-onscreen-profile-tests PRIVATE Threads::Threads)
     add_test(NAME onscreen-profile COMMAND fgvk-onscreen-profile-tests)
     fgvk_register_portable_policy_test(fgvk-onscreen-profile-tests onscreen-profile)
+
+    # GT1: the gamescope tick grid, the lead and the tick choice (pure; static_asserts and a runtime main).
+    add_executable(fgvk-tick-lock-tests "tests/tick_lock_tests.cpp")
+    target_include_directories(fgvk-tick-lock-tests PRIVATE "src")
+    add_test(NAME tick-lock COMMAND fgvk-tick-lock-tests)
+    fgvk_register_portable_policy_test(fgvk-tick-lock-tests tick-lock)
 
     # OS1: the screen sample ring, the producer mode and the source rule (pure).
     add_executable(fgvk-screen-samples-tests "tests/screen_samples_tests.cpp")

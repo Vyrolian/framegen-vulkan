@@ -193,6 +193,10 @@ namespace fgvk::layer::present_diagnostics {
             // GP1: the application's own present ID for a real output (0 otherwise). present_id above
             // is the lower ID the output was presented with.
             uint64_t appPresentId{};
+            // GT1: the tick snap (snapped deadline minus the deadline before the snap) and the target tick
+            // (zero when the output was not snapped).
+            Clock::duration tickSnap{};
+            Clock::time_point targetTick{};
         };
         struct OutputSample {
             size_t ordinal{};

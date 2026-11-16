@@ -266,7 +266,8 @@ namespace fgvk::layer {
 #endif
         /// OS1: decides which producer feeds this lower swapchain's automatic output correction and logs the
         /// decision, once per lower swapchain. `watcherActive` and `gateReason` are the GP1 gate's result.
-        void configureScreenCorrection(bool watcherActive, const char* gateReason);
+        /// GT1: `gamescopeSession` decides the gamescope tick lock with the same inputs (see tick_lock.hpp).
+        void configureScreenCorrection(bool watcherActive, const char* gateReason, bool gamescopeSession);
     private:
 #if defined(VK_KHR_present_wait2) && defined(VK_KHR_present_id2)
         /// GP1: gives the deferred worker the on-screen owner and watcher, when the gate is active.
@@ -529,6 +530,8 @@ namespace fgvk::layer {
         // True when the previous application present used an automatic cap value as baseFpsCap.
         bool uncappedAutoCapApplied{false};
         double applicationRefreshHz{0.0};
+        // GT1: the application timing query reported variable refresh (an all-ones refresh interval).
+        bool applicationRefreshVariable{false};
         // X5: refresh of the monitor under an X11 surface. A detached query started at creation fills
         // the cell (x11_refresh.hpp). The present path reads it only when owned and application timing
         // gave no rate. Null for other surfaces.
@@ -666,6 +669,8 @@ namespace fgvk::layer {
         // Declared before onScreen and deferredPresent, so both producers and the worker are gone before it.
         std::shared_ptr<ScreenSampleRing> screenSamples;
         ScreenSource screenSource{ScreenSource::None};
+        // GT1: the gamescope tick lock of this lower swapchain, decided with screenSource (see configureScreenCorrection).
+        bool screenTickLock{};
         // GP1: the on-screen profile of this lower swapchain, when its gate is active. Declared before
         // deferredPresent, so the worker is joined before the owner and watcher are destroyed.
         std::unique_ptr<OnScreenProfile> onScreen;

@@ -45,9 +45,10 @@ VkResult Swapchain::completeDeferredPresent(const uint64_t timeoutNs, const bool
     if (!first) return timeoutNs == 0 ? VK_NOT_READY : VK_TIMEOUT;
     const auto report = [this](const DeferredPresent::Completion& completion) {
         if (completion.result == VK_SUCCESS && completion.count && !completion.readinessMiss)
-            // A just-in-time batch's readiness shift is not carried into the planned phase.
+            // A just-in-time batch's readiness shift is not carried into the planned phase. GT1: the start is in
+            // unsnapped time, like every other planned phase.
             this->realFramePacer.completeOutputBatch(
-                completion.calls[completion.count - 1].started - completion.calls[completion.count - 1].offset,
+                completion.calls[completion.count - 1].unmovedStart(),
                 completion.justInTime ? DiagnosticsClock::duration{} : completion.readinessShift);
         else if (completion.readinessMiss)
             this->realFramePacer.resetOutputs();
@@ -119,6 +120,7 @@ VkResult Swapchain::completeDeferredPresent(const uint64_t timeoutNs, const bool
                     .readyAt = i == 0 ? completion.readyAt : DiagnosticsClock::time_point{},
                     .slack = i == 0 ? completion.slack : DiagnosticsClock::duration{},
                     .offset = call.offset, .appPresentId = call.appPresentId,
+                    .tickSnap = call.tickSnap, .targetTick = call.targetTick,
                 });
                 present_diagnostics::logPacingOutput(this->diagnosticsState.contextId, call.swapchain, sample);
             }
@@ -158,6 +160,9 @@ bool Swapchain::beginDeferredPresentBatch(const vk::Vulkan& vk, const size_t lim
         .joinTolerance = releasedJoinTolerance,
         .expediteOnJoin = releasedOutputLimit.has_value(),
         .overlap = overlap, .justInTime = justInTime, .outputInterval = outputInterval,
+        // GT1: the refresh period the cap uses; the worker's tick lock starts from it. Variable refresh has no tick
+        // grid, so it passes 0 and the lock never snaps.
+        .refreshNs = this->applicationRefreshVariable ? 0 : refreshPeriodNs(this->applicationRefreshHz),
         // Diagnostics only: the arrival is observed when the pacing profile is enabled.
         .arrival = this->pacingProfile ? arrival : DiagnosticsClock::time_point{},
         .copyFence = this->pacingProfile && present_diagnostics::pacingGpuProfileEnabled() && !this->renderSlots.empty()
@@ -460,12 +465,17 @@ VkResult Swapchain::queuePresentWithRetirementFence(
             return observedPresent(queue, info);
         };
         const auto submit = [&]() -> VkResult {
+#if defined(VK_KHR_present_id2)
+            // GT1: the start of this lower present, for its screen sample. Read only with the on-screen gate.
+            const int64_t startedNs = this->onScreen ? steadyNanoseconds(DiagnosticsClock::now()) : 0;
+#endif
             const VkResult presented = submitPresent();
 #if defined(VK_KHR_present_id2)
             if (presented >= 0 && this->onScreen && onScreenLowerId) {
                 this->onScreen->lowerIds().record(applicationId, onScreenLowerId);
+                // Synchronous outputs are never snapped: their target tick is zero.
                 this->onScreen->watch().push(onScreenLowerId, this->diagnosticsState.contextId,
-                    this->sourceSerial, observation.generated);
+                    this->sourceSerial, observation.generated, 0, startedNs);
             }
 #endif
             return presented;

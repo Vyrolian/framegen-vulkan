@@ -71,9 +71,10 @@ public:
 
     // Worker push: O(1), never waits for the thread, never allocates. A full ring drops the entry
     // and counts it. Nothing is queued once stop() or an error has ended the waits. `source` and
-    // `generated` identify the output for the screen sample (OS1).
+    // `generated` identify the output for the screen sample (OS1). GT1: `targetNs` is the output's
+    // target tick (0 when not snapped) and `startedNs` its lower present's start, both carried to the sample.
     void push(const uint64_t lowerId, const uint64_t context, const uint64_t source,
-            const bool generated) noexcept {
+            const bool generated, const int64_t targetNs = 0, const int64_t startedNs = 0) noexcept {
         {
             const std::lock_guard lock(mutex);
             if (stopping || dead) return;
@@ -81,7 +82,7 @@ public:
                 ++dropped;
                 return;
             }
-            ring[(head + count) % capacity] = Entry{lowerId, context, source, generated};
+            ring[(head + count) % capacity] = Entry{lowerId, context, source, generated, targetNs, startedNs};
             ++count;
         }
         changed.notify_one();
@@ -106,6 +107,8 @@ private:
         uint64_t context{};
         uint64_t source{};
         bool generated{};
+        int64_t targetNs{};
+        int64_t startedNs{};
     };
     void run();
     std::atomic_bool sawSuccess{false};

@@ -19,8 +19,9 @@ using Clock = std::chrono::steady_clock;
 // Records carry steady-clock nanoseconds; the writer converts them exactly as the text always did.
 static_assert(std::is_same_v<Clock::duration, std::chrono::nanoseconds>);
 
-/// The fixed payload bound of one record. Larger observations go through a window slot.
-inline constexpr size_t payloadCapacity = 256;
+/// The fixed payload bound of one record. Larger observations go through a window slot. GT1 grew the pacing output
+/// sample by two 8-byte fields (tick_snap_ns, target_tick_ns) past 256; the queue exists only in a profiled process.
+inline constexpr size_t payloadCapacity = 288;
 
 /// Every record kind the writer formats. Kinds are stable names inside the process only.
 enum class RecordKind : uint16_t {
