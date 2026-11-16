@@ -3795,6 +3795,41 @@ void justInTimeBatchHoldOffStartsAtReadiness() {
     expect(off.second->calls[1].started >= off.second->calls[0].started + interval - 1ms,
         "batch hold off lost its spacing from its first output");
 }
+// BH2 (batch_hold, low_latency off): a batch that is not just in time takes the same phase-locked hold. Batch B is
+// ready 26 ms after the start, and its lock starts it 2 ms later. The chained floor (27.5 ms here) is 0.5 ms earlier,
+// so the hold sets the start, and the batch starts at its readiness plus the recorded hold.
+void chainedBatchHoldStartsAfterReadiness() {
+    const auto interval = 8ms;
+    const auto on = releasedPair(false, 26ms, std::nullopt, true);
+    expect(releasedPairCompleted(on), "low-latency-off batch hold pair did not complete");
+    expect(on.second->batchPhaseHold > 1ms && on.second->batchPhaseHold < 3ms,
+        "batch hold on did not hold a batch that is not just in time about 2 ms after its readiness");
+    expect(on.second->calls[0].scheduled == on.second->readyAt + on.second->batchPhaseHold,
+        "batch hold on did not start a batch that is not just in time at its readiness plus the hold");
+    expect(on.second->calls[1].started >= on.second->calls[0].started + interval - 1ms,
+        "batch hold on lost the spacing of a batch that is not just in time");
+}
+// BH2: the same batch shape with the hold off, ready 30 ms after the start (after the chained floor): it starts at its
+// readiness, with no lock and no margin.
+void chainedBatchHoldOffStartsAtReadiness() {
+    const auto off = releasedPair(false, 30ms, std::nullopt, false);
+    expect(releasedPairCompleted(off), "low-latency-off batch hold off pair did not complete");
+    expect(off.second->batchPhaseHold == 0ns,
+        "batch hold off still held a batch that is not just in time after its readiness");
+    expect(off.second->calls[0].scheduled == off.second->readyAt,
+        "batch hold off did not start a batch that is not just in time at its readiness");
+}
+// BH2: a batch ready 20 ms after the start has its schedule (the chained floor) well after its readiness plus the
+// hold, so the hold does not move it: it starts at the schedule with the hold on and with it off.
+void chainedBatchHoldKeepsItsSchedule() {
+    const auto interval = 8ms;
+    for (const bool batchHold : {true, false}) {
+        const auto pair = releasedPair(false, 20ms, std::nullopt, batchHold);
+        expect(releasedPairCompleted(pair), "low-latency-off batch schedule pair did not complete");
+        expect(pair.second->calls[0].scheduled == chainedFloorAfter(*pair.first, interval),
+            "a batch ready well before its schedule was moved off its schedule by the batch hold");
+    }
+}
 // OS2: a just-in-time batch's first generated output takes its automatic correction after the batch's readiness
 // start (readyAt plus the phase-locked hold, 2 ms here). The start replaces the unmoved deadline, so a correction
 // taken before it was lost. The real after the output keeps its unmoved spacing in every run.
@@ -4256,6 +4291,7 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char** argv) {
     overlappedChainShiftsLaterOutputs(); expeditedOutputAnchorsNextBatch();
     justInTimeBatchStartsAtItsReadiness(); justInTimeBatchKeepsQuarterIntervalAfterPreviousReal();
     justInTimeBatchHoldOffStartsAtReadiness();
+    chainedBatchHoldStartsAfterReadiness(); chainedBatchHoldOffStartsAtReadiness(); chainedBatchHoldKeepsItsSchedule();
     offsetAppliesAfterReadinessStart(); chainedPairOffsetsFromItsUnmovedStart();
     generatedCopyPresentsAcquiredImage(); generatedCopySkipsWithoutImage(); generatedCopySkipsOutOfRangeImage();
     generatedCopyNeedsOpenBatch(); generatedCopyChainWaitsPreceding(); generatedCopyChainSkipWaitsPreceding();

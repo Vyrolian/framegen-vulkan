@@ -33,7 +33,7 @@ const LOW_LATENCY_TIP: &str =
     "starts the game's next frame just in time at the cap; off = up to three frames queued";
 const BATCH_HOLD_HINT: &str =
     "Waits about 2 ms after frames are ready so GPU timing wobble does not show as uneven frames. \
-    Off: about 2 ms less latency, slightly less even. Only with Low latency on.";
+    Off: up to about 2 ms less latency, slightly less even.";
 const MODES: [Mode; 5] = [
     Mode::Off,
     Mode::Fixed(2),
@@ -561,15 +561,11 @@ impl App {
         }
     }
 
-    /// Holds each output batch about 2 ms after its frames are ready. Only with Low latency on: off
-    /// keeps the value but greys the checkbox out. The explanation stays visible under it.
+    /// Holds each output batch about 2 ms after its frames are ready, with Low latency on or off.
+    /// The explanation stays visible under it.
     fn batch_hold(&mut self, ui: &mut Ui, profile: &Profile) {
         let mut on = profile.batch_hold;
-        let response = ui.add_enabled(
-            profile.low_latency,
-            egui::Checkbox::new(&mut on, "Batch hold"),
-        );
-        if response.changed() {
+        if ui.checkbox(&mut on, "Batch hold").changed() {
             let result = self.config.set_batch_hold(&profile.key, on);
             self.report(result);
         }

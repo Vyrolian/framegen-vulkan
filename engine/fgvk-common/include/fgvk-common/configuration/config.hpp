@@ -83,8 +83,8 @@ namespace ls {
         /// release each capped frame just in time at its cap deadline instead of letting the game
         /// queue frames ahead; off keeps the release at the deadline (swapchain/low_latency.hpp)
         bool low_latency{GameConfDefaults::lowLatency};
-        /// with low_latency, start each released output batch about 2 ms after its frames are ready,
-        /// phase-locked to the batch cadence; off starts it at readiness (swapchain/batch_phase.hpp)
+        /// start each released output batch about 2 ms after its frames are ready, phase-locked to the
+        /// batch cadence, with low_latency on or off; off starts it at readiness (swapchain/batch_phase.hpp)
         bool batch_hold{GameConfDefaults::batchHold};
         /// trade live profile reloads for the lowest supported resource cost
         bool ultra_performance{GameConfDefaults::ultraPerformance};

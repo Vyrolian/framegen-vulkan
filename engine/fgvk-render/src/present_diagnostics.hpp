@@ -292,7 +292,7 @@ namespace fgvk::layer::present_diagnostics {
             bool justInTime{};
             // batch_hold: the profile's batch_hold setting at the window's latest present (1: the 2 ms hold).
             bool batchHold{true};
-            // L3: each just-in-time batch's start minus its readiness.
+            // L3, BH2: each held batch's start minus its readiness.
             Samples batchPhaseHold;
             // L5: the GPU release mode of the window's latest capped present, the hold its release
             // token carried when a predicted release was armed (or the stepping hold), and the sum
@@ -436,7 +436,7 @@ namespace fgvk::layer::present_diagnostics {
             window.gpuPrevEndSumMs += std::chrono::duration<double, std::milli>(lead).count();
             ++window.gpuPrevEndCount;
         }
-        // L3: one just-in-time batch that became ready, and how far its phase-locked start came after that.
+        // L3, BH2: one held batch that became ready, and how far its phase-locked start came after that.
         void justInTimeBatch(Clock::duration hold) { window.batchPhaseHold.add(hold); }
         void generatedSkipped(GeneratedSkip kind) { ++window.generatedSkips[kind]; }
         void lateReadinessBatch() { ++window.lateReadinessBatches; }

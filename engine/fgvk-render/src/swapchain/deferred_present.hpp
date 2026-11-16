@@ -352,8 +352,10 @@ public:
         // The batch started at its own readiness (Readiness::justInTime). Its readiness shift is
         // not carried into the planned phase of the next batch.
         bool justInTime{};
+        // BH2: the batch took the phase-locked hold (Readiness::batchHold), just in time or not.
+        bool held{};
         // Diagnostics only: the batch's start minus its readiness, from the phase lock. Zero for
-        // a batch that did not start just in time and for a readiness miss.
+        // a batch that took no hold and for a readiness miss.
         Clock::duration batchPhaseHold{};
         // Presented generated outputs whose following real output in the same batch
         // started less than outputInterval/2 after the generated start.
@@ -401,8 +403,8 @@ public:
         // quarter interval can hold it later (see run()). The chain floor from the previous batch's
         // planned phase is not applied.
         bool justInTime{};
-        // batch_hold: with justInTime, the phase lock adds its 2 ms margin. Off starts the batch at
-        // its readiness, with no lock; the quarter-interval guard still applies.
+        // batch_hold: the phase lock adds its 2 ms margin to the batch's start, just in time or not. Off starts
+        // the batch at its readiness, with no lock; a just-in-time batch keeps the quarter-interval guard.
         bool batchHold{true};
         Clock::duration outputInterval{};
         // GT1: the refresh period the cap uses, in nanoseconds (0 when unknown). The tick lock starts from it.
@@ -1041,8 +1043,11 @@ private:
     // W2, FGVK_REAL_OFFSET_US=auto: worker thread only; the cursor is used under queue->mutex.
     OutputOffsetController outputOffsetController;
     // L3, low_latency: worker thread only, like outputOffsetController. The phase of consecutive
-    // just-in-time batches.
+    // batches that take the hold (BH2: just in time or not, with batch_hold on).
     BatchPhaseLock batchPhase;
+    // BH2, worker thread only: whether the batch that last reached batchPhase was just in time.
+    // A change between just in time and not starts the next batch from no phase.
+    bool batchPhaseJustInTime{};
     uint64_t markerCursor{};
     // OS1, worker thread only (with outputOffsetController): the screen ring and its cursor, and the
     // producer mode of this context's correction.
@@ -1526,8 +1531,10 @@ private:
         Clock::duration readinessShift{};
         Clock::time_point readyAt{};
         Clock::duration slack{};
-        // L3: a just-in-time batch's start minus readyAt (diagnostics only).
+        // L3: a held batch's start minus readyAt (diagnostics only).
         Clock::duration batchPhaseHold{};
+        // BH2: the first output's readiness block took the phase-locked hold.
+        bool batchHeld{};
         // Shift from the batch's first output to its final deadline. Later
         // outputs of the same batch keep their requested spacing from it.
         Clock::duration batchShift{};
@@ -1629,8 +1636,12 @@ private:
                 readyAt = {};
                 slack = {};
                 batchPhaseHold = {};
-                // L3: only consecutive just-in-time batches share a phase.
-                if (!ready.justInTime) batchPhase.reset();
+                batchHeld = false;
+                // L3, BH2: a batch that takes no hold, or whose just-in-time mode differs from the previous batch's,
+                // starts from no phase.
+                if ((!ready.justInTime && !ready.batchHold) || ready.justInTime != batchPhaseJustInTime)
+                    batchPhase.reset();
+                batchPhaseJustInTime = ready.justInTime;
                 if (!ready.overlap) {
                     outputOffsetController.forget();
                 }
@@ -1682,6 +1693,8 @@ private:
                         // L3: a just-in-time batch starts at its phase-locked time after its readiness
                         // (batch_phase.hpp). Only the quarter-interval guard after the previous real
                         // output's actual start can hold it later, and the lock then follows that start.
+                        // BH2: a batch that is not just in time takes the same phase-locked start with batch_hold on,
+                        // and no guard (the schedule spaces those). Its scheduled deadline below can hold it later.
                         // batchShift below carries the start to the batch's later outputs.
                         // batch_hold off: the start is the readiness itself, with no lock and no margin.
                         // The lock stays reset, so a later batch_hold on starts from no phase.
@@ -1699,11 +1712,19 @@ private:
                                     if (ready.batchHold) batchPhase.forceStart(start);
                                 }
                             }
+                        } else if (ready.batchHold) {
+                            start = batchPhase.start(readyAt, ready.outputInterval * static_cast<int64_t>(limit));
                         }
+                        batchHeld = ready.batchHold;
                         batchPhaseHold = start - readyAt;
                         readinessShift = std::max(Clock::duration{}, start - unmovedReady);
                         unmovedReady += readinessShift;
                         deadline = std::max(deadline, start);
+                        // BH2: a held batch that is not just in time starts at the later of its schedule and the
+                        // lock. When the schedule is later, the lock follows it, as the guard does. Never the unset maximum.
+                        if (!ready.justInTime && ready.batchHold && deadline > start &&
+                                deadline != Clock::time_point::max())
+                            batchPhase.forceStart(deadline);
                         if (offsetAfterReadiness) {
                             // OS2: the correction moves the readiness start, never before readyAt. Its
                             // effective part is measured from unmovedReady (rule 3 below).
@@ -2056,6 +2077,7 @@ private:
             batch.aggregate.source = ready.source;
             batch.aggregate.outputInterval = ready.outputInterval;
             batch.aggregate.justInTime = ready.justInTime;
+            batch.aggregate.held = batchHeld;
             batch.aggregate.batchPhaseHold = batchPhaseHold;
             batch.aggregate.readinessShift = readinessShift;
             batch.aggregate.readyAt = readyAt;
