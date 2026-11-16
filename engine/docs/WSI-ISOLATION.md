@@ -17,7 +17,7 @@ The WSI completion-pacing exclusion is decided from the application's device-cre
 Standalone `fgvk` establishes the normal boundary before `vkCreateInstance`:
 
 ```text
-VK_IMPLICIT_LAYER_PATH=<private framegen-vulkan manifest directory>[:<gamescope WSI link directory>]
+VK_IMPLICIT_LAYER_PATH=<private framegen-vulkan manifest directory>
 VK_ADD_IMPLICIT_LAYER_PATH unset
 ENABLE_FGVK=1
 DISABLE_LSFG=1
@@ -26,7 +26,7 @@ DISABLE_LSFGVK=1
 
 The host manifest directory is `<prefix>/share/framegen-vulkan/vulkan/implicit_layer.d`. Published host packages contain 64-bit and 32-bit framegen-vulkan manifests. A prepared Flatpak uses the matching framegen-vulkan runtime extension and bounded application overrides rather than the host launcher.
 
-In a gamescope session, the launcher also names one directory after the private directory: `$XDG_DATA_HOME/framegen-vulkan/gamescope-wsi/implicit_layer.d` (default `~/.local/share`). It holds a symlink to each gamescope WSI manifest (`VkLayer_FROG_gamescope_wsi*.json`) that the loader's standard directories provide; a link whose manifest is no longer found is removed. Steam's pressure-vessel imports only directory entries, so the layer reaches Steam games through this directory and not through manifest file names. Gamescope sets `ENABLE_GAMESCOPE_WSI=1` for its children; `DISABLE_GAMESCOPE_WSI=1` skips the layer. `VK_IMPLICIT_LAYER_PATH` replaces the loader's standard directories, so the layer is found only through this directory. The loader calls implicit layers in list order: game, framegen-vulkan, gamescope WSI layer, then the driver (checked with `VK_LOADER_DEBUG=layer` on loader 1.4.363). The launcher admits no other system implicit layer.
+In a gamescope session, the launcher also links the gamescope WSI manifests (`VkLayer_FROG_gamescope_wsi*.json`) that the loader's standard directories provide into `$XDG_DATA_HOME/framegen-vulkan/gamescope-wsi/explicit_layer.d` (default `~/.local/share`), prepends that directory to `VK_LAYER_PATH`, and names each layer in `VK_INSTANCE_LAYERS` right after `VK_LAYER_FGVK_render` (first when framegen-vulkan is implicit). A link whose manifest is no longer found is removed, and the H2c `gamescope-wsi/implicit_layer.d` directory is removed when nothing else is in it. Steam's pressure-vessel imports only directory entries, so the layer reaches Steam games through this directory and not through manifest file names. `VK_IMPLICIT_LAYER_PATH` replaces the loader's standard implicit directories, so the layer is not found through them. Gamescope sets `ENABLE_GAMESCOPE_WSI=1` for its children; `DISABLE_GAMESCOPE_WSI=1` skips the layer. The loader loads a layer named in `VK_INSTANCE_LAYERS` even when `ENABLE_GAMESCOPE_WSI` is unset, so the launcher's own gate decides whether the layer is named. Setting `VK_LAYER_PATH` replaces the loader's default explicit-layer directories, so in a gamescope session a system explicit layer such as the Khronos validation layer is not found by name; this is a known gap, and the Steam overlay branch already has it. The launcher admits no other system layer. Checked on the host with `VK_LOADER_DEBUG=layer vulkaninfo --summary` on loader 1.4.363, with the Steam overlay off, the Steam overlay on and MangoHud requested: application → framegen-vulkan → gamescope WSI layer → driver, with the MangoHud or overlay layer placed where the launcher names it.
 
 The private path prevents inherited implicit layers from joining accidentally. Known competing frame-generation layers are disabled explicitly. Layer membership cannot be repaired after Vulkan starts, so launchers, manifests, packages, and Flatpak setup all enforce the same contract.
 
@@ -178,7 +178,7 @@ Do not claim general multi-instance, multi-queue, or multi-swapchain-batch suppo
 | --- | --- |
 | framegen-vulkan render role | Admitted and gated by `ENABLE_FGVK=1` |
 | Gamescope sessions | Experimental, on by default: the launcher and the layer run; `FGVK_GAMESCOPE=0` makes both stay inactive |
-| Gamescope WSI layer | Kept in gamescope sessions by linking its manifests into one directory named in `VK_IMPLICIT_LAYER_PATH`; `DISABLE_GAMESCOPE_WSI=1` skips it |
+| Gamescope WSI layer | Kept in gamescope sessions as an explicit layer named in `VK_INSTANCE_LAYERS` right after framegen-vulkan, with its manifest links in the directory `VK_LAYER_PATH` names; `DISABLE_GAMESCOPE_WSI=1` skips it |
 | Known competing Frame Generation layers | Disabled |
 | System implicit overlays, capture, Mesa helpers, and vendor layers | Excluded unless a named guarded exception stages an exact manifest |
 | Explicit application layers | Outside this implicit-discovery policy |

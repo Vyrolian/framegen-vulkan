@@ -151,10 +151,13 @@ PYTHON
 
 # Gamescope's WSI layer is an implicit layer that the loader finds in the standard
 # XDG and system manifest directories. VK_IMPLICIT_LAYER_PATH replaces those
-# directories, so the launcher links the matching manifests into one directory and
-# names that directory (fgvk_gamescope_wsi_stage). Only VkLayer_FROG_gamescope_wsi*.json
-# is admitted, in the loader's search order, and the first directory that holds a
-# filename wins for that filename. Relative and empty XDG entries are ignored.
+# directories, so the launcher links the matching manifests into one directory
+# (fgvk_gamescope_wsi_stage), names that directory in VK_LAYER_PATH and names each
+# layer in VK_INSTANCE_LAYERS, so the layer loads as an explicit layer below
+# framegen-vulkan. Only VkLayer_FROG_gamescope_wsi*.json is admitted, in the loader's
+# search order, and the first directory that holds a filename wins for that filename.
+# A manifest without a VK_LAYER_ name is skipped, so a later copy of the same filename
+# can still be found. Relative and empty XDG entries are ignored.
 fgvk_gamescope_wsi_manifests() {
     local -a bases=() roots=()
     local base manifest name
@@ -183,17 +186,54 @@ fgvk_gamescope_wsi_manifests() {
             if [[ -n "${seen[$name]:-}" ]]; then
                 continue
             fi
+            if [[ -z "$(fgvk_gamescope_wsi_layer_name "$manifest")" ]]; then
+                continue
+            fi
             seen[$name]=1
             printf '%s\n' "$manifest"
         done
     done
 }
 
+# Prints the VK_LAYER_ name of one gamescope WSI manifest, or nothing when it has none.
+# The name is the layer object's "name" key, read with bash alone because python3 is not
+# guaranteed. Manifests over 64 KiB are treated as unnamed.
+fgvk_gamescope_wsi_layer_name() {
+    local manifest="$1" size content
+    local pattern='"name"[[:space:]]*:[[:space:]]*"(VK_LAYER_[A-Za-z0-9_]+)"'
+    size="$(stat -L -c %s -- "$manifest" 2> /dev/null)" || return 0
+    if ((size > 65536)); then
+        return 0
+    fi
+    IFS= read -r -d '' content 2> /dev/null < "$manifest" || true
+    if [[ "$content" =~ $pattern ]]; then
+        printf '%s\n' "${BASH_REMATCH[1]}"
+    fi
+    return 0
+}
+
+# H2c staged its links in gamescope-wsi/implicit_layer.d, which the loader no longer
+# searches. This removes the gamescope WSI links there and the directory itself when
+# nothing else remains in it. Other files are left alone, and nothing is removed
+# recursively.
+fgvk_gamescope_wsi_retire() {
+    local directory="$1" entry
+    if [[ -L "$directory" || ! -d "$directory" ]]; then
+        return 0
+    fi
+    for entry in "$directory"/VkLayer_FROG_gamescope_wsi*.json; do
+        if [[ -L "$entry" ]]; then
+            rm -f -- "$entry"
+        fi
+    done
+    rmdir -- "$directory" 2> /dev/null || true
+}
+
 # pressure-vessel (the Steam Linux Runtime) imports only directory entries from
-# VK_IMPLICIT_LAYER_PATH, so a manifest file named there never loads in a Steam game.
-# The arguments are the directory, then the manifest files to link into it under
-# their own names. Only VkLayer_FROG_gamescope_wsi*.json links are touched: a link
-# whose manifest is no longer found is removed, and nothing else is written there.
+# VK_LAYER_PATH and VK_IMPLICIT_LAYER_PATH, so a manifest file named there never loads
+# in a Steam game. The arguments are the directory, then the manifest files to link into
+# it under their own names. Only VkLayer_FROG_gamescope_wsi*.json links are touched: a
+# link whose manifest is no longer found is removed, and nothing else is written there.
 # Concurrent launches replace links one file at a time, and the directory is never
 # removed. Returns 1 after printing a not-kept notice when the links cannot be made.
 fgvk_gamescope_wsi_stage() {
@@ -633,16 +673,51 @@ fi
 unset fgvk_mangohud_requested fgvk_mangohud_directory
 unset fgvk_mangohud_chain fgvk_mangohud_layer
 # Gamescope sessions set ENABLE_GAMESCOPE_WSI=1 for their children. Its WSI layer
-# gives the game the Xwayland bypass and HDR colour spaces, so it stays in the chain
-# below framegen-vulkan, which sees the game's real swapchain request. Its manifest
-# links form one directory that follows the private directory. DISABLE_GAMESCOPE_WSI=1
-# skips it, and FGVK_GAMESCOPE=0 has already exec'd the game unchanged above.
+# gives the game the Xwayland bypass and HDR colour spaces, and it must sit below
+# framegen-vulkan, which sees the game's real swapchain request. It is therefore named
+# in VK_INSTANCE_LAYERS right after VK_LAYER_FGVK_render, so it loads as an explicit
+# layer. The loader places implicit layers above every explicit one, so an implicit WSI
+# layer would sit above an explicit framegen-vulkan; the Steam overlay and MangoHud
+# branches name framegen-vulkan explicitly. When framegen-vulkan stays implicit, the WSI
+# names go first and framegen-vulkan stays above them. The manifest links form one
+# directory, prepended to VK_LAYER_PATH. DISABLE_GAMESCOPE_WSI=1 skips the layer, and
+# FGVK_GAMESCOPE=0 has already exec'd the game unchanged above.
 if [[ "${ENABLE_GAMESCOPE_WSI:-}" == 1 && "${DISABLE_GAMESCOPE_WSI:-}" != 1 ]]; then
-    fgvk_gamescope_wsi_directory="$fgvk_data_home/framegen-vulkan/gamescope-wsi/implicit_layer.d"
+    fgvk_gamescope_wsi_directory="$fgvk_data_home/framegen-vulkan/gamescope-wsi/explicit_layer.d"
+    fgvk_gamescope_wsi_retire "$fgvk_data_home/framegen-vulkan/gamescope-wsi/implicit_layer.d"
     mapfile -t fgvk_gamescope_wsi_found < <(fgvk_gamescope_wsi_manifests)
     if fgvk_gamescope_wsi_stage "$fgvk_gamescope_wsi_directory" "${fgvk_gamescope_wsi_found[@]}"; then
-        if ((${#fgvk_gamescope_wsi_found[@]} > 0)); then
-            fgvk_implicit_layer_path="$fgvk_implicit_layer_path:$fgvk_gamescope_wsi_directory"
+        fgvk_gamescope_wsi_names=()
+        for fgvk_gamescope_wsi_manifest in "${fgvk_gamescope_wsi_found[@]}"; do
+            fgvk_gamescope_wsi_name="$(fgvk_gamescope_wsi_layer_name "$fgvk_gamescope_wsi_manifest")"
+            if [[ -n "$fgvk_gamescope_wsi_name" ]]; then
+                fgvk_gamescope_wsi_names+=("$fgvk_gamescope_wsi_name")
+            fi
+        done
+        if ((${#fgvk_gamescope_wsi_names[@]} > 0)); then
+            fgvk_gamescope_wsi_joined=""
+            for fgvk_gamescope_wsi_layer in "${fgvk_gamescope_wsi_names[@]}"; do
+                fgvk_gamescope_wsi_joined="${fgvk_gamescope_wsi_joined:+$fgvk_gamescope_wsi_joined:}$fgvk_gamescope_wsi_layer"
+            done
+            # Remove any inherited copy of these names so each appears once.
+            fgvk_gamescope_wsi_chain=":${VK_INSTANCE_LAYERS:-}:"
+            for fgvk_gamescope_wsi_layer in "${fgvk_gamescope_wsi_names[@]}"; do
+                while [[ "$fgvk_gamescope_wsi_chain" == *":$fgvk_gamescope_wsi_layer:"* ]]; do
+                    fgvk_gamescope_wsi_chain="${fgvk_gamescope_wsi_chain/:$fgvk_gamescope_wsi_layer:/:}"
+                done
+            done
+            fgvk_gamescope_wsi_chain="${fgvk_gamescope_wsi_chain#:}"
+            fgvk_gamescope_wsi_chain="${fgvk_gamescope_wsi_chain%:}"
+            if [[ ":$fgvk_gamescope_wsi_chain:" == *":VK_LAYER_FGVK_render:"* ]]; then
+                fgvk_gamescope_wsi_chain=":$fgvk_gamescope_wsi_chain:"
+                fgvk_gamescope_wsi_chain="${fgvk_gamescope_wsi_chain/:VK_LAYER_FGVK_render:/:VK_LAYER_FGVK_render:$fgvk_gamescope_wsi_joined:}"
+                fgvk_gamescope_wsi_chain="${fgvk_gamescope_wsi_chain#:}"
+                fgvk_gamescope_wsi_chain="${fgvk_gamescope_wsi_chain%:}"
+            else
+                fgvk_gamescope_wsi_chain="$fgvk_gamescope_wsi_joined${fgvk_gamescope_wsi_chain:+:$fgvk_gamescope_wsi_chain}"
+            fi
+            export VK_INSTANCE_LAYERS="$fgvk_gamescope_wsi_chain"
+            export VK_LAYER_PATH="$fgvk_gamescope_wsi_directory${VK_LAYER_PATH:+:$VK_LAYER_PATH}"
             echo "framegen-vulkan: gamescope WSI layer kept: $fgvk_gamescope_wsi_directory -> ${fgvk_gamescope_wsi_found[*]}" >&2
         else
             echo "framegen-vulkan: gamescope WSI layer not found; gamescope HDR and Xwayland bypass unavailable" >&2
@@ -650,6 +725,8 @@ if [[ "${ENABLE_GAMESCOPE_WSI:-}" == 1 && "${DISABLE_GAMESCOPE_WSI:-}" != 1 ]]; 
     fi
 fi
 unset fgvk_gamescope_wsi_found fgvk_gamescope_wsi_directory
+unset fgvk_gamescope_wsi_manifest fgvk_gamescope_wsi_name fgvk_gamescope_wsi_names
+unset fgvk_gamescope_wsi_joined fgvk_gamescope_wsi_layer fgvk_gamescope_wsi_chain
 export VK_IMPLICIT_LAYER_PATH="$fgvk_implicit_layer_path"
 unset VK_ADD_IMPLICIT_LAYER_PATH
 # Apply the saved process-start Performance setting before application exec.
