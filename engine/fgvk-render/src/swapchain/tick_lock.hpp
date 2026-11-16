@@ -236,11 +236,12 @@ struct TickLockPlan {
     return {true, "active"};
 }
 
-// FGVK_GAMESCOPE_TICK_LOCK=0 turns the tick lock off; any other value leaves it on. Read once.
+// FGVK_GAMESCOPE_TICK_LOCK=1 turns the tick lock on; it is off otherwise (opt-in until its verdict run passes; the
+// 2026-11-16 run failed). Read once.
 [[nodiscard]] inline bool gamescopeTickLockEnvironment() noexcept {
     static const bool enabled = [] {
         const char* text = std::getenv("FGVK_GAMESCOPE_TICK_LOCK");
-        return !(text && std::strcmp(text, "0") == 0);
+        return text && std::strcmp(text, "1") == 0;
     }();
     return enabled;
 }
