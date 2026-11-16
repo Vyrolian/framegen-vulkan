@@ -195,13 +195,16 @@ for gamescope_value in '' true yes 00; do
     fi
 done
 
-# H2b: a gamescope session keeps gamescope's WSI layer in the chain. The launcher names
-# each VkLayer_FROG_gamescope_wsi*.json manifest file after the private directory, taking
-# the first match per file name in the loader's search order. The probe points the XDG
-# config and data directories at fixtures, so the host's /usr/share manifest cannot change
-# the expected paths.
+# H2c: a gamescope session keeps gamescope's WSI layer in the chain through one directory
+# of links. The launcher links each VkLayer_FROG_gamescope_wsi*.json manifest it finds, in
+# the loader's search order (the first directory that holds a file name wins), into
+# $XDG_DATA_HOME/framegen-vulkan/gamescope-wsi/implicit_layer.d, and names that directory
+# after the private directory, because pressure-vessel imports only directory entries. The
+# probe points the XDG config and data directories at fixtures, so the host's /usr/share
+# manifest cannot change the expected paths.
 gamescope_wsi_root="$test_root/gamescope-wsi"
 gamescope_wsi_stderr="$test_root/gamescope-wsi.stderr"
+gamescope_wsi_dir="$test_data_home/framegen-vulkan/gamescope-wsi/implicit_layer.d"
 gamescope_wsi_probe() {
     # Later assignments win, so each case passes only the variables it changes.
     env -u GAMESCOPE_WAYLAND_DISPLAY -u WAYLAND_DISPLAY -u FGVK_GAMESCOPE \
@@ -216,16 +219,47 @@ gamescope_wsi_probe() {
         2> "$gamescope_wsi_stderr"
 }
 
-# A launch that must leave the implicit layer path and print no notice.
+# Prints the entries of the gamescope WSI directory, sorted: "name -> target" for a link,
+# "name (not a link)" for anything else.
+gamescope_wsi_links() {
+    local entry
+    {
+        for entry in "$gamescope_wsi_dir"/* "$gamescope_wsi_dir"/.[!.]*; do
+            if [[ -L "$entry" ]]; then
+                printf '%s -> %s\n' "${entry##*/}" "$(readlink -- "$entry")"
+            elif [[ -e "$entry" ]]; then
+                printf '%s (not a link)\n' "${entry##*/}"
+            fi
+        done
+    } | LC_ALL=C sort
+}
+
+# A launch that must leave the implicit layer path, the notice and the directory unchanged.
 expect_gamescope_wsi_skipped() {
-    local label="$1" output
+    local label="$1" output before
     shift
+    before="$(gamescope_wsi_links)"
     output="$(gamescope_wsi_probe "$@")" || fail "$label: launch failed"
     if [[ "$output" != "$expected_layer_path" ]]; then
         fail "$label changed VK_IMPLICIT_LAYER_PATH:\n$output"
     fi
     if [[ -s "$gamescope_wsi_stderr" ]]; then
         fail "$label printed a launcher notice:\n$(cat "$gamescope_wsi_stderr")"
+    fi
+    if [[ "$(gamescope_wsi_links)" != "$before" ]]; then
+        fail "$label changed the gamescope WSI directory"
+    fi
+}
+
+# A launch whose gamescope WSI directory cannot be used: the path is unchanged, the
+# not-kept notice is the only notice, and the launch still ran the command.
+expect_gamescope_wsi_not_kept() {
+    local output="$1" notice="$2"
+    if [[ "$output" != "$expected_layer_path" ]]; then
+        fail "unusable gamescope WSI directory changed VK_IMPLICIT_LAYER_PATH or stopped the launch:\n$output"
+    fi
+    if [[ "$(cat "$gamescope_wsi_stderr")" != "$notice" ]]; then
+        fail "gamescope WSI not-kept notice changed:\n$(cat "$gamescope_wsi_stderr")"
     fi
 }
 
@@ -236,20 +270,31 @@ run_gamescope_wsi_cases() {
     local extra_dir="$gamescope_wsi_root/extra/vulkan/implicit_layer.d"
     local config_x8664="$config_dir/VkLayer_FROG_gamescope_wsi.x86_64.json"
     local extra_x86="$extra_dir/VkLayer_FROG_gamescope_wsi.x86.json"
-    local output
+    local output pass expected blocked_data readonly_data readonly_dir colon_data relative_cwd
 
     mkdir -p "$system_dir" "$gamescope_wsi_root/xdg-config" "$gamescope_wsi_root/config-empty" \
         "$gamescope_wsi_root/empty"
     # Other system manifests beside the gamescope layer are never admitted.
     touch "$kept" "$system_dir/VkLayer_MESA_anti_lag.json" "$system_dir/MangoHud.x86_64.json"
 
-    output="$(gamescope_wsi_probe ENABLE_GAMESCOPE_WSI=1)" ||
-        fail "gamescope WSI launch failed: $(cat "$gamescope_wsi_stderr")"
-    if [[ "$output" != "$expected_layer_path:$kept" ]]; then
-        fail "gamescope WSI manifest was not appended after the private directory:\n$output"
-    fi
-    if [[ "$(cat "$gamescope_wsi_stderr")" != "framegen-vulkan: gamescope WSI layer kept: $kept" ]]; then
-        fail "gamescope WSI kept notice changed:\n$(cat "$gamescope_wsi_stderr")"
+    # The first launch creates the directory (mode 0700) with one link to the found manifest.
+    # Repeating the launch gives the same path, notice and directory contents.
+    for pass in first repeated; do
+        output="$(gamescope_wsi_probe ENABLE_GAMESCOPE_WSI=1)" ||
+            fail "gamescope WSI $pass launch failed: $(cat "$gamescope_wsi_stderr")"
+        if [[ "$output" != "$expected_layer_path:$gamescope_wsi_dir" ]]; then
+            fail "gamescope WSI directory was not appended after the private directory ($pass launch):\n$output"
+        fi
+        if [[ "$(cat "$gamescope_wsi_stderr")" != "framegen-vulkan: gamescope WSI layer kept: $gamescope_wsi_dir -> $kept" ]]; then
+            fail "gamescope WSI kept notice changed ($pass launch):\n$(cat "$gamescope_wsi_stderr")"
+        fi
+        expected="$(printf 'VkLayer_FROG_gamescope_wsi.x86_64.json -> %s' "$kept")"
+        if [[ "$(gamescope_wsi_links)" != "$expected" ]]; then
+            fail "gamescope WSI directory does not hold exactly the found manifest as a link ($pass launch):\n$(gamescope_wsi_links)"
+        fi
+    done
+    if [[ "$(stat -c %a "$gamescope_wsi_dir")" != 700 ]]; then
+        fail "gamescope WSI directory is not mode 0700"
     fi
 
     # The config directory is searched first, so its x86_64 manifest shadows the
@@ -260,11 +305,15 @@ run_gamescope_wsi_cases() {
         XDG_CONFIG_HOME="$gamescope_wsi_root/config" \
         XDG_DATA_DIRS="$gamescope_wsi_root/system:$gamescope_wsi_root/extra")" ||
         fail "gamescope WSI two-directory launch failed: $(cat "$gamescope_wsi_stderr")"
-    if [[ "$output" != "$expected_layer_path:$config_x8664:$extra_x86" ]]; then
+    if [[ "$output" != "$expected_layer_path:$gamescope_wsi_dir" ]]; then
         fail "gamescope WSI search order or per-name precedence changed:\n$output"
     fi
-    if [[ "$(cat "$gamescope_wsi_stderr")" != "framegen-vulkan: gamescope WSI layer kept: $config_x8664 $extra_x86" ]]; then
+    if [[ "$(cat "$gamescope_wsi_stderr")" != "framegen-vulkan: gamescope WSI layer kept: $gamescope_wsi_dir -> $config_x8664 $extra_x86" ]]; then
         fail "gamescope WSI two-directory notice changed:\n$(cat "$gamescope_wsi_stderr")"
+    fi
+    expected="$(printf 'VkLayer_FROG_gamescope_wsi.x86.json -> %s\nVkLayer_FROG_gamescope_wsi.x86_64.json -> %s' "$extra_x86" "$config_x8664")"
+    if [[ "$(gamescope_wsi_links)" != "$expected" ]]; then
+        fail "gamescope WSI two-directory links changed:\n$(gamescope_wsi_links)"
     fi
 
     # Only the exact ENABLE_GAMESCOPE_WSI=1 keeps the layer, and DISABLE_GAMESCOPE_WSI=1 wins.
@@ -273,7 +322,24 @@ run_gamescope_wsi_cases() {
     expect_gamescope_wsi_skipped "ENABLE_GAMESCOPE_WSI=0" ENABLE_GAMESCOPE_WSI=0
     expect_gamescope_wsi_skipped "ENABLE_GAMESCOPE_WSI=true" ENABLE_GAMESCOPE_WSI=true
 
-    # A missing manifest leaves the path unchanged and prints the not-found notice.
+    # The 32-bit manifest is no longer found, so its link is removed; the config copy of the
+    # 64-bit manifest is still the one linked.
+    output="$(gamescope_wsi_probe ENABLE_GAMESCOPE_WSI=1 XDG_CONFIG_HOME="$gamescope_wsi_root/config")" ||
+        fail "gamescope WSI stale-link launch failed: $(cat "$gamescope_wsi_stderr")"
+    if [[ "$output" != "$expected_layer_path:$gamescope_wsi_dir" ]]; then
+        fail "gamescope WSI stale-link launch changed the path:\n$output"
+    fi
+    if [[ "$(cat "$gamescope_wsi_stderr")" != "framegen-vulkan: gamescope WSI layer kept: $gamescope_wsi_dir -> $config_x8664" ]]; then
+        fail "gamescope WSI stale-link notice changed:\n$(cat "$gamescope_wsi_stderr")"
+    fi
+    expected="$(printf 'VkLayer_FROG_gamescope_wsi.x86_64.json -> %s' "$config_x8664")"
+    if [[ "$(gamescope_wsi_links)" != "$expected" ]]; then
+        fail "stale gamescope WSI link was not removed:\n$(gamescope_wsi_links)"
+    fi
+
+    # Nothing found: the path is unchanged, the not-found notice is printed, and every stale
+    # link is removed. A file that is not a gamescope WSI link is not ours and stays.
+    touch "$gamescope_wsi_dir/unrelated.txt"
     output="$(gamescope_wsi_probe ENABLE_GAMESCOPE_WSI=1 XDG_DATA_DIRS="$gamescope_wsi_root/empty")" ||
         fail "gamescope WSI missing-manifest launch failed"
     if [[ "$output" != "$expected_layer_path" ]]; then
@@ -282,6 +348,10 @@ run_gamescope_wsi_cases() {
     if [[ "$(cat "$gamescope_wsi_stderr")" != "framegen-vulkan: gamescope WSI layer not found; gamescope HDR and Xwayland bypass unavailable" ]]; then
         fail "gamescope WSI not-found notice changed:\n$(cat "$gamescope_wsi_stderr")"
     fi
+    if [[ "$(gamescope_wsi_links)" != "unrelated.txt (not a link)" ]]; then
+        fail "missing gamescope WSI manifest left a stale link or removed another file:\n$(gamescope_wsi_links)"
+    fi
+    rm -f -- "$gamescope_wsi_dir/unrelated.txt"
 
     # FGVK_GAMESCOPE=0 execs the game before any launcher setting, so the layer is not added.
     output="$(gamescope_wsi_probe ENABLE_GAMESCOPE_WSI=1 GAMESCOPE_WAYLAND_DISPLAY=gamescope-0 \
@@ -297,8 +367,55 @@ run_gamescope_wsi_cases() {
     # otherwise load, so the layer is still kept.
     output="$(gamescope_wsi_probe ENABLE_GAMESCOPE_WSI=1 DISABLE_FGVK=1)" ||
         fail "gamescope WSI with DISABLE_FGVK=1 launch failed"
-    if [[ "$output" != "$expected_layer_path:$kept" ]]; then
-        fail "DISABLE_FGVK=1 dropped the gamescope WSI manifest:\n$output"
+    if [[ "$output" != "$expected_layer_path:$gamescope_wsi_dir" ]]; then
+        fail "DISABLE_FGVK=1 dropped the gamescope WSI directory:\n$output"
+    fi
+    expected="$(printf 'VkLayer_FROG_gamescope_wsi.x86_64.json -> %s' "$kept")"
+    if [[ "$(gamescope_wsi_links)" != "$expected" ]]; then
+        fail "DISABLE_FGVK=1 did not link the found manifest:\n$(gamescope_wsi_links)"
+    fi
+
+    # A directory that cannot be created (a file sits where it must go) is not kept. The
+    # launch continues with the path unchanged.
+    blocked_data="$gamescope_wsi_root/blocked-data"
+    mkdir -p "$blocked_data"
+    touch "$blocked_data/framegen-vulkan"
+    output="$(gamescope_wsi_probe ENABLE_GAMESCOPE_WSI=1 XDG_DATA_HOME="$blocked_data")" || true
+    expect_gamescope_wsi_not_kept "$output" \
+        "framegen-vulkan: gamescope WSI layer not kept: cannot create $blocked_data/framegen-vulkan/gamescope-wsi/implicit_layer.d"
+
+    # A directory that cannot be written is not kept. Root writes anywhere, so the case runs
+    # only as another user.
+    if [[ "$(id -u)" == 0 ]]; then
+        echo "fgvk-launch test: read-only gamescope WSI directory case skipped as root" >&2
+    else
+        readonly_data="$gamescope_wsi_root/readonly-data"
+        readonly_dir="$readonly_data/framegen-vulkan/gamescope-wsi/implicit_layer.d"
+        mkdir -p "$readonly_dir"
+        chmod 500 "$readonly_dir"
+        output="$(gamescope_wsi_probe ENABLE_GAMESCOPE_WSI=1 XDG_DATA_HOME="$readonly_data")" || true
+        chmod 700 "$readonly_dir"
+        expect_gamescope_wsi_not_kept "$output" \
+            "framegen-vulkan: gamescope WSI layer not kept: $readonly_dir is not a writable directory"
+    fi
+
+    # A path with ':' cannot be named in VK_IMPLICIT_LAYER_PATH.
+    colon_data="$gamescope_wsi_root/colon:data"
+    output="$(gamescope_wsi_probe ENABLE_GAMESCOPE_WSI=1 XDG_DATA_HOME="$colon_data")" || true
+    expect_gamescope_wsi_not_kept "$output" \
+        "framegen-vulkan: gamescope WSI layer not kept: directory must be an absolute path without ':' or a newline: $colon_data/framegen-vulkan/gamescope-wsi/implicit_layer.d"
+    if [[ -e "$colon_data" ]]; then
+        fail "a gamescope WSI directory was created under a path with ':'"
+    fi
+
+    # A relative data directory would depend on the working directory, so nothing is created.
+    relative_cwd="$gamescope_wsi_root/relative-cwd"
+    mkdir -p "$relative_cwd"
+    output="$(cd "$relative_cwd" && gamescope_wsi_probe ENABLE_GAMESCOPE_WSI=1 XDG_DATA_HOME=relative-data)" || true
+    expect_gamescope_wsi_not_kept "$output" \
+        "framegen-vulkan: gamescope WSI layer not kept: directory must be an absolute path without ':' or a newline: relative-data/framegen-vulkan/gamescope-wsi/implicit_layer.d"
+    if [[ -e "$relative_cwd/relative-data" ]]; then
+        fail "a relative gamescope WSI directory was created"
     fi
 }
 

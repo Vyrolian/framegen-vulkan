@@ -26,7 +26,7 @@
 - The container package builders are removed: the packaging and publish scripts build natively on Linux, and the Arch package check needs `makepkg` and `fakeroot` on the host.
 - Surface format queries are logged once per distinct list as `framegen-vulkan: surface formats offered: count=N pairs=…`, at most eight lists per process, to show which formats a game is offered; the queries are pass-throughs and the offered formats are unchanged.
 - The settings window has an Appearance section: ten built-in themes (four Catppuccin flavours with a choice of fourteen accents, and six others), plus custom themes from `*.toml` files in `~/.config/framegen-vulkan/themes/`; the choice is saved in `ui.toml`, not `conf.toml`.
-- Gamescope sessions keep gamescope's WSI layer in the chain below framegen-vulkan by naming its manifest files in `VK_IMPLICIT_LAYER_PATH`, so the game's own HDR request reaches the layer; `DISABLE_GAMESCOPE_WSI=1` skips it. HDR under Gamescope is not yet confirmed by a user run.
+- Gamescope sessions keep gamescope's WSI layer in the chain below framegen-vulkan by naming a directory of links to its manifests in `VK_IMPLICIT_LAYER_PATH` (Steam's pressure-vessel imports only directory entries), so the game's own HDR request reaches the layer; `DISABLE_GAMESCOPE_WSI=1` skips it. HDR under Gamescope is not yet confirmed by a user run.
 
 ## What's new in MAKO Renderer v4.6.0
 
