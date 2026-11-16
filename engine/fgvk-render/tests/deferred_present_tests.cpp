@@ -2166,6 +2166,11 @@ struct DeferredPresentTestAccess {
         worker.outputOffsetController.setExpected(expected);
         worker.outputOffsetController.offset = offsets;
     }
+    // OS1b: accepted correction samples of the worker's controller. Read only after the worker's batch was finished:
+    // finish takes the worker mutex that orders the controller's writes before this read.
+    static uint64_t acceptedOffsetSamples(const DeferredPresent& worker) {
+        return worker.outputOffsetController.accepted;
+    }
 };
 }
 
@@ -3909,6 +3914,114 @@ void chainedPairOffsetsFromItsUnmovedStart() {
             lateGenerated.scheduled == late.second->readyAt + 1ms,
         "a chained batch ready after its floor did not take its correction after its readiness start");
 }
+// OS1b: one worker batch without the release gate (overlap false): a generated output with internal images, then its
+// real. Its readiness is 10 ms after the start, and the batch is just in time with batch_hold on, as a detached ready
+// batch is with low_latency. The generated output takes `generatedOffset` after its readiness start.
+DeferredPresent::Completion nonOverlapGeneratedBatch(const std::chrono::nanoseconds generatedOffset) {
+    auto queue = std::make_shared<DeferredPresentQueue>();
+    queue->queue = handle<VkQueue>(7);
+    VkSwapchainKHR swapchain = handle<VkSwapchainKHR>(11);
+    VkSemaphore wait = handle<VkSemaphore>(12);
+    uint32_t image = 0;
+    VkPresentInfoKHR info{.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+        .waitSemaphoreCount = 1, .pWaitSemaphores = &wait,
+        .swapchainCount = 1, .pSwapchains = &swapchain, .pImageIndices = &image};
+    DeferredPresent worker(queue, timedPresent);
+    const auto start = DeferredPresent::Clock::now();
+    const auto interval = 8ms;
+    simulatedReady[1] = start + 10ms;
+    realOffsetAutoConfigured.store(true);
+    copySubmits.clear();
+    copyAcquireResult = VK_SUCCESS;
+    copyAcquireImage = 2;
+    DeferredPresentTestAccess::setOutputOffsets(worker, 1, {generatedOffset, 0ns, 0ns, 0ns});
+    expect(worker.beginBatch(2, {.device = handle<VkDevice>(21), .semaphore = handle<VkSemaphore>(31),
+            .value = 1, .wait = readyAtInstant, .deadline = start + 1s, .overlap = false,
+            .justInTime = true, .batchHold = true, .outputInterval = interval}),
+        "non-overlap batch rejected");
+    auto copy = generatedCopy();
+    copy.internalImages = true;
+    expect(worker.enqueueGeneratedCopy(swapchain, nullptr, start, copy),
+        "non-overlap batch's generated output rejected");
+    image = 1;
+    expect(worker.enqueue(info, start + interval), "non-overlap batch's real output rejected");
+    worker.closeBatch();
+    auto completion = worker.finish(UINT64_MAX);
+    realOffsetAutoConfigured.store(false);
+    expect(completion && completion->count == 2 && !completion->calls[0].skipped && !completion->calls[1].skipped,
+        "non-overlap batch did not complete");
+    return *completion;
+}
+// OS1b: a worker batch without the release gate takes the automatic correction of its generated output, as a released
+// batch does. +1 ms moves that output 1 ms after its readiness start; its real output keeps its unmoved slot.
+void nonOverlapBatchOffsetMovesGeneratedOnly() {
+    const auto interval = 8ms;
+    const auto startOf = [](const DeferredPresent::Completion& batch) { return batch.readyAt + batch.batchPhaseHold; };
+    const auto zero = nonOverlapGeneratedBatch(0ns);
+    const auto& zeroGenerated = zero.calls[0];
+    expect(zeroGenerated.generated && zeroGenerated.offset == 0ns && zeroGenerated.scheduled == startOf(zero),
+        "a zero correction moved a non-overlap batch's generated output off its readiness start");
+
+    const auto late = nonOverlapGeneratedBatch(1ms);
+    const auto& lateGenerated = late.calls[0];
+    expect(lateGenerated.generated && lateGenerated.offset == 1ms && lateGenerated.scheduled == startOf(late) + 1ms,
+        "a +1 ms correction did not move a non-overlap batch's generated output 1 ms after its readiness start");
+    const auto& lateReal = late.calls[1];
+    expect(!lateReal.generated && lateReal.offset == 0ns, "a non-overlap batch's real output carries a correction");
+    expect(lateReal.scheduled == lateGenerated.started - lateGenerated.offset + interval,
+        "a +1 ms correction moved a non-overlap batch's real output off its unmoved slot");
+}
+// OS1b: the controller keeps its pending real across consecutive worker batches without the release gate. Batch A's
+// real screen sample is read at batch B's first present, after B was admitted. With A's generated output (source 1,
+// midway between the reals) it completes a sample, which is accepted. The batch boundary used to forget that real.
+void nonOverlapPendingRealSurvivesBatches() {
+    auto queue = std::make_shared<DeferredPresentQueue>();
+    queue->queue = handle<VkQueue>(7);
+    VkSwapchainKHR swapchain = handle<VkSwapchainKHR>(11);
+    VkSemaphore wait = handle<VkSemaphore>(12);
+    uint32_t image = 0;
+    VkPresentInfoKHR info{.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+        .waitSemaphoreCount = 1, .pWaitSemaphores = &wait,
+        .swapchainCount = 1, .pSwapchains = &swapchain, .pImageIndices = &image};
+    DeferredPresent worker(queue, timedPresent);
+    auto ring = std::make_shared<ScreenSampleRing>();
+    worker.setScreenSamples(ring);
+    realOffsetAutoConfigured.store(true);
+    const int64_t base = steadyNanoseconds(DeferredPresent::Clock::now());
+    const auto push = [&](const uint64_t source, const bool generated, const int64_t offsetNs) {
+        ring->push(ScreenSample{0, source, generated, base + offsetNs, 0, 0});
+    };
+    const auto admit = [&](const bool second) {
+        expect(worker.beginBatch(2, {.device = handle<VkDevice>(21), .semaphore = handle<VkSemaphore>(31),
+                .value = 1, .overlap = false, .outputInterval = 8ms}),
+            second ? "second non-overlap batch rejected after the first was finished"
+                   : "first non-overlap batch rejected");
+    };
+    const auto now = DeferredPresent::Clock::now();
+
+    // Batch A: the real of source 0 and the generated output of source 1 are read at A's first present.
+    push(0, false, 0);
+    push(1, true, 6'500'000);
+    admit(false);
+    expect(worker.enqueue(info, now), "first non-overlap batch's first output rejected");
+    image = 1;
+    expect(worker.enqueue(info, now + 8ms), "first non-overlap batch's second output rejected");
+    worker.closeBatch();
+    expect(worker.finish(UINT64_MAX).has_value(), "first non-overlap batch did not finish");
+
+    // Batch B is admitted, then the real of source 1 arrives. Its first present reads that sample.
+    admit(true);
+    push(1, false, 13'000'000);
+    expect(worker.enqueue(info, now), "second non-overlap batch's first output rejected");
+    image = 2;
+    expect(worker.enqueue(info, now + 8ms), "second non-overlap batch's second output rejected");
+    worker.closeBatch();
+    expect(worker.finish(UINT64_MAX).has_value(), "second non-overlap batch did not finish");
+    const auto accepted = DeferredPresentTestAccess::acceptedOffsetSamples(worker);
+    realOffsetAutoConfigured.store(false);
+    expect(accepted == 1,
+        "a screen sample of the previous non-overlap batch's real was not accepted across the batch boundary");
+}
 }
 
 // X3: the empty submits the worker makes to signal an application present fence that no lower
@@ -4293,6 +4406,7 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char** argv) {
     justInTimeBatchHoldOffStartsAtReadiness();
     chainedBatchHoldStartsAfterReadiness(); chainedBatchHoldOffStartsAtReadiness(); chainedBatchHoldKeepsItsSchedule();
     offsetAppliesAfterReadinessStart(); chainedPairOffsetsFromItsUnmovedStart();
+    nonOverlapBatchOffsetMovesGeneratedOnly(); nonOverlapPendingRealSurvivesBatches();
     generatedCopyPresentsAcquiredImage(); generatedCopySkipsWithoutImage(); generatedCopySkipsOutOfRangeImage();
     generatedCopyNeedsOpenBatch(); generatedCopyChainWaitsPreceding(); generatedCopyChainSkipWaitsPreceding();
     generatedCopyAddsPrivateTail(); generatedSkipAddsPrivateTail();

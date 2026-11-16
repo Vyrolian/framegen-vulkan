@@ -1610,7 +1610,7 @@ private:
             const auto unmovedDeadline = deadline;
             Clock::duration commandedOffset{}, appliedOffset{};
             const bool offsetOutput = current.generated && current.copyActive && current.copy.internalImages &&
-                ready.overlap && realOffsetAuto() && index < OutputOffsetController::maxPositions;
+                realOffsetAuto() && index < OutputOffsetController::maxPositions;
             // OS2: the first output of a batch with a readiness wait takes its correction after that wait (in the
             // readiness block below). Its move here would be replaced by the readiness start.
             const bool offsetAfterReadiness = offsetOutput && first && ready.wait;
@@ -1642,9 +1642,6 @@ private:
                 if ((!ready.justInTime && !ready.batchHold) || ready.justInTime != batchPhaseJustInTime)
                     batchPhase.reset();
                 batchPhaseJustInTime = ready.justInTime;
-                if (!ready.overlap) {
-                    outputOffsetController.forget();
-                }
                 batchShift = {};
                 readinessMiss = false;
                 lateReadiness = false;
@@ -1916,7 +1913,9 @@ private:
                 if (job.copyActive && !generatedPrepared && !prep.settled) {
                     uint32_t image{};
                     VkResult acquireResult = VK_NOT_READY;
-                    auto giveUpAt = unmovedReady + job.copy.giveUp;
+                    // OS1b: the window follows the corrected slot, so a generated output moved later keeps
+                    // its full acquire window (an earlier move keeps the unmoved one).
+                    auto giveUpAt = unmovedReady + std::max(appliedOffset, Clock::duration{}) + job.copy.giveUp;
                     // Generated outputs may start up to a quarter output interval before the
                     // batch limit. FIFO still shows each image at least one refresh.
                     if (ready.latestOutput != Clock::time_point::max())
