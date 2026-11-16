@@ -28,6 +28,9 @@ printf '%s\n' 'version=1' 'disable_steam_overlay=0' > "$overlay_enabled_config"
 # case below is a desktop launch; the Gamescope cases set their own. The opt-out
 # is cleared too, so only the cases that set it see it.
 unset GAMESCOPE_WAYLAND_DISPLAY FGVK_GAMESCOPE
+# Gamescope sets the WSI switches for its children, so a test run inside a
+# gamescope session must not inherit them either.
+unset ENABLE_GAMESCOPE_WSI DISABLE_GAMESCOPE_WSI
 expected_layer_path="$install_prefix/share/framegen-vulkan/vulkan/implicit_layer.d"
 if [[ ! -d "$expected_layer_path" && -d "$test_data_home/framegen-vulkan/vulkan/implicit_layer.d" ]]; then
     expected_layer_path="$test_data_home/framegen-vulkan/vulkan/implicit_layer.d"
@@ -191,6 +194,121 @@ for gamescope_value in '' true yes 00; do
         fail "FGVK_GAMESCOPE='$gamescope_value' printed a launcher notice:\n$(cat "$gamescope_value_stderr")"
     fi
 done
+
+# H2b: a gamescope session keeps gamescope's WSI layer in the chain. The launcher names
+# each VkLayer_FROG_gamescope_wsi*.json manifest file after the private directory, taking
+# the first match per file name in the loader's search order. The probe points the XDG
+# config and data directories at fixtures, so the host's /usr/share manifest cannot change
+# the expected paths.
+gamescope_wsi_root="$test_root/gamescope-wsi"
+gamescope_wsi_stderr="$test_root/gamescope-wsi.stderr"
+gamescope_wsi_probe() {
+    # Later assignments win, so each case passes only the variables it changes.
+    env -u GAMESCOPE_WAYLAND_DISPLAY -u WAYLAND_DISPLAY -u FGVK_GAMESCOPE \
+        -u ENABLE_GAMESCOPE_WSI -u DISABLE_GAMESCOPE_WSI -u DISABLE_FGVK \
+        FGVK_LAUNCH_CONFIG="$overlay_enabled_config" \
+        XDG_CONFIG_HOME="$gamescope_wsi_root/config-empty" \
+        XDG_CONFIG_DIRS="$gamescope_wsi_root/xdg-config" \
+        XDG_DATA_HOME="$test_data_home" \
+        XDG_DATA_DIRS="$gamescope_wsi_root/system" \
+        "$@" \
+        "$launcher" bash -c 'printf "%s\n" "${VK_IMPLICIT_LAYER_PATH:-unset}"' \
+        2> "$gamescope_wsi_stderr"
+}
+
+# A launch that must leave the implicit layer path and print no notice.
+expect_gamescope_wsi_skipped() {
+    local label="$1" output
+    shift
+    output="$(gamescope_wsi_probe "$@")" || fail "$label: launch failed"
+    if [[ "$output" != "$expected_layer_path" ]]; then
+        fail "$label changed VK_IMPLICIT_LAYER_PATH:\n$output"
+    fi
+    if [[ -s "$gamescope_wsi_stderr" ]]; then
+        fail "$label printed a launcher notice:\n$(cat "$gamescope_wsi_stderr")"
+    fi
+}
+
+run_gamescope_wsi_cases() {
+    local system_dir="$gamescope_wsi_root/system/vulkan/implicit_layer.d"
+    local kept="$system_dir/VkLayer_FROG_gamescope_wsi.x86_64.json"
+    local config_dir="$gamescope_wsi_root/config/vulkan/implicit_layer.d"
+    local extra_dir="$gamescope_wsi_root/extra/vulkan/implicit_layer.d"
+    local config_x8664="$config_dir/VkLayer_FROG_gamescope_wsi.x86_64.json"
+    local extra_x86="$extra_dir/VkLayer_FROG_gamescope_wsi.x86.json"
+    local output
+
+    mkdir -p "$system_dir" "$gamescope_wsi_root/xdg-config" "$gamescope_wsi_root/config-empty" \
+        "$gamescope_wsi_root/empty"
+    # Other system manifests beside the gamescope layer are never admitted.
+    touch "$kept" "$system_dir/VkLayer_MESA_anti_lag.json" "$system_dir/MangoHud.x86_64.json"
+
+    output="$(gamescope_wsi_probe ENABLE_GAMESCOPE_WSI=1)" ||
+        fail "gamescope WSI launch failed: $(cat "$gamescope_wsi_stderr")"
+    if [[ "$output" != "$expected_layer_path:$kept" ]]; then
+        fail "gamescope WSI manifest was not appended after the private directory:\n$output"
+    fi
+    if [[ "$(cat "$gamescope_wsi_stderr")" != "framegen-vulkan: gamescope WSI layer kept: $kept" ]]; then
+        fail "gamescope WSI kept notice changed:\n$(cat "$gamescope_wsi_stderr")"
+    fi
+
+    # The config directory is searched first, so its x86_64 manifest shadows the
+    # data-directory copies. The 32-bit manifest exists only in the second data directory.
+    mkdir -p "$config_dir" "$extra_dir"
+    touch "$config_x8664" "$extra_dir/VkLayer_FROG_gamescope_wsi.x86_64.json" "$extra_x86"
+    output="$(gamescope_wsi_probe ENABLE_GAMESCOPE_WSI=1 \
+        XDG_CONFIG_HOME="$gamescope_wsi_root/config" \
+        XDG_DATA_DIRS="$gamescope_wsi_root/system:$gamescope_wsi_root/extra")" ||
+        fail "gamescope WSI two-directory launch failed: $(cat "$gamescope_wsi_stderr")"
+    if [[ "$output" != "$expected_layer_path:$config_x8664:$extra_x86" ]]; then
+        fail "gamescope WSI search order or per-name precedence changed:\n$output"
+    fi
+    if [[ "$(cat "$gamescope_wsi_stderr")" != "framegen-vulkan: gamescope WSI layer kept: $config_x8664 $extra_x86" ]]; then
+        fail "gamescope WSI two-directory notice changed:\n$(cat "$gamescope_wsi_stderr")"
+    fi
+
+    # Only the exact ENABLE_GAMESCOPE_WSI=1 keeps the layer, and DISABLE_GAMESCOPE_WSI=1 wins.
+    expect_gamescope_wsi_skipped "DISABLE_GAMESCOPE_WSI=1" ENABLE_GAMESCOPE_WSI=1 DISABLE_GAMESCOPE_WSI=1
+    expect_gamescope_wsi_skipped "ENABLE_GAMESCOPE_WSI unset"
+    expect_gamescope_wsi_skipped "ENABLE_GAMESCOPE_WSI=0" ENABLE_GAMESCOPE_WSI=0
+    expect_gamescope_wsi_skipped "ENABLE_GAMESCOPE_WSI=true" ENABLE_GAMESCOPE_WSI=true
+
+    # A missing manifest leaves the path unchanged and prints the not-found notice.
+    output="$(gamescope_wsi_probe ENABLE_GAMESCOPE_WSI=1 XDG_DATA_DIRS="$gamescope_wsi_root/empty")" ||
+        fail "gamescope WSI missing-manifest launch failed"
+    if [[ "$output" != "$expected_layer_path" ]]; then
+        fail "missing gamescope WSI manifest changed VK_IMPLICIT_LAYER_PATH:\n$output"
+    fi
+    if [[ "$(cat "$gamescope_wsi_stderr")" != "framegen-vulkan: gamescope WSI layer not found; gamescope HDR and Xwayland bypass unavailable" ]]; then
+        fail "gamescope WSI not-found notice changed:\n$(cat "$gamescope_wsi_stderr")"
+    fi
+
+    # FGVK_GAMESCOPE=0 execs the game before any launcher setting, so the layer is not added.
+    output="$(gamescope_wsi_probe ENABLE_GAMESCOPE_WSI=1 GAMESCOPE_WAYLAND_DISPLAY=gamescope-0 \
+        WAYLAND_DISPLAY=gamescope-0 FGVK_GAMESCOPE=0)" || fail "gamescope WSI opt-out launch failed"
+    if [[ "$output" != "unset" ]]; then
+        fail "FGVK_GAMESCOPE=0 changed VK_IMPLICIT_LAYER_PATH:\n$output"
+    fi
+    if [[ "$(cat "$gamescope_wsi_stderr")" != "framegen-vulkan: Gamescope session: starting without frame generation (FGVK_GAMESCOPE=0)" ]]; then
+        fail "FGVK_GAMESCOPE=0 notice changed:\n$(cat "$gamescope_wsi_stderr")"
+    fi
+
+    # DISABLE_FGVK=1 turns off framegen-vulkan, not the gamescope layer the game would
+    # otherwise load, so the layer is still kept.
+    output="$(gamescope_wsi_probe ENABLE_GAMESCOPE_WSI=1 DISABLE_FGVK=1)" ||
+        fail "gamescope WSI with DISABLE_FGVK=1 launch failed"
+    if [[ "$output" != "$expected_layer_path:$kept" ]]; then
+        fail "DISABLE_FGVK=1 dropped the gamescope WSI manifest:\n$output"
+    fi
+}
+
+# The loader's /etc/vulkan directory cannot be redirected. A manifest there would change
+# every expected path, so the cases run only on a host without one.
+if compgen -G "/etc/vulkan/implicit_layer.d/VkLayer_FROG_gamescope_wsi*.json" > /dev/null; then
+    echo "fgvk-launch test: gamescope WSI cases skipped; /etc/vulkan/implicit_layer.d holds a gamescope WSI manifest" >&2
+else
+    run_gamescope_wsi_cases
+fi
 
 fake_flatpak="$test_root/flatpak"
 printf '%s\n' '#!/usr/bin/env bash' \

@@ -1,7 +1,7 @@
 ## Unreleased: spatial scaling removed
 
 - The renderer no longer contains spatial scaling, the LS1 and framegen-vulkan Scaler paths, or the Gamescope scaling bridge.
-- Gamescope sessions run frame generation by default as an experimental path; HDR is not recovered under Gamescope yet, because its WSI gives the layer an sRGB swapchain. `FGVK_GAMESCOPE=0` starts the game without frame generation. The Gamescope feedback reader, the VRR lease helper, the compatibility record, and the `gamescope_vrr_mode` and `frame_generation_refresh_threshold` keys and overrides are retired; existing keys are accepted and ignored.
+- Gamescope sessions run frame generation by default as an experimental path; the launcher keeps Gamescope's WSI layer in the chain below framegen-vulkan, so HDR games under Gamescope reach the HDR path (untested on hardware). `FGVK_GAMESCOPE=0` starts the game without frame generation. The Gamescope feedback reader, the VRR lease helper, the compatibility record, and the `gamescope_vrr_mode` and `frame_generation_refresh_threshold` keys and overrides are retired; existing keys are accepted and ignored.
 - The retired scaling keys (`scaling_enabled`, `scaling_method`, `scaling_factor`, `scaling_supersampling`, and `scaling_sharpness`) are accepted and ignored, so old `conf.toml` files still load; framegen-vulkan no longer writes them.
 - The AC/battery profile tables (`[profile.handheld]` and `[profile.docked]`) are retired; old `conf.toml` files still load, the tables are ignored, and framegen-vulkan no longer writes them.
 - GPU Headroom is removed. Old `conf.toml` files still load; `gpu_headroom_percent` is accepted and ignored, the `FGVK_GPU_HEADROOM_PERCENT` override is no longer read, and framegen-vulkan no longer writes the key.
@@ -26,6 +26,7 @@
 - The container package builders are removed: the packaging and publish scripts build natively on Linux, and the Arch package check needs `makepkg` and `fakeroot` on the host.
 - Surface format queries are logged once per distinct list as `framegen-vulkan: surface formats offered: count=N pairs=…`, at most eight lists per process, to show which formats a game is offered; the queries are pass-throughs and the offered formats are unchanged.
 - The settings window has an Appearance section: ten built-in themes (four Catppuccin flavours with a choice of fourteen accents, and six others), plus custom themes from `*.toml` files in `~/.config/framegen-vulkan/themes/`; the choice is saved in `ui.toml`, not `conf.toml`.
+- Gamescope sessions keep gamescope's WSI layer in the chain below framegen-vulkan by naming its manifest files in `VK_IMPLICIT_LAYER_PATH`, so the game's own HDR request reaches the layer; `DISABLE_GAMESCOPE_WSI=1` skips it. HDR under Gamescope is not yet confirmed by a user run.
 
 ## What's new in MAKO Renderer v4.6.0
 

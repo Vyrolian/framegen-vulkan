@@ -149,6 +149,47 @@ except (OSError, ValueError) as error:
 PYTHON
 }
 
+# Gamescope's WSI layer is an implicit layer that the loader finds in the standard
+# XDG and system manifest directories. VK_IMPLICIT_LAYER_PATH replaces those
+# directories, so the launcher names the matching manifest files instead. The loader
+# accepts file entries and calls implicit layers in list order, first entry nearest
+# the application (checked on loader 1.4.363). Only VkLayer_FROG_gamescope_wsi*.json
+# is admitted, in the loader's search order, and the first directory that holds a
+# filename wins for that filename. Relative and empty XDG entries are ignored.
+fgvk_gamescope_wsi_manifests() {
+    local -a bases=() roots=()
+    local base manifest name
+    local -A seen=()
+    bases=("${XDG_CONFIG_HOME:-$HOME/.config}")
+    IFS=: read -r -a roots <<< "${XDG_CONFIG_DIRS:-/etc/xdg}"
+    bases+=("${roots[@]}")
+    bases+=("/etc")
+    bases+=("${XDG_DATA_HOME:-$HOME/.local/share}")
+    IFS=: read -r -a roots <<< "${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
+    bases+=("${roots[@]}")
+    for base in "${bases[@]}"; do
+        if [[ "$base" != /* ]]; then
+            continue
+        fi
+        for manifest in "$base"/vulkan/implicit_layer.d/VkLayer_FROG_gamescope_wsi*.json; do
+            if [[ ! -f "$manifest" || ! -r "$manifest" ]]; then
+                continue
+            fi
+            # A colon would split the entry in VK_IMPLICIT_LAYER_PATH, and a newline
+            # would break the notice line, so such paths are skipped.
+            if [[ "$manifest" == *:* || "$manifest" == *$'\n'* ]]; then
+                continue
+            fi
+            name="${manifest##*/}"
+            if [[ -n "${seen[$name]:-}" ]]; then
+                continue
+            fi
+            seen[$name]=1
+            printf '%s\n' "$manifest"
+        done
+    done
+}
+
 if (($# == 0)); then
     echo "fgvk-launch requires a command to run." >&2
     usage >&2
@@ -545,6 +586,23 @@ if [[ "$fgvk_mangohud_requested" == 1 && "${DISABLE_FGVK:-0}" != 1 ]]; then
 fi
 unset fgvk_mangohud_requested fgvk_mangohud_directory
 unset fgvk_mangohud_chain fgvk_mangohud_layer
+# Gamescope sessions set ENABLE_GAMESCOPE_WSI=1 for their children. Its WSI layer
+# gives the game the Xwayland bypass and HDR colour spaces, so it stays in the chain
+# below framegen-vulkan, which sees the game's real swapchain request. The manifest
+# files follow the private directory. DISABLE_GAMESCOPE_WSI=1 skips it, and
+# FGVK_GAMESCOPE=0 has already exec'd the game unchanged above.
+if [[ "${ENABLE_GAMESCOPE_WSI:-}" == 1 && "${DISABLE_GAMESCOPE_WSI:-}" != 1 ]]; then
+    mapfile -t fgvk_gamescope_wsi_found < <(fgvk_gamescope_wsi_manifests)
+    if ((${#fgvk_gamescope_wsi_found[@]} > 0)); then
+        for fgvk_gamescope_wsi_manifest in "${fgvk_gamescope_wsi_found[@]}"; do
+            fgvk_implicit_layer_path="$fgvk_implicit_layer_path:$fgvk_gamescope_wsi_manifest"
+        done
+        echo "framegen-vulkan: gamescope WSI layer kept: ${fgvk_gamescope_wsi_found[*]}" >&2
+    else
+        echo "framegen-vulkan: gamescope WSI layer not found; gamescope HDR and Xwayland bypass unavailable" >&2
+    fi
+fi
+unset fgvk_gamescope_wsi_found fgvk_gamescope_wsi_manifest
 export VK_IMPLICIT_LAYER_PATH="$fgvk_implicit_layer_path"
 unset VK_ADD_IMPLICIT_LAYER_PATH
 # Apply the saved process-start Performance setting before application exec.

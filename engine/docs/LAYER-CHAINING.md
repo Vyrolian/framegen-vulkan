@@ -20,6 +20,10 @@ Native launch checks only the named `MangoHud.x86_64.json` and `MangoHud.x86.jso
 
 MangoHud reads its own configuration, normally `~/.config/MangoHud/MangoHud.conf`. Inherited `MANGOHUD_CONFIGFILE` and `MANGOHUD_CONFIG` values pass through unchanged.
 
+## Gamescope WSI layer
+
+Gamescope sets `ENABLE_GAMESCOPE_WSI=1` for the programs it starts. In that session the launcher keeps gamescope's WSI layer (`VK_LAYER_FROG_gamescope_wsi_x86_64`) in the chain below framegen-vulkan, by naming its `VkLayer_FROG_gamescope_wsi*.json` manifest files in `VK_IMPLICIT_LAYER_PATH`. The layer provides the Xwayland bypass and the HDR colour spaces the game asks for, so it has to stay in the chain. The launcher logs the kept files, or that the layer was not found. `DISABLE_GAMESCOPE_WSI=1` skips the layer. `FGVK_GAMESCOPE=0` starts the game without any launcher change. HDR under gamescope is not yet confirmed by a user run.
+
 ## Support boundaries
 
 | Integration | Support |
