@@ -24,6 +24,7 @@
 - Native Wayland outside gamescope: the lower swapchain is destroyed with the application's destroy call after its retirement fences complete, so an SDR to HDR switch under Wine no longer fails with a colour-management protocol error.
 - Release archives are built natively by the `release-build` workflow on Ubuntu 22.04. Two local builds of one clean commit with the same toolchain produce identical archive bytes, because `SOURCE_DATE_EPOCH` defaults to the commit time.
 - The container package builders are removed: the packaging and publish scripts build natively on Linux, and the Arch package check needs `makepkg` and `fakeroot` on the host.
+- Surface format queries are logged once per distinct list as `framegen-vulkan: surface formats offered: count=N pairs=…`, at most eight lists per process, to show which formats a game is offered; the queries are pass-throughs and the offered formats are unchanged.
 
 ## What's new in MAKO Renderer v4.6.0
 

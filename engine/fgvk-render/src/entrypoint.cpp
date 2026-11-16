@@ -9,6 +9,7 @@
 #include "fgvk-common/vulkan/device_features.hpp"
 #include "present_diagnostics.hpp"
 #include "wayland_presentation_feedback.hpp"
+#include "surface_formats.hpp"
 #include "swapchain/swapchain.hpp"
 #include "swapchain/create_policy.hpp"
 #include "swapchain/retirement.hpp"
@@ -588,6 +589,65 @@ namespace {
         // initVulkanInstanceFuncs resolves the core spelling with the KHR
         // alias as fallback. GPA below only exposes supported entrypoints.
         instance_info->funcs.GetPhysicalDeviceFeatures2(physicalDevice, features);
+    }
+
+    // Surface format queries are pure pass-throughs: the list, count and VkResult are the lower
+    // driver's, unchanged. A complete answer (VK_SUCCESS with an array) is logged once per distinct
+    // list, at most maxLoggedSurfaceFormatLists per process. Count-only and
+    // VK_INCOMPLETE answers are not logged, and logging cannot change the answer.
+    SurfaceFormatListLog surfaceFormatLists; // NOLINT (global variable)
+
+    template <typename Entry, typename PairOf>
+    void noteOfferedSurfaceFormats(const VkResult result, const uint32_t* count,
+            const Entry* entries, PairOf pairOf) noexcept {
+        const bool arrayReturned = count != nullptr && entries != nullptr;
+        if (!logsSurfaceFormatQuery(result, arrayReturned))
+            return;
+        try {
+            // A repeated list is keyed straight from the array and never copied.
+            SurfaceFormatListKey key(*count);
+            for (uint32_t index = 0; index < *count; ++index)
+                key.add(pairOf(entries[index]));
+            if (!surfaceFormatLists.claim(key.value()))
+                return;
+            std::vector<SurfaceFormatPair> pairs;
+            pairs.reserve(*count);
+            for (uint32_t index = 0; index < *count; ++index)
+                pairs.push_back(pairOf(entries[index]));
+            std::cerr << "framegen-vulkan: surface formats offered: "
+                      << surfaceFormatListLine(pairs) << '\n';
+        } catch (...) {} // Diagnostics cannot change the query's answer.
+    }
+
+    VkResult VKAPI_CALL myvkGetPhysicalDeviceSurfaceFormatsKHR(VkPhysicalDevice physicalDevice,
+            VkSurfaceKHR surface, uint32_t* pSurfaceFormatCount, VkSurfaceFormatKHR* pSurfaceFormats) {
+        const auto next = instance_info
+            ? instance_info->funcs.GetPhysicalDeviceSurfaceFormatsKHR : nullptr;
+        if (!next)
+            return VK_ERROR_EXTENSION_NOT_PRESENT;
+        const auto result = next(physicalDevice, surface, pSurfaceFormatCount, pSurfaceFormats);
+        noteOfferedSurfaceFormats(result, pSurfaceFormatCount, pSurfaceFormats,
+            [](const VkSurfaceFormatKHR& format) {
+                return SurfaceFormatPair{static_cast<uint32_t>(format.format),
+                    static_cast<uint32_t>(format.colorSpace)};
+            });
+        return result;
+    }
+
+    VkResult VKAPI_CALL myvkGetPhysicalDeviceSurfaceFormats2KHR(VkPhysicalDevice physicalDevice,
+            const VkPhysicalDeviceSurfaceInfo2KHR* surfaceInfo, uint32_t* pSurfaceFormatCount,
+            VkSurfaceFormat2KHR* pSurfaceFormats) {
+        const auto next = instance_info
+            ? instance_info->funcs.GetPhysicalDeviceSurfaceFormats2KHR : nullptr;
+        if (!next)
+            return VK_ERROR_EXTENSION_NOT_PRESENT;
+        const auto result = next(physicalDevice, surfaceInfo, pSurfaceFormatCount, pSurfaceFormats);
+        noteOfferedSurfaceFormats(result, pSurfaceFormatCount, pSurfaceFormats,
+            [](const VkSurfaceFormat2KHR& format) {
+                return SurfaceFormatPair{static_cast<uint32_t>(format.surfaceFormat.format),
+                    static_cast<uint32_t>(format.surfaceFormat.colorSpace)};
+            });
+        return result;
     }
 
     VkResult myvkCreateDevice(
@@ -1197,6 +1257,13 @@ namespace {
             name == waitSemaphoresName || name == waitSemaphoresKhrName;
     }
 
+    // Exported only where the lower instance exports it, like the features2 query: an
+    // unmatched process gets the lower pointer, and a matched one gets the logging wrapper.
+    bool isOptionalSurfaceFormatCommand(const std::string_view name) {
+        return name == "vkGetPhysicalDeviceSurfaceFormatsKHR" ||
+            name == "vkGetPhysicalDeviceSurfaceFormats2KHR";
+    }
+
     // Layer-owned swapchain images intercept these only when the lower
     // device exposes the matching release command.
     bool isOptionalSwapchainReleaseCommand(const std::string_view name) {
@@ -1415,6 +1482,7 @@ namespace {
 
         if (std::string_view(name) == "vkGetPhysicalDeviceFeatures2" ||
                 std::string_view(name) == "vkGetPhysicalDeviceFeatures2KHR" ||
+                isOptionalSurfaceFormatCommand(name) ||
                 isOptionalPresentationCommand(name) || isOptionalReleaseCommand(name) ||
                 isOptionalSwapchainReleaseCommand(name)) {
             if (!instance || !layer_info->GetInstanceProcAddr ||
@@ -2694,6 +2762,8 @@ namespace {
                     { "vkCreateXlibSurfaceKHR",
                         VKPTR(myvkCreateXlibSurfaceKHR) },
                     { "vkDestroySurfaceKHR", VKPTR(myvkDestroySurfaceKHR) },
+                    { "vkGetPhysicalDeviceSurfaceFormatsKHR", VKPTR(myvkGetPhysicalDeviceSurfaceFormatsKHR) },
+                    { "vkGetPhysicalDeviceSurfaceFormats2KHR", VKPTR(myvkGetPhysicalDeviceSurfaceFormats2KHR) },
                     { "vkCreateSwapchainKHR", VKPTR(myvkCreateSwapchainKHR) },
                     { "vkAcquireNextImageKHR", VKPTR(myvkAcquireNextImageKHR) },
                     { "vkAcquireNextImage2KHR", VKPTR(myvkAcquireNextImage2KHR) },

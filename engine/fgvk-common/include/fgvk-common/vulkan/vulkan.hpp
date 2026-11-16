@@ -44,6 +44,8 @@ namespace vk {
         // Optional diagnostics and queue-priority queries; null when the loader lacks them.
         PFN_vkGetPhysicalDeviceQueueFamilyProperties2 GetPhysicalDeviceQueueFamilyProperties2;
         PFN_vkGetPhysicalDeviceCalibrateableTimeDomainsKHR GetPhysicalDeviceCalibrateableTimeDomainsKHR;
+        // Optional surface format query (VK_KHR_get_surface_capabilities2); null when the instance lacks it.
+        PFN_vkGetPhysicalDeviceSurfaceFormats2KHR GetPhysicalDeviceSurfaceFormats2KHR;
     };
 
     /// initialize vulkan instance function pointers

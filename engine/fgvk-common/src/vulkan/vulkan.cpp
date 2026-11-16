@@ -496,7 +496,10 @@ VulkanInstanceFuncs vk::initVulkanInstanceFuncs(VkInstance i, PFN_vkGetInstanceP
         .GetPhysicalDeviceCalibrateableTimeDomainsKHR = optionalIpa<
             PFN_vkGetPhysicalDeviceCalibrateableTimeDomainsKHR>(
                 mpa, i, "vkGetPhysicalDeviceCalibrateableTimeDomainsKHR",
-                "vkGetPhysicalDeviceCalibrateableTimeDomainsEXT")
+                "vkGetPhysicalDeviceCalibrateableTimeDomainsEXT"),
+        .GetPhysicalDeviceSurfaceFormats2KHR = graphical ?
+            optionalIpa<PFN_vkGetPhysicalDeviceSurfaceFormats2KHR>(mpa, i,
+                "vkGetPhysicalDeviceSurfaceFormats2KHR") : nullptr
     };
 }
 

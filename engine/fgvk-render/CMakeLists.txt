@@ -367,6 +367,13 @@ if(BUILD_TESTING)
     add_test(NAME completion-spiral COMMAND fgvk-completion-spiral-tests)
     fgvk_register_portable_policy_test(fgvk-completion-spiral-tests completion-spiral)
 
+    # Surface format log (H2a): the dedupe key, the line format, the complete-answer rule and the
+    # per-process cap. The pass-through wrappers need a Vulkan device and are not tested here.
+    add_executable(fgvk-surface-formats-tests "tests/surface_formats_tests.cpp")
+    target_include_directories(fgvk-surface-formats-tests PRIVATE "src")
+    add_test(NAME surface-formats COMMAND fgvk-surface-formats-tests)
+    fgvk_register_portable_policy_test(fgvk-surface-formats-tests surface-formats)
+
     add_executable(fgvk-present-feedback-probe-tests "tests/present_feedback_probe_tests.cpp")
     target_include_directories(fgvk-present-feedback-probe-tests PRIVATE "src")
     add_test(NAME present-feedback-probe COMMAND fgvk-present-feedback-probe-tests)
