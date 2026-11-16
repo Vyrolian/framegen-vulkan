@@ -32,11 +32,11 @@ grep -Fq "'libx11'" "$script_dir/PKGBUILD"
 grep -Fq 'done < framegen-vulkan-install-manifest.txt' "$script_dir/PKGBUILD"
 grep -Fqx '        share/doc/framegen-vulkan/COPYRIGHT.md' "$script_dir/PKGBUILD"
 grep -Fqx '        share/doc/framegen-vulkan/LICENSE' "$script_dir/PKGBUILD"
-grep -Fq 'pacman -Syu --noconfirm --needed fakeroot' \
+grep -Fq 'sudo pacman -S --needed base-devel' \
     "$script_dir/verify-release-package.sh"
 grep -Fq 'command -v makepkg >/dev/null 2>&1 || ! command -v fakeroot' \
     "$script_dir/verify-release-package.sh"
-grep -Fq 'trap "rm -f -- \"$output_tmp\"" EXIT' \
+grep -Fq "rm -rf -- \"\$work_dir\"; rm -f -- \"\$output_tmp\"' EXIT" \
     "$script_dir/verify-release-package.sh"
 bash -n "$script_dir/verify-release-package.sh"
 bash -n "$repo_root/engine/scripts/package-local-release.sh"
@@ -399,14 +399,12 @@ printf '%s\n' 9.8.7 > "$local_release_fixture/VERSION"
 cat > "$local_release_fixture/scripts/package-local.sh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-[[ "${FGVK_PORTABLE_PACKAGE:-0}" == "1" ]]
 mkdir -p "$(dirname "$1")"
 printf '%s\n' local-host-archive > "$1"
 EOF
 cat > "$local_release_fixture/scripts/package-flatpaks.sh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-[[ "${FGVK_PORTABLE_PACKAGE:-0}" == "1" ]]
 mkdir -p "$(dirname "$1")"
 printf '%s\n' local-flatpak-archive > "$1"
 EOF

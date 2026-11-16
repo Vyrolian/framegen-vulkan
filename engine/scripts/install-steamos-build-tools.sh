@@ -12,7 +12,7 @@ Usage: scripts/install-steamos-build-tools.sh --check|--install
 
 Run as your normal SteamOS user. Installation prompts for sudo and Pacman
 confirmation, preserves the original read-only state, and does not build,
-deploy, or install framegen-vulkan. Portable release builds use Docker/Podman separately.
+deploy, or install framegen-vulkan.
 The fast SteamOS builder fetches framegen-vulkan's pinned Vulkan headers into its own
 repository-local cache; the system headers serve manual builds and other tools.
 EOF

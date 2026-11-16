@@ -61,6 +61,18 @@ for command in gh git node python3; do
         exit 1
     fi
 done
+if [[ "$(uname -s)" != "Linux" ]]; then
+    echo "Publishing builds the archives natively and runs only on Linux; this host is $(uname -s)." >&2
+    exit 2
+fi
+# The archives are built on this host after the optional version commit, so check the native
+# build tools before anything is pushed.
+for command in cargo fakeroot flatpak flatpak-builder makepkg; do
+    if ! command -v "$command" >/dev/null 2>&1; then
+        echo "Publishing needs $command on the host to build the archives. Install it and try again." >&2
+        exit 1
+    fi
+done
 
 release_branch="$(git branch --show-current)"
 if [[ "$release_branch" != "main" ]]; then
@@ -146,11 +158,11 @@ if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
     tag_exists=true
 fi
 
-# Match the native builder used by complete local release candidates on every host.
-# Host SDK selection must not change the compiled presentation contract.
-FGVK_PORTABLE_PACKAGE=1 scripts/package-local.sh "$archive"
+# Build with the same native builders as complete local release candidates. Host SDK selection
+# must not change the compiled presentation contract: package-local.sh compiles against the pin.
+scripts/package-local.sh "$archive"
 checksum="$("${checksum_command[@]}" "$archive" | awk '{print $1}')"
-FGVK_PORTABLE_PACKAGE=1 scripts/package-flatpaks.sh "$flatpak_archive"
+scripts/package-flatpaks.sh "$flatpak_archive"
 flatpak_checksum="$("${checksum_command[@]}" "$flatpak_archive" | awk '{print $1}')"
 
 pin_renderer_release() {

@@ -23,6 +23,7 @@
 - Wine's HDR on native Wayland (PASS_THROUGH with HDR10/PQ or scRGB) gets frame generation too, reported as `wine-hdr10-pq` or `wine-scrgb-linear` in the colour pipeline line.
 - Native Wayland outside gamescope: the lower swapchain is destroyed with the application's destroy call after its retirement fences complete, so an SDR to HDR switch under Wine no longer fails with a colour-management protocol error.
 - Release archives are built natively by the `release-build` workflow on Ubuntu 22.04. Two local builds of one clean commit with the same toolchain produce identical archive bytes, because `SOURCE_DATE_EPOCH` defaults to the commit time.
+- The container package builders are removed: the packaging and publish scripts build natively on Linux, and the Arch package check needs `makepkg` and `fakeroot` on the host.
 
 ## What's new in MAKO Renderer v4.6.0
 

@@ -25,62 +25,13 @@ if [[ -z "$version" ]]; then
     exit 1
 fi
 
-portable_container="${FGVK_PORTABLE_PACKAGE:-0}"
-containerized_build="${FGVK_FLATPAK_CONTAINERIZED:-0}"
-needs_container=false
-if [[ "$(uname -s)" != "Linux" || "$portable_container" == "1" ]] ||
-        ! command -v flatpak >/dev/null 2>&1 ||
-        ! command -v flatpak-builder >/dev/null 2>&1; then
-    needs_container=true
+if [[ "$(uname -s)" != "Linux" ]]; then
+    echo "Flatpak packaging runs only on Linux; this host is $(uname -s)." >&2
+    exit 2
 fi
-
-if [[ "$containerized_build" != "1" && "$needs_container" == true ]]; then
-    container_runtime=""
-    if command -v docker >/dev/null 2>&1; then
-        container_runtime="docker"
-    elif command -v podman >/dev/null 2>&1; then
-        container_runtime="podman"
-    else
-        echo "Flatpak packaging needs flatpak-builder or Docker/Podman." >&2
-        echo "Install one of those supported build paths and try again." >&2
-        exit 1
-    fi
-
-    case "$output_path" in
-        "$repo_root"/*) output_relative="${output_path#"$repo_root"/}" ;;
-        *)
-            echo "For a containerized Flatpak build, the output path must be inside this repository." >&2
-            exit 1
-            ;;
-    esac
-
-    echo "Using local linux/amd64 $container_runtime Flatpak packaging environment..."
-    # flatpak-builder starts a nested Bubblewrap sandbox. Container runtimes'
-    # default seccomp profiles can block the filter setup needed by that sandbox.
-    exec "$container_runtime" run --rm --privileged --security-opt seccomp=unconfined --platform linux/amd64 \
-        -v "fgvk-flatpak-cache:/cache" \
-        -e FGVK_DISABLE_BWRAP_SECCOMP=1 \
-        -e FGVK_FLATPAK_CONTAINERIZED=1 \
-        -e FGVK_FLATPAK_CACHE_ROOT=/cache \
-        -e FGVK_FLATPAK_WORK_ROOT=/cache \
-        -v "$monorepo_root:/workspace" \
-        -w /workspace/engine \
-        ubuntu:24.04 \
-        bash -lc '
-            set -euo pipefail
-            export DEBIAN_FRONTEND=noninteractive
-            sed -i "s|http://|https://|g" /etc/apt/sources.list.d/ubuntu.sources
-            # Minimal Ubuntu images do not contain a CA bundle. APT still
-            # verifies signed Ubuntu repository metadata during this one-time
-            # TLS bootstrap; subsequent downloads use normal certificate checks.
-            if [[ ! -s /etc/ssl/certs/ca-certificates.crt ]]; then
-                apt-get -o Acquire::https::Verify-Peer=false update -qq
-                apt-get -o Acquire::https::Verify-Peer=false install -y -qq ca-certificates
-            fi
-            apt-get update -qq
-            apt-get install -y -qq ca-certificates flatpak flatpak-builder python3 xz-utils
-            scripts/package-flatpaks.sh "/workspace/engine/'"$output_relative"'"
-        '
+if ! command -v flatpak >/dev/null 2>&1 || ! command -v flatpak-builder >/dev/null 2>&1; then
+    echo "Flatpak packaging needs flatpak and flatpak-builder on the host. Install both (for example: sudo pacman -S flatpak flatpak-builder, or sudo apt install flatpak flatpak-builder) and try again." >&2
+    exit 1
 fi
 
 for command in flatpak flatpak-builder nm python3 strings tar; do
@@ -104,13 +55,6 @@ verify_elf_class() {
     fi
 }
 
-# Docker Desktop's Linux VM may not expose CONFIG_SECCOMP_FILTER to nested
-# Bubblewrap instances. This is only set by the privileged local Docker build
-# above; normal Linux builds retain Flatpak's default sandboxing.
-if [[ "${FGVK_DISABLE_BWRAP_SECCOMP:-0}" == "1" ]]; then
-    export FLATPAK_BWRAP="$repo_root/scripts/bwrap-no-seccomp.sh"
-fi
-
 work_root="${FGVK_FLATPAK_WORK_ROOT:-${FGVK_FLATPAK_TMP_ROOT:-$build_work_root/flatpak}}"
 if [[ "$work_root" != /* ]]; then
     work_root="$repo_root/$work_root"
@@ -123,8 +67,7 @@ cleanup() {
 trap cleanup EXIT
 
 # Keep downloaded SDKs outside the disposable staging tree.  This directory is
-# ignored by Git and makes repeated native Linux release builds incremental;
-# Docker builds continue to use the explicitly configured /cache volume.
+# ignored by Git and makes repeated native Linux release builds incremental.
 cache_root="${FGVK_FLATPAK_CACHE_ROOT:-$build_cache_root/flatpak}"
 if [[ "$cache_root" != /* ]]; then
     cache_root="$repo_root/$cache_root"

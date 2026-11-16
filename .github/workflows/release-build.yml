@@ -52,8 +52,6 @@ jobs:
         run: scripts/dev.sh test-all
 
       - name: Build the release archive natively
-        env:
-          FGVK_PORTABLE_PACKAGE: "0"
         run: scripts/dev.sh package-engine
 
       - name: Write and verify the SHA-256 file

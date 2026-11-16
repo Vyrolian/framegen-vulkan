@@ -23,7 +23,8 @@ Usage: scripts/package-local.sh [--64-bit-only] [output-path]
 Build and verify a local Linux engine archive. --64-bit-only omits the 32-bit
 layer and manifest for faster native 64-bit Deck/Steam Machine test builds.
 The archive is reproducible for a given commit: SOURCE_DATE_EPOCH (default: the
-commit time of HEAD) sets every archive timestamp.
+commit time of HEAD) sets every archive timestamp. The build is native only and
+runs on Linux; any other host exits with status 2.
 EOF
 }
 
@@ -61,6 +62,10 @@ if [[ -z "$version" ]]; then
     echo "VERSION must contain a release version." >&2
     exit 1
 fi
+if [[ "$(uname -s)" != "Linux" ]]; then
+    echo "Native packaging runs only on Linux; this host is $(uname -s)." >&2
+    exit 2
+fi
 
 # Archive timestamps come from the source commit, never from the wall clock, so two builds of one
 # commit match byte for byte. Sources without git history have no commit time: they warn and use
@@ -85,12 +90,7 @@ if [[ ! "$vulkan_headers_revision" =~ ^(vulkan-sdk-|v)[0-9]+\.[0-9]+\.[0-9]+$ ]]
     exit 1
 fi
 
-portable_container="${FGVK_PORTABLE_PACKAGE:-0}"
-containerized_build="${FGVK_PACKAGE_CONTAINERIZED:-0}"
-
-# fgvk (the settings window and `fgvk <command>` entry point) is built with the host
-# toolchain in both modes. The portable Ubuntu 22.04 container has no recent Rust, so it
-# only receives the finished binary.
+# fgvk (the settings window and `fgvk <command>` entry point) is built with the host toolchain.
 fgvk_ui_binary=""
 build_fgvk_ui() {
     if ! command -v cargo >/dev/null 2>&1; then
@@ -129,77 +129,7 @@ build_fgvk_ui() {
         exit 1
     fi
 }
-if [[ "$containerized_build" == "1" ]]; then
-    fgvk_ui_binary="${FGVK_PREBUILT_FGVK:-}"
-    if [[ -z "$fgvk_ui_binary" || ! -x "$fgvk_ui_binary" ]]; then
-        echo "Containerized packaging needs the prebuilt fgvk binary from the host build." >&2
-        exit 1
-    fi
-else
-    build_fgvk_ui
-fi
-if [[ "$containerized_build" != "1" && ( "$(uname -s)" != "Linux" || "$portable_container" == "1" ) ]]; then
-    container_runtime=""
-    if command -v docker >/dev/null 2>&1; then
-        container_runtime="docker"
-    elif command -v podman >/dev/null 2>&1; then
-        container_runtime="podman"
-    else
-        echo "Portable packaging needs Docker or Podman. Install one and try again." >&2
-        exit 1
-    fi
-
-    case "$output_path" in
-        "$repo_root"/*)
-            output_relative="${output_path#"$repo_root"/}"
-            ;;
-        *)
-            echo "For a containerized build, the output path must be inside this repository." >&2
-            exit 1
-            ;;
-    esac
-
-    echo "Using local linux/amd64 $container_runtime packaging environment..."
-    docker_64_only=0
-    if [[ "$build_32_bit" == false ]]; then
-        docker_64_only=1
-    fi
-    exec "$container_runtime" run --rm --platform linux/amd64 \
-        -e FGVK_PACKAGE_64_ONLY="$docker_64_only" \
-        -e FGVK_PACKAGE_CONTAINERIZED=1 \
-        -e FGVK_VULKAN_HEADERS_REVISION="$vulkan_headers_revision" \
-        -e FGVK_RELEASE_SKIP_TESTS="${FGVK_RELEASE_SKIP_TESTS:-0}" \
-        -e FGVK_PREBUILT_FGVK=/prebuilt/fgvk \
-        -v "$fgvk_ui_binary:/prebuilt/fgvk:ro" \
-        -v "$monorepo_root:/workspace" \
-        -w /workspace/engine \
-        ubuntu:22.04 \
-        bash -lc '
-            set -euo pipefail
-            export DEBIAN_FRONTEND=noninteractive
-            sed -i "s|http://|https://|g" /etc/apt/sources.list
-            # Minimal Ubuntu images do not contain a CA bundle. APT still
-            # verifies signed Ubuntu repository metadata during this one-time
-            # TLS bootstrap; subsequent downloads use normal certificate checks.
-            if [[ ! -s /etc/ssl/certs/ca-certificates.crt ]]; then
-                apt-get -o Acquire::https::Verify-Peer=false update -qq
-                apt-get -o Acquire::https::Verify-Peer=false install -y -qq ca-certificates
-            fi
-            apt-get update -qq
-            apt-get install -y -qq \
-                git curl nodejs python3 llvm clang cmake ninja-build pkg-config g++-multilib \
-                libvulkan-dev mesa-common-dev
-            git clone --depth=1 -b "$FGVK_VULKAN_HEADERS_REVISION" \
-                https://github.com/KhronosGroup/Vulkan-Headers /tmp/vkh
-            rm -rf /usr/include/vulkan /usr/include/vk_video
-            cp -a /tmp/vkh/include/vulkan /tmp/vkh/include/vk_video /usr/include/
-            package_args=()
-            if [[ "${FGVK_PACKAGE_64_ONLY:-0}" == "1" ]]; then
-                package_args+=(--64-bit-only)
-            fi
-            scripts/package-local.sh "${package_args[@]}" "/workspace/engine/'"$output_relative"'"
-        '
-fi
+build_fgvk_ui
 
 for command in cmake ninja clang++ nm python3 readelf strings strip tar xz sha256sum; do
     if ! command -v "$command" >/dev/null 2>&1; then
@@ -208,49 +138,46 @@ for command in cmake ninja clang++ nm python3 readelf strings strip tar xz sha25
     fi
 done
 
-# Native builds compile against one explicit Vulkan-Headers include directory, so the
-# pinned revision (not the host SDK) is what the CMake header check and every compile
-# see. The container path installs the same pin into /usr/include and passes no override.
+# Builds compile against one explicit Vulkan-Headers include directory, so the pinned revision
+# (not the host SDK) is what the CMake header check and every compile see.
 native_header_args=()
-if [[ "$containerized_build" != "1" ]]; then
-    if [[ -n "${FGVK_VULKAN_HEADERS_INCLUDE_DIR:-}" ]]; then
-        native_vulkan_headers_include_dir="$FGVK_VULKAN_HEADERS_INCLUDE_DIR"
-        if [[ "$native_vulkan_headers_include_dir" != /* ]]; then
-            native_vulkan_headers_include_dir="$PWD/$native_vulkan_headers_include_dir"
-        fi
-        header_source="FGVK_VULKAN_HEADERS_INCLUDE_DIR"
-    else
-        headers_parent="$repo_root/build/vulkan-headers"
-        headers_root="$headers_parent/$vulkan_headers_revision"
-        if [[ ! -f "$headers_root/include/vulkan/vulkan_core.h" ]]; then
-            if ! command -v git >/dev/null 2>&1; then
-                echo "Native packaging needs git to fetch Vulkan-Headers $vulkan_headers_revision. Install git or set FGVK_VULKAN_HEADERS_INCLUDE_DIR." >&2
-                exit 1
-            fi
-            echo "Fetching Vulkan-Headers $vulkan_headers_revision into $headers_root..."
-            mkdir -p "$headers_parent"
-            # Clone beside the final directory and rename only after the clone succeeds, so an
-            # interrupted fetch never leaves a directory that looks complete.
-            clone_dir="$(mktemp -d "$headers_parent/.$vulkan_headers_revision.partial.XXXXXX")"
-            if ! git clone --depth=1 -b "$vulkan_headers_revision" \
-                    https://github.com/KhronosGroup/Vulkan-Headers "$clone_dir"; then
-                rm -rf "$clone_dir"
-                echo "Failed to fetch Vulkan-Headers $vulkan_headers_revision from GitHub." >&2
-                exit 1
-            fi
-            rm -rf "$headers_root"
-            mv "$clone_dir" "$headers_root"
-        fi
-        native_vulkan_headers_include_dir="$headers_root/include"
-        header_source="pinned $vulkan_headers_revision"
+if [[ -n "${FGVK_VULKAN_HEADERS_INCLUDE_DIR:-}" ]]; then
+    native_vulkan_headers_include_dir="$FGVK_VULKAN_HEADERS_INCLUDE_DIR"
+    if [[ "$native_vulkan_headers_include_dir" != /* ]]; then
+        native_vulkan_headers_include_dir="$PWD/$native_vulkan_headers_include_dir"
     fi
-    if [[ ! -f "$native_vulkan_headers_include_dir/vulkan/vulkan_core.h" ]]; then
-        echo "Vulkan-Headers include directory does not contain vulkan/vulkan_core.h: $native_vulkan_headers_include_dir" >&2
-        exit 1
+    header_source="FGVK_VULKAN_HEADERS_INCLUDE_DIR"
+else
+    headers_parent="$repo_root/build/vulkan-headers"
+    headers_root="$headers_parent/$vulkan_headers_revision"
+    if [[ ! -f "$headers_root/include/vulkan/vulkan_core.h" ]]; then
+        if ! command -v git >/dev/null 2>&1; then
+            echo "Native packaging needs git to fetch Vulkan-Headers $vulkan_headers_revision. Install git or set FGVK_VULKAN_HEADERS_INCLUDE_DIR." >&2
+            exit 1
+        fi
+        echo "Fetching Vulkan-Headers $vulkan_headers_revision into $headers_root..."
+        mkdir -p "$headers_parent"
+        # Clone beside the final directory and rename only after the clone succeeds, so an
+        # interrupted fetch never leaves a directory that looks complete.
+        clone_dir="$(mktemp -d "$headers_parent/.$vulkan_headers_revision.partial.XXXXXX")"
+        if ! git clone --depth=1 -b "$vulkan_headers_revision" \
+                https://github.com/KhronosGroup/Vulkan-Headers "$clone_dir"; then
+            rm -rf "$clone_dir"
+            echo "Failed to fetch Vulkan-Headers $vulkan_headers_revision from GitHub." >&2
+            exit 1
+        fi
+        rm -rf "$headers_root"
+        mv "$clone_dir" "$headers_root"
     fi
-    echo "Vulkan-Headers include directory ($header_source): $native_vulkan_headers_include_dir"
-    native_header_args+=("-DFGVK_VULKAN_HEADERS_INCLUDE_DIR=$native_vulkan_headers_include_dir")
+    native_vulkan_headers_include_dir="$headers_root/include"
+    header_source="pinned $vulkan_headers_revision"
 fi
+if [[ ! -f "$native_vulkan_headers_include_dir/vulkan/vulkan_core.h" ]]; then
+    echo "Vulkan-Headers include directory does not contain vulkan/vulkan_core.h: $native_vulkan_headers_include_dir" >&2
+    exit 1
+fi
+echo "Vulkan-Headers include directory ($header_source): $native_vulkan_headers_include_dir"
+native_header_args+=("-DFGVK_VULKAN_HEADERS_INCLUDE_DIR=$native_vulkan_headers_include_dir")
 
 
 mkdir -p "$build_work_root"
@@ -325,7 +252,7 @@ fi
 install -Dm755 "$fgvk_ui_binary" "$install_dir/bin/fgvk"
 strip --strip-unneeded "$install_dir/bin/fgvk"
 # The host-built fgvk inherits the build host's glibc symbol versions. Warn when it
-# will not start on the Ubuntu 22.04 (glibc 2.35) baseline used by the portable layers.
+# will not start on the Ubuntu 22.04 (glibc 2.35) baseline of the release-build workflow.
 fgvk_max_glibc="$(readelf -V "$install_dir/bin/fgvk" | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -n 1 || true)"
 if [[ -n "$fgvk_max_glibc" && "$(printf '%s\n' "${fgvk_max_glibc#GLIBC_}" 2.35 | sort -V | tail -n 1)" != "2.35" ]]; then
     echo "Warning: bin/fgvk requires $fgvk_max_glibc from the build host; it will not start on systems with an older glibc (Ubuntu 22.04 provides 2.35)." >&2

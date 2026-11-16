@@ -59,65 +59,8 @@ if (($# == 2)); then
 fi
 
 if ! command -v makepkg >/dev/null 2>&1 || ! command -v fakeroot >/dev/null 2>&1; then
-    container_runtime=""
-    if command -v docker >/dev/null 2>&1; then
-        container_runtime="docker"
-    elif command -v podman >/dev/null 2>&1; then
-        container_runtime="podman"
-    else
-        echo "Arch package verification needs makepkg, Docker, or Podman." >&2
-        exit 1
-    fi
-
-    echo "Using local linux/amd64 $container_runtime Arch packaging environment..."
-    container_arguments=(
-        run --rm --platform linux/amd64
-        -v "$script_dir:/package-source:ro"
-        -v "$archive_path:/release-archive/$expected_archive:ro"
-    )
-    container_output_path=""
-    if [[ -n "$output_path" ]]; then
-        container_arguments+=(
-            -v "$output_dir:/release-output"
-        )
-        container_output_path="/release-output/$output_name"
-    fi
-    if [[ -n "$package_epoch" ]]; then
-        container_arguments+=(
-            -e "SOURCE_DATE_EPOCH=$package_epoch"
-        )
-    fi
-    exec "$container_runtime" "${container_arguments[@]}" \
-        archlinux:base-devel \
-        bash -c '
-            set -euo pipefail
-            if ! command -v fakeroot >/dev/null 2>&1; then
-                pacman -Syu --noconfirm --needed fakeroot
-            fi
-            useradd --create-home fgvk-builder
-            install -d -o fgvk-builder -g fgvk-builder /tmp/fgvk-arch-package-source
-            cp \
-                /package-source/PKGBUILD \
-                /package-source/framegen-vulkan-bin.install \
-                /package-source/verify-release-package.sh \
-                "/release-archive/$1" \
-                /tmp/fgvk-arch-package-source/
-            chown -R fgvk-builder:fgvk-builder /tmp/fgvk-arch-package-source
-            if [[ -n "${2:-}" ]]; then
-                runuser -u fgvk-builder -- \
-                    bash /tmp/fgvk-arch-package-source/verify-release-package.sh \
-                    "/tmp/fgvk-arch-package-source/$1" \
-                    "/tmp/fgvk-arch-package-source/$3"
-                output_tmp="$2.tmp.$$"
-                trap "rm -f -- \"$output_tmp\"" EXIT
-                install -Dm644 "/tmp/fgvk-arch-package-source/$3" "$output_tmp"
-                mv -f -- "$output_tmp" "$2"
-            else
-                exec runuser -u fgvk-builder -- \
-                    bash /tmp/fgvk-arch-package-source/verify-release-package.sh \
-                    "/tmp/fgvk-arch-package-source/$1"
-            fi
-        ' _ "$expected_archive" "$container_output_path" "$expected_package"
+    echo "Arch package verification needs makepkg and fakeroot on the host. On Arch Linux, install them with: sudo pacman -S --needed base-devel" >&2
+    exit 1
 fi
 
 for command in bsdtar find od readelf; do

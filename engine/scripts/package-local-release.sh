@@ -13,8 +13,8 @@ Usage: scripts/package-local-release.sh [output-directory]
 
 Builds the release-shaped framegen-vulkan host, Flatpak, and Arch Linux artifacts
 from the current checkout without changing release pins, tagging, or publishing.
-The output directory must be inside engine/ so portable container builds can
-write the artifacts.
+The build is native and runs on Linux; it needs flatpak-builder, makepkg and
+fakeroot on the host.
 EOF
 }
 
@@ -36,13 +36,6 @@ if [[ "$output_argument" != /* ]]; then
 fi
 mkdir -p "$output_argument"
 output_dir="$(cd "$output_argument" && pwd -P)"
-case "$output_dir/" in
-    "$repo_root"/*) ;;
-    *)
-        echo "Local release output must be inside $repo_root for portable builds." >&2
-        exit 1
-        ;;
-esac
 
 for command in git python3; do
     if ! command -v "$command" >/dev/null 2>&1; then
@@ -62,11 +55,11 @@ fi
 host_archive="$output_dir/framegen-vulkan-v$version-linux.tar.xz"
 flatpak_archive="$output_dir/framegen-vulkan-v$version-flatpaks.tar.xz"
 
-echo "Building portable framegen-vulkan host archive..."
-FGVK_PORTABLE_PACKAGE=1 "$repo_root/scripts/package-local.sh" "$host_archive"
+echo "Building framegen-vulkan host archive..."
+"$repo_root/scripts/package-local.sh" "$host_archive"
 
-echo "Building portable framegen-vulkan Flatpak archive..."
-FGVK_PORTABLE_PACKAGE=1 "$repo_root/scripts/package-flatpaks.sh" "$flatpak_archive"
+echo "Building framegen-vulkan Flatpak archive..."
+"$repo_root/scripts/package-flatpaks.sh" "$flatpak_archive"
 
 host_checksum="$("${checksum_command[@]}" "$host_archive" | awk '{print $1}')"
 tracked_pkgver="$(sed -n 's/^pkgver=\(.*\)$/\1/p' "$repo_root/dist/arch/PKGBUILD" | head -n 1)"
