@@ -142,6 +142,41 @@ namespace {
             "released batches without an observed source ignored the cap interval");
     }
 
+    // A released source slower than four cap intervals is still its own
+    // cadence. Its batch spans the qualified period at any slower length; the
+    // cap interval carries the batch only until that period qualifies.
+    void testReleasedSourcePeriodBeyondFourCapIntervals() {
+        using Clock = RealFramePacer::Clock;
+        const auto start = Clock::time_point{100s};
+        constexpr Clock::duration capInterval = 8333us;
+        const auto batchMs = [&](const Clock::duration source) {
+            RealFramePacer pacer;
+            auto arrival = start;
+            pacer.observeSource(arrival, true, 2, true);
+            // Seven released intervals leave the eight-sample window incomplete.
+            for (size_t i = 0; i < 7; ++i) {
+                arrival += source;
+                pacer.observeSource(arrival, true, 2, true);
+            }
+            const auto early = pacer.scheduleReleasedOutputs(arrival + 1ms, capInterval, 2);
+            expect(early && early->interval == capInterval / 2,
+                "released batch adopted a source period before it qualified");
+            arrival += source;
+            pacer.observeSource(arrival, true, 2, true);
+            const auto batch = pacer.scheduleReleasedOutputs(arrival + 1ms, capInterval, 2);
+            expect(batch.has_value(), "released batch rejected a qualified source period");
+            return std::chrono::duration<double, std::milli>(batch->interval).count();
+        };
+        // 28 fps: 35.7 ms is longer than the former 4 x 8.333 ms bound.
+        expect(std::abs(batchMs(35700us) - 17.85) < 0.1,
+            "a 28 fps released source kept the cap interval instead of its measured period");
+        // 33 fps: 30.3 ms is inside the former bound, so this is a regression check.
+        expect(std::abs(batchMs(30300us) - 15.15) < 0.1,
+            "a 33 fps released source period stopped spacing its batch");
+        expect(std::abs(batchMs(100ms) - 50.0) < 0.1,
+            "a 10 fps released source was not spaced on its measured period");
+    }
+
     // Without a cap there is no interval to bound a released batch. Its
     // spacing comes only from a qualified, uninterrupted measured source
     // period; until that qualifies, the caller keeps its ready-output path.
@@ -2436,6 +2471,7 @@ int main() {
     testReleasedCadenceUsesBurstThroughput();
     testReleasedOutputsStayInsideTheSourceInterval();
     testReleasedOutputsUseMeasuredSourcePeriod();
+    testReleasedSourcePeriodBeyondFourCapIntervals();
     testReleasedUncappedOutputsUseQualifiedPeriod();
     testJustInTimeReleasedBatchIgnoresPendingPhase();
     testSlowerReleasedBlocksNeedConsecutiveConfirmation();

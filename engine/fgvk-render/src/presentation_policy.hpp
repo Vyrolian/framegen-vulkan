@@ -1161,10 +1161,12 @@ namespace fgvk::layer {
         /// from GPU readiness, as the worker does for an uncapped source; the
         /// release wait enforces the cap itself. The cap interval is the
         /// shortest batch period. A GPU-bound source slower than a non-binding
-        /// cap is spaced on its measured period (the block mean observeSource
-        /// learns; a slower period needs two consecutive slower blocks), so each
-        /// generated frame sits midway between reals instead of on the cap's
-        /// half slot.
+        /// cap is spaced on its measured period at any slower length (the block
+        /// mean observeSource learns; a slower period needs two consecutive
+        /// slower blocks), so each generated frame sits midway between reals
+        /// instead of on the cap's half slot. A source gap over 250 ms clears
+        /// a released cadence, so the cap interval holds until it qualifies
+        /// again. The validRate check on the resulting interval still applies.
         ///
         /// Without a cap (sourceInterval <= 0) no interval bounds the batch.
         /// Space it only on a qualified, uninterrupted measured period. Until
@@ -1190,7 +1192,7 @@ namespace fgvk::layer {
                 }
                 batchPeriod = this->sourcePeriod;
             } else if (this->sourceHasQualifiedCadence && !this->sourceInterrupted &&
-                    this->sourcePeriod > sourceInterval && this->sourcePeriod <= 4 * sourceInterval)
+                    this->sourcePeriod > sourceInterval)
                 batchPeriod = this->sourcePeriod;
             const auto interval = batchPeriod / static_cast<int64_t>(count);
             if (!OrderedPresentTimeline::validRate(1.0 / std::chrono::duration<double>(interval).count())) {
