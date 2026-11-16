@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <dlfcn.h>
+#include <iostream>
 #include <limits>
 #include <locale>
 #include <mutex>
@@ -102,6 +103,29 @@ struct WaylandPresentationFeedback::Impl {
     // mutex by presented(), read lock-free by the present path's refresh query.
     std::atomic<uint32_t> outputMilliHz{0};
     uint64_t presents{};
+    // OS1: the screen sink (see setScreenSink) and whether its unsupported-clock line was printed.
+    std::weak_ptr<ScreenSampleRing> screenSink;
+    bool clockLogged{};
+
+    // OS1: whether the screen sink is open. Every present asks for feedback while it is.
+    bool screenSinkOpen() const {
+        const auto ring = screenSink.lock();
+        return ring && ring->accepting();
+    }
+    // OS1: a presented event with a valid timestamp feeds the sink, on CLOCK_MONOTONIC only. Caller holds mutex.
+    void pushScreenSample(const Sample& sample) noexcept {
+        const auto ring = screenSink.lock();
+        if (!ring) return;
+        if (!screenSampleClockSupported(clockId)) {
+            if (!clockLogged) {
+                clockLogged = true;
+                std::clog << "framegen-vulkan: on-screen correction: wayland clock=" << clockId << " unsupported\n";
+            }
+            return;
+        }
+        ring->push(ScreenSample{sample.context, sample.source, sample.generated,
+            static_cast<int64_t>(sample.presented)});
+    }
 
     // The mode rate of the only bound output; 0 when no output or several outputs are bound.
     uint32_t onlyOutputMilliHz() const noexcept {
@@ -202,6 +226,7 @@ struct WaylandPresentationFeedback::Impl {
         sample.refresh = refresh;
         sample.flags = flags;
         item.owner->record(sample);
+        if (validTimestamp) item.owner->pushScreenSample(sample);
         item.owner->destroy(item.proxy);
         item.proxy = nullptr;
     }
@@ -281,11 +306,12 @@ struct WaylandPresentationFeedback::Impl {
         if (dispatchPending(display, queue) < 0) { cleanup(); return 0; }
         requestedId = 0;
         // Without diagnostics only the refresh source asks, on the UncappedAutoCap cadence. A rate is known
-        // from the refresh (X6) or from the output's mode while the refresh is 0 (X7).
+        // from the refresh (X6) or from the output's mode while the refresh is 0 (X7). OS1: an open screen
+        // sink asks for every present.
         const uint64_t presentIndex = presents++;
         const bool known = refreshNs.load(std::memory_order_relaxed) != 0 ||
             outputMilliHz.load(std::memory_order_relaxed) != 0;
-        if (!diagnostics && !UncappedAutoCap::waylandFeedbackDue(presentIndex, known))
+        if (!diagnostics && !screenSinkOpen() && !UncappedAutoCap::waylandFeedbackDue(presentIndex, known))
             return 0;
         Sample sample{.event = Event::Request, .id = ++nextId, .context = context,
             .source = source, .image = image, .generated = generated, .requested = hostNow(), .clock = clockId};
@@ -364,6 +390,13 @@ uint32_t WaylandPresentationFeedback::refreshNs() const noexcept {
 
 uint32_t WaylandPresentationFeedback::outputMilliHz() const noexcept {
     return impl->outputMilliHz.load(std::memory_order_acquire);
+}
+
+void WaylandPresentationFeedback::setScreenSink(std::weak_ptr<ScreenSampleRing> sink) noexcept {
+    try {
+        const std::lock_guard lock(impl->mutex);
+        impl->screenSink = std::move(sink);
+    } catch (...) {}
 }
 
 std::shared_ptr<WaylandPresentationFeedback> WaylandPresentationFeedback::create(

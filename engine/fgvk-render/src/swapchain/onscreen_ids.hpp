@@ -18,24 +18,39 @@
 
 namespace fgvk::layer {
 
+// The session kind the gate reads: a gamescope session, an X11 surface (Xwayland or plain X11), or
+// neither (native Wayland surfaces outside gamescope).
+enum class OnScreenKind : uint8_t { None, Gamescope, X11 };
+
+[[nodiscard]] constexpr const char* onScreenKindName(const OnScreenKind kind) noexcept {
+    switch (kind) {
+        case OnScreenKind::Gamescope: return "gamescope";
+        case OnScreenKind::X11: return "x11";
+        case OnScreenKind::None: break;
+    }
+    return "none";
+}
+
 // The gate, decided once per lower swapchain at creation. `reason` names the first false input
-// (a string literal); it is null when the gate is active.
+// (a string literal); it is null when the gate is active. `kind` is the session kind it was given.
 struct OnScreenGate {
     bool active{};
     const char* reason{};
+    OnScreenKind kind{};
 };
 
 // The gate's inputs are checked in this order, so the reason names the first missing one.
 // The owned-present-timing reason is not an input here: the caller adds it (see entrypoint.cpp).
-[[nodiscard]] constexpr OnScreenGate gamescopeOnScreenProfile(const bool pacingProfile,
-        const bool gamescopeSession, const bool presentId2Flag, const bool presentWait2Flag,
-        const bool waitFunction) {
-    if (!pacingProfile) return {false, "pacing-profile"};
-    if (!gamescopeSession) return {false, "gamescope-session"};
-    if (!presentId2Flag) return {false, "present-id2-flag"};
-    if (!presentWait2Flag) return {false, "present-wait2-flag"};
-    if (!waitFunction) return {false, "wait-function"};
-    return {true, nullptr};
+// `enabled` is the watcher's enable: the pacing profile (its records) or the automatic output correction (OS1),
+// which needs the watcher's screen samples and no profile. With neither, the reason is "disabled".
+[[nodiscard]] constexpr OnScreenGate onScreenGate(const bool enabled, const OnScreenKind sessionKind,
+        const bool presentId2Flag, const bool presentWait2Flag, const bool waitFunction) {
+    if (!enabled) return {false, "disabled", sessionKind};
+    if (sessionKind == OnScreenKind::None) return {false, "surface-kind", sessionKind};
+    if (!presentId2Flag) return {false, "present-id2-flag", sessionKind};
+    if (!presentWait2Flag) return {false, "present-wait2-flag", sessionKind};
+    if (!waitFunction) return {false, "wait-function", sessionKind};
+    return {true, nullptr, sessionKind};
 }
 
 // One lower swapchain's ID owner. Thread-safe: presents hand out IDs under queue->mutex, waits

@@ -745,10 +745,14 @@ void formatPacingWindowBody(const PacingWindowPayload& payload, const PacingProf
     if (const auto presentIdReleases = fgvk::layer::ReleaseGate::global().presentIdReleases(); presentIdReleases)
         line << " present_id_gate_releases=" << presentIdReleases;
     if (fgvk::layer::realOffsetAuto()) {
+        // OS1: screen_samples counts the screen samples accepted since the previous summary.
         line << " real_offset_us=" << fgvk::layer::realOffsetAutoNs.load(std::memory_order_relaxed) / 1000
              << " real_offset_auto=1 real_offset_samples="
              << fgvk::layer::realOffsetAutoSamples.load(std::memory_order_relaxed)
-             << " real_offset_held=" << fgvk::layer::realOffsetAutoHeld.load(std::memory_order_relaxed);
+             << " real_offset_held=" << fgvk::layer::realOffsetAutoHeld.load(std::memory_order_relaxed)
+             << " offset_source=" << (fgvk::layer::realOffsetScreen.load(std::memory_order_relaxed) ? "screen" : "marker")
+             << " screen_samples=" << fgvk::layer::realOffsetScreenSamples.exchange(0, std::memory_order_relaxed)
+             << " screen_dropped=" << fgvk::layer::realOffsetScreenDropped.load(std::memory_order_relaxed);
     } else {
         line << " real_offset_us=0";
     }

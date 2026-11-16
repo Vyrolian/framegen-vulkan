@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
-// GP1 tests: the gamescope on-screen gate, the lower present ID owner with its translation, and the
-// watcher. No Vulkan: the watcher's wait is a fake function.
+// GP1 and OS1 tests: the on-screen gate, the lower present ID owner with its translation, and the
+// watcher with its screen samples. No Vulkan: the watcher's wait is a fake function.
 #include "swapchain/onscreen_watch.hpp"
 
 #include <atomic>
@@ -49,30 +49,67 @@ private:
     std::vector<OnScreenRecord> records;
 };
 
+// OS1: the screen samples the watcher hands over. The watcher thread adds, the test reads.
+class ScreenRecorder {
+public:
+    void add(const ScreenSample& sample) {
+        const std::lock_guard lock(mutex);
+        samples.push_back(sample);
+    }
+    [[nodiscard]] std::vector<ScreenSample> snapshot() const {
+        const std::lock_guard lock(mutex);
+        return samples;
+    }
+private:
+    mutable std::mutex mutex;
+    std::vector<ScreenSample> samples;
+};
+
 OnScreenWatch::Emit emitInto(const std::shared_ptr<Recorder>& recorder) {
     return [recorder](const OnScreenRecord& record) { recorder->add(record); };
+}
+
+OnScreenWatch::Observe observeInto(const std::shared_ptr<ScreenRecorder>& recorder) {
+    return [recorder](const ScreenSample& sample) { recorder->add(sample); };
+}
+
+OnScreenWatch::Observe ignoreScreen() {
+    return [](const ScreenSample&) {};
 }
 
 // ---- Gate -----------------------------------------------------------------------------------------
 
 void gateNamesTheFirstFalseInput() {
-    const auto active = gamescopeOnScreenProfile(true, true, true, true, true);
-    expect(active.active && active.reason == nullptr, "gate is active when every input holds");
-    expect(std::string_view(gamescopeOnScreenProfile(false, false, false, false, false).reason) == "pacing-profile",
-        "pacing profile is the first input");
-    expect(std::string_view(gamescopeOnScreenProfile(true, false, false, false, false).reason) == "gamescope-session",
-        "gamescope session is the second input");
-    expect(std::string_view(gamescopeOnScreenProfile(true, true, false, false, false).reason) == "present-id2-flag",
+    using Kind = OnScreenKind;
+    const auto active = onScreenGate(true, Kind::Gamescope, true, true, true);
+    expect(active.active && active.reason == nullptr && active.kind == Kind::Gamescope,
+        "gate is active when every input holds, and names its session kind");
+    expect(onScreenGate(true, Kind::X11, true, true, true).active,
+        "an X11 surface (Xwayland or plain X11) passes the session kind");
+    expect(std::string_view(onScreenGate(false, Kind::Gamescope, true, true, true).reason) == "disabled",
+        "the enable (the profile or the correction) is the first input");
+    expect(std::string_view(onScreenGate(true, Kind::None, true, true, true).reason) == "surface-kind",
+        "a native Wayland surface outside gamescope is refused");
+    expect(std::string_view(onScreenGate(true, Kind::X11, false, true, true).reason) == "present-id2-flag",
         "the id2 flag is the third input");
-    expect(std::string_view(gamescopeOnScreenProfile(true, true, true, false, false).reason) == "present-wait2-flag",
+    expect(std::string_view(onScreenGate(true, Kind::X11, true, false, true).reason) == "present-wait2-flag",
         "the wait2 flag is the fourth input");
-    expect(std::string_view(gamescopeOnScreenProfile(true, true, true, true, false).reason) == "wait-function",
+    expect(std::string_view(onScreenGate(true, Kind::X11, true, true, false).reason) == "wait-function",
         "the wait function is the fifth input");
-    for (unsigned mask = 0; mask < 32; ++mask) {
-        const auto gate = gamescopeOnScreenProfile(mask & 1, mask & 2, mask & 4, mask & 8, mask & 16);
-        expect(gate.active == (mask == 31), "gate is active exactly when all five inputs hold");
+    // Every combination of the enable, the session kind (three values) and the three flags.
+    for (unsigned mask = 0; mask < 48; ++mask) {
+        const bool enabled = (mask % 2) != 0;
+        const auto kind = static_cast<Kind>((mask / 2) % 3);
+        const unsigned flags = mask / 6;
+        const auto gate = onScreenGate(enabled, kind, (flags & 1) != 0, (flags & 2) != 0, (flags & 4) != 0);
+        expect(gate.active == (enabled && kind != Kind::None && flags == 7),
+            "gate is active exactly when the profile is on, the surface kind is known and all flags hold");
         expect(gate.active == (gate.reason == nullptr), "an inactive gate always names a reason");
+        expect(gate.kind == kind, "the gate carries its session kind");
     }
+    expect(std::string_view(onScreenKindName(Kind::Gamescope)) == "gamescope" &&
+        std::string_view(onScreenKindName(Kind::X11)) == "x11" &&
+        std::string_view(onScreenKindName(Kind::None)) == "none", "session kind names");
 }
 
 // ---- Lower ID owner -------------------------------------------------------------------------------
@@ -141,8 +178,8 @@ void watcherWaitsEachIdInOrder() {
     OnScreenWatch watch([calls](const uint64_t id, const uint64_t) {
         calls->push_back(id);
         return VK_SUCCESS;
-    }, emitInto(recorder));
-    for (uint64_t id = 1; id <= 5; ++id) watch.push(id, 7);
+    }, emitInto(recorder), ignoreScreen());
+    for (uint64_t id = 1; id <= 5; ++id) watch.push(id, 7, 0, false);
     expect(recorder->waitForCount(5), "every pushed ID is emitted");
     watch.stop();
     expect(*calls == std::vector<uint64_t>{1, 2, 3, 4, 5}, "IDs are waited in push order");
@@ -161,8 +198,8 @@ void timeoutsAreRetried() {
     OnScreenWatch watch([attempts](const uint64_t id, const uint64_t) {
         if (id == 2 && ++*attempts <= 3) return VK_TIMEOUT;
         return VK_SUCCESS;
-    }, emitInto(recorder));
-    for (uint64_t id = 1; id <= 3; ++id) watch.push(id, 1);
+    }, emitInto(recorder), ignoreScreen());
+    for (uint64_t id = 1; id <= 3; ++id) watch.push(id, 1, 0, false);
     expect(recorder->waitForCount(3), "a wait that times out is retried until it completes");
     watch.stop();
     expect(*attempts == 4, "ID 2 was waited four times: three timeouts, then success");
@@ -177,8 +214,8 @@ void unfinishedWaitEndsAtTheBudget() {
         ++*attempts;
         std::this_thread::sleep_for(10ms);
         return VK_TIMEOUT;
-    }, emitInto(recorder));
-    watch.push(9, 1);
+    }, emitInto(recorder), ignoreScreen());
+    watch.push(9, 1, 0, false);
     expect(recorder->waitForCount(1), "a wait that never completes is recorded at its budget");
     watch.stop();
     const auto records = recorder->snapshot();
@@ -194,16 +231,44 @@ void anErrorEndsTheWaitsOnce() {
     OnScreenWatch watch([calls](const uint64_t id, const uint64_t) {
         calls->push_back(id);
         return id == 1 ? VK_ERROR_OUT_OF_DATE_KHR : VK_SUCCESS;
-    }, emitInto(recorder));
-    watch.push(1, 1);
+    }, emitInto(recorder), ignoreScreen());
+    watch.push(1, 1, 0, false);
     expect(recorder->waitForCount(1), "the error is emitted");
-    watch.push(2, 1);
-    watch.push(3, 1);
+    watch.push(2, 1, 0, false);
+    watch.push(3, 1, 0, false);
     watch.stop();
     expect(*calls == std::vector<uint64_t>{1}, "no wait follows an error for this swapchain");
     const auto records = recorder->snapshot();
     expect(records.size() == 1 && records[0].result == VK_ERROR_OUT_OF_DATE_KHR,
         "the error is emitted once, with its result");
+}
+
+// OS1: a completed wait (success or suboptimal) is a screen sample carrying the pushed source and
+// generated flag; an error is not, and it ends the waits.
+void watcherObservesCompletedWaitsOnly() {
+    auto recorder = std::make_shared<Recorder>();
+    auto screen = std::make_shared<ScreenRecorder>();
+    OnScreenWatch watch([](const uint64_t id, const uint64_t) {
+        if (id == 2) return VK_ERROR_OUT_OF_DATE_KHR;
+        if (id == 3) return VK_SUBOPTIMAL_KHR;
+        return VK_SUCCESS;
+    }, emitInto(recorder), observeInto(screen));
+    watch.push(1, 7, 4, false);
+    watch.push(3, 7, 5, true);
+    watch.push(2, 7, 6, false);
+    expect(recorder->waitForCount(3), "all three waits are emitted");
+    watch.stop();
+    const auto samples = screen->snapshot();
+    expect(samples.size() == 2, "only the two completed waits are screen samples");
+    expect(samples[0].context == 7 && samples[0].source == 4 && !samples[0].generated,
+        "the first sample carries the pushed context, source and generated flag");
+    expect(samples[1].context == 7 && samples[1].source == 5 && samples[1].generated,
+        "a suboptimal wait is a sample with its own generated flag");
+    expect(samples[0].screenNs > 0 && samples[1].screenNs >= samples[0].screenNs,
+        "screen samples carry steady-clock times in present order");
+    const auto records = recorder->snapshot();
+    expect(records.size() == 3 && records[2].result == VK_ERROR_OUT_OF_DATE_KHR,
+        "the error is still emitted as a record");
 }
 
 void fullRingDropsAndCounts() {
@@ -218,13 +283,13 @@ void fullRingDropsAndCounts() {
         std::unique_lock lock(*gate);
         changed->wait(lock, [&] { return *released; });
         return VK_SUCCESS;
-    }, emitInto(recorder));
-    watch.push(1, 1);
+    }, emitInto(recorder), ignoreScreen());
+    watch.push(1, 1, 0, false);
     const auto until = std::chrono::steady_clock::now() + 5s;
     while (!entered->load() && std::chrono::steady_clock::now() < until) std::this_thread::sleep_for(1ms);
     expect(entered->load(), "the first wait is in progress");
-    for (uint64_t id = 2; id < 2 + 512; ++id) watch.push(id, 1);
-    for (uint64_t id = 1000; id < 1010; ++id) watch.push(id, 1);
+    for (uint64_t id = 2; id < 2 + 512; ++id) watch.push(id, 1, 0, false);
+    for (uint64_t id = 1000; id < 1010; ++id) watch.push(id, 1, 0, false);
     expect(watch.droppedCount() == 10, "entries pushed into a full ring are dropped and counted");
     {
         const std::lock_guard lock(*gate);
@@ -245,8 +310,8 @@ void stopJoinsTheWaitInProgress() {
         std::this_thread::sleep_for(60ms);
         inFlight->store(false);
         return VK_SUCCESS;
-    }, emitInto(recorder));
-    watch.push(1, 1);
+    }, emitInto(recorder), ignoreScreen());
+    watch.push(1, 1, 0, false);
     const auto until = std::chrono::steady_clock::now() + 5s;
     while (!inFlight->load() && std::chrono::steady_clock::now() < until) std::this_thread::sleep_for(1ms);
     expect(inFlight->load(), "the wait is in progress before stop");
@@ -258,8 +323,8 @@ void stopIsBoundedByOneSlice() {
     OnScreenWatch watch([](const uint64_t, const uint64_t) {
         std::this_thread::sleep_for(std::chrono::milliseconds{OnScreenWatch::sliceNs / 1'000'000});
         return VK_TIMEOUT;
-    }, [](const OnScreenRecord&) {});
-    watch.push(1, 1);
+    }, [](const OnScreenRecord&) {}, ignoreScreen());
+    watch.push(1, 1, 0, false);
     std::this_thread::sleep_for(20ms);
     const auto started = std::chrono::steady_clock::now();
     watch.stop();
@@ -272,9 +337,9 @@ void pushAfterStopIsIgnored() {
     OnScreenWatch watch([calls](const uint64_t, const uint64_t) {
         ++*calls;
         return VK_SUCCESS;
-    }, [](const OnScreenRecord&) {});
+    }, [](const OnScreenRecord&) {}, ignoreScreen());
     watch.stop();
-    watch.push(1, 1);
+    watch.push(1, 1, 0, false);
     expect(watch.droppedCount() == 0, "a push after stop is not counted as a drop");
     expect(*calls == 0, "a push after stop never reaches the wait");
 }
@@ -298,7 +363,7 @@ void recordLineHasTheDocumentedFields() {
 void profileRegistersUntilStopped() {
     const OnScreenRegistry::Key key{31, 32};
     OnScreenProfile profile(31, 32, 7, [](const uint64_t, const uint64_t) { return VK_SUCCESS; },
-        [](const OnScreenRecord&) {});
+        [](const OnScreenRecord&) {}, ignoreScreen());
     expect(OnScreenRegistry::find(key).get() == &profile.lowerIds(),
         "a started profile registers its owner for application waits");
     profile.stop();
@@ -320,6 +385,7 @@ int main() {
     timeoutsAreRetried();
     unfinishedWaitEndsAtTheBudget();
     anErrorEndsTheWaitsOnce();
+    watcherObservesCompletedWaitsOnly();
     fullRingDropsAndCounts();
     stopJoinsTheWaitInProgress();
     stopIsBoundedByOneSlice();

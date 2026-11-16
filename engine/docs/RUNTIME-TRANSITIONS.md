@@ -120,6 +120,7 @@ Reset only state whose assumptions changed:
 - mode, multiplier, or cap changes rebuild the affected real-frame pacing;
 - configured cap changes reset the real-frame pacer and scheduler observations; a bounded scheduler rescue changes only its effective automatic cap and output clock, with rollback owned by the same rescue;
 - probe-interval-only changes update only the timer;
+- the on-screen correction's producer (OS1): the first screen sample of a context starts screen mode, and a second without one returns the correction to the GPU markers; each switch forgets the pending markers and keeps the offsets;
 - applied 3x–5x integer pacing may verify its real-frame cost against a recent trial baseline or obtain a fresh adjacent lower-load sample through the existing efficiency probe after a delayed handoff; a measured rejection restores the adjacent lower workload and output clock without history warm-up, resource replacement, or transport recovery, while interrupted evidence is discarded;
 - private-resource, mode, multiplier, refresh, or transport-recovery changes clear transient transport evidence when its assumptions are no longer valid; and
 - dormant or deferred values reset nothing until they apply.

@@ -28,6 +28,7 @@
 #include "swapchain/present_feedback_probe.hpp"
 #include "swapchain/reflex_frame_limit.hpp"
 #include "swapchain/release_gate.hpp"
+#include "swapchain/screen_samples.hpp"
 #include "swapchain/surface_origin.hpp"
 #include "swapchain/uncapped_auto_cap.hpp"
 
@@ -263,11 +264,20 @@ namespace fgvk::layer {
         /// GP1: unregisters the on-screen owner and joins its watcher. Call before the lower swapchain is destroyed.
         void stopOnScreenProfile() noexcept;
 #endif
+        /// OS1: decides which producer feeds this lower swapchain's automatic output correction and logs the
+        /// decision, once per lower swapchain. `watcherActive` and `gateReason` are the GP1 gate's result.
+        void configureScreenCorrection(bool watcherActive, const char* gateReason);
     private:
 #if defined(VK_KHR_present_wait2) && defined(VK_KHR_present_id2)
         /// GP1: gives the deferred worker the on-screen owner and watcher, when the gate is active.
         void attachDeferredOnScreen();
 #endif
+        /// OS1: the screen samples of this swapchain, created on first use and shared with the watcher's observer,
+        /// the deferred worker and the native Wayland sink.
+        std::shared_ptr<ScreenSampleRing> screenRing();
+        /// OS1: hands the screen ring to the deferred worker, and to the Wayland observer as its sink when that is
+        /// the source. Called wherever the deferred worker is created.
+        void attachScreenSamples();
         struct PresentInvocation {
             const vk::Vulkan& vk;
             VkQueue queue;
@@ -451,6 +461,10 @@ namespace fgvk::layer {
         RecoveryState recoveryState;
         DiagnosticsState diagnosticsState;
         std::unique_ptr<present_diagnostics::PacingProfile> pacingProfile;
+        // OS1: the source of each application present. It advances where PacingProfile::beginSource advances
+        // its batch, with or without the profile, so the output correction never depends on the profile. While
+        // the profile is on, it equals the profile's sourceOrdinal() at every use.
+        uint64_t sourceSerial{};
         // Diagnostic GPU split timestamps, render and output halves. Created on first use
         // with the split gate on; recent halves wait here for their backend sample.
         std::optional<vk::CalibratedClock> splitRenderClock;
@@ -648,6 +662,10 @@ namespace fgvk::layer {
             std::span<const VkSemaphore> applicationWaitSemaphores,
             std::span<const uint32_t> acquiredImageIndices,
             VkImage originalImage);
+        // OS1: the screen ring (see screenRing) and the source chosen at creation (see configureScreenCorrection).
+        // Declared before onScreen and deferredPresent, so both producers and the worker are gone before it.
+        std::shared_ptr<ScreenSampleRing> screenSamples;
+        ScreenSource screenSource{ScreenSource::None};
         // GP1: the on-screen profile of this lower swapchain, when its gate is active. Declared before
         // deferredPresent, so the worker is joined before the owner and watcher are destroyed.
         std::unique_ptr<OnScreenProfile> onScreen;

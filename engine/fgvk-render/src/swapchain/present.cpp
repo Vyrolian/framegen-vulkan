@@ -227,6 +227,8 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
             owner.pacingProfile->publicationCost(DiagnosticsClock::now() - now);
         }
     } profileCompletion{*this, swapchain};
+    // OS1: advanced at the same point as the profile's batch, and also without the profile.
+    ++this->sourceSerial;
     if (this->pacingProfile) {
         this->pacingProfile->beginSource(DiagnosticsClock::now());
         present_diagnostics::bindApplicationPresentSource(this->diagnosticsState.contextId,

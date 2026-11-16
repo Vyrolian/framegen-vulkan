@@ -6,6 +6,8 @@
 #include <memory>
 #include <vulkan/vulkan_core.h>
 
+#include "swapchain/screen_samples.hpp"
+
 struct wl_display;
 struct wl_surface;
 
@@ -19,6 +21,10 @@ public:
     static std::shared_ptr<WaylandPresentationFeedback> create(wl_display*, wl_surface*, bool diagnostics) noexcept;
     ~WaylandPresentationFeedback();
     void stop() noexcept;
+    // OS1: the ring that presented outputs of this surface are pushed to, held weakly. While the sink is open
+    // every present asks for feedback (not only on the refresh cadence). A presented event with a valid
+    // timestamp on CLOCK_MONOTONIC is pushed; other clocks give no sample.
+    void setScreenSink(std::weak_ptr<ScreenSampleRing> sink) noexcept;
     // The output refresh in nanoseconds from the last presented feedback; 0 when unknown or variable. Lock-free.
     [[nodiscard]] uint32_t refreshNs() const noexcept;
     // The current-mode rate of the output the surface was last presented on, in mHz; set only while the

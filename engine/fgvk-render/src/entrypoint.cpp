@@ -2069,6 +2069,9 @@ namespace {
             }
 
 #if defined(VK_KHR_present_wait2) && defined(VK_KHR_present_id2)
+            // OS1: the screen source of the automatic correction is chosen from the gate's result below.
+            bool screenWatcher{};
+            const char* screenGateReason{"headers"};
             // GP1: the gamescope on-screen gate, decided once per lower swapchain from the application's own
             // create flags. Owned present timing already adds a VkPresentId2KHR node of its own, so that
             // case stays unavailable until its ID is owned too (see the GP1 report).
@@ -2076,30 +2079,46 @@ namespace {
                 const auto nextWaitForPresent2 = reinterpret_cast<PFN_vkWaitForPresent2KHR>(
                     instance_info->funcs.GetDeviceProcAddr(device, "vkWaitForPresent2KHR"));
                 const bool profiling = present_diagnostics::pacingProfileEnabled();
-                auto gate = gamescopeOnScreenProfile(profiling, layer_info->root.gamescopeSession(),
+                // OS1: the automatic correction needs the watcher's samples, with or without the profile.
+                const bool correction = realOffsetAuto() && onScreenCorrectionEnvironment();
+                // The session kind: a gamescope session first, else an X11 surface (Xwayland or plain X11).
+                // Native Wayland surfaces outside gamescope have no kind and never take the watcher.
+                const auto origin = surfaceOrigin(info->surface);
+                const OnScreenKind kind = layer_info->root.gamescopeSession() ? OnScreenKind::Gamescope
+                    : origin == SurfaceOrigin::Xlib || origin == SurfaceOrigin::Xcb ? OnScreenKind::X11
+                    : OnScreenKind::None;
+                // The gate's enable: the profile (records) or the correction (OS1).
+                auto gate = onScreenGate(profiling || correction, kind,
                     (newInfo.flags & VK_SWAPCHAIN_CREATE_PRESENT_ID_2_BIT_KHR) != 0,
                     (newInfo.flags & VK_SWAPCHAIN_CREATE_PRESENT_WAIT_2_BIT_KHR) != 0,
                     nextWaitForPresent2 != nullptr);
-                if (gate.active && ownedPresentTiming) gate = {false, "owned-present-timing"};
+                if (gate.active && ownedPresentTiming) gate = {false, "owned-present-timing", kind};
                 if (gate.active) {
                     try {
                         if (auto* context = layer_info->root.findSwapchainContext(*swapchain))
                             context->startOnScreenProfile(device, *swapchain, nextWaitForPresent2);
                     } catch (const std::exception& e) {
-                        gate = {false, "watcher-thread"};
+                        gate = {false, "watcher-thread", kind};
                         std::cerr << "framegen-vulkan: gamescope on-screen watcher could not start: "
                                   << e.what() << '\n';
                     }
                 }
                 if (profiling) {
+                    std::clog << "framegen-vulkan: gamescope on-screen profile: state=";
                     if (gate.active)
-                        std::clog << "framegen-vulkan: gamescope on-screen profile: state=active\n";
+                        std::clog << "active";
                     else
-                        std::clog << "framegen-vulkan: gamescope on-screen profile: state=unavailable reason="
-                                  << gate.reason << '\n';
+                        std::clog << "unavailable reason=" << gate.reason;
+                    if (kind != OnScreenKind::None)
+                        std::clog << " kind=" << onScreenKindName(kind);
+                    std::clog << '\n';
                 }
+                screenWatcher = gate.active;
+                screenGateReason = gate.reason;
             }
 #endif
+            if (auto* context = layer_info->root.findSwapchainContext(*swapchain))
+                context->configureScreenCorrection(screenWatcher, screenGateReason);
             installInternalSwapchainImages(it->second, *info, *swapchain,
                 swapchainInfo);
 

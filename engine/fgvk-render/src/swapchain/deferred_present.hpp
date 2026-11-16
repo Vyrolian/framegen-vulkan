@@ -7,6 +7,7 @@
 #include "swapchain/onscreen_watch.hpp"
 #include "swapchain/output_margin.hpp"
 #include "swapchain/present_marker.hpp"
+#include "swapchain/screen_samples.hpp"
 #include "swapchain/create_policy.hpp"
 #include "swapchain/retirement.hpp"
 #include "present_diagnostics.hpp"
@@ -489,6 +490,8 @@ public:
         }
         changed.notify_one();
         worker.join();
+        // OS1: the producers may still hold the ring; after this their pushes are no-ops.
+        if (screenRing) screenRing->close();
         if (registeredSwapchain) {
             const std::lock_guard lock(deliveriesMutex());
             const DeliveryKey key{device, registeredSwapchain};
@@ -621,6 +624,11 @@ public:
     void setOnScreen(OnScreenIds* ids, OnScreenWatch* watch) {
         this->onScreenIds = ids;
         this->onScreenWatch = watch;
+    }
+    // OS1: the screen ring this worker reads for its automatic correction, or null for none. Set once, before the
+    // first job is admitted, like setOnScreen.
+    void setScreenSamples(std::shared_ptr<ScreenSampleRing> ring) {
+        this->screenRing = std::move(ring);
     }
     // Only fixed-size metadata is admitted. Copy every scalar before returning
     // to the application; unknown nodes and caller-owned result arrays stay
@@ -1016,15 +1024,22 @@ private:
     // just-in-time batches.
     BatchPhaseLock batchPhase;
     uint64_t markerCursor{};
-    // Caller holds queue->mutex, right after a worker present was marked.
+    // OS1, worker thread only (with outputOffsetController): the screen ring and its cursor, and the
+    // producer mode of this context's correction.
+    std::shared_ptr<ScreenSampleRing> screenRing;
+    uint64_t screenCursor{};
+    ScreenOffsetMode screenMode;
+    // Caller holds queue->mutex, right after a worker present was marked. OS1: the screen samples of this
+    // context are read first; while they drive the correction, the marker samples are drained and ignored.
     void observeOutputOffsetLocked(const uint64_t context) noexcept {
         if (!realOffsetAuto()) return;
+        const bool screen = screenRing && observeScreenSamplesLocked(context);
         std::array<PresentMarkerSample, 16> samples;
         for (;;) {
             const auto count = queue->readMarkerSamplesLocked(&markerCursor, samples.data(), samples.size());
             for (size_t i = 0; i < count; ++i) {
                 const auto& sample = samples[i];
-                if (sample.context != context) continue;
+                if (sample.context != context || screen) continue;
                 const auto heldBefore = outputOffsetController.held;
                 if (outputOffsetController.observe(sample.generated, sample.source,
                         std::chrono::nanoseconds{sample.gpuNs})) {
@@ -1037,6 +1052,33 @@ private:
             }
             if (count < samples.size()) return;
         }
+    }
+    // OS1, caller holds queue->mutex: feeds this context's screen samples to the controller in present order.
+    // The first sample starts screen mode and each switch forgets the pending markers (offsets are kept). No
+    // sample for ScreenOffsetMode::timeoutNs ends it. Returns whether screen mode is on after this call.
+    bool observeScreenSamplesLocked(const uint64_t context) noexcept {
+        const int64_t now = steadyNanoseconds(Clock::now());
+        std::array<ScreenSample, 16> samples;
+        for (;;) {
+            const size_t count = screenRing->read(&screenCursor, samples.data(), samples.size());
+            for (size_t i = 0; i < count; ++i) {
+                const ScreenSample& sample = samples[i];
+                if (sample.context != context) continue;
+                if (screenMode.sample(now)) outputOffsetController.forget();
+                if (outputOffsetController.observe(sample.generated, sample.source,
+                        std::chrono::nanoseconds{sample.screenNs})) {
+                    realOffsetScreenSamples.fetch_add(1, std::memory_order_relaxed);
+                    realOffsetAutoNs.store(outputOffsetController.equivalentRealOffset().count(),
+                        std::memory_order_relaxed);
+                    realOffsetAutoSamples.fetch_add(1, std::memory_order_relaxed);
+                }
+            }
+            if (count < samples.size()) break;
+        }
+        if (screenMode.expire(now)) outputOffsetController.forget();
+        realOffsetScreen.store(screenMode.screen(), std::memory_order_relaxed);
+        realOffsetScreenDropped.store(screenRing->dropped(), std::memory_order_relaxed);
+        return screenMode.screen();
     }
     std::thread worker;
 
@@ -1129,7 +1171,7 @@ private:
             const VkResult result) noexcept {
         if (!onScreenIds || !lowerId || result < 0) return;
         if (!job.generated) onScreenIds->record(applicationIdOf(job.metadata), lowerId);
-        onScreenWatch->push(lowerId, ready.context);
+        onScreenWatch->push(lowerId, ready.context, ready.source, job.generated);
     }
 
     // One registry entry per live worker, shared by all of its identified batches.

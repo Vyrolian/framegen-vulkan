@@ -1,11 +1,14 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "wayland_presentation_feedback.hpp"
 #include "present_diagnostics.hpp"
+#include "swapchain/screen_samples.hpp"
 
+#include <array>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <memory>
 #include <string>
 #include <unistd.h>
 
@@ -105,6 +108,54 @@ int main() {
         observer->stop();
         expect(observer->outputMilliHz()==165'000u); // stop keeps the last value
         expect(fgvk_test_wayland_objects()==0);
+        observer.reset();
+        expect(fgvk_test_wayland_objects()==0);
+    }
+    // OS1: an open screen sink asks for feedback on every present, and each presented event reaches it with
+    // its context, source, generated flag and CLOCK_MONOTONIC time. Presented event k is dispatched by present k+1.
+    {
+        fgvk_test_wayland_mode(0);
+        auto observer=WaylandPresentationFeedback::create(fgvk_test_wayland_display(),fgvk_test_wayland_surface(),false);
+        expect(static_cast<bool>(observer));
+        auto ring=std::make_shared<fgvk::layer::ScreenSampleRing>();
+        observer->setScreenSink(ring);
+        lowerResult=VK_SUCCESS;
+        for (int i=0;i<12;++i)
+            expect(WaylandPresentationFeedback::observe(observer.get(),lower,VK_NULL_HANDLE,info,
+                200,static_cast<uint64_t>(i/2+1),i%2)==VK_SUCCESS);
+        expect(fgvk_test_wayland_feedbacks()==12); // every present asks while the sink is open
+        uint64_t cursor=0;
+        std::array<fgvk::layer::ScreenSample,16> out{};
+        const size_t count=ring->read(&cursor,out.data(),out.size());
+        expect(count==11); // presents 0 to 10; present 11's event is still pending
+        for (size_t k=0;k<count;++k) {
+            expect(out[k].context==200 && out[k].source==k/2+1 && out[k].generated==(k%2==1));
+            // The fixture's presented time is 10 s plus the commit's sequence times 8 ms.
+            expect(out[k].screenNs==10'000'000'000LL+static_cast<int64_t>(k+1)*8'000'000LL);
+        }
+        observer->stop();
+        expect(fgvk_test_wayland_objects()==0);
+        observer.reset();
+        expect(fgvk_test_wayland_objects()==0);
+    }
+    // OS1: without an open sink (closed, or its ring gone) only the refresh cadence asks, as before.
+    for (int variant=0;variant<2;++variant) {
+        fgvk_test_wayland_mode(0);
+        auto observer=WaylandPresentationFeedback::create(fgvk_test_wayland_display(),fgvk_test_wayland_surface(),false);
+        expect(static_cast<bool>(observer));
+        if (variant==0) {
+            auto ring=std::make_shared<fgvk::layer::ScreenSampleRing>();
+            observer->setScreenSink(ring);
+            ring->close();
+        } else {
+            auto ring=std::make_shared<fgvk::layer::ScreenSampleRing>();
+            observer->setScreenSink(ring);
+        }
+        lowerResult=VK_SUCCESS;
+        for (int i=0;i<480;++i)
+            expect(WaylandPresentationFeedback::observe(observer.get(),lower,VK_NULL_HANDLE,info,7,7,false)==VK_SUCCESS);
+        expect(fgvk_test_wayland_feedbacks()==2); // presents 0 and 240 only
+        observer->stop();
         observer.reset();
         expect(fgvk_test_wayland_objects()==0);
     }

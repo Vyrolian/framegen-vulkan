@@ -3389,6 +3389,34 @@ static_assert(outputOffsetSimulation(-500us));
 static_assert(outputOffsetSimulation(0us));
 static_assert(outputOffsetSimulation(400us, true));
 static_assert(outputOffsetSimulation(-600us, true));
+// OS1: the swapchain's source counter starts at 0 and advances once per present, with or without the pacing
+// profile. Its values are nonzero and consecutive, so each batch's real carries the previous present's source
+// and its generated output and closing real carry this one. The controller integrates with no profile at all.
+constexpr bool unprofiledSourcesIntegrate(std::chrono::nanoseconds bias) {
+    using namespace std::chrono_literals;
+    OutputOffsetController controller;
+    constexpr std::chrono::nanoseconds period = 13ms;
+    uint64_t sourceSerial{};
+    uint64_t previous{};
+    for (int k = 1; k <= 400; ++k) {
+        // The present advances the counter before its batch is marked, as Swapchain::present does.
+        const uint64_t source = ++sourceSerial;
+        if (source == 0 || source != previous + 1) return false;
+        previous = source;
+        const auto generated = period * k - period / 2 + bias + controller.offset[0];
+        (void)controller.observe(true, source, generated);
+        // The first closing real has no opener yet, so it only starts the chain.
+        const bool used = controller.observe(false, source, period * k);
+        if (k > 1 && !used) return false;
+        if (controller.offset[0] > OutputOffsetController::limit ||
+                controller.offset[0] < -OutputOffsetController::limit)
+            return false;
+    }
+    const auto miss = controller.offset[0] + bias;
+    return controller.accepted == 399 && previous == 400 && miss <= 50us && miss >= -50us;
+}
+static_assert(unprofiledSourcesIntegrate(500us));
+static_assert(unprofiledSourcesIntegrate(-500us));
 // W2: at 4x each generated position has its own bias. Each converges to its own bias, within 10 us,
 // and the mean of the biases alone would not give that (it would leave every position off by its
 // own deviation from the mean).
@@ -3605,6 +3633,9 @@ constexpr std::chrono::nanoseconds outputOffsetWindup(bool hold) {
 static_assert(outputOffsetWindup(false) == -OutputOffsetController::limit);
 static_assert(outputOffsetWindup(true) >= -std::chrono::microseconds{270});
 static_assert(outputOffsetWindup(true) <= -std::chrono::microseconds{200});
+// OS1: the limit is 2.5 ms, still under a quarter of the 2x output interval at 120 fps base. The constant
+// error checks above (outputOffsetSimulation, outputOffsetWindup) hold at this limit.
+static_assert(OutputOffsetController::limit == std::chrono::microseconds{2500});
 
 // L2 (low_latency): readiness at a simulated instant. The wait returns once the value's instant has
 // passed, within its timeout, and otherwise times out at the timeout.

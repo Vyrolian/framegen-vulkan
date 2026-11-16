@@ -328,6 +328,13 @@ if(BUILD_TESTING)
     add_test(NAME onscreen-profile COMMAND fgvk-onscreen-profile-tests)
     fgvk_register_portable_policy_test(fgvk-onscreen-profile-tests onscreen-profile)
 
+    # OS1: the screen sample ring, the producer mode and the source rule (pure).
+    add_executable(fgvk-screen-samples-tests "tests/screen_samples_tests.cpp")
+    target_include_directories(fgvk-screen-samples-tests PRIVATE "src")
+    target_link_libraries(fgvk-screen-samples-tests PRIVATE Threads::Threads)
+    add_test(NAME screen-samples COMMAND fgvk-screen-samples-tests)
+    fgvk_register_portable_policy_test(fgvk-screen-samples-tests screen-samples)
+
     # Reflex frame limit: the pure interval rule and the per-swapchain request state.
     add_executable(fgvk-reflex-frame-limit-tests "tests/reflex_frame_limit_tests.cpp")
     target_include_directories(fgvk-reflex-frame-limit-tests PRIVATE "src")

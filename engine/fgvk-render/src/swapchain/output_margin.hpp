@@ -67,6 +67,11 @@ inline std::atomic<bool> realOffsetAutoConfigured{false};
 inline std::atomic<int64_t> realOffsetAutoNs{0};
 inline std::atomic<uint64_t> realOffsetAutoSamples{0};
 inline std::atomic<uint64_t> realOffsetAutoHeld{0};
+// OS1, diagnostics only: the last worker's correction source (true: screen samples), the accepted screen samples
+// since the last summary, and the screen ring's overflow total.
+inline std::atomic<bool> realOffsetScreen{false};
+inline std::atomic<uint64_t> realOffsetScreenSamples{0};
+inline std::atomic<uint64_t> realOffsetScreenDropped{0};
 
 /// W2: one correction per generated output. Position k is the k-th generated output of a batch
 /// (k < maxPositions). Its ideal point is the (k + 1)-th of expectedGenerated + 1 even points
@@ -78,7 +83,7 @@ inline std::atomic<uint64_t> realOffsetAutoHeld{0};
 struct OutputOffsetController {
     using Duration = std::chrono::nanoseconds;
     static constexpr size_t maxPositions = 4;
-    static constexpr Duration limit = std::chrono::microseconds{1000};
+    static constexpr Duration limit = std::chrono::microseconds{2500};
     static constexpr Duration errorClamp = std::chrono::milliseconds{1};
     static constexpr Duration errorReject = std::chrono::milliseconds{3};
     static constexpr Duration minStep = std::chrono::milliseconds{8};

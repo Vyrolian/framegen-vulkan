@@ -5,9 +5,11 @@
 // each successful lower present ID onto a bounded ring; one thread (fgvk-onscreen) waits each ID in
 // order through the next layer's vkWaitForPresent2KHR and emits when it completed. The push is O(1),
 // never waits for the thread, and never allocates. The wait function and the emitter are injected,
-// so the tests run without a driver.
+// so the tests run without a driver. OS1: a completed wait is also a screen sample, handed to the
+// injected observer.
 
 #include "swapchain/onscreen_ids.hpp"
+#include "swapchain/screen_samples.hpp"
 
 #include <array>
 #include <atomic>
@@ -58,16 +60,20 @@ public:
     // wait(lowerId, timeoutNs) is the next layer's vkWaitForPresent2KHR for this swapchain.
     using Wait = std::function<VkResult(uint64_t lowerId, uint64_t timeoutNs)>;
     using Emit = std::function<void(const OnScreenRecord& record)>;
+    // OS1: receives each completed wait (VK_SUCCESS or VK_SUBOPTIMAL_KHR) as a screen sample.
+    using Observe = std::function<void(const ScreenSample& sample)>;
 
     // Starts the thread. It may throw std::system_error when the thread cannot start.
-    OnScreenWatch(Wait wait, Emit emit);
+    OnScreenWatch(Wait wait, Emit emit, Observe observe);
     ~OnScreenWatch() { stop(); }
     OnScreenWatch(const OnScreenWatch&) = delete;
     OnScreenWatch& operator=(const OnScreenWatch&) = delete;
 
     // Worker push: O(1), never waits for the thread, never allocates. A full ring drops the entry
-    // and counts it. Nothing is queued once stop() or an error has ended the waits.
-    void push(const uint64_t lowerId, const uint64_t context) noexcept {
+    // and counts it. Nothing is queued once stop() or an error has ended the waits. `source` and
+    // `generated` identify the output for the screen sample (OS1).
+    void push(const uint64_t lowerId, const uint64_t context, const uint64_t source,
+            const bool generated) noexcept {
         {
             const std::lock_guard lock(mutex);
             if (stopping || dead) return;
@@ -75,7 +81,7 @@ public:
                 ++dropped;
                 return;
             }
-            ring[(head + count) % capacity] = Entry{lowerId, context};
+            ring[(head + count) % capacity] = Entry{lowerId, context, source, generated};
             ++count;
         }
         changed.notify_one();
@@ -98,6 +104,8 @@ private:
     struct Entry {
         uint64_t lowerId{};
         uint64_t context{};
+        uint64_t source{};
+        bool generated{};
     };
     void run();
     std::atomic_bool sawSuccess{false};
@@ -108,6 +116,7 @@ private:
 
     Wait wait;
     Emit emit;
+    Observe observe;
     mutable std::mutex mutex;
     std::condition_variable changed;
     std::array<Entry, capacity> ring{};
@@ -126,9 +135,9 @@ private:
 class OnScreenProfile {
 public:
     OnScreenProfile(const uint64_t device, const uint64_t swapchain, const uint64_t context,
-            OnScreenWatch::Wait wait, OnScreenWatch::Emit emit) :
+            OnScreenWatch::Wait wait, OnScreenWatch::Emit emit, OnScreenWatch::Observe observe) :
             key{device, swapchain}, ids(std::make_shared<OnScreenIds>()),
-            watcher(std::make_unique<OnScreenWatch>(std::move(wait), std::move(emit))),
+            watcher(std::make_unique<OnScreenWatch>(std::move(wait), std::move(emit), std::move(observe))),
             contextId(context) {
         OnScreenRegistry::add(key, ids);
     }

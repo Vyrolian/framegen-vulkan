@@ -12,8 +12,8 @@ int64_t nanoseconds(const OnScreenWatch::Clock::time_point time) {
 }
 }
 
-OnScreenWatch::OnScreenWatch(Wait waitFunction, Emit emitFunction) :
-        wait(std::move(waitFunction)), emit(std::move(emitFunction)),
+OnScreenWatch::OnScreenWatch(Wait waitFunction, Emit emitFunction, Observe observeFunction) :
+        wait(std::move(waitFunction)), emit(std::move(emitFunction)), observe(std::move(observeFunction)),
         thread([this] { run(); }) {}
 
 void OnScreenWatch::stop() noexcept {
@@ -53,8 +53,11 @@ void OnScreenWatch::run() {
         // A wait cut short by stop() is not an observation.
         if (interrupted) return;
         const auto done = Clock::now();
-        if (result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR)
+        if (result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR) {
             sawSuccess.store(true, std::memory_order_release);
+            // OS1: a completed wait is the output's screen sample, on the steady clock like started_ns.
+            observe(ScreenSample{entry.context, entry.source, entry.generated, nanoseconds(done)});
+        }
         emit(OnScreenRecord{entry.context, entry.lowerId, result, nanoseconds(entered), nanoseconds(done),
             droppedCount()});
         if (result < 0) {

@@ -148,6 +148,7 @@ bool Swapchain::beginDeferredPresentBatch(const vk::Vulkan& vk, const size_t lim
                 this->info.deferredPresentQueue, vk.df().QueuePresentKHR, vk.dev(), vk.df().QueueSubmit);
             this->deferredPresent->setOwnedPresentIdStorage(&this->presentFeedbackTag);
             this->attachDeferredOnScreen();
+            this->attachScreenSamples();
         } catch (const std::exception&) { return false; }
     }
     return this->deferredPresent->beginBatch(limit, {
@@ -166,7 +167,7 @@ bool Swapchain::beginDeferredPresentBatch(const vk::Vulkan& vk, const size_t lim
         .observer = this->info.waylandPresentation,
         .observe = this->info.waylandPresentation ? &WaylandPresentationFeedback::observe : nullptr,
         .context = this->diagnosticsState.contextId,
-        .source = this->pacingProfile ? this->pacingProfile->sourceOrdinal() : 0,
+        .source = this->sourceSerial,
         .trace = present_diagnostics::pacingFrameTraceEnabled(),
         .profile = static_cast<bool>(this->pacingProfile),
     });
@@ -331,6 +332,7 @@ VkResult Swapchain::queuePresentWithRetirementFence(
                         this->info.deferredPresentQueue, vk.df().QueuePresentKHR, vk.dev(), vk.df().QueueSubmit);
                     this->deferredPresent->setOwnedPresentIdStorage(&this->presentFeedbackTag);
                     this->attachDeferredOnScreen();
+                    this->attachScreenSamples();
                 } catch (const std::exception&) {
                     // Thread/resource exhaustion retains synchronous delivery.
                 }
@@ -422,7 +424,7 @@ VkResult Swapchain::queuePresentWithRetirementFence(
                 if (this->info.waylandPresentation)
                     return WaylandPresentationFeedback::observe(this->info.waylandPresentation.get(),
                         vk.df().QueuePresentKHR, selectedQueue, selectedInfo, this->diagnosticsState.contextId,
-                        this->pacingProfile ? this->pacingProfile->sourceOrdinal() : 0, observation.generated,
+                        this->sourceSerial, observation.generated,
                         &feedbackId);
                 return vk.df().QueuePresentKHR(selectedQueue, &selectedInfo);
             };
@@ -441,8 +443,7 @@ VkResult Swapchain::queuePresentWithRetirementFence(
                     });
                     // T4: the private queue marker, outside the timed present bracket.
                     this->info.deferredPresentQueue->markPresentLocked(this->diagnosticsState.contextId,
-                        this->pacingProfile ? this->pacingProfile->sourceOrdinal() : 0, feedbackId,
-                        observation.generated);
+                        this->sourceSerial, feedbackId, observation.generated);
                     return presented;
                 }
                 if (this->onScreen) {
@@ -463,7 +464,8 @@ VkResult Swapchain::queuePresentWithRetirementFence(
 #if defined(VK_KHR_present_id2)
             if (presented >= 0 && this->onScreen && onScreenLowerId) {
                 this->onScreen->lowerIds().record(applicationId, onScreenLowerId);
-                this->onScreen->watch().push(onScreenLowerId, this->diagnosticsState.contextId);
+                this->onScreen->watch().push(onScreenLowerId, this->diagnosticsState.contextId,
+                    this->sourceSerial, observation.generated);
             }
 #endif
             return presented;

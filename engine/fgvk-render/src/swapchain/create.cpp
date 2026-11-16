@@ -5,6 +5,7 @@
 #include "swapchain/retirement.hpp"
 #include "layer_role.hpp"
 #include "present_diagnostics.hpp"
+#include "wayland_presentation_feedback.hpp"
 #include "x11_refresh.hpp"
 #include "fgvk-common/helpers/errors.hpp"
 #include "fgvk-common/helpers/file_descriptors.hpp"
@@ -285,11 +286,18 @@ void Swapchain::startOnScreenProfile(const VkDevice device, const VkSwapchainKHR
         return waitForPresent2(device, swapchain, &info);
     };
     const auto emit = [](const OnScreenRecord& record) {
+        // Diagnostics only: without the pacing profile the watcher still feeds the
+        // correction, and no record is formatted.
+        if (!present_diagnostics::pacingProfileEnabled()) return;
         present_diagnostics::writePacingProfileRecords(
             formatOnScreenRecord(record, static_cast<long>(getpid())));
     };
+    // OS1: each completed wait is a screen sample for the ring that the worker reads.
+    const auto observe = [ring = this->screenRing()](const ScreenSample& sample) {
+        ring->push(sample);
+    };
     this->onScreen = std::make_unique<OnScreenProfile>(handleBits(device), handleBits(swapchain),
-        this->diagnosticsState.contextId, wait, emit);
+        this->diagnosticsState.contextId, wait, emit, observe);
 }
 
 void Swapchain::stopOnScreenProfile() noexcept {
@@ -301,3 +309,24 @@ void Swapchain::attachDeferredOnScreen() {
         this->deferredPresent->setOnScreen(&this->onScreen->lowerIds(), &this->onScreen->watch());
 }
 #endif
+
+void Swapchain::configureScreenCorrection(const bool watcherActive, const char* gateReason) {
+    const auto plan = screenCorrectionSource(realOffsetAuto(), onScreenCorrectionEnvironment(),
+        watcherActive, gateReason, static_cast<bool>(this->info.waylandPresentation));
+    this->screenSource = plan.source;
+    std::clog << "framegen-vulkan: on-screen correction: source=" << screenSourceName(plan.source)
+              << " reason=" << plan.reason << '\n';
+}
+
+std::shared_ptr<ScreenSampleRing> Swapchain::screenRing() {
+    if (!this->screenSamples) this->screenSamples = std::make_shared<ScreenSampleRing>();
+    return this->screenSamples;
+}
+
+void Swapchain::attachScreenSamples() {
+    if (this->screenSource == ScreenSource::None || !this->deferredPresent) return;
+    const auto ring = this->screenRing();
+    this->deferredPresent->setScreenSamples(ring);
+    if (this->screenSource == ScreenSource::Wayland && this->info.waylandPresentation)
+        this->info.waylandPresentation->setScreenSink(ring);
+}
