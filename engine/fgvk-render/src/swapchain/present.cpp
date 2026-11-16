@@ -1066,8 +1066,10 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         // interval, or on the measured source period when a GPU-bound source
         // is slower, while the game continues; the release wait owns the cap.
         const auto count = plan.scheduledGeneratedFrames.size() + 1;
+        // BH3: a held batch (batch_hold) is just in time with or without low_latency.
+        const bool justInTime = latency.justInTime || this->profile.batch_hold;
         invocation.pacedOutputs = this->realFramePacer.scheduleReleasedOutputs(
-            DiagnosticsClock::now(), capInterval, count, latency.justInTime);
+            DiagnosticsClock::now(), capInterval, count, justInTime);
         if (invocation.pacedOutputs) {
             const auto batchPeriod = invocation.pacedOutputs->interval * static_cast<int64_t>(count);
             invocation.readyOutputPacing = true;
@@ -1080,10 +1082,10 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
             // at most a quarter output slot of spacing is kept.
             invocation.readinessDeadline = limiterArrival + 3 * batchPeriod;
             invocation.releasedOverlap = true;
-            // With low_latency the worker starts this batch at its own readiness (see
+            // With low_latency or batch_hold the worker starts this batch at its own readiness (see
             // RealFramePacer::scheduleReleasedOutputs and the worker's justInTime rule).
             // Reflex does not change this.
-            invocation.justInTime = latency.justInTime;
+            invocation.justInTime = justInTime;
             invocation.releasedJoinTolerance = invocation.pacedOutputs->interval / 4;
             invocation.releasedOutputLimit = limiterArrival + 3 * batchPeriod +
                 invocation.pacedOutputs->interval / 8;
@@ -1107,11 +1109,16 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
             invocation.readinessWait += waited;
             invocation.outputWait += waited;
             if (ready) {
+                // BH3: a detached batch is just in time with low_latency or batch_hold, as a released batch is
+                // above. A synchronous batch is never just in time.
+                const bool justInTime = detachedReadyBatchJustInTime(
+                    invocation.deferredOutputEligible, latency.justInTime, this->profile.batch_hold);
                 invocation.pacedOutputs = this->realFramePacer.scheduleReadyOutputs(
                     DiagnosticsClock::now(), plan.scheduledGeneratedFrames.size() + 1,
-                    invocation.deferredOutputEligible);
+                    invocation.deferredOutputEligible, justInTime);
                 if (invocation.pacedOutputs) {
                     invocation.readyOutputPacing = true;
+                    invocation.justInTime = justInTime;
                     invocation.readinessDeadline = waiting + budget;
                     invocation.originalPresentDeadline = invocation.pacedOutputs->at(
                         invocation.pacedOutputs->count - 1);

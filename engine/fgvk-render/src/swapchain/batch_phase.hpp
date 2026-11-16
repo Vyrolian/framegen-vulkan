@@ -8,7 +8,7 @@
 
 namespace fgvk::layer {
 
-// Phase-locked start of a held batch (batch_hold, released batches only; low_latency on or off).
+// Phase-locked start of a held batch (batch_hold; released and detached ready batches, low_latency on or off).
 //
 // A held batch starts at its own readiness plus a margin, but its start is not taken
 // from one readiness alone. The lock follows the batch cadence: the expected start is the
@@ -19,8 +19,10 @@ namespace fgvk::layer {
 //
 // The start never comes before the batch's readiness. The caller resets the lock when its
 // inputs stop being consecutive: an idle gap, a readiness miss, a batch that takes no hold, or a
-// change between just-in-time and scheduled batches (BH2). forceStart() records a start the caller
-// moved later, such as the quarter-interval guard or a later schedule.
+// change between just-in-time and scheduled batches (BH2). A detached ready batch is just in time when
+// low_latency or batch_hold asks (BH3); a scheduled batch is one on the cap grid, the cap-scheduled path.
+// forceStart() records a start the caller moved later, such as the quarter-interval guard or a later
+// schedule.
 class BatchPhaseLock {
 public:
     using Clock = std::chrono::steady_clock;

@@ -1470,6 +1470,83 @@ void testCompletionThreadDoesNotTeachItsOutputWait() {
     }
 }
 
+// BH3: a just-in-time detached batch (low_latency or batch_hold) starts at its own readiness. Its first
+// output is `now`, so it takes no chained phase hold, and it neither uses nor sets a pending requalification.
+// A chained batch keeps both.
+void testHeldReadyBatchStartsAtItsOwnTime() {
+    using Clock = RealFramePacer::Clock;
+    const auto start = Clock::time_point{170s};
+    // A steady 16 ms detached source: eight samples qualify it, so a 2 x 8 ms batch is spaced on it.
+    RealFramePacer learned;
+    auto arrival = start;
+    for (size_t frame = 0; frame < 16; ++frame) {
+        learned.observeSource(arrival, true, 2);
+        const auto batch = learned.scheduleReadyOutputs(arrival + 1ms, 2, true);
+        learned.recordOutputWait(0ns, batch.has_value(), batch.has_value());
+        arrival += 16ms;
+    }
+    // The last source is at `source`. Its batch's second output is due 8 ms after its first, which is
+    // 9 ms after `source`, so the chained next output is due at source + 17 ms.
+    const auto source = arrival - 16ms;
+
+    // The flag comes from detachedReadyBatchJustInTime: a detached batch is just in time when
+    // low_latency or batch_hold is on, and neither a synchronous batch nor both settings off is.
+    expect(!detachedReadyBatchJustInTime(true, false, false) &&
+            !detachedReadyBatchJustInTime(false, true, true) &&
+            detachedReadyBatchJustInTime(true, false, true) &&
+            detachedReadyBatchJustInTime(true, true, false) &&
+            detachedReadyBatchJustInTime(true, true, true),
+        "detachedReadyBatchJustInTime did not follow low_latency, batch_hold and detached output");
+
+    // Both settings off: the chained phase hold stays.
+    RealFramePacer chained = learned;
+    const auto chainedBatch = chained.scheduleReadyOutputs(source + 13ms, 2, true,
+        detachedReadyBatchJustInTime(true, false, false));
+    expect(chainedBatch && chainedBatch->first == source + 17ms && chainedBatch->interval == 8ms,
+        "chained detached batch lost its phase hold");
+
+    // batch_hold on, low_latency off: a held batch starts at its own readiness.
+    RealFramePacer held = learned;
+    const auto heldBatch = held.scheduleReadyOutputs(source + 13ms, 2, true,
+        detachedReadyBatchJustInTime(true, false, true));
+    expect(heldBatch && heldBatch->first == source + 13ms && heldBatch->interval == 8ms &&
+            heldBatch->count == 2,
+        "held detached batch did not start at its own readiness");
+
+    // low_latency on, batch_hold off: the just-in-time start does not depend on the hold.
+    RealFramePacer lowLatency = learned;
+    const auto lowLatencyBatch = lowLatency.scheduleReadyOutputs(source + 13ms, 2, true,
+        detachedReadyBatchJustInTime(true, true, false));
+    expect(lowLatencyBatch && lowLatencyBatch->first == source + 13ms && lowLatencyBatch->interval == 8ms,
+        "low_latency detached batch with batch_hold off did not start at its own readiness");
+
+    // A late chained batch (its phase is more than one output interval ahead) sets 16 requalifications,
+    // twice the eight-sample window, and starts at its readiness. A held batch in between must not count
+    // one down: the next 16 chained batches still start at their readiness, and the probe after them
+    // holds to its phase again. A held batch that counted one down would leave the probe at its readiness.
+    RealFramePacer pending = learned;
+    const auto late = pending.scheduleReadyOutputs(source + 5ms, 2, true, false);
+    expect(late && late->first == source + 5ms, "late chained batch did not start at its readiness");
+    expect(pending.scheduleReadyOutputs(source + 5ms, 2, true, true).has_value(),
+        "held batch between the requalifications was not scheduled");
+    for (size_t batch = 0; batch < 16; ++batch) {
+        const auto counted = pending.scheduleReadyOutputs(source + 6ms, 2, true, false);
+        expect(counted && counted->first == source + 6ms,
+            "requalified chained batch held its phase before the requalifications were used");
+    }
+    const auto probe = pending.scheduleReadyOutputs(source + 15ms, 2, true, false);
+    expect(probe && probe->first == source + 21ms,
+        "a held batch changed the requalification count: the chained phase hold did not resume");
+
+    // A held late batch sets no requalification of its own: the next chained batch holds to its phase.
+    RealFramePacer heldLate = learned;
+    expect(heldLate.scheduleReadyOutputs(source + 5ms, 2, true, true).has_value(),
+        "held late batch was not scheduled");
+    const auto afterHeldLate = heldLate.scheduleReadyOutputs(source + 15ms, 2, true, false);
+    expect(afterHeldLate && afterHeldLate->first == source + 21ms,
+        "a held batch set a requalification");
+}
+
 void testDetachedBatchPhaseContinuity() {
     using Clock = RealFramePacer::Clock;
     constexpr auto period = 22222200ns; // Integral slots for every 2x-5x rung.
@@ -2092,6 +2169,7 @@ int main() {
     testReadyFixedSourceJitterAndCapIncrease();
     testDetachedOutputSourceJitter();
     testDetachedLoadedReadiness();
+    testHeldReadyBatchStartsAtItsOwnTime();
     testDetachedBatchPhaseContinuity();
     testDetachedBatchPhaseRecovery();
     testDetachedBatchWakeFeedback();

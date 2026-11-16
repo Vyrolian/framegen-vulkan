@@ -398,10 +398,10 @@ public:
         // are skipped only for readiness, stopping, or no lower image at the end of
         // their give-up window. Late readiness gets one bounded extension.
         bool overlap{};
-        // low_latency, released batches only: the first output starts at a phase-locked time just
-        // after the batch's readiness (BatchPhaseLock). Only the previous real output's start plus a
-        // quarter interval can hold it later (see run()). The chain floor from the previous batch's
-        // planned phase is not applied.
+        // Just in time: released batches with low_latency or batch_hold, and detached ready batches with
+        // low_latency or batch_hold (BH3). The first output starts at a phase-locked time just after the batch's
+        // readiness (BatchPhaseLock). Only the previous real output's start plus a quarter interval can
+        // hold it later (see run()). The chain floor from the previous batch's planned phase is not applied.
         bool justInTime{};
         // batch_hold: the phase lock adds its 2 ms margin to the batch's start, just in time or not. Off starts
         // the batch at its readiness, with no lock; a just-in-time batch keeps the quarter-interval guard.
@@ -1693,8 +1693,9 @@ private:
                         // L3: a just-in-time batch starts at its phase-locked time after its readiness
                         // (batch_phase.hpp). Only the quarter-interval guard after the previous real
                         // output's actual start can hold it later, and the lock then follows that start.
-                        // BH2: a batch that is not just in time takes the same phase-locked start with batch_hold on,
-                        // and no guard (the schedule spaces those). Its scheduled deadline below can hold it later.
+                        // BH2: a batch that is not just in time (only the cap-scheduled path, whose deadlines are the
+                        // cap grid, since BH3) takes the same phase-locked start with batch_hold on, and no guard
+                        // (the schedule spaces those). Its scheduled deadline below can hold it later.
                         // batchShift below carries the start to the batch's later outputs.
                         // batch_hold off: the start is the readiness itself, with no lock and no margin.
                         // The lock stays reset, so a later batch_hold on starts from no phase.

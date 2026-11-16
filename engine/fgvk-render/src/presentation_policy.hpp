@@ -151,6 +151,13 @@ namespace fgvk::layer {
         return generatedImagesPreacquired && admittedGeneratedFrameCount > 0;
     }
 
+    /// BH3: a detached ready batch starts at its own readiness when low_latency's just-in-time start
+    /// or batch_hold asks for it. A synchronous batch never does. Passed to RealFramePacer::scheduleReadyOutputs.
+    [[nodiscard]] inline bool detachedReadyBatchJustInTime(
+            const bool detachedOutput, const bool lowLatencyJustInTime, const bool batchHold) {
+        return detachedOutput && (lowLatencyJustInTime || batchHold);
+    }
+
     struct GeneratedImageAdmissionRecovery {
         bool resumed{false};
         size_t missedAttempts{0};
@@ -1136,8 +1143,14 @@ namespace fgvk::layer {
         /// Bound first-output holds to one slot. On exhaustion, observe a
         /// complete source window without those holds so faster work cannot
         /// remain hidden behind the old phase. Within-batch spacing stays on.
+        ///
+        /// justInTime (BH3, detachedReadyBatchJustInTime): the worker starts the
+        /// batch at its own readiness, so its nominal first output is `now` and
+        /// it takes no chained phase hold (see chainDetachedOutputs). A
+        /// synchronous batch ignores it.
         [[nodiscard]] std::optional<OutputBatch> scheduleReadyOutputs(
-                const TimePoint now, const size_t count, const bool allowDetachedOutput = false) {
+                const TimePoint now, const size_t count, const bool allowDetachedOutput = false,
+                const bool justInTime = false) {
             if (count < 2 || count > GeneratedFramePlan::capacity + 1 ||
                     this->sourceReadinessBudget(now, count, allowDetachedOutput) <= Clock::duration::zero()) {
                 this->resetOutputs();
@@ -1152,7 +1165,7 @@ namespace fgvk::layer {
                 this->resetOutputs();
                 return OutputBatch{now, interval, count};
             }
-            return this->chainDetachedOutputs(now, interval, count, false);
+            return this->chainDetachedOutputs(now, interval, count, justInTime);
         }
 
         /// A source-cap deadline owned by the application's release wait
@@ -1173,9 +1186,9 @@ namespace fgvk::layer {
         /// that cadence is proven, return nullopt so the caller's ready-output
         /// path carries the warm-up.
         ///
-        /// justInTime (low_latency): the batch's nominal first output is `now`,
-        /// and the worker starts it at the batch's own readiness instead of
-        /// after the previous batch's planned output phase.
+        /// justInTime (low_latency or batch_hold): the batch's nominal first
+        /// output is `now`, and the worker starts it at the batch's own readiness
+        /// instead of after the previous batch's planned output phase.
         [[nodiscard]] std::optional<OutputBatch> scheduleReleasedOutputs(
                 const TimePoint now, const Clock::duration sourceInterval, const size_t count,
                 const bool justInTime = false) {
@@ -1304,11 +1317,13 @@ namespace fgvk::layer {
         /// thread, where any join stalls later game submissions. Bound the
         /// phase hold to three quarters of a slot and shorten only that gap.
         ///
-        /// justInTime batches (released, low_latency) take no such hold and count
-        /// no requalification: their nominal first output is `now`, and the
+        /// justInTime batches (released or detached ready batches with low_latency
+        /// or batch_hold, BH3) take no such hold and count no requalification: their nominal first output is `now`, and the
         /// worker moves it to readiness. lastOutputAt, readyOutputCount and
         /// readyOutputHold are still written, so a later batch that is not
-        /// just-in-time chains from the same bookkeeping.
+        /// just-in-time chains from the same bookkeeping. readyOutputHold is
+        /// therefore zero for a just-in-time batch, which leaves the
+        /// phase-blocked recovery in observeSource with nothing to release.
         [[nodiscard]] OutputBatch chainDetachedOutputs(
                 const TimePoint now, const Clock::duration interval, const size_t count,
                 const bool justInTime) {
