@@ -1,0 +1,63 @@
+# framegen-vulkan theme file.
+#
+# To use it, copy this file into your themes folder, change the name, then press "Reload themes"
+# in the fgvk settings window. The folder is $XDG_CONFIG_HOME/framegen-vulkan/themes, or
+# ~/.config/framegen-vulkan/themes when XDG_CONFIG_HOME is not set. The window lists every *.toml
+# file in that folder, in file-name order.
+#
+# A file that cannot be read or parsed is skipped, and the window shows a note with the file name
+# and the line. An unknown key is ignored, with a note. Names and colours are quoted strings, and
+# dark is true or false.
+
+# Required. The name the window lists. A name that is already listed (a built-in theme or another
+# file) gets " (custom)" appended.
+name = "My theme"
+
+# Optional. The built-in theme to inherit every key that you leave out. Default: "Catppuccin Mocha".
+# The built-in names are: Catppuccin Mocha, Catppuccin Macchiato, Catppuccin Frappé,
+# Catppuccin Latte, Dracula, Nord, Gruvbox Dark, Tokyo Night, Solarized Dark, Solarized Light.
+base = "Catppuccin Mocha"
+
+# Optional. true for a dark theme, false for a light one. Default: the base theme's setting.
+# dark = true
+
+# Colours are "#rrggbb", or "#rrggbbaa" to include transparency. Each colour is optional.
+#
+# background: the window background. The palette calls this role "base". The key is not named
+#   "base" because base names the theme to inherit from.
+# background = "#1e1e2e"
+# mantle: the background of the list rows in the process picker.
+# mantle = "#181825"
+# crust: the background of text fields.
+# crust = "#11111b"
+# surface0: the fill of buttons and the game list box.
+# surface0 = "#313244"
+# surface1: the fill of a button under the pointer, and of a game row under the pointer.
+# surface1 = "#45475a"
+# surface2: the fill of a button while it is pressed.
+# surface2 = "#585b70"
+# overlay0: borders under the pointer, and text for disabled items.
+# overlay0 = "#6c7086"
+# text: the main text.
+# text = "#cdd6f4"
+# subtext0: hints and secondary text.
+# subtext0 = "#a6adc8"
+# accent: section headings, links, the selection, the selected option and the Wine badge.
+# accent = "#cba6f7"
+# error: error messages and the Remove and Delete buttons.
+# error = "#f38ba8"
+# success: the "Saved" message and the Vulkan badge.
+# success = "#a6e3a1"
+# stripe: the fill of every second game row. Default: surface0 at half opacity.
+# stripe = "#31324480"
+
+# Optional, for a Catppuccin base only. One of the fourteen Catppuccin accents, in lowercase:
+# rosewater, flamingo, pink, mauve, red, maroon, peach, yellow, green, teal, sky, sapphire, blue,
+# lavender. When this key is set, the Accent setting in the window does not change this theme.
+# catppuccin_accent = "teal"
+
+# Optional. A fixed accent colour. When this key is set, the accent is this colour, and neither
+# the Accent setting nor catppuccin_accent changes it.
+# accent = "#94e2d5"
+
+# The built-in palettes follow each theme's public colour specification.

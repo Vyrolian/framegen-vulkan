@@ -32,6 +32,7 @@ grep -Fq "'libx11'" "$script_dir/PKGBUILD"
 grep -Fq 'done < framegen-vulkan-install-manifest.txt' "$script_dir/PKGBUILD"
 grep -Fqx '        share/doc/framegen-vulkan/COPYRIGHT.md' "$script_dir/PKGBUILD"
 grep -Fqx '        share/doc/framegen-vulkan/LICENSE' "$script_dir/PKGBUILD"
+grep -Fqx '        share/doc/framegen-vulkan/themes/example.toml' "$script_dir/PKGBUILD"
 grep -Fq 'sudo pacman -S --needed base-devel' \
     "$script_dir/verify-release-package.sh"
 grep -Fq 'command -v makepkg >/dev/null 2>&1 || ! command -v fakeroot' \
@@ -239,6 +240,8 @@ printf '%s\n' future > "$mapping_root/share/framegen-vulkan/future/payload.dat"
 mkdir -p "$mapping_root/share/doc/framegen-vulkan"
 printf '%s\n' copyright > "$mapping_root/share/doc/framegen-vulkan/COPYRIGHT.md"
 printf '%s\n' gpl > "$mapping_root/share/doc/framegen-vulkan/LICENSE"
+mkdir -p "$mapping_root/share/doc/framegen-vulkan/themes"
+printf '%s\n' example > "$mapping_root/share/doc/framegen-vulkan/themes/example.toml"
 (
     # shellcheck disable=SC1091
     . "$script_dir/PKGBUILD"
@@ -252,6 +255,7 @@ printf '%s\n' gpl > "$mapping_root/share/doc/framegen-vulkan/LICENSE"
     _fgvk_install_payload_file share/framegen-vulkan/future/payload.dat
     _fgvk_install_payload_file share/doc/framegen-vulkan/COPYRIGHT.md
     _fgvk_install_payload_file share/doc/framegen-vulkan/LICENSE
+    _fgvk_install_payload_file share/doc/framegen-vulkan/themes/example.toml
     if _fgvk_install_payload_file ../escape 2>/dev/null; then
         echo "Arch package accepted an unsafe manifest path" >&2
         exit 1
@@ -264,6 +268,7 @@ printf '%s\n' gpl > "$mapping_root/share/doc/framegen-vulkan/LICENSE"
 [[ -f "$mapping_pkgdir/usr/share/licenses/framegen-vulkan-bin/COPYRIGHT.md" ]]
 [[ -f "$mapping_pkgdir/usr/share/licenses/framegen-vulkan-bin/LICENSE" ]]
 [[ ! -e "$mapping_pkgdir/usr/share/doc/framegen-vulkan-bin/LICENSE" ]]
+[[ -f "$mapping_pkgdir/usr/share/doc/framegen-vulkan-bin/themes/example.toml" ]]
 [[ ! -e "$mapping_pkgdir/usr/bin/fgvk-installer" ]]
 [[ ! -e "$mapping_pkgdir/usr/share/applications/legacy-entry" ]]
 

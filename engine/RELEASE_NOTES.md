@@ -25,6 +25,7 @@
 - Release archives are built natively by the `release-build` workflow on Ubuntu 22.04. Two local builds of one clean commit with the same toolchain produce identical archive bytes, because `SOURCE_DATE_EPOCH` defaults to the commit time.
 - The container package builders are removed: the packaging and publish scripts build natively on Linux, and the Arch package check needs `makepkg` and `fakeroot` on the host.
 - Surface format queries are logged once per distinct list as `framegen-vulkan: surface formats offered: count=N pairs=…`, at most eight lists per process, to show which formats a game is offered; the queries are pass-throughs and the offered formats are unchanged.
+- The settings window has an Appearance section: ten built-in themes (four Catppuccin flavours with a choice of fourteen accents, and six others), plus custom themes from `*.toml` files in `~/.config/framegen-vulkan/themes/`; the choice is saved in `ui.toml`, not `conf.toml`.
 
 ## What's new in MAKO Renderer v4.6.0
 

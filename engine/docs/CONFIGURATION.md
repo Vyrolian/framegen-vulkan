@@ -53,6 +53,14 @@ The window has these controls:
 
 Typed values apply when you press Enter or leave the field. Sliders apply when you release them, and buttons apply at once. Live settings change a running game; restart-only settings apply the next time the game starts. See [Applying changes](#applying-changes).
 
+## Themes
+
+The Appearance section at the bottom of the settings window chooses the colours. A change applies at once and is saved to `~/.config/framegen-vulkan/ui.toml` as `theme = "…"` and `catppuccin_accent = "…"`. That file is separate from `conf.toml`, which the layer reads, so the theme choice never reaches the layer. Built-in themes are the four Catppuccin flavours (Mocha is the default; Latte, Frappé and Macchiato are the others), Dracula, Nord, Gruvbox Dark, Tokyo Night, Solarized Dark and Solarized Light. The built-in palettes follow each theme's public colour specification.
+
+The Accent list appears while a Catppuccin theme is selected and its file does not set an accent. It offers the fourteen Catppuccin accents, and the default is Mauve. A theme file's `catppuccin_accent` or `accent` key takes precedence over the list. Error and success colours stay red and green whatever accent is chosen.
+
+Custom themes are `*.toml` files in `~/.config/framegen-vulkan/themes/`, or in `$XDG_CONFIG_HOME/framegen-vulkan/themes/` when that variable is set. Press Reload themes after adding or editing one. The example in `~/.local/share/doc/framegen-vulkan/themes/example.toml` (or `/usr/share/doc/framegen-vulkan-bin/themes/example.toml` from the Arch package) lists every key. `name` is required. `base` names the built-in theme whose keys the file inherits, and defaults to Catppuccin Mocha. Colours are `"#rrggbb"` or `"#rrggbbaa"`. The key `background` sets the window background, which the palette calls `base`. A file that cannot be read or parsed is skipped, and the window shows a note that names the file and the line. An unknown key is ignored with a note.
+
 ## Profiles
 
 Each `[[profile]]` has a unique `name`. `active_in` lists executable names, process names, or executable-path suffixes. Copy a profile block to create a variant for another game.

@@ -6,8 +6,8 @@ use std::time::{Duration, Instant, SystemTime};
 
 use egui::text::{LayoutJob, TextWrapping};
 use egui::{
-    pos2, vec2, Align, Button, CornerRadius, Key, Layout, Margin, Rect, RichText, Sense, Stroke,
-    StrokeKind, TextStyle, Ui, UiBuilder,
+    pos2, vec2, Align, Button, Color32, CornerRadius, Key, Label, Layout, Margin, Rect, RichText,
+    Sense, Stroke, StrokeKind, TextStyle, Ui, UiBuilder,
 };
 
 use crate::config::{self, Config, ConfigView, FpsMemory, Mode, Profile, ProfileKey, Settings};
@@ -16,7 +16,8 @@ use crate::live::{self, Row, View};
 use crate::picker::Picker;
 use crate::processes;
 use crate::state;
-use crate::theme;
+use crate::theme::{self, Accent, Flavour};
+use crate::themes::{Catalog, Note};
 
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
 const FPS_SLIDER_RANGE: RangeInclusive<i64> = 10..=360;
@@ -101,6 +102,8 @@ pub struct App {
     remembered: Option<String>,
     /// Set once the first configuration view with profiles has applied the remembered selection.
     restored: bool,
+    /// The theme list, the theme in use and the Catppuccin accent. Its palette is applied to egui.
+    themes: Catalog,
 }
 
 impl App {
@@ -108,6 +111,7 @@ impl App {
         path: Result<PathBuf, String>,
         state_path: Option<PathBuf>,
         launcher_path: Result<PathBuf, String>,
+        themes: Catalog,
     ) -> Self {
         let remembered = state_path.as_deref().and_then(state::load);
         Self {
@@ -132,6 +136,7 @@ impl App {
             state_path,
             remembered,
             restored: false,
+            themes,
         }
     }
 
@@ -191,13 +196,15 @@ impl App {
                 // whatever state the profile file is in.
                 self.live_readings(ui);
                 self.logging(ui);
+                self.appearance(ui);
             });
     }
 
     fn missing(&mut self, ui: &mut Ui, path: &str) {
+        let palette = theme::current(ui.ctx());
         ui.add_space(8.0);
         ui.label("No configuration file yet.");
-        ui.label(RichText::new(path).small().color(theme::SUBTEXT0));
+        ui.label(RichText::new(path).small().color(palette.subtext0));
         ui.add_space(8.0);
         if ui.button("Create").clicked() {
             let result = self.config.create_default();
@@ -345,11 +352,12 @@ impl App {
             return;
         };
         let key = profile.key.clone();
+        let palette = theme::current(ui.ctx());
         let (delete, cancel) = ui
             .horizontal(|ui| {
                 ui.label(format!("Delete \"{}\"?", key.name));
                 let delete = ui
-                    .button(RichText::new("Delete").color(theme::RED))
+                    .button(RichText::new("Delete").color(palette.error))
                     .clicked();
                 let cancel = ui.button("Cancel").clicked();
                 (delete, cancel)
@@ -629,6 +637,7 @@ impl App {
     /// Readings from the pacing log of the game that is running, refreshed by the poll in `logic`.
     /// Nothing is read from processes or windows: the log file is the only input.
     fn live_readings(&mut self, ui: &mut Ui) {
+        let palette = theme::current(ui.ctx());
         section(ui, "Live");
         match self.live.view() {
             View::NoGame => hint(ui, "No game is logging right now"),
@@ -644,7 +653,7 @@ impl App {
                                 ui.label(
                                     RichText::new(format!("needs \"{checkbox}\""))
                                         .small()
-                                        .color(theme::SUBTEXT0),
+                                        .color(palette.subtext0),
                                 );
                             });
                         }
@@ -657,11 +666,12 @@ impl App {
     /// Logging switches in `launcher.conf`. The launcher exports them as renderer variables when it
     /// starts a game. A file that fails the strict rules is shown as an error and left unchanged.
     fn logging(&mut self, ui: &mut Ui) {
+        let palette = theme::current(ui.ctx());
         section(ui, "Logging");
         let logging = match self.launcher.view() {
             Ok(logging) => logging,
             Err(message) => {
-                ui.label(RichText::new(message).color(theme::RED));
+                ui.label(RichText::new(message).color(palette.error));
                 Logging::default()
             }
         };
@@ -677,6 +687,99 @@ impl App {
             ui,
             "Applies the next time a game starts. Logs: /tmp/fgvk-pacing-*.log",
         );
+    }
+
+    /// Theme and Catppuccin accent, saved in `ui.toml`. A change applies at once.
+    fn appearance(&mut self, ui: &mut Ui) {
+        let palette = theme::current(ui.ctx());
+        section(ui, "Appearance");
+
+        let mut index = self.themes.selected();
+        let mut accent = self.themes.accent();
+        let mut reload = false;
+        ui.horizontal(|ui| {
+            egui::ComboBox::from_id_salt("theme")
+                .width(200.0)
+                .selected_text(self.themes.current().name.as_str())
+                .show_ui(ui, |ui| {
+                    for (position, listed) in self.themes.themes().iter().enumerate() {
+                        ui.selectable_value(&mut index, position, listed.name.as_str());
+                    }
+                });
+            reload = ui.button("Reload themes").clicked();
+        });
+        if index != self.themes.selected() {
+            self.themes.select(index);
+            self.theme_changed(ui.ctx());
+        }
+
+        let flavour: Option<Flavour> = self.themes.flavour();
+        if let (Some(flavour), true) = (flavour, self.themes.current().follows_accent_setting()) {
+            ui.horizontal(|ui| {
+                egui::ComboBox::from_id_salt("accent")
+                    .width(160.0)
+                    .selected_text(accent.label())
+                    .show_ui(ui, |ui| {
+                        for choice in Accent::ALL {
+                            ui.horizontal(|ui| {
+                                swatch(ui, flavour.accent(choice));
+                                ui.selectable_value(&mut accent, choice, choice.label());
+                            });
+                        }
+                    });
+            });
+            if accent != self.themes.accent() {
+                self.themes.set_accent(accent);
+                self.theme_changed(ui.ctx());
+            }
+        }
+
+        ui.horizontal_wrapped(|ui| {
+            hint(ui, "Themes folder:");
+            match self.themes.folder() {
+                Ok(folder) => {
+                    ui.add(
+                        Label::new(
+                            RichText::new(folder.display().to_string())
+                                .small()
+                                .color(palette.subtext0),
+                        )
+                        .selectable(true),
+                    );
+                }
+                Err(message) => {
+                    ui.label(RichText::new(message.as_str()).small().color(palette.error));
+                }
+            }
+        });
+        hint(
+            ui,
+            "Add a .toml file to this folder, then press Reload themes. The example is in share/doc/framegen-vulkan/themes.",
+        );
+        for note in self.themes.notes() {
+            note_line(ui, note);
+        }
+        if reload {
+            self.themes.reload();
+            self.sync_theme(ui.ctx());
+        }
+    }
+
+    /// Applies the catalogue's palette when the frame does not use it yet. The frame is then drawn
+    /// again, so the change shows at once.
+    fn sync_theme(&self, ctx: &egui::Context) {
+        let palette = self.themes.palette();
+        if theme::current(ctx) != palette {
+            theme::apply(ctx, &palette);
+            ctx.request_discard("theme changed");
+        }
+    }
+
+    /// Applies a changed theme and saves the choice. A failed save shows in the footer.
+    fn theme_changed(&mut self, ctx: &egui::Context) {
+        self.sync_theme(ctx);
+        let result = self.themes.save();
+        self.report(result);
     }
 }
 
@@ -699,6 +802,7 @@ impl eframe::App for App {
     }
 
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
+        self.sync_theme(ui.ctx());
         footer(ui, &self.status);
         egui::CentralPanel::default().show(ui, |ui| self.content(ui));
         self.remember_selection();
@@ -708,10 +812,11 @@ impl eframe::App for App {
 /// The boxed list of executable names. Returns the index of the entry whose Remove button was
 /// clicked.
 fn games_box(ui: &mut Ui, entries: &[String]) -> Option<usize> {
+    let palette = theme::current(ui.ctx());
     let mut remove = None;
     let frame = egui::Frame::NONE
-        .fill(theme::MANTLE)
-        .stroke(Stroke::new(1.0, theme::SURFACE0))
+        .fill(palette.mantle)
+        .stroke(Stroke::new(1.0, palette.surface0))
         .corner_radius(CornerRadius::same(6))
         .inner_margin(Margin::same(4));
     // The box is GAMES_BOX_WIDTH wide, or as wide as the space when that is smaller. Its rows get
@@ -723,7 +828,7 @@ fn games_box(ui: &mut Ui, entries: &[String]) -> Option<usize> {
         if entries.is_empty() {
             ui.horizontal_wrapped(|ui| {
                 ui.add_space(ROW_TEXT_INSET);
-                ui.label(RichText::new(NO_GAMES).small().color(theme::SUBTEXT0));
+                ui.label(RichText::new(NO_GAMES).small().color(palette.subtext0));
             });
             return;
         }
@@ -742,13 +847,14 @@ fn games_box(ui: &mut Ui, entries: &[String]) -> Option<usize> {
 /// name gets only the space the button leaves, so it never runs under the button. Returns true when
 /// the button is clicked.
 fn game_row(ui: &mut Ui, index: usize, entry: &str) -> bool {
+    let palette = theme::current(ui.ctx());
     let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_HEIGHT), Sense::hover());
     let hovered = ui.rect_contains_pointer(row);
 
     let fill = if hovered {
-        Some(theme::SURFACE1)
+        Some(palette.surface1)
     } else if index % 2 == 1 {
-        Some(theme::STRIPE)
+        Some(palette.stripe)
     } else {
         None
     };
@@ -783,8 +889,9 @@ fn game_row(ui: &mut Ui, index: usize, entry: &str) -> bool {
 /// Paints an entry name inside `rect`, cut with an ellipsis when it does not fit. A cut name shows
 /// its full text on hover.
 fn name_text(ui: &mut Ui, rect: Rect, index: usize, entry: &str) {
+    let palette = theme::current(ui.ctx());
     let font = TextStyle::Body.resolve(ui.style());
-    let mut job = LayoutJob::simple_singleline(entry.to_owned(), font, theme::TEXT);
+    let mut job = LayoutJob::simple_singleline(entry.to_owned(), font, palette.text);
     job.wrap = TextWrapping {
         max_width: rect.width(),
         max_rows: 1,
@@ -794,7 +901,7 @@ fn name_text(ui: &mut Ui, rect: Rect, index: usize, entry: &str) {
     let galley = ui.painter().layout_job(job);
     let elided = galley.elided;
     let pos = pos2(rect.left(), rect.center().y - galley.size().y / 2.0);
-    ui.painter_at(rect).galley(pos, galley, theme::TEXT);
+    ui.painter_at(rect).galley(pos, galley, palette.text);
 
     if elided {
         ui.interact(
@@ -807,15 +914,16 @@ fn name_text(ui: &mut Ui, rect: Rect, index: usize, entry: &str) {
 }
 
 fn invalid(ui: &mut Ui, message: &str) {
+    let palette = theme::current(ui.ctx());
     ui.add_space(8.0);
     ui.label(RichText::new("This configuration cannot be edited.").strong());
     ui.add_space(4.0);
-    ui.label(RichText::new(message).color(theme::RED));
+    ui.label(RichText::new(message).color(palette.error));
     ui.add_space(8.0);
     ui.label(
         RichText::new("The file has not been changed. fgvk loads it again once it is valid.")
             .small()
-            .color(theme::SUBTEXT0),
+            .color(palette.subtext0),
     );
 }
 
@@ -840,27 +948,47 @@ fn footer(ui: &mut Ui, status: &Status) {
 }
 
 fn status_line(ui: &mut Ui, status: &Status) {
+    let palette = theme::current(ui.ctx());
     match status {
         // An empty label lays out the same text row as a message, so the height matches exactly.
         Status::Idle => {
             ui.label("");
         }
         Status::Saved => {
-            ui.label(RichText::new("Saved").color(theme::GREEN));
+            ui.label(RichText::new("Saved").color(palette.success));
         }
         Status::Error(message) => {
-            ui.label(RichText::new(message.as_str()).color(theme::RED));
+            ui.label(RichText::new(message.as_str()).color(palette.error));
         }
     }
 }
 
 fn section(ui: &mut Ui, title: &str) {
+    let palette = theme::current(ui.ctx());
     ui.add_space(6.0);
-    ui.label(RichText::new(title).strong().color(theme::MAUVE));
+    ui.label(RichText::new(title).strong().color(palette.accent));
 }
 
 fn hint(ui: &mut Ui, text: &str) {
-    ui.label(RichText::new(text).small().color(theme::SUBTEXT0));
+    let palette = theme::current(ui.ctx());
+    ui.label(RichText::new(text).small().color(palette.subtext0));
+}
+
+/// One note from the theme catalogue: problems in the error colour, the rest in the hint colour.
+fn note_line(ui: &mut Ui, note: &Note) {
+    let palette = theme::current(ui.ctx());
+    let color = if note.problem {
+        palette.error
+    } else {
+        palette.subtext0
+    };
+    ui.label(RichText::new(note.text.as_str()).small().color(color));
+}
+
+/// A small filled square in `color`, drawn beside a name in a list.
+fn swatch(ui: &mut Ui, color: Color32) {
+    let (rect, _) = ui.allocate_exact_size(vec2(12.0, 12.0), Sense::hover());
+    ui.painter().rect_filled(rect, CornerRadius::same(3), color);
 }
 
 fn mode_label(mode: Mode) -> String {
@@ -873,12 +1001,13 @@ fn mode_label(mode: Mode) -> String {
 /// Framed option button that returns true when clicked. The selected option gets a 1.5 px mauve
 /// border painted over its frame. A stroke override on the button would change its layout size.
 fn option_button(ui: &mut Ui, label: String, selected: bool) -> bool {
+    let palette = theme::current(ui.ctx());
     let response = ui.add(Button::new(label).selected(selected));
     if selected {
         ui.painter().rect_stroke(
             response.rect,
             ui.visuals().widgets.inactive.corner_radius,
-            Stroke::new(1.5, theme::MAUVE),
+            Stroke::new(1.5, palette.accent),
             StrokeKind::Inside,
         );
     }

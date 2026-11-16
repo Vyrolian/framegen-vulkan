@@ -155,11 +155,12 @@ impl Picker {
 
 /// One clickable row. Rows already in the profile are shown dimmed and do not respond to clicks.
 fn row(ui: &mut Ui, group: &Group, listed: &[String], picked: &mut Vec<String>) {
+    let palette = theme::current(ui.ctx());
     let added = processes::is_listed(&group.entry, listed);
     let (name_color, detail_color) = if added {
-        (theme::OVERLAY0, theme::OVERLAY0)
+        (palette.overlay0, palette.overlay0)
     } else {
-        (theme::TEXT, theme::SUBTEXT0)
+        (palette.text, palette.subtext0)
     };
 
     // The background is painted after the content is laid out, so it can follow hover state.
@@ -175,16 +176,16 @@ fn row(ui: &mut Ui, group: &Group, listed: &[String], picked: &mut Vec<String>) 
                         .color(detail_color),
                 );
                 if group.vulkan {
-                    badge(ui, "Vulkan", theme::GREEN);
+                    badge(ui, "Vulkan", palette.success);
                 }
                 if group.wine {
-                    badge(ui, "Wine", theme::MAUVE);
+                    badge(ui, "Wine", palette.accent);
                 }
                 if added {
-                    badge(ui, "already added", theme::SUBTEXT0);
+                    badge(ui, "already added", palette.subtext0);
                 }
                 if group.launcher {
-                    badge(ui, "launcher (ignored by layer)", theme::RED);
+                    badge(ui, "launcher (ignored by layer)", palette.error);
                 }
             });
             ui.add(Label::new(RichText::new(&group.path).small().color(detail_color)).truncate());
@@ -199,9 +200,9 @@ fn row(ui: &mut Ui, group: &Group, listed: &[String], picked: &mut Vec<String>) 
     let id = ui.scope_id().with(("picker-row", &group.entry));
     let response = ui.interact(rect, id, sense);
     let fill = if response.hovered() && !added {
-        theme::SURFACE0
+        palette.surface0
     } else {
-        theme::MANTLE
+        palette.mantle
     };
     ui.painter().set(
         background,
@@ -220,7 +221,7 @@ fn row(ui: &mut Ui, group: &Group, listed: &[String], picked: &mut Vec<String>) 
 
 fn badge(ui: &mut Ui, text: &str, color: Color32) {
     Frame::new()
-        .fill(theme::SURFACE0)
+        .fill(theme::current(ui.ctx()).surface0)
         .corner_radius(CornerRadius::same(BADGE_RADIUS))
         .inner_margin(Margin::symmetric(5, 0))
         .show(ui, |ui| {
@@ -229,7 +230,8 @@ fn badge(ui: &mut Ui, text: &str, color: Color32) {
 }
 
 fn hint(ui: &mut Ui, text: &str) {
-    ui.label(RichText::new(text).small().color(theme::SUBTEXT0));
+    let palette = theme::current(ui.ctx());
+    ui.label(RichText::new(text).small().color(palette.subtext0));
 }
 
 fn process_count(count: usize) -> String {

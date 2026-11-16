@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fs::{self, File};
 use std::io::{self, Write};
-use std::ops::RangeInclusive;
+use std::ops::{Range, RangeInclusive};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -59,6 +59,18 @@ pub fn resolve_path(lookup: impl Fn(&str) -> Option<OsString>) -> Result<PathBuf
 /// Treats an unset or empty environment value as absent.
 pub(crate) fn non_empty(value: Option<OsString>) -> Option<PathBuf> {
     value.filter(|value| !value.is_empty()).map(PathBuf::from)
+}
+
+/// Prefixes `message` with the 1-based line where `span` starts in `text`, as `line N: message`.
+/// A missing span counts as line 1. Used by the readers of small TOML files that report errors.
+pub(crate) fn located(text: &str, span: Option<Range<usize>>, message: &str) -> String {
+    let offset = span.map_or(0, |span| span.start).min(text.len());
+    let line = text.as_bytes()[..offset]
+        .iter()
+        .filter(|byte| **byte == b'\n')
+        .count()
+        + 1;
+    format!("line {line}: {message}")
 }
 
 /// One position of the frame-generation selector.

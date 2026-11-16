@@ -119,6 +119,7 @@ while IFS= read -r runtime_version || [[ -n "$runtime_version" ]]; do
         "files/share/doc/framegen-vulkan/COPYRIGHT.md" \
         "files/share/doc/framegen-vulkan/LICENSE" \
         "files/share/doc/framegen-vulkan/THIRD_PARTY_NOTICES.md" \
+        "files/share/doc/framegen-vulkan/themes/example.toml" \
         "files/lib64/libfgvk-render.so" \
         "files/lib/i386-linux-gnu/libfgvk-render.so"; do
         if [[ ! -f "$build_dir/$required_path" ]]; then

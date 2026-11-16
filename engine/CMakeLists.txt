@@ -21,6 +21,9 @@ if(NOT EXISTS "${FGVK_ASSET_PROVENANCE}")
 endif()
 install(FILES "${FGVK_REPOSITORY_LICENSE}" "${FGVK_REPOSITORY_COPYRIGHT}" "${FGVK_THIRD_PARTY_NOTICES}" "${FGVK_ASSET_PROVENANCE}"
     DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/doc/framegen-vulkan")
+# The settings window's example theme file, copied into the themes folder to start a custom theme.
+install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/dist/themes/example.toml"
+    DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/doc/framegen-vulkan/themes")
 install(PROGRAMS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/fgvk-installer"
     DESTINATION "${CMAKE_INSTALL_BINDIR}")
 

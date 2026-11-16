@@ -268,6 +268,7 @@ required_paths=(
     "share/doc/framegen-vulkan/COPYRIGHT.md" \
     "share/doc/framegen-vulkan/LICENSE" \
     "share/doc/framegen-vulkan/THIRD_PARTY_NOTICES.md" \
+    "share/doc/framegen-vulkan/themes/example.toml" \
     "share/framegen-vulkan/vulkan/implicit_layer.d/VkLayer_FGVK_render.json" \
     "share/vulkan/implicit_layer.d/VkLayer_FGVK_render.json"
 )
