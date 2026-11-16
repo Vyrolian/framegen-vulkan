@@ -62,6 +62,47 @@ void noCapResetsDelay() {
     expect(release.delay() == Duration::zero(), "reset did not clear the delay");
 }
 
+// A late present has a negative lead equal to its lateness (present.cpp). A delay settled near
+// 21 ms at an 8.33 ms cap interval falls to zero within 12 presents of a -21.7 ms lead.
+void lateLeadPullsSettledDelayToZeroWithinTwelvePresents() {
+    const Duration cap = 8333us;
+    LowLatencyRelease release;
+    for (int i = 0; i < 10; ++i) release.observe(18ms, cap);
+    expect(release.delay() > 21ms && release.delay() < 22ms, "setup did not settle the delay near 21 ms");
+    int presents = 0;
+    while (release.delay() > Duration::zero() && presents < 100) {
+        release.observe(-21700us, cap);
+        ++presents;
+    }
+    expect(release.delay() == Duration::zero() && presents <= 12,
+        "a -21.7 ms lead did not bring the delay to zero within 12 presents");
+}
+
+// A pause or load screen can report a lead far below -3 cap intervals. The controller treats it as
+// exactly -3 cap intervals, so the delay and margin match and one present moves the delay by a bounded step.
+void hugeNegativeLeadActsAsThreeCapIntervals() {
+    const Duration cap = 10ms;
+    LowLatencyRelease bounded;
+    LowLatencyRelease huge;
+    for (int i = 0; i < 20; ++i) {
+        bounded.observe(20ms, cap);
+        huge.observe(20ms, cap);
+    }
+    expect(huge.delay() > 10ms, "setup did not raise the delay");
+    bounded.observe(-3 * cap, cap);
+    huge.observe(-1s, cap);
+    expect(huge.delay() == bounded.delay() && huge.margin() == bounded.margin(),
+        "a lead of -1 s was not treated as -3 cap intervals");
+    expect(huge.margin() <= LowLatencyRelease::baseMargin + 3 * cap,
+        "the margin was not bounded after a huge negative lead");
+    for (int i = 0; i < 1000; ++i) huge.observe(-1s, cap);
+    expect(huge.delay() == Duration::zero(), "repeated huge negative leads did not return the delay to zero");
+    LowLatencyRelease fresh;
+    fresh.observe(-1s, cap);
+    expect(fresh.delay() == Duration::zero() && fresh.margin() == LowLatencyRelease::baseMargin,
+        "a fresh controller moved its delay or margin on a huge negative lead");
+}
+
 // The setting's parts for one present. The release delay steps aside while Reflex holds the game, and
 // the just-in-time batch start stays on.
 void lowLatencyPlanFollowsSettingCapFrameGenerationAndReflex() {
@@ -550,6 +591,8 @@ int main() {
     jitterWidensMargin();
     delayStaysWithinThreeCapIntervals();
     noCapResetsDelay();
+    lateLeadPullsSettledDelayToZeroWithinTwelvePresents();
+    hugeNegativeLeadActsAsThreeCapIntervals();
     lowLatencyPlanFollowsSettingCapFrameGenerationAndReflex();
     reflexKeepsJustInTimeBatchesAndStepsReleaseDelayAside();
     reflexOnForcesZeroAndReflexOffResumesFromZero();

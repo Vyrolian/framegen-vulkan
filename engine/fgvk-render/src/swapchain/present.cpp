@@ -676,8 +676,10 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
     const auto latency = lowLatencyPlan(this->profile.low_latency, baseFpsCap > 0,
         effectiveFrameGenerationEnabled(this->profile),
         this->reflexFrameLimit(swapchain).reflexLowLatency());
+    // A late present's lead is negative by its lateness (lastLateness), so the controller sees how
+    // late it is. The release gate and the logs below keep the plain deadline minus arrival.
     const auto releaseDelay = this->lowLatencyRelease.update(latency.releaseDelay,
-        limiterDeadline - limiterArrival, capInterval);
+        (limiterDeadline - limiterArrival) - this->realFramePacer.lastLateness(), capInterval);
     const auto releasePoint = limiterDeadline + releaseDelay;
     // GPU release (L5, low_latency.hpp): while the release delay runs, the next frame's release
     // point is also no earlier than the predicted GPU release, or a stepping hold without split

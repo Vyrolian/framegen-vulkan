@@ -1343,6 +1343,8 @@ namespace fgvk::layer {
         [[nodiscard]] TimePoint schedule(
                 const TimePoint now, const double framesPerSecond,
                 const bool preserveRatePhase = false) {
+            // Only a late call below sets the lateness; every other path reports zero.
+            this->scheduledLateness = Clock::duration{};
             if (!std::isfinite(framesPerSecond) || framesPerSecond <= 0.0) {
                 if (this->activeFramesPerSecond > 0.0 || this->nextFrameAt)
                     this->reset();
@@ -1379,6 +1381,8 @@ namespace fgvk::layer {
             }
 
             if (now >= *this->nextFrameAt) {
+                // How far past its deadline this call arrived, before the boundary is re-based.
+                this->scheduledLateness = now - *this->nextFrameAt;
                 this->nextFrameAt = now + interval;
                 return now;
             }
@@ -1388,9 +1392,15 @@ namespace fgvk::layer {
             return deadline;
         }
 
+        // Lateness of the last schedule call: how far past its deadline it arrived (it starts at
+        // once). Zero for an early, first, uncapped or rate-changed call. present.cpp subtracts it
+        // from the low latency lead.
+        [[nodiscard]] Clock::duration lastLateness() const { return this->scheduledLateness; }
+
         void reset() {
             this->nextFrameAt.reset();
             this->activeFramesPerSecond = 0.0;
+            this->scheduledLateness = Clock::duration{};
             this->resetOutputs();
             this->resetSource();
         }
@@ -1430,6 +1440,7 @@ namespace fgvk::layer {
         size_t sourceCapBatchRun{};
         double activeFramesPerSecond{0.0};
         std::optional<TimePoint> nextFrameAt;
+        Clock::duration scheduledLateness{};
         double outputFramesPerSecond{0.0};
         std::optional<TimePoint> lastOutputAt;
         size_t readyOutputCount{}, readyOutputRequalification{};

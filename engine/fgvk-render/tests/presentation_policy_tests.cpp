@@ -1974,6 +1974,56 @@ void testBridgeStagedReadiness() {
         "V2 ring expiry retained phantom occupancy or accepted stale feedback");
 }
 
+// Arrivals every 30 ms against a 120 fps boundary are late by 30 ms less one interval; the late frame
+// still starts at its arrival. Early, first, uncapped, rate-changed and reset calls report zero.
+void testLateCallReportsItsLateness() {
+    using Clock = RealFramePacer::Clock;
+    const auto start = Clock::time_point{10s};
+    const double fps = 120.0;
+    const auto interval = std::chrono::duration_cast<Clock::duration>(
+        std::chrono::duration<double>(1.0 / fps));
+    const auto toMs = [](const Clock::duration value) {
+        return std::chrono::duration<double, std::milli>(value).count();
+    };
+    // A pacer whose second call is late, for the paths that must reset the lateness.
+    const auto lateState = [&]() {
+        RealFramePacer late;
+        static_cast<void>(late.schedule(start, fps));
+        static_cast<void>(late.schedule(start + 30ms, fps));
+        return late;
+    };
+    expect(lateState().lastLateness() > Clock::duration::zero(), "setup: the second frame was not late");
+
+    RealFramePacer pacer;
+    expect(pacer.schedule(start, fps) == start && pacer.lastLateness() == Clock::duration::zero(),
+        "the first frame at a cap reported lateness");
+    auto arrival = start + 30ms;
+    for (int frame = 0; frame < 10; ++frame) {
+        expect(pacer.schedule(arrival, fps) == arrival, "a late frame did not start at its arrival");
+        expect(std::abs(toMs(pacer.lastLateness()) - toMs(30ms - interval)) < 0.001,
+            "a late frame did not report 30 ms less one interval");
+        arrival += 30ms;
+    }
+    // Two milliseconds after the last late arrival the boundary is still ahead: the frame waits.
+    const auto early = arrival - 28ms;
+    expect(pacer.schedule(early, fps) > early && pacer.lastLateness() == Clock::duration::zero(),
+        "an early frame reported lateness");
+    expect(pacer.schedule(arrival, fps) == arrival && pacer.lastLateness() > Clock::duration::zero(),
+        "a late frame after an early one did not report lateness");
+
+    auto uncapped = lateState();
+    expect(uncapped.schedule(start + 60ms, 0.0) == start + 60ms &&
+            uncapped.lastLateness() == Clock::duration::zero(),
+        "an uncapped frame reported the lateness of an earlier capped frame");
+    auto rateChanged = lateState();
+    expect(rateChanged.schedule(start + 60ms, 90.0) == start + 60ms &&
+            rateChanged.lastLateness() == Clock::duration::zero(),
+        "a rate change without a preserved phase reported lateness");
+    auto resetPacer = lateState();
+    resetPacer.reset();
+    expect(resetPacer.lastLateness() == Clock::duration::zero(), "reset did not clear the lateness");
+}
+
 int main() {
     {
         fgvk::layer::RealFramePacer pacer;
@@ -2389,6 +2439,7 @@ int main() {
     testReleasedUncappedOutputsUseQualifiedPeriod();
     testJustInTimeReleasedBatchIgnoresPendingPhase();
     testSlowerReleasedBlocksNeedConsecutiveConfirmation();
+    testLateCallReportsItsLateness();
     std::cout << "presentation policy tests passed\n";
     return 0;
 }

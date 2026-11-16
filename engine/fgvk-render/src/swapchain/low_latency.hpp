@@ -15,14 +15,18 @@ namespace fgvk::layer {
 // so a three-frame queue starts frames about two cap intervals before they are
 // needed. Every release point of a capped swapchain is moved later by delay().
 //
-// lead = limiterDeadline - limiterArrival of a source present at the cap. The
+// lead = limiterDeadline - limiterArrival of a source present at the cap, less its
+// lateness past the deadline (RealFramePacer::lastLateness). A present that arrives
+// after its deadline therefore has a negative lead equal to its lateness. The
 // delay moves by an eighth of (lead - margin) in both directions, so it settles
 // where presents arrive one margin early; a larger gain oscillates on a
 // three-frame queue, whose answer to a change comes three frames later. The
 // margin is 1 ms plus three times the mean frame-to-frame change of the lead, so
-// a jittery game keeps more slack and rarely arrives late. The delay stays within
-// [0, 3 cap intervals]. Without a cap, with frame generation off, or while the
-// application's Reflex limiter holds the game (lowLatencyPlan), the step resets it to zero.
+// a jittery game keeps more slack and rarely arrives late. The lead is clamped to
+// at least -3 cap intervals, so a pause or load screen cannot move the controller
+// arbitrarily. The delay stays within [0, 3 cap intervals]. Without a cap, with
+// frame generation off, or while the application's Reflex limiter holds the game
+// (lowLatencyPlan), the step resets it to zero.
 class LowLatencyRelease {
 public:
     using Clock = std::chrono::steady_clock;
@@ -45,6 +49,7 @@ public:
             reset();
             return;
         }
+        lead = std::max(lead, -3 * capInterval);
         if (hasPrevious) {
             const Duration change = lead > previousLead ? lead - previousLead : previousLead - lead;
             leadChange += (std::min(change, capInterval) - leadChange) / 16;
