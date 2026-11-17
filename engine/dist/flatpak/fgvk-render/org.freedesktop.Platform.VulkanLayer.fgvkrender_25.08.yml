@@ -39,7 +39,11 @@ modules:
       - type: dir
         path: ../../../..
         skip:
+          - .git
           - engine/build
+          - engine/out
+          - engine/fgvk-ui/target
+          - target
 
   - name: fgvk-32bit
     buildsystem: cmake-ninja
@@ -63,4 +67,8 @@ modules:
       - type: dir
         path: ../../../..
         skip:
+          - .git
           - engine/build
+          - engine/out
+          - engine/fgvk-ui/target
+          - target

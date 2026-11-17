@@ -92,6 +92,10 @@ while IFS= read -r runtime_version || [[ -n "$runtime_version" ]]; do
     if [[ -z "$runtime_version" || "$runtime_version" == \#* ]]; then
         continue
     fi
+    # FGVK_FLATPAK_RUNTIMES (space-separated, e.g. "26.08") builds only those runtimes.
+    if [[ -n "${FGVK_FLATPAK_RUNTIMES:-}" && " $FGVK_FLATPAK_RUNTIMES " != *" $runtime_version "* ]]; then
+        continue
+    fi
     runtime_count=$((runtime_count + 1))
     manifest="$manifest_root/$extension_id"_"$runtime_version.yml"
     build_dir="$build_root/build-$runtime_version"

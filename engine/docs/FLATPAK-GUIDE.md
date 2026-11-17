@@ -70,11 +70,11 @@ flatpak override --user --env=ENABLE_FGVK=1 "$appid"
 flatpak override --user --env=DISABLE_LSFG=1 "$appid"
 flatpak override --user --env=DISABLE_LSFGVK=1 "$appid"
 flatpak override --user --env=DISABLE_VKBASALT=1 "$appid"
-flatpak override --user --env=VK_IMPLICIT_LAYER_PATH=/usr/lib/extensions/vulkan/fgvkrender/share/vulkan/implicit_layer.d "$appid"
-flatpak override --user --unset-env=VK_ADD_IMPLICIT_LAYER_PATH "$appid"
+flatpak override --user --env=VK_ADD_IMPLICIT_LAYER_PATH=/usr/lib/extensions/vulkan/fgvkrender/share/vulkan/implicit_layer.d "$appid"
+flatpak override --user --unset-env=VK_IMPLICIT_LAYER_PATH "$appid"
 ```
 
-These settings persist for this app. Repeat with another `appid` for each additional app.
+`VK_ADD_IMPLICIT_LAYER_PATH` adds the extension's layer folder and keeps the default ones, so MangoHud and other Flatpak layers still load. These settings persist for this app. Repeat with another `appid` for each additional app.
 
 - **Heroic/Lutris:** prepare the launcher and match each game's executable. Avoid an app-wide `FGVK_PROFILE`; no host wrapper is needed.
 - **EmuDeck:** prepare each Flatpak emulator, select Vulkan, and keep its Steam shortcut and ROM arguments. Native/AppImage emulators use [native launch setup](../README.md#usage).
