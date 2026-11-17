@@ -473,11 +473,12 @@ namespace {
                 layer_info->root.frameGenerationInteropProvisioned());
             InstanceExtensionQuery extensionQuery;
             if (retirementRequested) {
-                const auto enumerate = reinterpret_cast<PFN_vkEnumerateInstanceExtensionProperties>(
-                    layer_info->GetInstanceProcAddr(VK_NULL_HANDLE,
-                        "vkEnumerateInstanceExtensionProperties"));
+                // Global enumeration is a loader entrypoint: a lower layer's
+                // vkGetInstanceProcAddr(NULL, ...) may return a pointer that is
+                // unsafe to call (Mesa device_select dereferences missing
+                // instance state and crashes), so always ask the loader.
                 extensionQuery = queryPresentationInstanceExtensions(
-                    enumerate, vk::enumerateLoaderInstanceExtensionProperties);
+                    nullptr, vk::enumerateLoaderInstanceExtensionProperties);
             }
             const auto& available = extensionQuery.properties;
             VkInstanceCreateInfo newInfo = *info;
