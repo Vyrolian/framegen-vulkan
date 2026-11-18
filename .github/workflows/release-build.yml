@@ -130,10 +130,53 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  flatpak-archive:
+    name: framegen-vulkan Flatpak extensions
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    outputs:
+      archive: ${{ steps.archive.outputs.archive }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Install Flatpak build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y binutils flatpak flatpak-builder xz-utils
+          flatpak --version
+          flatpak-builder --version
+
+      - name: Build and verify Flatpak extensions
+        run: scripts/dev.sh package-flatpaks
+
+      - name: Write and verify the SHA-256 file
+        id: archive
+        working-directory: engine/out
+        run: |
+          version="$(tr -d '[:space:]' < ../VERSION)"
+          archive="framegen-vulkan-v${version}-flatpaks.tar.xz"
+          test -s "$archive"
+          sha256sum "$archive" > "$archive.sha256"
+          sha256sum --check "$archive.sha256"
+          echo "archive=$archive" >> "$GITHUB_OUTPUT"
+
+      - name: Upload the Flatpak archive and its SHA-256 file
+        uses: actions/upload-artifact@v7
+        with:
+          name: framegen-vulkan-flatpaks
+          path: |
+            engine/out/${{ steps.archive.outputs.archive }}
+            engine/out/${{ steps.archive.outputs.archive }}.sha256
+          if-no-files-found: error
+          retention-days: 30
+
   publish:
-    name: Publish Linux package to GitHub Releases
+    name: Publish Linux and Flatpak packages to GitHub Releases
     if: github.event_name == 'push' && github.ref_type == 'tag'
-    needs: release-archive
+    needs: [release-archive, flatpak-archive]
     runs-on: ubuntu-22.04
     timeout-minutes: 10
     permissions:
@@ -144,18 +187,26 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Download the verified archive
+      - name: Download the verified Linux archive
         uses: actions/download-artifact@v8
         with:
           name: framegen-vulkan-linux
           path: release-assets
 
+      - name: Download the verified Flatpak archive
+        uses: actions/download-artifact@v8
+        with:
+          name: framegen-vulkan-flatpaks
+          path: release-assets
+
       - name: Create the GitHub release
         env:
-          ARCHIVE: ${{ needs.release-archive.outputs.archive }}
+          LINUX_ARCHIVE: ${{ needs.release-archive.outputs.archive }}
+          FLATPAK_ARCHIVE: ${{ needs.flatpak-archive.outputs.archive }}
           GH_TOKEN: ${{ github.token }}
         run: |
           cd release-assets
-          sha256sum --check "$ARCHIVE.sha256"
+          sha256sum --check "$LINUX_ARCHIVE.sha256" "$FLATPAK_ARCHIVE.sha256"
           gh release create "$GITHUB_REF_NAME" --verify-tag --title "framegen-vulkan $GITHUB_REF_NAME" \
-            --notes-file ../engine/RELEASE_NOTES.md "$ARCHIVE" "$ARCHIVE.sha256"
+            --notes-file ../engine/RELEASE_NOTES.md \
+            "$LINUX_ARCHIVE" "$LINUX_ARCHIVE.sha256" "$FLATPAK_ARCHIVE" "$FLATPAK_ARCHIVE.sha256"

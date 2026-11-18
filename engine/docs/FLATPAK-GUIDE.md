@@ -44,7 +44,11 @@ flatpak install --user ./org.freedesktop.Platform.VulkanLayer.fgvkrender-26.08.f
 
 ### Graphical extension installation
 
-Alternatively, open **Install framegen-vulkan Flatpak Extensions** to install the extension. Then prepare each app below.
+Alternatively, run the installer from the extracted folder. Then prepare each app below.
+
+```bash
+"./Install framegen-vulkan Flatpak Extensions"
+```
 
 ## Manual application override
 

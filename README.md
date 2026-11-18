@@ -20,7 +20,22 @@ framegen-vulkan (`fgvk`) is a Vulkan layer that brings Lossless Scaling frame ge
 
 ### Install a release
 
-Download `framegen-vulkan-vX.Y.Z-linux.tar.xz` from GitHub Releases, extract it, and run **Install framegen-vulkan** from the extracted directory. The archive is built on Ubuntu 22.04 and includes both 64-bit and 32-bit Vulkan layers. [GitHub Releases](https://github.com/Vyrolian/framegen-vulkan/releases)
+For native Steam and other Linux apps, download `framegen-vulkan-vX.Y.Z-linux.tar.xz`. The archive is built on Ubuntu 22.04 and includes both 64-bit and 32-bit Vulkan layers. [GitHub Releases](https://github.com/Vyrolian/framegen-vulkan/releases)
+
+From the download directory, replace `X.Y.Z` with the version you downloaded and run these commands. The installer uses `~/.local` and keeps existing profiles.
+
+```bash
+mkdir -p framegen-vulkan
+tar -xf framegen-vulkan-vX.Y.Z-linux.tar.xz -C framegen-vulkan
+cd framegen-vulkan
+"./Install framegen-vulkan"
+```
+
+For Flatpak apps, download and extract `framegen-vulkan-vX.Y.Z-flatpaks.tar.xz` into its own folder. From that folder, run the extension installer and follow the guide to configure each app. [Flatpak setup guide](engine/docs/FLATPAK-GUIDE.md)
+
+```bash
+"./Install framegen-vulkan Flatpak Extensions"
+```
 
 ### Build dependencies
 
