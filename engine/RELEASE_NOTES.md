@@ -1,38 +1,37 @@
-## What's new in framegen-vulkan v1.0.0
+## What's new in framegen-vulkan v1.1.0
 
-This is the first framegen-vulkan release. It focuses on Fixed frame generation and removes the spatial scaling paths.
+`fgvk` opens Settings, launches games, and runs the diagnostic commands through `fgvk cli`. Upgrading removes the old `fgvk-cli` and `fgvk-installer` commands when they match files owned by the previous package.
 
-- Vulkan conformance fixes use `GENERAL` for the layer's private application images when a game requests `PRESENT_SRC_KHR`. Lower swapchain images still use the presentation layout. Renderer and backend devices now use matching image usage flags when sharing dedicated external-memory images.
-- Gamescope on-screen profile (`FGVK_PACING_PROFILE=1` inside Gamescope): the layer owns the lower present IDs of its swapchain and logs when each lower present completed on screen (`pacing-profile-onscreen`); `engine/scripts/analyze-onscreen.py` reads it. Other sessions are unchanged.
-- On-screen correction (on with `pacing_correction`, with or without the pacing profile): generated outputs are moved by when they reached the screen (on-screen watcher on Xwayland, X11 and Gamescope; `wp_presentation` feedback on native Wayland), with the GPU timing as the fallback; `FGVK_ONSCREEN_CORRECTION=0` turns the screen sources off. The correction limit is 2.5 ms (was 1 ms).
-- A released batch's first generated output takes its pacing correction after the batch's readiness start, so a correction is no longer lost when the batch starts later than its planned slot.
-- The renderer no longer contains spatial scaling, the LS1 and framegen-vulkan Scaler paths, or the Gamescope scaling bridge.
-- Gamescope sessions run frame generation by default as an experimental path; the launcher keeps Gamescope's WSI layer in the chain below framegen-vulkan, so HDR games under Gamescope reach the HDR path (untested on hardware). `FGVK_GAMESCOPE=0` starts the game without frame generation. The Gamescope feedback reader, the VRR lease helper, the compatibility record, and the `gamescope_vrr_mode` and `frame_generation_refresh_threshold` keys and overrides are retired; existing keys are accepted and ignored.
-- The retired scaling keys (`scaling_enabled`, `scaling_method`, `scaling_factor`, `scaling_supersampling`, and `scaling_sharpness`) are accepted and ignored, so old `conf.toml` files still load; framegen-vulkan no longer writes them.
-- The AC/battery profile tables (`[profile.handheld]` and `[profile.docked]`) are retired; old `conf.toml` files still load, the tables are ignored, and framegen-vulkan no longer writes them.
-- GPU Headroom is removed. Old `conf.toml` files still load; `gpu_headroom_percent` is accepted and ignored, the `FGVK_GPU_HEADROOM_PERCENT` override is no longer read, and framegen-vulkan no longer writes the key.
-- The development measurement and benchmark tools are removed: the present measurer, the `fgvk-cli` `benchmark`, `debug`, `quality-regression` and `synchronization-validation-canary` commands, and the latency, framegen-comparison and Gym bridge scripts. `validate`, `inspect-dll` and `mark` are unchanged.
-- The `runtime-state` JSON record that the Renderer wrote for each context, and the `fgvk-diagnostics` report helper, are removed; the layer no longer writes `runtime-state/` records.
-- Adaptive frame generation is removed. Every profile runs the Fixed `multiplier`, and Smooth Cadence keeps its Fixed behaviour. Old `conf.toml` files still load: `adaptive`, `adaptive_max_multiplier`, `adaptive_auto_base_fps_cap`, `adaptive_fractional_real_frame_priority`, `adaptive_target_refresh_rate`, `target_fps`, `dynamic_cadence_recovery`, and `dynamic_cadence_probe_interval_seconds` are accepted and ignored, a profile with `adaptive = true` runs Fixed with its `multiplier`, and framegen-vulkan no longer writes them or reads their `FGVK_*` overrides.
-- The `adaptive_stable_cadence` key is removed. Every profile behaves as it did with the key off: the uncapped automatic cap is no longer disabled by it, and ready-output pacing applies to detached output only. Old `conf.toml` files still load; the key is ignored, framegen-vulkan no longer writes it, and `FGVK_ADAPTIVE_STABLE_CADENCE` is no longer read.
-- Generated-frame capacity follows the Fixed multiplier. Profiles with `multiplier = 2` and `adaptive_max_multiplier = 3` now reserve one generated output and one lower swapchain image fewer. Raising the multiplier live goes through the existing private rebuild or recreation request.
-- The `FGVK_INTERNAL_SWAPCHAIN`, `FGVK_INTERNAL_PREPARE`, `FGVK_PACING_PROFILE_COPY`, `FGVK_PACING_PROFILE_CONTENT` and `FGVK_PACING_PROFILE_CONTENT_SOURCES` variables are no longer read; the native copy timestamp profile and frame content capture are removed.
-- Frame generation runs only on swapchains with internal application images. A swapchain created with frame generation off presents real frames only; switching it on live asks the game for one swapchain recreation, and a swapchain that cannot use internal images logs `frame generation unavailable for this swapchain: reason=…`.
-- Frame generation outputs at 3x–5x are paced by the presentation worker like 2x; pacing correction applies at every multiplier.
-- Pacing correction moves each generated output onto its own ideal point between its reals, and real frames are never moved; `FGVK_REAL_OFFSET_US` accepts only `auto`, and any other value turns the correction off.
-- Each released output batch starts about 2 ms after its frames are ready, phase-locked to the batch cadence, with `batch_hold` on (the default) and `low_latency` on or off. With `low_latency` on it starts there instead of after the previous batch's planned output phase; with it off, a batch starts at its schedule or that point, whichever is later. `batch_hold = false` starts each batch at its readiness instead: up to about 2 ms less latency, slightly less even spacing. The pacing window line reports `just_in_time=`, `batch_hold=` and `batch_phase_hold_ms=`.
-- With the game's Reflex on (its last `vkSetLatencySleepModeNV` has `lowLatencyMode`), `low_latency` leaves the release delay, its release-token holds and the native acquire fallback off, so Reflex holds the game. The just-in-time batch start stays on. The pacing window line reports `low_latency_hold=reflex` for those windows, and `low_latency_extra_ms=0`.
-- With `low_latency` on and a cap, the game's next frame is also held until the GPU is about to finish the previous batch, like Reflex, when the GPU is the limit. The release is predicted from the backend's batch ends; without split timestamps a stepping hold on a non-blocking fence query is used. The pacing window line reports `gpu_release_ms=`, `gpu_prev_end_ms=` and `gpu_release=off|pred|fence`. Measured in Cyberpunk with Reflex off: GPU queue wait about 0 ms (was 15–23), simulation → screen 56–62 ms (was 72–92), fps unchanged.
-- Native Wayland surfaces whose application reports no present timing (for example Minecraft in IMMEDIATE) take the monitor refresh from `wp_presentation` feedback, so the uncapped automatic cap (refresh divided by the multiplier) applies to them as well; the layer requests feedback only every 8th present until a rate is known, then every 240th.
-- Native Wayland under VRR: the automatic cap uses the output's mode rate when `wp_presentation` reports refresh 0.
-- HDR10/PQ and linear scRGB swapchains on native surfaces get frame generation in linear light again; other HDR transfer functions still pass through.
-- Wine's HDR on native Wayland (PASS_THROUGH with HDR10/PQ or scRGB) gets frame generation too, reported as `wine-hdr10-pq` or `wine-scrgb-linear` in the colour pipeline line.
-- Native Wayland outside gamescope: the lower swapchain is destroyed with the application's destroy call after its retirement fences complete, so an SDR to HDR switch under Wine no longer fails with a colour-management protocol error.
-- Release archives are built natively by the `release-build` workflow on Ubuntu 22.04. Two local builds of one clean commit with the same toolchain produce identical archive bytes, because `SOURCE_DATE_EPOCH` defaults to the commit time.
-- The container package builders are removed: the packaging and publish scripts build natively on Linux, and the Arch package check needs `makepkg` and `fakeroot` on the host.
-- Surface format queries are logged once per distinct list as `framegen-vulkan: surface formats offered: count=N pairs=…`, at most eight lists per process, to show which formats a game is offered; the queries are pass-throughs and the offered formats are unchanged.
-- The settings window has an Appearance section: ten built-in themes (four Catppuccin flavours with a choice of fourteen accents, and six others), plus custom themes from `*.toml` files in `~/.config/framegen-vulkan/themes/`; the choice is saved in `ui.toml`, not `conf.toml`.
-- Gamescope sessions keep gamescope's WSI layer directly below framegen-vulkan: the layer is named in `VK_INSTANCE_LAYERS` right after framegen-vulkan, and its manifest links sit in one directory that the launcher prepends to `VK_LAYER_PATH` (Steam's pressure-vessel imports only directory entries), so the game's own HDR request reaches framegen-vulkan first; `DISABLE_GAMESCOPE_WSI=1` skips it. HDR under Gamescope is not yet confirmed by a user run.
-- Zink (`enable_zink`, OpenGL through Vulkan): 8-bit swapchains that Mesa creates with a pass-through colour space and a mutable UNORM/sRGB format list are classified as `passthrough-sdr8` and can run frame generation; the private images carry the same mutable format list, so the application's sRGB views stay valid.
-- With `low_latency` or `batch_hold` on, an output batch from a detached ready source (no release gate, for example Zink or MAILBOX) starts at its frames' readiness, on the phase lock with `batch_hold` on, like a released batch, instead of on the previous batch's planned output phase.
-- Worker batches without the release gate (detached ready and cap-scheduled batches, for example Zink or MAILBOX) take the on-screen correction too, as released batches do; the controller no longer forgets its pending real at each such batch. Generated outputs presented without a worker copy take the correction as well, and a move that the batch cuts short stops the controller pushing that way further.
+### Native Linux
+
+Download and extract the Linux archive into its own folder. To install or upgrade, run from that folder:
+
+```bash
+./install
+```
+
+To uninstall, close games using framegen-vulkan and run:
+
+```bash
+~/.local/bin/fgvk uninstall
+```
+
+The uninstaller asks separately whether to delete your profiles, settings, and diagnostics.
+
+### Flatpak
+
+Download and extract the Flatpak archive into its own folder, then run:
+
+```bash
+./install-flatpak
+```
+
+Configure each app using the [Flatpak setup guide](https://github.com/Vyrolian/framegen-vulkan/blob/v1.1.0/engine/docs/FLATPAK-GUIDE.md).
+
+To uninstall the extension for runtime 26.08, close the apps using it and run:
+
+```bash
+flatpak uninstall --user org.freedesktop.Platform.VulkanLayer.fgvkrender//26.08
+```
+
+Repeat for each installed runtime branch. App overrides and profiles remain. [Flatpak removal and override cleanup](https://github.com/Vyrolian/framegen-vulkan/blob/v1.1.0/engine/docs/FLATPAK-GUIDE.md#uninstall-the-flatpak-extension)

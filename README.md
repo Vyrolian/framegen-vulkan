@@ -39,7 +39,23 @@ For Flatpak apps, download and extract `framegen-vulkan-vX.Y.Z-flatpak.tar.xz` i
 
 The original v1.0.0 archives use `"./Install framegen-vulkan"` and `"./Install framegen-vulkan Flatpak Extensions"`.
 
-To remove a Flatpak extension, see [Uninstall the Flatpak extension](engine/docs/FLATPAK-GUIDE.md#uninstall-the-flatpak-extension).
+### Uninstall
+
+Close the games and apps using framegen-vulkan. For a native installation, run:
+
+```bash
+~/.local/bin/fgvk uninstall
+```
+
+If you still have the original v1.0.0 native package installed, run `~/.local/bin/fgvk-installer --uninstall`. Confirm removal. The native uninstaller asks separately whether to delete your profiles, settings, and diagnostics.
+
+For the Flatpak extension on runtime 26.08, run and confirm:
+
+```bash
+flatpak uninstall --user org.freedesktop.Platform.VulkanLayer.fgvkrender//26.08
+```
+
+Repeat for each installed runtime branch. Your profiles and app overrides remain. [Flatpak removal and override cleanup](engine/docs/FLATPAK-GUIDE.md#uninstall-the-flatpak-extension)
 
 ### Build dependencies
 
@@ -82,9 +98,9 @@ mkdir -p build/package/x && tar -xf build/package/framegen-vulkan.tar.xz -C buil
 cd build/package/x && ./install
 ```
 
-The installer puts everything under `~/.local`, keeps existing profiles, and prints the launch option. Close games using `fgvk` before updating or uninstalling. To update, run the installer from a newer package. To uninstall, run `~/.local/bin/fgvk uninstall`.
+The installer puts everything under `~/.local`, keeps existing profiles, and prints the launch option. Close games using `fgvk` before updating. To update, run `./install` from the newer extracted package.
 
-The original v1.0.0 package uses `~/.local/bin/fgvk-installer --uninstall` for removal and `~/.local/bin/fgvk-cli validate` for configuration checks.
+The original v1.0.0 package uses `~/.local/bin/fgvk-cli validate` for configuration checks.
 
 To also build the 32-bit layer, omit `--64-bit-only` and install multilib support. [Building from source](engine/docs/BUILDING-FROM-SOURCE.md)
 
