@@ -260,8 +260,8 @@ fi
 
 required_paths=(
     "bin/fgvk" \
-    "bin/fgvk-cli" \
-    "bin/fgvk-installer" \
+    "libexec/framegen-vulkan/fgvk-cli" \
+    "libexec/framegen-vulkan/fgvk-installer" \
     "libexec/framegen-vulkan/fgvk-launch" \
     "lib/libfgvk-render.so" \
     "share/doc/framegen-vulkan/ASSET_PROVENANCE.md" \
@@ -286,8 +286,7 @@ for required_path in "${required_paths[@]}"; do
     fi
 done
 
-# The archive-root launcher is intentionally separate from the installed
-# `fgvk-installer` command. Users extract the archive, double-click this file,
+# Users extract the archive, double-click this file,
 # and the installer copies only the verified payload into their user-local
 # prefix. The generated manifest gives upgrades and uninstalls an exact,
 # checksummed ownership record without treating the entire ~/.local tree as
@@ -301,7 +300,7 @@ if [[ ! -s "$standalone_readme" ]]; then
 fi
 cp "$standalone_readme" "$install_dir/README.txt"
 if ! grep -Fq '~/.local/bin/fgvk %command%' "$install_dir/README.txt" ||
-        ! grep -Fq '~/.local/bin/fgvk-installer --uninstall' "$install_dir/README.txt" ||
+        ! grep -Fq '~/.local/bin/fgvk uninstall' "$install_dir/README.txt" ||
         ! grep -Fq 'profiles, settings, and diagnostics' "$install_dir/README.txt"; then
     echo "Packaging failed: standalone Renderer README is incomplete" >&2
     exit 1
@@ -328,12 +327,20 @@ if [[ ! -x "$install_dir/bin/fgvk" ]]; then
     echo "Packaging failed: bin/fgvk is not executable" >&2
     exit 1
 fi
+if [[ "$(find "$install_dir/bin" -mindepth 1 -maxdepth 1 -printf '%f\n')" != "fgvk" ]]; then
+    echo "Packaging failed: bin must contain only fgvk" >&2
+    exit 1
+fi
+if [[ ! -x "$install_dir/libexec/framegen-vulkan/fgvk-cli" ]]; then
+    echo "Packaging failed: libexec/framegen-vulkan/fgvk-cli is not executable" >&2
+    exit 1
+fi
 if [[ ! -x "$install_dir/libexec/framegen-vulkan/fgvk-launch" ]]; then
     echo "Packaging failed: libexec/framegen-vulkan/fgvk-launch is not executable" >&2
     exit 1
 fi
-if [[ ! -x "$install_dir/bin/fgvk-installer" ]]; then
-    echo "Packaging failed: bin/fgvk-installer is not executable" >&2
+if [[ ! -x "$install_dir/libexec/framegen-vulkan/fgvk-installer" ]]; then
+    echo "Packaging failed: libexec/framegen-vulkan/fgvk-installer is not executable" >&2
     exit 1
 fi
 bash -n "$install_dir/libexec/framegen-vulkan/fgvk-launch"
@@ -353,6 +360,7 @@ verify_elf_class() {
 }
 
 verify_elf_class "$install_dir/bin/fgvk" 2
+verify_elf_class "$install_dir/libexec/framegen-vulkan/fgvk-cli" 2
 verify_elf_class "$install_dir/lib/libfgvk-render.so" 2
 if [[ "$build_32_bit" == true ]]; then
     verify_elf_class "$install_dir/lib32/libfgvk-render.so" 1

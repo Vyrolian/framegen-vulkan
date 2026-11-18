@@ -79,7 +79,7 @@ _fgvk_install_payload_file() {
     fi
 
     case "$relative_path" in
-        bin/fgvk-installer | bin/*-ui | share/applications/*)
+        bin/fgvk-installer | libexec/framegen-vulkan/fgvk-installer | bin/*-ui | share/applications/*)
             # The user-local installer must never manage a pacman-owned system
             # prefix. The Renderer-only package ships no configuration app or
             # desktop entries, including those in older archives.
@@ -134,8 +134,8 @@ package() {
 
     local required_path
     local required_paths=(
-        bin/fgvk-cli
-        bin/fgvk-installer
+        libexec/framegen-vulkan/fgvk-cli
+        libexec/framegen-vulkan/fgvk-installer
         bin/fgvk
         libexec/framegen-vulkan/fgvk-launch
         lib/libfgvk-render.so
@@ -174,7 +174,7 @@ package() {
     install -Dm644 framegen-vulkan-install-manifest.txt "$pkgdir/usr/share/doc/framegen-vulkan-bin/framegen-vulkan-install-manifest.txt"
 
     # Deliberately not installed:
-    # - bin/fgvk-installer: the user-local installer, which targets ~/.local and
+    # - libexec/framegen-vulkan/fgvk-installer: the user-local installer, which targets ~/.local and
     #   manages its own renderer copy.
     # - bin/*-ui and share/applications/*: the Qt configuration app and desktop
     #   entries were removed from the Renderer, and this package does not ship

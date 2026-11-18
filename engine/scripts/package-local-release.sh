@@ -53,7 +53,7 @@ else
 fi
 
 host_archive="$output_dir/framegen-vulkan-v$version-linux.tar.xz"
-flatpak_archive="$output_dir/framegen-vulkan-v$version-flatpaks.tar.xz"
+flatpak_archive="$output_dir/framegen-vulkan-v$version-flatpak.tar.xz"
 
 echo "Building framegen-vulkan host archive..."
 "$repo_root/scripts/package-local.sh" "$host_archive"

@@ -98,7 +98,7 @@ fgvk_renderer_bin_guidance() {
     cat <<'EOF'
 Create a profile in ~/.config/framegen-vulkan/conf.toml before launching a game;
 installing the package does not activate framegen-vulkan for any game. Check it with
-fgvk-cli validate.
+fgvk cli validate.
 
 For a native or Proton game, set this Steam launch option:
   /usr/bin/fgvk %command%
@@ -109,7 +109,7 @@ Frame generation needs a user-owned Lossless.dll from
 Lossless Scaling. DirectX LSFG models
 additionally need vkd3d (lib32-vkd3d for 32-bit games). Both are optional dependencies.
 
-Do not run upstream's fgvk-installer: it targets ~/.local and would create a
+Do not run the standalone archive installer: it targets ~/.local and would create a
 second, independently managed copy. Remove the package with pacman instead.
 EOF
     return 0

@@ -4,7 +4,7 @@
 
 Usage: analyze-hitches.py LOG [--marks MARKS] [--from SECONDS] [--to SECONDS] [--min-gap MS]
 
-LOG is a FGVK_PACING_PROFILE_LOG capture. MARKS is the file `fgvk-cli mark` appends to. Standard
+LOG is a FGVK_PACING_PROFILE_LOG capture. MARKS is the file `fgvk cli mark` appends to. Standard
 library only. Times in the log are CLOCK_MONOTONIC nanoseconds; the report shows seconds from the
 first output. A generated output of the pair (s-1, s) carries source s.
 """
@@ -213,7 +213,7 @@ def print_after_call(samples, unavailable, unjoined, ambiguous, unshown, label="
 def main(argv):
     parser = argparse.ArgumentParser(description="Explain output gaps in a framegen-vulkan capture.")
     parser.add_argument("log")
-    parser.add_argument("--marks", help="marks file written by fgvk-cli mark")
+    parser.add_argument("--marks", help="marks file written by fgvk cli mark")
     parser.add_argument("--from", dest="start", type=float, help="window start, seconds from the first output")
     parser.add_argument("--to", dest="end", type=float, help="window end, seconds from the first output")
     parser.add_argument("--min-gap", type=float, help="report gaps of at least this many ms")

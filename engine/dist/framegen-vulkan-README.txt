@@ -12,7 +12,7 @@ Install or update
 2. Extract the entire archive into a new folder. Do not run the installer from an archive preview.
 3. Double-click "Install framegen-vulkan" and choose "Execute" if your file manager asks.
 4. Confirm the installation location. The installer verifies every managed payload file, safely updates an existing installation, and preserves your profiles.
-5. When installation finishes, the installer shows the Steam launch option. Profiles live in ~/.config/framegen-vulkan/conf.toml; check them with ~/.local/bin/fgvk-cli validate.
+5. When installation finishes, the installer shows the Steam launch option. Profiles live in ~/.config/framegen-vulkan/conf.toml; check them with ~/.local/bin/fgvk cli validate.
 
 Prepare and launch a game
 -------------------------
@@ -34,7 +34,7 @@ Installing framegen-vulkan does not activate it for every game. A standalone nat
     multiplier = 2
 
 2. Enable Frame Generation in the profile. Set dll to your Lossless.dll path if automatic discovery fails. Settings that need a restart take effect the next time the game starts.
-3. Check the file with ~/.local/bin/fgvk-cli validate.
+3. Check the file with ~/.local/bin/fgvk cli validate.
 
 Run ~/.local/bin/fgvk with no arguments to open the settings window. It edits the same conf.toml file.
 
@@ -62,7 +62,7 @@ Uninstall
 
 Run:
 
-    ~/.local/bin/fgvk-installer --uninstall
+    ~/.local/bin/fgvk uninstall
 
 The first confirmation removes the managed native Renderer while preserving modified files and your profiles. Shared Flatpak runtime extensions remain installed.
 

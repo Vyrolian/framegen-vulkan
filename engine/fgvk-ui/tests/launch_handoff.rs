@@ -87,21 +87,34 @@ fn an_open_settings_window_refuses_another_window_but_allows_command_handoff() {
 }
 
 #[test]
-fn installed_layout_finds_the_helper_beside_the_binary() {
+fn installed_layout_routes_each_command_to_its_helper() {
     let prefix = scratch_directory("installed");
     let binary = prefix.join("bin/fgvk");
     fs::create_dir_all(binary.parent().expect("bin")).expect("create bin");
     fs::copy(env!("CARGO_BIN_EXE_fgvk"), &binary).expect("copy fgvk into the layout");
-    write_executable(
-        &prefix.join("libexec/framegen-vulkan/fgvk-launch"),
-        FAKE_HELPER,
-        0o755,
-    );
+    for helper in ["fgvk-launch", "fgvk-cli", "fgvk-installer"] {
+        write_executable(
+            &prefix.join("libexec/framegen-vulkan").join(helper),
+            &FAKE_HELPER.replace("for argument", &format!("echo {helper}\nfor argument")),
+            0o755,
+        );
+    }
 
-    let output = run_fgvk(&binary, &["%command%"], None);
-
-    assert_eq!(output.status.code(), Some(23), "{output:?}");
-    assert_eq!(String::from_utf8_lossy(&output.stdout), "%command%\n");
+    for (arguments, expected) in [
+        (&["%command%"][..], "fgvk-launch\n%command%\n"),
+        (
+            &["cli", "validate", "--config", "a b"][..],
+            "fgvk-cli\nvalidate\n--config\na b\n",
+        ),
+        (
+            &["uninstall", "--purge-configuration"][..],
+            "fgvk-installer\n--purge-configuration\n--uninstall\n",
+        ),
+    ] {
+        let output = run_fgvk(&binary, arguments, None);
+        assert_eq!(output.status.code(), Some(23), "{output:?}");
+        assert_eq!(output.stdout, expected.as_bytes());
+    }
     let _ = fs::remove_dir_all(&prefix);
 }
 

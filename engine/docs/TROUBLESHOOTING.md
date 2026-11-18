@@ -37,7 +37,7 @@ If the loader reports `GLIBC_2.43 not found` for `fgvk`, the archive was built a
 To check configuration errors:
 
 ```bash
-fgvk-cli validate --config ~/.config/framegen-vulkan/conf.toml
+fgvk cli validate --config ~/.config/framegen-vulkan/conf.toml
 ```
 
 ## Gamescope sessions

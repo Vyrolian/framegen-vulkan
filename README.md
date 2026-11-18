@@ -31,7 +31,7 @@ cd framegen-vulkan
 "./Install framegen-vulkan"
 ```
 
-For Flatpak apps, download and extract `framegen-vulkan-vX.Y.Z-flatpaks.tar.xz` into its own folder. From that folder, run the extension installer and follow the guide to configure each app. [Flatpak setup guide](engine/docs/FLATPAK-GUIDE.md)
+For Flatpak apps, download and extract `framegen-vulkan-vX.Y.Z-flatpak.tar.xz` into its own folder. From that folder, run the extension installer and follow the guide to configure each app. [Flatpak setup guide](engine/docs/FLATPAK-GUIDE.md)
 
 ```bash
 "./Install framegen-vulkan Flatpak Extensions"
@@ -78,13 +78,15 @@ mkdir -p build/package/x && tar -xf build/package/framegen-vulkan.tar.xz -C buil
 cd build/package/x && "./Install framegen-vulkan"
 ```
 
-The installer puts everything under `~/.local`, keeps existing profiles, and prints the launch option. Close games using `fgvk` before updating or uninstalling. To update, run the installer from a newer package. To uninstall, run `~/.local/bin/fgvk-installer --uninstall`.
+The installer puts everything under `~/.local`, keeps existing profiles, and prints the launch option. Close games using `fgvk` before updating or uninstalling. To update, run the installer from a newer package. To uninstall, run `~/.local/bin/fgvk uninstall`.
+
+The original v1.0.0 package uses `~/.local/bin/fgvk-installer --uninstall` for removal and `~/.local/bin/fgvk-cli validate` for configuration checks.
 
 To also build the 32-bit layer, omit `--64-bit-only` and install multilib support. [Building from source](engine/docs/BUILDING-FROM-SOURCE.md)
 
 ## Launch a game
 
-1. Run `~/.local/bin/fgvk` to open Settings and create a game profile. You can also edit `~/.config/framegen-vulkan/conf.toml` directly and check it with `~/.local/bin/fgvk-cli validate`.
+1. Run `~/.local/bin/fgvk` to open Settings and create a game profile. You can also edit `~/.config/framegen-vulkan/conf.toml` directly and check it with `~/.local/bin/fgvk cli validate`.
 2. Start the game through `fgvk` using the command for your launcher.
 
 | Launcher | How |

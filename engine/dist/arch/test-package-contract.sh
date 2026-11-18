@@ -59,13 +59,13 @@ mkdir -p \
     "$package_root/usr/share/doc/framegen-vulkan-bin"
 touch \
     "$package_root/usr/bin/fgvk" \
-    "$package_root/usr/bin/fgvk-cli" \
+    "$package_root/usr/libexec/framegen-vulkan/fgvk-cli" \
     "$package_root/usr/libexec/framegen-vulkan/fgvk-launch" \
     "$package_root/usr/lib/libfgvk-render.so" \
     "$package_root/usr/lib32/libfgvk-render.so"
 for binary_path in \
     usr/bin/fgvk \
-    usr/bin/fgvk-cli \
+    usr/libexec/framegen-vulkan/fgvk-cli \
     usr/lib/libfgvk-render.so \
     usr/lib32/libfgvk-render.so; do
     printf '\177ELF' > "$package_root/$binary_path"
@@ -118,7 +118,7 @@ case "$1" in
         fi
         case "$2" in
             */libfuture.so) printf ' 0x00000001 (NEEDED)             Shared library: [libunexpected.so.1]\n' ;;
-            */bin/fgvk-cli)
+            */libexec/framegen-vulkan/fgvk-cli)
                 if [ "${FGVK_TEST_TOOLKIT_NEEDED:-0}" = 1 ]; then
                     printf ' 0x00000001 (NEEDED)             Shared library: [libsimulated-toolkit.so.1]\n'
                 fi ;;
@@ -232,7 +232,7 @@ mkdir -p \
     "$mapping_root/share/applications" \
     "$mapping_root/share/framegen-vulkan/future"
 printf '%s\n' tool > "$mapping_root/bin/future-tool"
-printf '%s\n' installer > "$mapping_root/bin/fgvk-installer"
+printf '%s\n' installer > "$mapping_root/libexec/framegen-vulkan/fgvk-installer"
 printf '%s\n' fgvk > "$mapping_root/bin/fgvk"
 printf '%s\n' launcher > "$mapping_root/libexec/framegen-vulkan/fgvk-launch"
 printf '%s\n' entry > "$mapping_root/share/applications/legacy-entry"
@@ -249,7 +249,7 @@ printf '%s\n' example > "$mapping_root/share/doc/framegen-vulkan/themes/example.
     cd "$mapping_root"
     _fgvk_install_payload_file bin/future-tool
     _fgvk_install_payload_file bin/fgvk
-    _fgvk_install_payload_file bin/fgvk-installer
+    _fgvk_install_payload_file libexec/framegen-vulkan/fgvk-installer
     _fgvk_install_payload_file libexec/framegen-vulkan/fgvk-launch
     _fgvk_install_payload_file share/applications/legacy-entry
     _fgvk_install_payload_file share/framegen-vulkan/future/payload.dat
@@ -269,7 +269,7 @@ printf '%s\n' example > "$mapping_root/share/doc/framegen-vulkan/themes/example.
 [[ -f "$mapping_pkgdir/usr/share/licenses/framegen-vulkan-bin/LICENSE" ]]
 [[ ! -e "$mapping_pkgdir/usr/share/doc/framegen-vulkan-bin/LICENSE" ]]
 [[ -f "$mapping_pkgdir/usr/share/doc/framegen-vulkan-bin/themes/example.toml" ]]
-[[ ! -e "$mapping_pkgdir/usr/bin/fgvk-installer" ]]
+[[ ! -e "$mapping_pkgdir/usr/libexec/framegen-vulkan/fgvk-installer" ]]
 [[ ! -e "$mapping_pkgdir/usr/share/applications/legacy-entry" ]]
 
 standalone_marker_home="$work_dir/standalone-marker-home"
@@ -324,7 +324,7 @@ grep -Fqx 'pkgrel=7' "$work_dir/PKGBUILD"
 # Exercise the first public pin as well as an update to an existing pin.
 printf '%s\n' '{"remote_binary":[]}' > "$work_dir/package.json"
 native_archive="$work_dir/framegen-vulkan-v9.8.7-linux.tar.xz"
-flatpak_archive="$work_dir/framegen-vulkan-v9.8.7-flatpaks.tar.xz"
+flatpak_archive="$work_dir/framegen-vulkan-v9.8.7-flatpak.tar.xz"
 arch_package="$work_dir/framegen-vulkan-bin-9.8.7-7-x86_64.pkg.tar.zst"
 node "$repo_root/engine/scripts/pin-renderer-release.mjs" \
     "$work_dir/package.json" \
@@ -454,7 +454,7 @@ chmod +x \
 "$local_release_fixture/scripts/package-local-release.sh" \
     "$local_release_output" >/dev/null
 [[ -f "$local_release_output/framegen-vulkan-v9.8.7-linux.tar.xz" ]]
-[[ -f "$local_release_output/framegen-vulkan-v9.8.7-flatpaks.tar.xz" ]]
+[[ -f "$local_release_output/framegen-vulkan-v9.8.7-flatpak.tar.xz" ]]
 [[ -f "$local_release_output/framegen-vulkan-bin-9.8.7-1-x86_64.pkg.tar.zst" ]]
 [[ -f "$local_release_output/SHA256SUMS" ]]
 (

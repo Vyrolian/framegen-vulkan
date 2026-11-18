@@ -1,6 +1,4 @@
-//! Routes `fgvk` invocations. No arguments open the settings window. Any arguments replace this
-//! process with the private launch helper, unchanged, so `fgvk <command>` behaves exactly like the
-//! helper it wraps and no window or graphics context is created on that path.
+//! Routes `fgvk` invocations before the settings window or graphics context is created.
 
 use std::ffi::OsString;
 use std::os::unix::process::CommandExt;
@@ -10,8 +8,7 @@ use std::process::Command;
 /// Overrides the launch helper path. Development builds outside an install use it.
 pub const HELPER_ENV: &str = "FGVK_LAUNCH_HELPER";
 
-/// Helper location relative to the directory holding the `fgvk` executable.
-const HELPER_FROM_BINARY: &str = "../libexec/framegen-vulkan/fgvk-launch";
+const HELPERS_FROM_BINARY: &str = "../libexec/framegen-vulkan";
 
 /// Exit status when the launch helper cannot be found.
 const STATUS_HELPER_MISSING: i32 = 127;
@@ -26,6 +23,7 @@ pub enum Action {
     /// Arguments present: run `helper` with `args` in place of this process.
     Exec {
         helper: PathBuf,
+        label: &'static str,
         args: Vec<OsString>,
     },
 }
@@ -41,34 +39,48 @@ pub fn plan(
 ) -> Result<Action, String> {
     let mut argv = argv.into_iter();
     let _program = argv.next();
-    let args: Vec<OsString> = argv.collect();
+    let mut args: Vec<OsString> = argv.collect();
     if args.is_empty() {
         return Ok(Action::Gui);
     }
-    let helper = helper_path(lookup, current_exe)?;
-    Ok(Action::Exec { helper, args })
+    let (name, label) = if args[0] == "cli" {
+        args.remove(0);
+        ("fgvk-cli", "CLI helper")
+    } else if args[0] == "uninstall" {
+        args.remove(0);
+        args.push("--uninstall".into());
+        ("fgvk-installer", "uninstall helper")
+    } else {
+        ("fgvk-launch", "launch helper")
+    };
+    let helper = helper_path(name, lookup, current_exe)?;
+    Ok(Action::Exec {
+        helper,
+        label,
+        args,
+    })
 }
 
 /// Resolves the helper from `FGVK_LAUNCH_HELPER`, else from the installed layout.
 fn helper_path(
+    name: &str,
     lookup: impl Fn(&str) -> Option<OsString>,
     current_exe: Option<&Path>,
 ) -> Result<PathBuf, String> {
-    if let Some(path) = lookup(HELPER_ENV).filter(|value| !value.is_empty()) {
-        return Ok(PathBuf::from(path));
+    if name == "fgvk-launch" {
+        if let Some(path) = lookup(HELPER_ENV).filter(|value| !value.is_empty()) {
+            return Ok(PathBuf::from(path));
+        }
     }
-    let binary = current_exe.ok_or_else(|| {
-        format!("cannot locate the fgvk executable; set {HELPER_ENV} to the launch helper")
-    })?;
-    let directory = binary.parent().ok_or_else(|| {
-        format!(
-            "cannot locate the fgvk executable directory; set {HELPER_ENV} to the launch helper"
-        )
-    })?;
-    Ok(directory.join(HELPER_FROM_BINARY))
+    let binary =
+        current_exe.ok_or_else(|| format!("cannot locate the fgvk executable for {name}"))?;
+    let directory = binary
+        .parent()
+        .ok_or_else(|| format!("cannot locate the fgvk executable directory for {name}"))?;
+    Ok(directory.join(HELPERS_FROM_BINARY).join(name))
 }
 
-/// Runs the arguments in the launch helper. Returns `Ok(())` when the settings window should open.
+/// Runs the selected helper. Returns `Ok(())` when the settings window should open.
 ///
 /// On success this function does not return: the process image becomes the helper. A returned
 /// `Err` carries the exit status to use after printing the reason.
@@ -76,7 +88,11 @@ pub fn dispatch(argv: impl IntoIterator<Item = OsString>) -> Result<(), i32> {
     let current_exe = std::env::current_exe().ok();
     match plan(argv, |key| std::env::var_os(key), current_exe.as_deref()) {
         Ok(Action::Gui) => Ok(()),
-        Ok(Action::Exec { helper, args }) => Err(hand_off(&helper, &args)),
+        Ok(Action::Exec {
+            helper,
+            label,
+            args,
+        }) => Err(hand_off(&helper, label, &args)),
         Err(message) => {
             eprintln!("framegen-vulkan: {message}");
             Err(STATUS_HELPER_MISSING)
@@ -85,17 +101,19 @@ pub fn dispatch(argv: impl IntoIterator<Item = OsString>) -> Result<(), i32> {
 }
 
 /// Replaces this process with `helper`, passing `args` unchanged. Returns only on failure.
-fn hand_off(helper: &Path, args: &[OsString]) -> i32 {
+fn hand_off(helper: &Path, label: &str, args: &[OsString]) -> i32 {
     if !helper.is_file() {
-        eprintln!(
-            "framegen-vulkan: launch helper not found: {}. Reinstall framegen-vulkan or set {HELPER_ENV}.",
-            helper.display()
-        );
+        eprintln!("framegen-vulkan: {label} not found: {}", helper.display());
+        if label == "uninstall helper" {
+            eprintln!("framegen-vulkan: Use your package manager for system packages.");
+        } else if label == "launch helper" {
+            eprintln!("framegen-vulkan: Reinstall framegen-vulkan or set {HELPER_ENV}.");
+        }
         return STATUS_HELPER_MISSING;
     }
     let error = Command::new(helper).args(args).exec();
     eprintln!(
-        "framegen-vulkan: cannot start launch helper {}: {error}",
+        "framegen-vulkan: cannot start {label} {}: {error}",
         helper.display()
     );
     STATUS_HELPER_NOT_RUNNABLE
@@ -153,6 +171,7 @@ mod tests {
         assert_eq!(
             action,
             Ok(Action::Exec {
+                label: "launch helper",
                 helper: PathBuf::from("/home/u/.local/bin/../libexec/framegen-vulkan/fgvk-launch"),
                 args: argv(&["%command%", "--", "Game.exe", "", "a b", "--flag=value"]),
             })
@@ -170,6 +189,7 @@ mod tests {
             assert_eq!(
                 action,
                 Ok(Action::Exec {
+                    label: "launch helper",
                     helper: PathBuf::from("/opt/fgvk/bin/../libexec/framegen-vulkan/fgvk-launch"),
                     args: argv(&[flag]),
                 }),
@@ -204,6 +224,7 @@ mod tests {
         assert_eq!(
             action,
             Ok(Action::Exec {
+                label: "launch helper",
                 helper: PathBuf::from("/dev/tree/fgvk-launch"),
                 args: argv(&["%command%"]),
             })
@@ -220,6 +241,7 @@ mod tests {
         assert_eq!(
             action,
             Ok(Action::Exec {
+                label: "launch helper",
                 helper: PathBuf::from("/home/u/.local/bin/../libexec/framegen-vulkan/fgvk-launch"),
                 args: argv(&["%command%"]),
             })
@@ -232,7 +254,7 @@ mod tests {
         let root_exe = plan(argv(&["fgvk", "%command%"]), no_environment, exe("/"));
         for action in [no_exe, root_exe] {
             let message = action.expect_err("no helper location");
-            assert!(message.contains(HELPER_ENV), "{message}");
+            assert!(message.contains("fgvk-launch"), "{message}");
         }
     }
 
@@ -248,7 +270,7 @@ mod tests {
             no_environment,
             exe("/usr/bin/fgvk"),
         );
-        let Ok(Action::Exec { helper, args }) = action else {
+        let Ok(Action::Exec { helper, args, .. }) = action else {
             panic!("expected a helper hand-off, got {action:?}");
         };
         assert_eq!(

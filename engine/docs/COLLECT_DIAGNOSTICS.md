@@ -43,7 +43,7 @@ Keep the file written by the terminal capture in section 1, or the pacing log de
 
 Collect from the original session log, not a filtered copy, which may have omitted error details. The capture does not include the separate compositor system journal; support may request it if the game log is insufficient.
 
-To check the configuration file for errors, run `fgvk-cli validate`.
+To check the configuration file for errors, run `fgvk cli validate`.
 
 For comparisons, keep a separate capture after each run and note which settings changed. Use the same scene and game settings where possible. For HDR sharpening comparisons, also note the game resolution and display resolution. For VRR comparisons, record the VRR setting, display refresh rate, and session type.
 

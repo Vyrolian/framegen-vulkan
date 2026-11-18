@@ -33,7 +33,8 @@ make_host() {
   printf '0.0.0\n' > "$directory/framegen-vulkan-version.txt"
   printf '#!/bin/sh\n' > "$directory/bin/fgvk"
   printf '#!/bin/sh\n' > "$directory/libexec/framegen-vulkan/fgvk-launch"
-  printf '#!/bin/sh\n' > "$directory/bin/fgvk-cli"
+  printf '#!/bin/sh\n' > "$directory/libexec/framegen-vulkan/fgvk-installer"
+  printf '#!/bin/sh\n' > "$directory/libexec/framegen-vulkan/fgvk-cli"
   printf 'layer %s\n' "$fingerprint" > "$directory/lib/libfgvk-render.so"
   printf 'layer32 %s\n' "$fingerprint" > "$directory/lib32/libfgvk-render.so"
   printf '{}\n' > "$directory/share/vulkan/implicit_layer.d/VkLayer_FGVK_render.json"
@@ -71,7 +72,7 @@ make_flatpak_archive() {
 }
 
 host_name="framegen-vulkan-v0.0.0-linux.tar.xz"
-flatpak_name="framegen-vulkan-v0.0.0-flatpaks.tar.xz"
+flatpak_name="framegen-vulkan-v0.0.0-flatpak.tar.xz"
 mkdir -p "$test_root/candidates"
 
 make_host_archive "$test_root/candidates/$host_name" "$engine_short"

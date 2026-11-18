@@ -29,7 +29,7 @@ Pacman verifies the package database transaction, installs the declared dependen
 Installing the package does not activate framegen-vulkan for every game. Create a game profile in `~/.config/framegen-vulkan/conf.toml` and configure Frame Generation. Check the file with:
 
 ```bash
-fgvk-cli validate
+fgvk cli validate
 ```
  Frame Generation requires a lawful user-supplied `Lossless.dll`. DirectX-only LSFG models additionally need the optional `vkd3d` dependency, plus `lib32-vkd3d` for 32-bit games. Native SPIR-V LSFG models do not need the translator. For a native Steam or Proton game, add this under **Steam Properties > General > Launch Options**:
 

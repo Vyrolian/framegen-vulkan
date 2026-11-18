@@ -92,7 +92,8 @@ jobs:
           tar -xJf "engine/out/framegen-vulkan-v${version}-linux.tar.xz" -C "$RUNNER_TEMP/fgvk-package"
           cd "$RUNNER_TEMP/fgvk-package"
           sha256sum --check --quiet framegen-vulkan-install-manifest.txt
-          for binary in bin/fgvk bin/fgvk-cli lib/libfgvk-render.so lib32/libfgvk-render.so; do
+          test "$(find bin -mindepth 1 -maxdepth 1 -printf '%f\n')" = fgvk
+          for binary in bin/fgvk libexec/framegen-vulkan/fgvk-cli lib/libfgvk-render.so lib32/libfgvk-render.so; do
             glibc="$(readelf --version-info "$binary" | awk '/Name: GLIBC_[0-9]/ {for (i=1; i<NF; ++i) if ($i == "Name:") print $(i+1)}' | sort -V | tail -n 1)"
             echo "$binary requires $glibc"
             if [[ -z "$glibc" || "$(printf '%s\n' "$glibc" GLIBC_2.35 | sort -V | tail -n 1)" != GLIBC_2.35 ]]; then
@@ -104,7 +105,16 @@ jobs:
               exit 1
             fi
           done
-          bin/fgvk /usr/bin/true
+          export FGVK_INSTALL_PREFIX="$RUNNER_TEMP/fgvk-installed"
+          export FGVK_INSTALLER_ASSUME_YES=1
+          "./Install framegen-vulkan" --install
+          installed_fgvk="$FGVK_INSTALL_PREFIX/bin/fgvk"
+          unset FGVK_INSTALL_PREFIX
+          "$installed_fgvk" /usr/bin/true
+          printf 'version = 2\n' > "$RUNNER_TEMP/fgvk.conf"
+          "$installed_fgvk" cli validate --config "$RUNNER_TEMP/fgvk.conf"
+          "$installed_fgvk" uninstall
+          test ! -e "$installed_fgvk"
 
       - name: Write and verify the SHA-256 file
         id: archive
@@ -157,7 +167,7 @@ jobs:
         working-directory: engine/out
         run: |
           version="$(tr -d '[:space:]' < ../VERSION)"
-          archive="framegen-vulkan-v${version}-flatpaks.tar.xz"
+          archive="framegen-vulkan-v${version}-flatpak.tar.xz"
           test -s "$archive"
           sha256sum "$archive" > "$archive.sha256"
           sha256sum --check "$archive.sha256"
@@ -166,7 +176,7 @@ jobs:
       - name: Upload the Flatpak archive and its SHA-256 file
         uses: actions/upload-artifact@v7
         with:
-          name: framegen-vulkan-flatpaks
+          name: framegen-vulkan-flatpak
           path: |
             engine/out/${{ steps.archive.outputs.archive }}
             engine/out/${{ steps.archive.outputs.archive }}.sha256
@@ -196,7 +206,7 @@ jobs:
       - name: Download the verified Flatpak archive
         uses: actions/download-artifact@v8
         with:
-          name: framegen-vulkan-flatpaks
+          name: framegen-vulkan-flatpak
           path: release-assets
 
       - name: Create the GitHub release

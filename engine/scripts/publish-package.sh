@@ -150,7 +150,7 @@ fi
 
 tag="v$version"
 archive="out/framegen-vulkan-v$version-linux.tar.xz"
-flatpak_archive="out/framegen-vulkan-v$version-flatpaks.tar.xz"
+flatpak_archive="out/framegen-vulkan-v$version-flatpak.tar.xz"
 source_commit="$(git rev-parse HEAD)"
 
 tag_exists=false
@@ -245,11 +245,11 @@ Download \`$(basename "$archive")\`, extract it into a new folder, then use the 
 2. Choose **Execute** if your file manager asks.
 3. Confirm the installation. The installer verifies the package, installs it under \`~/.local\`, safely updates existing files, and preserves profiles.
 
-To remove it later, run \`~/.local/bin/fgvk-installer --uninstall\` from a terminal. The removal keeps your profiles unless you explicitly choose to remove them.
+To remove it later, run \`~/.local/bin/fgvk uninstall\` from a terminal. The removal keeps your profiles unless you explicitly choose to remove them.
 
 The host archive includes 64-bit and 32-bit Vulkan layers; the CLI is 64-bit.
 
-Configure profiles in \`~/.config/framegen-vulkan/conf.toml\`, then validate them with \`~/.local/bin/fgvk-cli validate\`. Set the licensed DLL path in the profile when using Frame Generation, then use \`~/.local/bin/fgvk %command%\` for a direct Steam launch. Run \`~/.local/bin/fgvk\` without arguments to open the settings window.
+Configure profiles in \`~/.config/framegen-vulkan/conf.toml\`, then validate them with \`~/.local/bin/fgvk cli validate\`. Set the licensed DLL path in the profile when using Frame Generation, then use \`~/.local/bin/fgvk %command%\` for a direct Steam launch. Run \`~/.local/bin/fgvk\` without arguments to open the settings window.
 
 ### Arch Linux package
 
@@ -263,7 +263,7 @@ The \`./\` prefix refers to the terminal's current folder; this command does not
 
 The package installs framegen-vulkan under \`/usr\`, preserves profiles under \`~/.config/framegen-vulkan\`, and does not touch a user-local Renderer under \`~/.local\`. Use either the system package or the user-local installation as the active owner for a user; see the [Arch package guide](https://github.com/$release_repository/blob/main/engine/dist/arch/README.md) for coexistence details.
 
-After installation, create a game profile in \`~/.config/framegen-vulkan/conf.toml\`, validate it with \`fgvk-cli validate\`, and use \`/usr/bin/fgvk %command%\` as that native Steam or Proton game's launch option. Installing the package alone does not activate framegen-vulkan globally.
+After installation, create a game profile in \`~/.config/framegen-vulkan/conf.toml\`, validate it with \`fgvk cli validate\`, and use \`/usr/bin/fgvk %command%\` as that native Steam or Proton game's launch option. Installing the package alone does not activate framegen-vulkan globally.
 
 ### Flatpak runtime extensions
 
@@ -278,7 +278,7 @@ flatpak install --user ./org.freedesktop.Platform.VulkanLayer.fgvkrender-26.08.f
 1. Quit every game or application currently using framegen-vulkan.
 2. For a user-local installation, download the newer host archive, extract it into a new folder, and run **Install framegen-vulkan** again. For the Arch package, download the newer \`.pkg.tar.zst\` and run \`sudo pacman -U\` on it.
 3. If you use Flatpak applications, download the matching Flatpak archive and reinstall the extension for each runtime you use.
-4. Restart the game. Revalidate the configuration with \`fgvk-cli validate\` if you changed the DLL path or profiles.
+4. Restart the game. Revalidate the configuration with \`fgvk cli validate\` if you changed the DLL path or profiles.
 
 Keep the previous archives until the new version has been tested with your games.
 

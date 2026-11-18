@@ -77,7 +77,7 @@ const archiveName = basename(archivePath);
 const flatpakArchiveName = basename(flatpakArchivePath);
 const archPackageName = archPackagePath ? basename(archPackagePath) : "";
 const expectedArchiveName = `framegen-vulkan-v${version}-linux.tar.xz`;
-const expectedFlatpakArchiveName = `framegen-vulkan-v${version}-flatpaks.tar.xz`;
+const expectedFlatpakArchiveName = `framegen-vulkan-v${version}-flatpak.tar.xz`;
 if (archiveName !== expectedArchiveName) {
     throw new Error(`Expected ${expectedArchiveName}, received ${archiveName}`);
 }

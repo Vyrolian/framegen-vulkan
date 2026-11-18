@@ -13,7 +13,7 @@ if [[ "$build_work_root" != /* ]]; then
     build_work_root="$repo_root/$build_work_root"
 fi
 version="$(tr -d '[:space:]' < "$repo_root/VERSION")"
-default_output="$repo_root/out/framegen-vulkan-v$version-flatpaks.tar.xz"
+default_output="$repo_root/out/framegen-vulkan-v$version-flatpak.tar.xz"
 output_path="${1:-$default_output}"
 
 if [[ "$output_path" != /* ]]; then

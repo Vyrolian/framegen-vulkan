@@ -245,8 +245,8 @@ User installation, updates and removal are in the [Arch guide](../dist/arch/READ
 
 The package installs:
 
-- `fgvk` (settings window and `fgvk <command>` entry point) and `fgvk-cli` into `/usr/bin`.
-- the private launch helper `fgvk-launch` into `/usr/libexec/framegen-vulkan`, off `PATH`.
+- `fgvk` into `/usr/bin` for Settings, game launches and `fgvk cli`.
+- the private helpers `fgvk-launch` and `fgvk-cli` into `/usr/libexec/framegen-vulkan`.
 - the 64-bit Vulkan layers into `/usr/lib` and the 32-bit layers into `/usr/lib32`.
 - the public implicit-layer manifest into `/usr/share/vulkan/implicit_layer.d`, gated by `ENABLE_FGVK`.
 - the private manifest used by `fgvk` into `/usr/share/framegen-vulkan/vulkan/implicit_layer.d`.
@@ -255,7 +255,7 @@ The package installs:
 
 The package deliberately excludes:
 
-- `bin/fgvk-installer` and the `Install framegen-vulkan` launcher, which form the user-local installer and target `~/.local`.
+- `libexec/framegen-vulkan/fgvk-installer` and the `Install framegen-vulkan` launcher, which form the user-local installer and target `~/.local`.
 - the archive's `README.txt`, which documents the user-local installer flow that this package does not provide.
 
 Two details differ from the archive layout: the archived `share/doc/framegen-vulkan/*` files are installed under `/usr/share/licenses/framegen-vulkan-bin/` and `/usr/share/doc/framegen-vulkan-bin/`, and shared libraries are installed as mode `0755` instead of the archive's `0644`, following Arch convention. Content hashes are unaffected, so the checksum manifest still matches.
@@ -280,6 +280,6 @@ This repository owns the reviewed `PKGBUILD` and publishes its verified binary p
 - Renderer publication runs `verify-release-package.sh` after synchronizing the recipe, uploads that exact verified package, records its checksum in release metadata, and refuses to consider the release complete if the asset is missing or differs from the recorded checksum.
 - The build wrapper rejects a stale or renamed package unless its filename, `.PKGINFO` name/version/architecture, embedded `framegen-vulkan-version.txt`, synchronized recipe, and source archive checksum all agree.
 - The build wrapper rejects a new or undeclared ELF dependency in the CLI or either Renderer role. It also rejects an ELF with the wrong 32-bit or 64-bit class for its package path.
-- Every payload file this package installs has the same SHA-256 as its entry in `framegen-vulkan-install-manifest.txt`. The recipe verifies the complete archive manifest, packages every supported entry instead of maintaining a second payload allowlist, and fails on unsafe or unsupported paths. The manifest is installed unchanged at `/usr/share/doc/framegen-vulkan-bin/framegen-vulkan-install-manifest.txt` so the claim can be re-checked. The only manifest entries without a matching installed file are `bin/fgvk-installer` and desktop entries, both excluded by design.
+- Every payload file this package installs has the same SHA-256 as its entry in `framegen-vulkan-install-manifest.txt`. The recipe verifies the complete archive manifest, packages every supported entry instead of maintaining a second payload allowlist, and fails on unsafe or unsupported paths. The manifest is installed unchanged at `/usr/share/doc/framegen-vulkan-bin/framegen-vulkan-install-manifest.txt` so the claim can be re-checked. The only manifest entries without a matching installed file are `libexec/framegen-vulkan/fgvk-installer` and desktop entries, both excluded by design.
 - A Vulkan loader run with `VK_IMPLICIT_LAYER_PATH` pointed at each packaged manifest directory discovers and activates `VK_LAYER_FGVK_render` for the public set, and the matching layer for each private directory, with the relative `library_path` values resolving to `/usr/lib` and `/usr/lib32`.
 - `bash -n PKGBUILD`, `sh -n framegen-vulkan-bin.install`, and `./check-release-pin.sh` all pass.

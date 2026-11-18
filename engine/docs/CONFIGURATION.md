@@ -1,6 +1,6 @@
 # Configuration
 
-framegen-vulkan reads its profiles from `~/.config/framegen-vulkan/conf.toml`. Edit the file in any text editor. framegen-vulkan reads it when a game starts, so most changes apply to the next launch; settings marked live in [Applying changes](#applying-changes) can change while the game runs. Check each edit with `~/.local/bin/fgvk-cli validate`. The [configuration reference](CONFIGURATION-REFERENCE.md) lists every field, default, and environment variable.
+framegen-vulkan reads its profiles from `~/.config/framegen-vulkan/conf.toml`. Edit the file in any text editor. framegen-vulkan reads it when a game starts, so most changes apply to the next launch; settings marked live in [Applying changes](#applying-changes) can change while the game runs. Check each edit with `~/.local/bin/fgvk cli validate`. The [configuration reference](CONFIGURATION-REFERENCE.md) lists every field, default, and environment variable.
 
 ## Quick start
 
@@ -8,7 +8,7 @@ framegen-vulkan reads its profiles from `~/.config/framegen-vulkan/conf.toml`. E
 2. Set `active_in` to the game's executable name, such as `Game.exe`. Match the game's process, not its launcher, Steam title, or ROM filename.
 3. Enable Frame Generation for that profile.
 4. Add `~/.local/bin/fgvk %command%` to the game's Steam launch options, then start the game.
-5. Run `~/.local/bin/fgvk-cli validate` after each change.
+5. Run `~/.local/bin/fgvk cli validate` after each change.
 
 ```toml
 version = 2

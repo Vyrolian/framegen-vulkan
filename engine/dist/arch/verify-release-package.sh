@@ -103,7 +103,7 @@ package_entries="$(bsdtar -tf "${package_files[0]}")"
 for required_entry in \
     .INSTALL \
     usr/bin/fgvk \
-    usr/bin/fgvk-cli \
+    usr/libexec/framegen-vulkan/fgvk-cli \
     usr/libexec/framegen-vulkan/fgvk-launch \
     usr/lib/libfgvk-render.so \
     usr/lib32/libfgvk-render.so; do
@@ -153,7 +153,7 @@ while IFS= read -r -d '' audited_binary; do
     fi
     binary_path="${audited_binary#"$work_dir/audit/"}"
     case "$binary_path" in
-        usr/bin/* | usr/lib/* | usr/lib32/*) ;;
+        usr/bin/* | usr/lib/* | usr/lib32/* | usr/libexec/framegen-vulkan/fgvk-cli) ;;
         *)
             echo "Built Arch package has an ELF in an unreviewed location: $binary_path." >&2
             exit 1 ;;

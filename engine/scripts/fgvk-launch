@@ -5,6 +5,9 @@ set -euo pipefail
 usage() {
     cat <<'EOF'
 Usage: fgvk [--] COMMAND [ARG ...]
+       fgvk                         Open Settings
+       fgvk cli --help              Show validation, DLL inspection and marking commands
+       fgvk uninstall              Remove a standalone installation
 
 Activates framegen-vulkan for one command through its supported SDR presentation
 boundary, prevents the known LSFG-VK 1.x and 2.x frame-generation layers from

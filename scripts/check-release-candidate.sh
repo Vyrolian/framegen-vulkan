@@ -96,7 +96,8 @@ fi
   echo "The host archive does not match its install manifest." >&2
   exit 1
 }
-for renderer_file in ./bin/fgvk ./bin/fgvk-cli ./libexec/framegen-vulkan/fgvk-launch ./lib/libfgvk-render.so \
+for renderer_file in ./bin/fgvk ./libexec/framegen-vulkan/fgvk-cli ./libexec/framegen-vulkan/fgvk-launch \
+  ./libexec/framegen-vulkan/fgvk-installer ./lib/libfgvk-render.so \
   ./lib32/libfgvk-render.so ./share/vulkan/implicit_layer.d/VkLayer_FGVK_render.json; do
   if ! grep -Fxq "$renderer_file" "$work_root/host-files.txt"; then
     echo "The host archive is missing $renderer_file." >&2
@@ -115,8 +116,8 @@ for layer in "$package_root/lib/libfgvk-render.so" "$package_root/lib32/libfgvk-
 done
 
 if [[ -n "$flatpak_archive" ]]; then
-  if [[ "$(basename "$flatpak_archive")" != "framegen-vulkan-v$version-flatpaks.tar.xz" ]]; then
-    echo "The Flatpak candidate must be framegen-vulkan-v$version-flatpaks.tar.xz." >&2
+  if [[ "$(basename "$flatpak_archive")" != "framegen-vulkan-v$version-flatpak.tar.xz" ]]; then
+    echo "The Flatpak candidate must be framegen-vulkan-v$version-flatpak.tar.xz." >&2
     exit 1
   fi
   tar -tJf "$flatpak_archive" | sed 's|^\./||' > "$work_root/flatpak-files.txt"

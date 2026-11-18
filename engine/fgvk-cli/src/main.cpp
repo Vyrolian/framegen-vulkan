@@ -120,7 +120,7 @@ SUBCOMMAND OPTIONS:
 }
 
 int main(int argc, char** argv) {
-    const std::string program{argv[0]};
+    const std::string program{"fgvk cli"};
     std::vector<std::string_view> arguments;
     if (argc > 1)
         arguments.reserve(static_cast<size_t>(argc - 1));
@@ -131,7 +131,7 @@ int main(int argc, char** argv) {
         std::span<const std::string_view>{arguments}
     );
     if (const auto* error = std::get_if<std::string>(&parsed)) {
-        std::cerr << "fgvk-cli: " << *error << "\n\n";
+        std::cerr << "fgvk cli: " << *error << "\n\n";
         usage(program);
         return EXIT_FAILURE;
     }

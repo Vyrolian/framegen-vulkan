@@ -4,6 +4,10 @@ set -euo pipefail
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 install_prefix="${FGVK_INSTALL_PREFIX:-$HOME/.local}"
+if [[ "${BASH_SOURCE[0]##*/}" == fgvk-installer && "$script_dir" == */libexec/framegen-vulkan &&
+    -z "${FGVK_INSTALL_PREFIX:-}" ]]; then
+    install_prefix="${script_dir%/libexec/framegen-vulkan}"
+fi
 state_dir="$install_prefix/share/framegen-vulkan/installer"
 state_manifest="$state_dir/installed-files.sha256"
 active_renderer_state="$install_prefix/share/framegen-vulkan/active-renderer.json"
@@ -379,11 +383,12 @@ uninstall_payload() {
 
 usage() {
     cat <<'EOF'
-Usage: fgvk-installer [--install] [--uninstall [--purge-configuration]]
+Usage: ./Install\ framegen-vulkan [--install]
+       fgvk uninstall [--purge-configuration]
 
 Run ‘Install framegen-vulkan’ from an extracted framegen-vulkan archive to install
-or update the user-local Renderer. Run fgvk-installer --uninstall to remove the
-managed Renderer files; profiles are kept unless --purge-configuration is given.
+or update the user-local Renderer. Run fgvk uninstall to remove the managed
+Renderer files. You can also choose to remove profiles, settings and diagnostics.
 EOF
 }
 

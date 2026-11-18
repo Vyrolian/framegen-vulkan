@@ -42,7 +42,7 @@ XDG_CONFIG_HOME="$config_home" \
 FGVK_INSTALLER_ASSUME_YES=1 \
 "$package_root/Install framegen-vulkan" --install >"$test_root/install.log"
 
-[[ -x "$install_prefix/bin/fgvk-cli" ]] || fail "CLI was not installed"
+[[ -x "$install_prefix/bin/fgvk-cli" ]] || fail "legacy CLI was not installed"
 [[ -x "$install_prefix/bin/fgvk" ]] || fail "fgvk entry point was not installed"
 [[ -x "$install_prefix/libexec/framegen-vulkan/fgvk-launch" ]] ||
     fail "private launch helper was not installed under libexec"
@@ -101,8 +101,10 @@ grep -Fq '"owner": "standalone"' \
     sha256sum --check --status share/framegen-vulkan/installer/installed-files.sha256
 ) || fail "installed state does not describe the installed payload"
 
-printf '%s\n' '#!/usr/bin/env bash' 'exit 42' > "$package_root/bin/fgvk-cli"
-chmod 0755 "$package_root/bin/fgvk-cli"
+mv "$package_root/bin/fgvk-installer" "$package_root/libexec/framegen-vulkan/"
+mv "$package_root/bin/fgvk-cli" "$package_root/libexec/framegen-vulkan/"
+printf '%s\n' '#!/usr/bin/env bash' 'exit 42' > "$package_root/libexec/framegen-vulkan/fgvk-cli"
+chmod 0755 "$package_root/libexec/framegen-vulkan/fgvk-cli"
 write_manifest
 
 FGVK_INSTALL_PREFIX="$install_prefix" \
@@ -110,9 +112,11 @@ XDG_CONFIG_HOME="$config_home" \
 FGVK_INSTALLER_ASSUME_YES=1 \
 "$package_root/Install framegen-vulkan" --install >/dev/null
 
-grep -Fq 'exit 42' "$install_prefix/bin/fgvk-cli" || fail "update did not replace the CLI"
+grep -Fq 'exit 42' "$install_prefix/libexec/framegen-vulkan/fgvk-cli" || fail "update did not replace the CLI"
+[[ ! -e "$install_prefix/bin/fgvk-cli" ]] || fail "update left the legacy CLI on PATH"
+[[ ! -e "$install_prefix/bin/fgvk-installer" ]] || fail "update left the legacy installer on PATH"
 printf '%s\n' 'user modification' > "$install_prefix/share/framegen-vulkan/payload.txt"
-rm -f -- "$install_prefix/bin/fgvk-cli"
+rm -f -- "$install_prefix/libexec/framegen-vulkan/fgvk-cli"
 mkdir -p "$config_home/framegen-vulkan"
 printf '%s\n' 'version = 2' > "$config_home/framegen-vulkan/conf.toml"
 printf '%s\n' 'retain diagnostic session' > "$config_home/framegen-vulkan/present-diagnostics.log"
@@ -122,9 +126,9 @@ HOME="$test_root" \
 FGVK_INSTALL_PREFIX="$install_prefix" \
 XDG_CONFIG_HOME="$config_home" \
 FGVK_INSTALLER_ASSUME_YES=1 \
-"$install_prefix/bin/fgvk-installer" --uninstall >/dev/null
+"$install_prefix/libexec/framegen-vulkan/fgvk-installer" --uninstall >/dev/null
 
-[[ ! -e "$install_prefix/bin/fgvk-cli" ]] || fail "uninstaller left the managed CLI"
+[[ ! -e "$install_prefix/libexec/framegen-vulkan/fgvk-cli" ]] || fail "uninstaller left the managed CLI"
 [[ ! -e "$install_prefix/bin/fgvk" ]] || fail "uninstaller left the managed fgvk entry point"
 [[ ! -e "$desktop_entry" ]] || fail "uninstaller left the settings menu entry"
 [[ ! -e "$install_prefix/libexec/framegen-vulkan/fgvk-launch" ]] ||
@@ -152,18 +156,18 @@ printf 'n\n' | HOME="$test_root" \
         FGVK_INSTALL_PREFIX="$install_prefix" \
         XDG_CONFIG_HOME="$config_home" \
         FGVK_INSTALLER_ASSUME_YES=0 \
-        "$install_prefix/bin/fgvk-installer" --uninstall \
+        "$install_prefix/libexec/framegen-vulkan/fgvk-installer" --uninstall \
         >"$test_root/declined-uninstall.log" 2>&1
-[[ -x "$install_prefix/bin/fgvk-cli" ]] ||
+[[ -x "$install_prefix/libexec/framegen-vulkan/fgvk-cli" ]] ||
     fail "declining the uninstall removed the managed CLI"
 
 HOME="$test_root" \
 FGVK_INSTALL_PREFIX="$install_prefix" \
 XDG_CONFIG_HOME="$config_home" \
 FGVK_INSTALLER_ASSUME_YES=1 \
-"$install_prefix/bin/fgvk-installer" --uninstall >/dev/null
+"$install_prefix/libexec/framegen-vulkan/fgvk-installer" --uninstall >/dev/null
 
-[[ ! -e "$install_prefix/bin/fgvk-cli" ]] ||
+[[ ! -e "$install_prefix/libexec/framegen-vulkan/fgvk-cli" ]] ||
     fail "default uninstaller left the managed CLI"
 [[ ! -e "$install_prefix/share/framegen-vulkan/active-renderer.json" ]] ||
     fail "default uninstaller left the active Renderer identity"
@@ -182,7 +186,7 @@ cp "$rollback_prefix/share/framegen-vulkan/installer/installed-files.sha256" "$t
 rm "$package_root/bin/obsolete"
 rm -r "$package_root/share/framegen-vulkan/obsolete-dir"
 printf 'new payload\n' > "$package_root/bin/new-file"
-printf '%s\n' '#!/usr/bin/env bash' 'exit 77' > "$package_root/bin/fgvk-cli"
+printf '%s\n' '#!/usr/bin/env bash' 'exit 77' > "$package_root/libexec/framegen-vulkan/fgvk-cli"
 write_manifest
 late_payload="$package_root/share/framegen-vulkan/payload.txt"
 cp "$late_payload" "$test_root/late-payload"
@@ -265,7 +269,7 @@ printf '%s\n' 'private diagnostics' > \
     "$purge_config_home/framegen-vulkan/present-diagnostics.log"
 FGVK_INSTALL_PREFIX="$purge_prefix" \
 XDG_CONFIG_HOME="$purge_config_home" \
-"$purge_prefix/bin/fgvk-installer" --uninstall --purge-configuration >/dev/null
+"$purge_prefix/libexec/framegen-vulkan/fgvk-installer" --uninstall --purge-configuration >/dev/null
 [[ ! -e "$purge_config_home/framegen-vulkan" ]] ||
     fail "explicit configuration purge left profiles or diagnostics behind"
 

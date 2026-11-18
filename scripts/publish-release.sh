@@ -98,7 +98,7 @@ fi
 
 renderer_tag="v$version"
 renderer_archive="framegen-vulkan-v$version-linux.tar.xz"
-flatpak_archive="framegen-vulkan-v$version-flatpaks.tar.xz"
+flatpak_archive="framegen-vulkan-v$version-flatpak.tar.xz"
 
 refresh_arch_package_name() {
   local arch_pkgver
@@ -171,7 +171,7 @@ renderer_pin_matches() {
     const binary = manifest.remote_binary?.[0];
     const tag = `v${version}`;
     const nativeName = `framegen-vulkan-v${version}-linux.tar.xz`;
-    const flatpakName = `framegen-vulkan-v${version}-flatpaks.tar.xz`;
+    const flatpakName = `framegen-vulkan-v${version}-flatpak.tar.xz`;
     const base = `https://github.com/${repository}/releases/download/${tag}`;
     const sha256 = /^[0-9a-f]{64}$/;
     const valid = binary?.version === version &&
