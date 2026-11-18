@@ -80,6 +80,8 @@ To also build the 32-bit layer, omit `--64-bit-only` and install multilib suppor
 | gamescope (Steam) | `gamescope -- ~/.local/bin/fgvk %command%` |
 | A desktop program | `~/.local/bin/fgvk /path/to/program` |
 
+You can shorten `~/.local/bin/fgvk` to `fgvk` when `~/.local/bin` is on the `PATH` of the shell or launcher that starts the game.
+
 `fgvk` uses the matching game profile or the profile marked **Use as default for fgvk launches**. The layer stays inactive when neither applies.
 
 For HDR in Proton on Wayland, add `PROTON_ENABLE_WAYLAND=1 DXVK_HDR=1` to the game’s launch options. To disable frame generation inside gamescope, set `FGVK_GAMESCOPE=0`.

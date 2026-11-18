@@ -460,7 +460,7 @@ namespace {
             uint32_t bufferCount, const VkBufferMemoryBarrier* buffers,
             uint32_t imageCount, const VkImageMemoryBarrier* images) {
         auto [state, next] = dispatch<PFN_vkCmdPipelineBarrier, barrierName>(buffer);
-        translate(state, buffer, imageCount, images, [&](const auto* translated) {
+        translate(state, buffer, imageCount, images, [&, next = next](const auto* translated) {
             next(buffer, src, dst, flags, memoryCount, memory, bufferCount, buffers, imageCount, translated);
         });
     }
@@ -471,7 +471,7 @@ namespace {
             uint32_t bufferCount, const VkBufferMemoryBarrier* buffers,
             uint32_t imageCount, const VkImageMemoryBarrier* images) {
         auto [state, next] = dispatch<PFN_vkCmdWaitEvents, waitEventsName>(buffer);
-        translate(state, buffer, imageCount, images, [&](const auto* translated) {
+        translate(state, buffer, imageCount, images, [&, next = next](const auto* translated) {
             next(buffer, count, events, src, dst, memoryCount, memory, bufferCount, buffers, imageCount, translated);
         });
     }
@@ -481,7 +481,7 @@ namespace {
     template<const char* Name>
     void VKAPI_CALL pipelineBarrier2(VkCommandBuffer buffer, const VkDependencyInfo* info) {
         auto [state, next] = dispatch<PFN_vkCmdPipelineBarrier2, Name>(buffer);
-        translate(state, buffer, info->imageMemoryBarrierCount, info->pImageMemoryBarriers, [&](const auto* images) {
+        translate(state, buffer, info->imageMemoryBarrierCount, info->pImageMemoryBarriers, [&, next = next](const auto* images) {
             auto adjusted = *info;
             adjusted.pImageMemoryBarriers = images;
             next(buffer, &adjusted);
@@ -493,7 +493,7 @@ namespace {
     template<const char* Name>
     void VKAPI_CALL setEvent2(VkCommandBuffer buffer, VkEvent event, const VkDependencyInfo* info) {
         auto [state, next] = dispatch<PFN_vkCmdSetEvent2, Name>(buffer);
-        translate(state, buffer, info->imageMemoryBarrierCount, info->pImageMemoryBarriers, [&](const auto* images) {
+        translate(state, buffer, info->imageMemoryBarrierCount, info->pImageMemoryBarriers, [&, next = next](const auto* images) {
             auto adjusted = *info;
             adjusted.pImageMemoryBarriers = images;
             next(buffer, event, &adjusted);
@@ -538,7 +538,7 @@ namespace {
         if (!state.imageCount.load(std::memory_order_acquire)) return next(device, count, transitions);
         try {
             return withBarriers(state, count, transitions,
-                [&](const auto* translated) { return next(device, count, translated); });
+                [&, next = next](const auto* translated) { return next(device, count, translated); });
         } catch (const std::bad_alloc&) {
             return VK_ERROR_OUT_OF_HOST_MEMORY;
         }
