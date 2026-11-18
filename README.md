@@ -1,6 +1,6 @@
 # framegen-vulkan
 
-framegen-vulkan (`fgvk`) is a Vulkan layer that brings Lossless Scaling frame generation to Linux, with a focus on even frame pacing and low latency. It works with native Vulkan games and with Proton games through DXVK and VKD3D-Proton.
+framegen-vulkan (`fgvk`) is a Vulkan layer that brings Lossless Scaling frame generation to Linux, with a focus on even frame pacing and low latency. It works with native Vulkan games, Zink, and with Proton games through DXVK and VKD3D-Proton.
 
 ## Features
 
