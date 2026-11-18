@@ -355,6 +355,7 @@ namespace {
             {"extent-mismatch", [](auto& in) { in.applicationExtent.height = 720; }},
             {"format-mismatch", [](auto& in) { in.applicationFormat = VK_FORMAT_R8G8B8A8_UNORM; }},
             {"array-layers", [](auto& in) { in.imageArrayLayers = 2; }},
+            {"application-min-image-count", [](auto& in) { in.applicationMinImageCount = 9; }},
             {"lower-image-count", [](auto& in) { in.lowerImageCount = 1; }},
             {"create-flags", [](auto& in) { in.applicationFlags = VK_SWAPCHAIN_CREATE_PROTECTED_BIT_KHR; }},
             {"create-flags", [](auto& in) { in.applicationFlags = VK_SWAPCHAIN_CREATE_MUTABLE_FORMAT_BIT_KHR; }},
@@ -397,7 +398,7 @@ namespace {
     }
 
     // Zink's mutable swapchain: allowed only with the application's view format list, and an
-    // unknown flag next to it is still refused. The private images take the matching image flag.
+    // unknown flag next to it is still refused. Private images take both WSI image flags.
     void testMutableFormatNeedsFormatList() {
         auto withList = eligibleInput();
         withList.applicationFlags = VK_SWAPCHAIN_CREATE_MUTABLE_FORMAT_BIT_KHR;
@@ -416,8 +417,8 @@ namespace {
             "an unknown flag next to the mutable bit was not refused as create-flags");
 
         expect(internalImageCreateFlags(VK_SWAPCHAIN_CREATE_MUTABLE_FORMAT_BIT_KHR) ==
-                VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT,
-            "the mutable swapchain bit did not map to the mutable image bit");
+                (VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT | VK_IMAGE_CREATE_EXTENDED_USAGE_BIT),
+            "a mutable swapchain requires mutable-format and extended-usage image flags");
         expect(internalImageCreateFlags(VK_SWAPCHAIN_CREATE_PROTECTED_BIT_KHR) == 0 &&
                 internalImageCreateFlags(0) == 0,
             "a swapchain flag without an image counterpart leaked into the image flags");
@@ -487,11 +488,12 @@ namespace {
             {0, 3, 5},   // max(min, 3) + 2 gives five
             {2, 4, 5},   // three is the floor before the two extra images
             {5, 8, 7},   // the application minimum is honoured, plus two
-            {9, 8, 8},   // the eight-image ceiling caps a large minimum
+            {8, 8, 8},   // the ring can still meet an eight-image minimum
             {3, 2, 5},   // two lower images do not limit the private count
             {3, 1, 0},   // one lower image cannot host the ring
             {0, 12, 5},  // the ceiling does not raise a small minimum
-            {12, 12, 8}, // the eight-image ceiling caps a large minimum
+            {9, 12, 0},  // the ring cannot promise more than eight images
+            {UINT32_MAX, 12, 0},
         };
         for (const auto& testCase : cases) {
             expect(internalImageCount(testCase.minImages, testCase.lowerImages) == testCase.expected,

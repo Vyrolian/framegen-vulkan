@@ -29,6 +29,7 @@ namespace fgvk::layer {
 
     struct DeferredPresentQueue;
     class InternalSwapchainImages;
+    inline constexpr uint32_t maxInternalImageCount = 8;
 
     /// Facts the F5 internal-image gate reads from create-time state. Every
     /// field is plain data so the gate can be unit-tested without Vulkan.
@@ -43,6 +44,7 @@ namespace fgvk::layer {
         VkSwapchainCreateFlagsKHR applicationFlags{0};
         // Formats in the application's VkImageFormatListCreateInfo (zero when absent).
         uint32_t applicationViewFormatCount{0};
+        uint32_t applicationMinImageCount{0};
         uint32_t lowerImageCount{0};
         // Optimal-tiling BLIT_SRC and BLIT_DST for the application format.
         bool formatBlitCapable{false};
@@ -66,12 +68,12 @@ namespace fgvk::layer {
     }
 
     /// VkImageCreateFlags of the private images and of their support query. The
-    /// mutable-format bit carries over: the application creates sRGB or UNORM views
-    /// on these images. The other swapchain flags have no image counterpart.
+    /// mutable swapchain bit implies both image flags, so compatible views can
+    /// supply usages unsupported by the base format.
     [[nodiscard]] constexpr VkImageCreateFlags internalImageCreateFlags(
             const VkSwapchainCreateFlagsKHR flags) noexcept {
         return (flags & VK_SWAPCHAIN_CREATE_MUTABLE_FORMAT_BIT_KHR) != 0
-            ? VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT : 0;
+            ? VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT | VK_IMAGE_CREATE_EXTENDED_USAGE_BIT : 0;
     }
 
     /// Returns the first failing gate reason as a stable kebab-case string, or
@@ -89,9 +91,11 @@ namespace fgvk::layer {
         }
         if (input.applicationFormat != input.lowerFormat) return "format-mismatch";
         if (input.imageArrayLayers != 1) return "array-layers";
+        if (input.applicationMinImageCount > maxInternalImageCount)
+            return "application-min-image-count";
         if (input.lowerImageCount < 2) return "lower-image-count";
         if ((input.applicationFlags & ~internalImageAllowedCreateFlags()) != 0) return "create-flags";
-        // The private images can only take the mutable-format bit with the application's format list.
+        // Mutable private images need the application's format list.
         if ((input.applicationFlags & VK_SWAPCHAIN_CREATE_MUTABLE_FORMAT_BIT_KHR) != 0 &&
                 input.applicationViewFormatCount == 0) return "create-flags";
         if (!input.formatBlitCapable) return "format-blit";
@@ -105,13 +109,12 @@ namespace fgvk::layer {
 
     /// Private image count: min(8, max(minImageCount, 3) + 2). The extra two
     /// let the worker hold up to three pending real images in its depth-3 batch
-    /// ring while the application keeps acquiring. Returns zero when the lower
-    /// swapchain has fewer than two images.
+    /// ring while the application keeps acquiring. Returns zero when the ring
+    /// cannot satisfy the application's minimum or the lower count is below two.
     [[nodiscard]] constexpr uint32_t internalImageCount(
             const uint32_t minImageCount, const uint32_t lowerImageCount) noexcept {
-        constexpr uint32_t maxCount = 8;
-        if (lowerImageCount < 2) return 0;
-        return std::min(maxCount, std::max(minImageCount, 3u) + 2u);
+        if (lowerImageCount < 2 || minImageCount > maxInternalImageCount) return 0;
+        return std::min(maxInternalImageCount, std::max(minImageCount, 3u) + 2u);
     }
 
     /// F10: whether an emulated acquire may complete on the host, with no queue submit. Every
@@ -142,7 +145,7 @@ namespace fgvk::layer {
     class InternalImageRing {
     public:
         static constexpr uint32_t minCount = 2;
-        static constexpr uint32_t maxCount = 8;
+        static constexpr uint32_t maxCount = maxInternalImageCount;
 
         /// @throws std::invalid_argument when count is outside [2, 8].
         explicit InternalImageRing(const uint32_t count)

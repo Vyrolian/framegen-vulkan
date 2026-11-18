@@ -17,7 +17,7 @@ This guide owns the allocation and ownership overview. [Runtime transitions](RUN
 | Backend Vulkan device and shader registry | The lazily constructed process-wide backend instance. The layer enables the device-retention exception described below. |
 | Host containers and setup data | Their C++ owners. These are host allocations, not Vulkan device memory. Licensed model inputs and translated resources remain subject to the process-local boundary in the [Renderer README](../README.md). |
 
-The application-facing device and private backend device can differ. Export/import connects their exchange images; it does not create two independent copies of the same image payload. A source, format, or synchronization change must preserve that cross-device contract.
+The application-facing device and private backend device can differ. Export and import connect their exchange images to the same image payload. Dedicated `OPAQUE_FD` imports require identical image creation parameters on both devices, so each exchange image uses the combined usage flags for its renderer and backend operations.
 
 ## Allocation paths
 

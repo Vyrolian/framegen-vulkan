@@ -13,7 +13,16 @@
 #include <utility>
 #include <vector>
 
+#include <vulkan/vulkan_core.h>
+
 namespace fgvk::backend {
+
+    // Dedicated OPAQUE_FD imports require the exporter and importer to create
+    // identical images. Each usage includes the operations on both devices.
+    inline constexpr VkImageUsageFlags sourceExchangeImageUsage =
+        VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    inline constexpr VkImageUsageFlags destinationExchangeImageUsage =
+        VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
 
     /// Encoding of the images exchanged with the frame-generation backend.
     enum class FrameEncoding : uint8_t {

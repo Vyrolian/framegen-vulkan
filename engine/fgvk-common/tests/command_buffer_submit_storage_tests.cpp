@@ -56,10 +56,10 @@ namespace {
             "inline signal values are not aligned with semaphores");
         require(storage.usesTimelineSemaphores(),
             "timeline submission did not request timeline submit info");
-        for (const auto stage : storage.stages()) {
-            require(stage == VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                "wait stage changed");
-        }
+        require(storage.stages()[0] == VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT &&
+                storage.stages()[1] == VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT &&
+                storage.stages()[2] == VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+            "binary and ownership-transfer wait stages are incorrect");
     }
 
     void testOverflowAndEmptyComposition() {
@@ -79,16 +79,16 @@ namespace {
                 "overflow storage changed a binary wait semaphore");
             require(overflow.waitValues()[i] == 0,
                 "overflow binary wait received a timeline value");
+            require(overflow.stages()[i] == VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                "overflow binary wait stage changed");
         }
         require(overflow.waits().back() == fakeHandle<VkSemaphore>(15) &&
                 overflow.waitValues().back() == 29,
             "overflow storage lost the appended timeline wait");
         require(overflow.stages().size() == overflow.waits().size(),
             "overflow wait stage count is misaligned");
-        for (const auto stage : overflow.stages()) {
-            require(stage == VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                "overflow wait stage changed");
-        }
+        require(overflow.stages().back() == VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+            "overflow timeline wait does not cover ownership transfers");
         require(overflow.signals().empty() &&
                 overflow.signalValues().empty(),
             "empty signals unexpectedly created storage entries");
@@ -121,7 +121,7 @@ namespace {
 
         require(storage.waits().size() == 1 && storage.waits()[0] == wait &&
                 storage.waitValues()[0] == 31 &&
-                storage.stages()[0] == VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                storage.stages()[0] == VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
             "timeline-only wait composition is wrong");
         require(storage.signals().size() == 1 &&
                 storage.signals()[0] == signal &&
@@ -186,7 +186,7 @@ namespace {
             const std::span stages{got.pWaitDstStageMask, got.waitSemaphoreCount};
             const std::span signals{got.pSignalSemaphores, got.signalSemaphoreCount};
             for (size_t i = 0; i < waits.size(); ++i)
-                require(waits[i] == sync.waits()[i] && stages[i] == VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                require(waits[i] == sync.waits()[i] && stages[i] == sync.stages()[i],
                     "wait semaphore or stage changed");
             for (size_t i = 0; i < signals.size(); ++i)
                 require(signals[i] == sync.signals()[i], "signal semaphore changed");

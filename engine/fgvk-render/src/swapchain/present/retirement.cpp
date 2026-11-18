@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 
+#include "swapchain/present_layout.hpp"
 #include "swapchain/swapchain.hpp"
 #include "swapchain/present/internal.hpp"
 #include "swapchain/retirement.hpp"
@@ -642,6 +643,8 @@ VkResult Swapchain::retireAcquiredImagesAndPresent(const vk::Vulkan& vk,
     const VkImage originalSource = this->internalPresent
         ? this->internalPresent->image : originalImage;
     const size_t originalSlot = this->presentationSlotFor(originalImageIndex);
+    const auto sourceLayout = this->internalPresent
+        ? present_layout::backingLayout : VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
 
     const size_t semaphoreBase = (
         this->frameState.sequenceIndex + acquiredImageIndices.size() + 1
@@ -665,7 +668,7 @@ VkResult Swapchain::retireAcquiredImagesAndPresent(const vk::Vulkan& vk,
                 originalSource,
                 VK_ACCESS_NONE,
                 VK_ACCESS_TRANSFER_READ_BIT,
-                VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+                sourceLayout,
                 VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL
             );
         }
@@ -692,7 +695,7 @@ VkResult Swapchain::retireAcquiredImagesAndPresent(const vk::Vulkan& vk,
                 VK_ACCESS_TRANSFER_READ_BIT,
                 VK_ACCESS_MEMORY_READ_BIT,
                 VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
+                sourceLayout
             );
         }
 

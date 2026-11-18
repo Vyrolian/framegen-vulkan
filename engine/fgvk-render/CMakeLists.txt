@@ -16,6 +16,7 @@ set(LAYER_SOURCES
     "src/swapchain/create.cpp"
     "src/swapchain/onscreen_watch.cpp"
     "src/swapchain/internal_images.cpp"
+    "src/swapchain/present_layout.cpp"
     "src/swapchain/present_marker.cpp"
     "src/swapchain/present.cpp"
     "src/swapchain/present/admission.cpp"
@@ -361,6 +362,13 @@ if(BUILD_TESTING)
     target_link_libraries(fgvk-internal-images-tests PRIVATE Threads::Threads)
     add_test(NAME internal-images COMMAND fgvk-internal-images-tests)
     fgvk_register_portable_policy_test(fgvk-internal-images-tests internal-images)
+
+    add_executable(fgvk-present-layout-tests
+        "tests/present_layout_tests.cpp" "src/swapchain/present_layout.cpp")
+    target_include_directories(fgvk-present-layout-tests PRIVATE "src")
+    target_link_libraries(fgvk-present-layout-tests PRIVATE Threads::Threads)
+    add_test(NAME present-layout COMMAND fgvk-present-layout-tests)
+    fgvk_register_portable_policy_test(fgvk-present-layout-tests present-layout)
 
     # fgvk-backend is configured only for layer, CLI or develop builds. Its
     # fence ring is header-only, so the portable policy set builds this backend

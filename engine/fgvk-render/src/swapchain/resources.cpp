@@ -209,18 +209,16 @@ Swapchain::buildFrameGenerationResources(const vk::Vulkan& vk,
     FrameGenerationResources resources;
     resources.sourceImages.reserve(sourceFds.size());
     resources.destinationImages.reserve(destinationFds.size());
-    const VkImageUsageFlags sourceImageUsage =
-        VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
     for (int& fd : sourceFds) {
         resources.sourceImages.emplace_back(vk,
             extent, pipeline.exchangeFormat,
-            sourceImageUsage,
+            backend::sourceExchangeImageUsage,
             std::nullopt, &fd);
     }
     for (int& fd : destinationFds) {
         resources.destinationImages.emplace_back(vk,
             extent, pipeline.exchangeFormat,
-            VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+            backend::destinationExchangeImageUsage,
             std::nullopt, &fd);
     }
 

@@ -504,9 +504,9 @@ namespace {
         try {
             return {
                 vk::Image(vk, extent, format,
-                    VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, sourceFds.take()),
+                    sourceExchangeImageUsage, sourceFds.take()),
                 vk::Image(vk, extent, format,
-                    VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, sourceFds.take())
+                    sourceExchangeImageUsage, sourceFds.take())
             };
         } catch (const std::exception& e) {
             throw backend::error("Unable to import destination images", e);
@@ -522,7 +522,7 @@ namespace {
 
             for (size_t index = 0; index < destFds.size(); ++index)
                 destImages.emplace_back(vk, extent, format,
-                    VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, destFds.take());
+                    destinationExchangeImageUsage, destFds.take());
 
             return destImages;
         } catch (const std::exception& e) {

@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 
+#include "swapchain/present_layout.hpp"
 #include "swapchain/swapchain.hpp"
 #include "swapchain/present/internal.hpp"
 #include "swapchain/retirement.hpp"
@@ -117,11 +118,13 @@ VkResult Swapchain::presentOriginalImage(
 void Swapchain::submitSourceCopy(const PresentInvocation& invocation,
         const VkImage swapchainImage, const vk::Image& sourceImage) {
     const auto& commandBuffer = this->currentRenderSlot().sourceCopy;
+    const auto sourceLayout = this->internalPresent
+        ? present_layout::backingLayout : VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
     const std::array preBarriers{
         barrierHelper(swapchainImage,
             VK_ACCESS_NONE,
             VK_ACCESS_TRANSFER_READ_BIT,
-            VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+            sourceLayout,
             VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL
         ),
         barrierHelper(sourceImage.handle(),
@@ -138,7 +141,7 @@ void Swapchain::submitSourceCopy(const PresentInvocation& invocation,
             VK_ACCESS_TRANSFER_READ_BIT,
             VK_ACCESS_MEMORY_READ_BIT,
             VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-            VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
+            sourceLayout
         ),
     };
     commandBuffer.begin(invocation.vk);

@@ -55,6 +55,38 @@ fn arguments_reach_the_helper_unchanged_with_its_exit_status() {
 }
 
 #[test]
+fn an_open_settings_window_refuses_another_window_but_allows_command_handoff() {
+    let directory = scratch_directory("window-lock");
+    let lock_dir = directory.join("framegen-vulkan");
+    fs::create_dir(&lock_dir).expect("create launcher runtime directory");
+    let lock = fs::File::create(lock_dir.join("fgvk-ui.lock")).expect("open window lock");
+    lock.try_lock().expect("hold first window's lock");
+    let binary = env!("CARGO_BIN_EXE_fgvk");
+
+    let duplicate = Command::new(binary)
+        .env_clear()
+        .env("XDG_RUNTIME_DIR", &directory)
+        .output()
+        .expect("start second instance");
+    assert!(duplicate.status.success(), "{duplicate:?}");
+    assert!(String::from_utf8_lossy(&duplicate.stderr).contains("settings window is already open"));
+
+    let helper = directory.join("fgvk-launch");
+    write_executable(&helper, FAKE_HELPER, 0o755);
+    let command = Command::new(binary)
+        .env_clear()
+        .env("XDG_RUNTIME_DIR", &directory)
+        .env("FGVK_LAUNCH_HELPER", &helper)
+        .arg("game")
+        .output()
+        .expect("run helper while the lock is held");
+    assert_eq!(command.status.code(), Some(23), "{command:?}");
+    assert_eq!(command.stdout, b"game\n");
+    drop(lock);
+    let _ = fs::remove_dir_all(&directory);
+}
+
+#[test]
 fn installed_layout_finds_the_helper_beside_the_binary() {
     let prefix = scratch_directory("installed");
     let binary = prefix.join("bin/fgvk");

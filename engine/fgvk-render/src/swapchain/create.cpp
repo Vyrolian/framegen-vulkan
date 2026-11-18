@@ -178,21 +178,18 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance* backend,
         ls::FileDescriptorScope sourceScope{sourceFds};
         std::vector<int> destinationFds(generatedFrameCapacityForProfile(this->profile), -1);
         ls::FileDescriptorScope destinationScope{destinationFds};
-        const VkImageUsageFlags sourceImageUsage =
-            VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-
         this->sourceImages.reserve(sourceFds.size());
         for (int& fd : sourceFds)
             this->sourceImages.emplace_back(vk,
                 generationExtent, this->colorPipeline.exchangeFormat,
-                sourceImageUsage,
+                backend::sourceExchangeImageUsage,
                 std::nullopt, &fd);
 
         this->destinationImages.reserve(destinationFds.size());
         for (int& fd : destinationFds)
             this->destinationImages.emplace_back(vk,
                 generationExtent, this->colorPipeline.exchangeFormat,
-                VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                backend::destinationExchangeImageUsage,
                 std::nullopt, &fd);
 
         int syncFd{-1};

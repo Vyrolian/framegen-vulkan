@@ -83,6 +83,9 @@ namespace vk::detail {
             if (waitTimelineSemaphore) {
                 this->combinedWaitSemaphores.back() = waitTimelineSemaphore;
                 this->waitTimelineValues.back() = waitValue;
+                // The shared timeline orders external queue-family ownership
+                // transfers, which do not execute in a defined pipeline stage.
+                this->waitStages.back() = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
             }
 
             std::copy(

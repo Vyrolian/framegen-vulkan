@@ -17,6 +17,7 @@
 #include "swapchain/release_gate.hpp"
 #include "swapchain/low_latency.hpp"
 #include "swapchain/internal_images.hpp"
+#include "swapchain/present_layout.hpp"
 #include "swapchain/present_marker.hpp"
 #include "pnext_chain.hpp"
 
@@ -908,6 +909,12 @@ namespace {
             return VK_ERROR_INITIALIZATION_FAILED;
         }
 
+        if (layer_info->root.frameGenerationInteropProvisioned() &&
+                !present_layout::registerDevice(*device, instance_info->funcs.GetDeviceProcAddr)) {
+            rollbackCreatedDevice();
+            return VK_ERROR_OUT_OF_HOST_MEMORY;
+        }
+
         if (presentRetirementEnabled)
             instance_info->presentRetirementDevices.insert(*device);
         if (ownedPresentTiming)
@@ -1331,6 +1338,8 @@ namespace {
             return;
         }
 
+        if (layer_info->root.frameGenerationInteropProvisioned())
+            present_layout::unregisterDevice(device);
         vkDestroyDevice(device, alloc);
     }
 
@@ -1504,7 +1513,11 @@ namespace {
         if (func) return func;
 
         if (!layer_info->GetInstanceProcAddr) return nullptr;
-        return layer_info->GetInstanceProcAddr(instance, name);
+        const auto lower = layer_info->GetInstanceProcAddr(instance, name);
+        if (lower && instance && layer_info->root.frameGenerationInteropProvisioned()) {
+            if (auto override = present_layout::command(name)) return override;
+        }
+        return lower;
     }
 
     // get device-level function pointers
@@ -1590,7 +1603,11 @@ namespace {
         auto func = getProcAddr(name);
         if (func) return func;
 
-        return instance_info->funcs.GetDeviceProcAddr(device, name);
+        const auto lower = instance_info->funcs.GetDeviceProcAddr(device, name);
+        if (lower && layer_info->root.frameGenerationInteropProvisioned()) {
+            if (auto override = present_layout::command(name)) return override;
+        }
+        return lower;
     }
 }
 
@@ -1792,6 +1809,7 @@ namespace {
                 .imageArrayLayers = application.imageArrayLayers,
                 .applicationFlags = application.flags,
                 .applicationViewFormatCount = static_cast<uint32_t>(viewFormats.size()),
+                .applicationMinImageCount = application.minImageCount,
                 .lowerImageCount = static_cast<uint32_t>(swapchainInfo.images.size()),
                 .formatBlitCapable = support.formatBlitCapable,
                 .imageFormatSupported = support.imageFormatSupported,
@@ -1813,8 +1831,15 @@ namespace {
             images.reset();
             reason = "context-not-created";
         }
-        if (images)
-            instance_info->internalSwapchains.insert_or_assign(swapchain, images);
+        if (images) {
+            instance_info->internalSwapchains.emplace(swapchain, images);
+            if (!present_layout::registerImages(vk.dev(), images->images())) {
+                instance_info->internalSwapchains.erase(swapchain);
+                images.reset();
+                reason = "layout-registration-failed";
+                layer_info->root.getSwapchainContext(swapchain).setFrameGenerationUnavailable(reason);
+            }
+        }
         std::cerr << "framegen-vulkan: internal swapchain images: active="
                   << (images ? 1 : 0)
                   << " reason=" << (reason ? reason : "eligible")
@@ -1841,7 +1866,8 @@ namespace {
             instance_info->swapchains.erase(createdSwapchain);
             instance_info->swapchainInfos.erase(createdSwapchain);
             instance_info->nativeSwapchains.erase(createdSwapchain);
-            instance_info->internalSwapchains.erase(createdSwapchain);
+            if (auto internal = instance_info->internalSwapchains.extract(createdSwapchain); !internal.empty())
+                present_layout::unregisterImages(device, internal.mapped()->images());
             try {
                 // GP1: the on-screen watcher is joined before the lower swapchain is destroyed below.
                 if (auto* context = layer_info->root.findSwapchainContext(createdSwapchain))
@@ -2728,6 +2754,7 @@ namespace {
         if (const auto found = instance_info->internalSwapchains.find(swapchain);
                 found != instance_info->internalSwapchains.end()) {
             internalImages = std::move(found->second);
+            present_layout::unregisterImages(device, internalImages->images());
             instance_info->internalSwapchains.erase(found);
         }
 

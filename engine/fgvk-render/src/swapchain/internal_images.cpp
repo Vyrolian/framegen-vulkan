@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 
+#include "swapchain/present_layout.hpp"
 #include "swapchain/internal_images.hpp"
 
 #include "swapchain/deferred_present.hpp"
@@ -287,17 +288,17 @@ namespace fgvk::layer {
             try {
                 slot.emplace(vk);
                 slot->begin(vk, VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT);
-                // The application leaves its image in PRESENT_SRC_KHR. The
-                // lower image is discarded because the whole extent is written.
+                // The app's present layout maps to GENERAL on its private image.
+                // The lower image is discarded because the whole extent is written.
                 const std::array preBarriers{
                     barrier(source, VK_ACCESS_MEMORY_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT,
-                        VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL),
+                        present_layout::backingLayout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL),
                     barrier(target, VK_ACCESS_NONE, VK_ACCESS_TRANSFER_WRITE_BIT,
                         VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL),
                 };
                 const std::array postBarriers{
                     barrier(source, VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_MEMORY_READ_BIT,
-                        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR),
+                        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, present_layout::backingLayout),
                     barrier(target, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_MEMORY_READ_BIT,
                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR),
                 };

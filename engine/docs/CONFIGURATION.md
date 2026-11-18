@@ -34,7 +34,7 @@ framegen-vulkan activates on the next launch of a matched process. If nothing ma
 
 ## Settings window
 
-Run `~/.local/bin/fgvk` with no arguments to open the settings window. It edits the same `~/.config/framegen-vulkan/conf.toml` you can edit by hand, keeps its comments, and writes the file atomically. If the file is invalid, the window shows the problem and leaves the file unchanged. Changes made in a text editor appear in the window while it is open.
+Run `~/.local/bin/fgvk` with no arguments to open the settings window. A second settings invocation exits if the window is already open. You can still launch games with `fgvk <command>`. The window edits `~/.config/framegen-vulkan/conf.toml`, keeps its comments, and writes the file atomically. If the file is invalid, the window shows the problem and leaves the file unchanged. Changes made in a text editor appear in the window while it is open.
 
 The window has these controls:
 

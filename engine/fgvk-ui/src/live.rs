@@ -15,7 +15,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::ffi::OsString;
 use std::fmt;
 use std::fs::{self, File};
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{ErrorKind, Read, Seek, SeekFrom};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -31,6 +31,7 @@ const TAIL_BYTES: u64 = 4 << 20;
 const MAX_READ: u64 = 8 << 20;
 /// A partial line longer than this is dropped. Every pacing record is far shorter.
 const MAX_LINE: usize = 256 << 10;
+const READ_CHUNK: usize = 32 << 10;
 const OPERATION: &str = "framegen-vulkan: present diagnostics: operation=";
 /// `O_NOFOLLOW`, checked on x86_64; aarch64 and riscv64 use the same asm-generic value. Elsewhere
 /// the flag is 0 and the identity check in `open_checked` still refuses a symbolic link.
@@ -144,16 +145,22 @@ impl Follower {
             self.readings = Readings::default();
         }
         let wanted = len - tail.offset;
-        let mut data = Vec::new();
-        if file.seek(SeekFrom::Start(tail.offset)).is_err()
-            || (&file).take(wanted).read_to_end(&mut data).is_err()
-        {
+        if file.seek(SeekFrom::Start(tail.offset)).is_err() {
             return;
         }
-        tail.offset += data.len() as u64;
-        let mut bytes = std::mem::take(&mut tail.partial);
-        bytes.extend_from_slice(&data);
-        consume(tail, &mut self.readings, &bytes);
+        let mut input = file.take(wanted);
+        let mut buffer = [0; READ_CHUNK];
+        loop {
+            match input.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(count) => {
+                    tail.offset += count as u64;
+                    consume(tail, &mut self.readings, &buffer[..count]);
+                }
+                Err(error) if error.kind() == ErrorKind::Interrupted => continue,
+                Err(_) => break,
+            }
+        }
     }
 
     pub fn view(&self) -> View {
@@ -255,32 +262,31 @@ fn open_checked(path: &Path, uid: u32, listed: &fs::Metadata) -> Option<(File, f
     (same_file && meta.file_type().is_file() && meta.uid() == uid).then_some((file, meta))
 }
 
-/// Parses the complete lines in `bytes`, which are the previous partial line followed by the new
-/// bytes, and keeps the rest as the next partial line.
+/// Parse complete lines directly from each read. Only a line split across reads or polls needs
+/// storage. A cut or oversized line is skipped through its next newline.
 fn consume(tail: &mut Tail, readings: &mut Readings, bytes: &[u8]) {
-    let mut rest = bytes;
-    if tail.skipping {
-        // The first newline ends the line that a skip cut in half.
-        let Some(end) = rest.iter().position(|&byte| byte == b'\n') else {
-            return;
+    for part in bytes.split_inclusive(|&byte| byte == b'\n') {
+        let line = part.strip_suffix(b"\n");
+        let fragment = line.unwrap_or(part);
+        if tail.skipping || tail.partial.len() + fragment.len() > MAX_LINE {
+            tail.partial.clear();
+            tail.skipping = line.is_none();
+            continue;
+        }
+        let Some(line) = line else {
+            tail.partial.extend_from_slice(fragment);
+            break;
         };
-        rest = &rest[end + 1..];
-        tail.skipping = false;
-    }
-    let complete = rest
-        .iter()
-        .rposition(|&byte| byte == b'\n')
-        .map_or(0, |index| index + 1);
-    for line in rest[..complete].split(|&byte| byte == b'\n') {
-        if let Some(record) = std::str::from_utf8(line).ok().and_then(parse_line) {
+        let complete = if tail.partial.is_empty() {
+            line
+        } else {
+            tail.partial.extend_from_slice(line);
+            &tail.partial
+        };
+        if let Some(record) = std::str::from_utf8(complete).ok().and_then(parse_line) {
             readings.apply(record);
         }
-    }
-    let partial = &rest[complete..];
-    if partial.len() > MAX_LINE {
-        tail.skipping = true;
-    } else {
-        tail.partial = partial.to_vec();
+        tail.partial.clear();
     }
 }
 
@@ -1405,6 +1411,20 @@ mod tests {
         file.write_all(tail.as_bytes()).expect("write tail");
         file.write_all(b"\n").expect("write newline");
         drop(file);
+        poll_path(&mut follower, &path);
+        assert_row(
+            &texts(&follower.view()),
+            "Real 40 fps · Output 80 fps · Skipped 0",
+        );
+    }
+
+    #[test]
+    fn a_summary_crossing_the_read_boundary_survives_an_oversized_line() {
+        let dir = Scratch::new("chunk-boundary");
+        let path = dir.path().join(log_name(own()));
+        let prefix = "x".repeat(MAX_LINE + READ_CHUNK - 9);
+        write_lines(&path, &[prefix, summary_line(17, 40, 2, "immediate:40")]);
+        let mut follower = follow(dir.path(), own());
         poll_path(&mut follower, &path);
         assert_row(
             &texts(&follower.view()),

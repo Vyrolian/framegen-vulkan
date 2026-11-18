@@ -2,8 +2,9 @@
 //! `conf.toml` is never touched for it.
 
 use std::ffi::OsString;
-use std::fs::{self, File};
+use std::fs::{self, File, TryLockError};
 use std::io::{self, Write};
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::process;
 
@@ -11,6 +12,31 @@ use crate::config;
 
 const APP_DIR: &str = "framegen-vulkan";
 const FILE_NAME: &str = "fgvk-ui-state";
+const WINDOW_LOCK: &str = "fgvk-ui.lock";
+
+/// Hold the returned file open until the settings window closes. The kernel releases the
+/// lock on exit, including after a crash. Keep the lock file so contenders share one inode.
+pub fn lock_window(directory: &Path) -> io::Result<Option<File>> {
+    fs::create_dir_all(directory)?;
+    let lock = File::options()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(directory.join(WINDOW_LOCK))?;
+    match lock.try_lock() {
+        Ok(()) => Ok(Some(lock)),
+        Err(TryLockError::WouldBlock) => Ok(None),
+        Err(TryLockError::Error(error)) => Err(error),
+    }
+}
+
+pub fn window_lock_directory(lookup: impl Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
+    config::non_empty(lookup("XDG_RUNTIME_DIR"))
+        .filter(|dir| dir.is_absolute())
+        .map(|dir| dir.join(APP_DIR))
+        .or_else(|| resolve_path(lookup).and_then(|path| path.parent().map(Path::to_path_buf)))
+}
 
 /// Chooses the state file from an environment lookup.
 ///
