@@ -70,6 +70,15 @@ jobs:
           cargo --version
           rustc --version
 
+      - name: Fetch the pinned Vulkan headers for tests and packaging
+        run: |
+          revision="$(cat engine/vulkan-headers-revision.txt)"
+          headers="$RUNNER_TEMP/fgvk-vulkan-headers"
+          git clone --depth=1 --branch "$revision" https://github.com/KhronosGroup/Vulkan-Headers "$headers"
+          git -C "$headers" rev-parse HEAD
+          echo "CXXFLAGS=-I$headers/include" >> "$GITHUB_ENV"
+          echo "FGVK_VULKAN_HEADERS_INCLUDE_DIR=$headers/include" >> "$GITHUB_ENV"
+
       - name: Run repository gates
         run: scripts/dev.sh test-all
 
