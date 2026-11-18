@@ -36,7 +36,7 @@ Find `[Extension org.freedesktop.Platform.VulkanLayer]` and use a supported `ver
 
 ## Packaged extensions
 
-Download and extract `framegen-vulkan-v<version>-flatpaks.tar.xz` from [Renderer downloads](../README.md#downloads), matching your native release. In the extracted folder, install your runtime branch; replace `24.08` as needed:
+Download and extract `framegen-vulkan-v<version>-flatpaks.tar.xz` from the matching framegen-vulkan release when available. You can also [build the bundle locally](BUILDING-FROM-SOURCE.md#choose-the-right-build-path). In the extracted folder, install your runtime branch; replace `24.08` as needed:
 
 ```bash
 fgvk_runtime=24.08
@@ -75,7 +75,7 @@ flatpak override --user --env=DISABLE_VKBASALT=1 "$appid"
 Do not override `VK_IMPLICIT_LAYER_PATH`: the runtime already finds the extension's layer, and replacing the path also hides the NVIDIA driver's own layers. These settings persist for this app. Repeat with another `appid` for each additional app.
 
 - **Heroic/Lutris:** prepare the launcher and match each game's executable. Avoid an app-wide `FGVK_PROFILE`; no host wrapper is needed.
-- **EmuDeck:** prepare each Flatpak emulator, select Vulkan, and keep its Steam shortcut and ROM arguments. Native/AppImage emulators use [native launch setup](../README.md#usage).
+- **EmuDeck:** prepare each Flatpak emulator, select Vulkan, and keep its Steam shortcut and ROM arguments. Native/AppImage emulators use [native launch setup](../../README.md#launch-a-game).
 
 ## Launch and verify
 

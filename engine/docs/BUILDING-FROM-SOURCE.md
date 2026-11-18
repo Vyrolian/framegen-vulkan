@@ -61,7 +61,7 @@ The release packager builds the 64-bit CLI, launcher, and both Renderer roles, t
 | Standalone Renderer archive | `engine/scripts/package-local.sh` | Tests and packages the host Renderer payload; does not publish |
 | Complete local Renderer release-shaped set | `engine/scripts/package-local-release.sh` | Builds the host archive, Flatpak archive, verified Arch package, and `SHA256SUMS` natively without changing release pins or publishing; Linux only |
 | Complete local release candidate | `engine/scripts/package-local-release.sh`, then `scripts/check-release-candidate.sh` with the host and Flatpak archives from `engine/out/` | Builds once from a clean pushed commit and checks the existing complete archives without a CI rebuild or installation |
-| Public release | `scripts/publish-release.sh X.Y.Z` from the repository root | Publishes framegen-vulkan, records its checksums in `engine/renderer-release.json`, and updates release links |
+| Public release | `scripts/publish-release.sh X.Y.Z` from the repository root | Publishes framegen-vulkan, records its checksums in `engine/renderer-release.json`, and synchronizes the Arch recipe |
 
 `package-local-release.sh` writes under `engine/out/` and synchronizes a disposable Arch recipe. The complete local archives serve as release candidates. Publication separately applies version and pin commits and rebuilds public assets.
 
@@ -181,10 +181,10 @@ Set `FGVK_BUILD_JOBS=4` to limit parallelism on a memory-constrained Deck, or `F
 
 1. **Clone the repository**
 
-Clone the framegen-vulkan monorepo and enter the engine package:
+Clone the framegen-vulkan repository using its Git URL in `FGVK_REPOSITORY_URL`, then enter `engine/`:
 
 ```bash
-git clone https://github.com/eugeniosegala/MAKO.git
+git clone "$FGVK_REPOSITORY_URL" framegen-vulkan
 cd framegen-vulkan/engine
 ```
 
@@ -259,6 +259,8 @@ The package deliberately excludes:
 Two details differ from the archive layout: the archived `share/doc/framegen-vulkan/*` files are installed under `/usr/share/licenses/framegen-vulkan-bin/` and `/usr/share/doc/framegen-vulkan-bin/`, and shared libraries are installed as mode `0755` instead of the archive's `0644`, following Arch convention. Content hashes are unaffected, so the checksum manifest still matches.
 
 ### Release pins
+
+Before the first public framegen-vulkan release, the public pin and the Arch recipe’s download source are empty. Use `scripts/dev.sh package-renderer-local-release` to build from the current checkout. The first release version must have an unused `render-vX.Y.Z` tag, including tags inherited in this clone.
 
 The publisher pins the verified host archive in `engine/renderer-release.json`, runs `sync-release-pin.py` (resetting `pkgrel` to 1 for a new version), and checks it with `check-release-pin.sh`. `verify-release-package.sh` packages that exact local archive and retains the verified `.pkg.tar.zst` for publication and checksum recording. The archive manifest owns payload membership; do not maintain a second list.
 

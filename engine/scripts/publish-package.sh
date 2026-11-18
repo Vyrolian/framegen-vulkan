@@ -18,7 +18,7 @@ Usage: scripts/publish-package.sh [--version X.Y.Z]
 
 Builds, verifies, and publishes framegen-vulkan. When --version is supplied, the
 script updates and commits engine/VERSION first. After publishing, it commits
-the generated Renderer release pin and release links automatically.
+the generated Renderer release pin and Arch recipe automatically.
 engine/RELEASE_NOTES.md must contain the matching manually curated heading.
 EOF
 }
@@ -100,8 +100,13 @@ release_repository="$(git remote get-url "$release_remote")"
 release_repository="${release_repository#git@github.com:}"
 release_repository="${release_repository#https://github.com/}"
 release_repository="${release_repository%.git}"
-if [[ "$release_repository" != */* ]]; then
+if [[ ! "$release_repository" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
     echo "Could not determine a GitHub owner/repository from remote '$release_remote'." >&2
+    exit 1
+fi
+
+if [[ "${release_repository,,}" == eugeniosegala/mako ]]; then
+    echo "Set the release remote to the framegen-vulkan repository before publishing." >&2
     exit 1
 fi
 
@@ -309,13 +314,9 @@ else
         --verify-tag
 fi
 
-node "$repository_root/scripts/update-release-links.mjs" \
-    renderer "$version" "$release_repository"
 release_metadata_paths=(
     engine/renderer-release.json
     engine/dist/arch/PKGBUILD
-    README.md
-    engine/README.md
 )
 if ! git -C "$repository_root" diff --quiet -- "${release_metadata_paths[@]}"; then
     git -C "$repository_root" add "${release_metadata_paths[@]}"
@@ -324,4 +325,4 @@ if ! git -C "$repository_root" diff --quiet -- "${release_metadata_paths[@]}"; t
 fi
 
 echo "Published: https://github.com/$release_repository/releases/tag/$tag"
-echo "Committed the matching framegen-vulkan release pin and release links."
+echo "Committed the matching framegen-vulkan release pin and Arch recipe."

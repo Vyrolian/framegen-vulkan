@@ -72,3 +72,6 @@ htmlcov/
 
 # framegen-vulkan settings window (Cargo)
 /engine/fgvk-ui/target/
+
+# Local copy of the retired logo
+/engine/assets/fgvk-render-logo.webp

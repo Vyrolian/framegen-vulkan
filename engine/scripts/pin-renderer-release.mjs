@@ -66,15 +66,18 @@ if (!/^[0-9a-f]{64}$/i.test(flatpakArchiveChecksum)) {
 if (archPackageChecksum && !/^[0-9a-f]{64}$/i.test(archPackageChecksum)) {
     throw new Error("The Arch package SHA-256 is invalid");
 }
-if (!/^[^/]+\/[^/]+$/.test(repository)) {
+if (!/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(repository)) {
     throw new Error(`Expected owner/repository, received ${repository}`);
+}
+if (repository.toLowerCase() === "eugeniosegala/mako") {
+    throw new Error("Use the framegen-vulkan repository to pin fork releases.");
 }
 
 const archiveName = basename(archivePath);
 const flatpakArchiveName = basename(flatpakArchivePath);
 const archPackageName = archPackagePath ? basename(archPackagePath) : "";
-const expectedArchiveName = `MAKO-Renderer-v${version}-linux.tar.xz`;
-const expectedFlatpakArchiveName = `MAKO-Renderer-v${version}-flatpaks.tar.xz`;
+const expectedArchiveName = `framegen-vulkan-v${version}-linux.tar.xz`;
+const expectedFlatpakArchiveName = `framegen-vulkan-v${version}-flatpaks.tar.xz`;
 if (archiveName !== expectedArchiveName) {
     throw new Error(`Expected ${expectedArchiveName}, received ${archiveName}`);
 }
@@ -86,7 +89,7 @@ if (flatpakArchiveName !== expectedFlatpakArchiveName) {
 if (
     archPackageName &&
     !new RegExp(
-        `^mako-renderer-bin-${version.split(".").join("\\.")}-[1-9][0-9]*-x86_64\\.pkg\\.tar\\.zst$`,
+        `^framegen-vulkan-bin-${version.split(".").join("\\.")}-[1-9][0-9]*-x86_64\\.pkg\\.tar\\.zst$`,
     ).test(archPackageName)
 ) {
     throw new Error(
@@ -98,14 +101,15 @@ async function pinRelease() {
     const manifest = JSON.parse(await readFile(packagePath, "utf8"));
     if (
         !Array.isArray(manifest.remote_binary) ||
-        manifest.remote_binary.length !== 1
+        manifest.remote_binary.length > 1
     ) {
         throw new Error(
-            "renderer-release.json must contain exactly one remote_binary entry",
+            "renderer-release.json must contain at most one remote_binary entry",
         );
     }
 
-    const binary = manifest.remote_binary[0];
+    const binary = manifest.remote_binary[0] ?? {};
+    manifest.remote_binary[0] = binary;
     const releaseBase = `https://github.com/${repository}/releases/download/${releaseTag}`;
     binary.name = archiveName;
     binary.version = version;

@@ -105,7 +105,8 @@ contents = path.read_text(encoding="utf-8")
 replacements = (
     (r"^pkgver=.*$", f"pkgver={version}", "pkgver"),
     (r"^pkgrel=.*$", f"pkgrel={release}", "pkgrel"),
-    (r"^sha256sums=\('[^']*'\)$", f"sha256sums=('{checksum}')", "sha256sums"),
+    (r"^source=.*$", f'source=("framegen-vulkan-v{version}-linux.tar.xz")', "source"),
+    (r"^sha256sums=.*$", f"sha256sums=('{checksum}')", "sha256sums"),
 )
 for pattern, replacement, field in replacements:
     contents, count = re.subn(pattern, replacement, contents, flags=re.MULTILINE)

@@ -15,7 +15,7 @@ This guide owns the allocation and ownership overview. [Runtime transitions](RUN
 | Imported exchange images, model intermediates, constant buffers, and backend command resources | A backend `ContextImpl` in `fgvk-backend/src/fgvk.cpp`; closed through `backend::Instance` after its work completes, or retained for later retirement. |
 | Internal model-image blocks | One `vk::ImageMemoryPool` per backend context, shared by the LSFG shader chains that explicitly request pooled images. Bound images also retain their block owner. |
 | Backend Vulkan device and shader registry | The lazily constructed process-wide backend instance. The layer enables the device-retention exception described below. |
-| Host containers and setup data | Their C++ owners. These are host allocations, not Vulkan device memory. Licensed model inputs and translated resources remain subject to the process-local boundary in the [Renderer README](../README.md). |
+| Host containers and setup data | Their C++ owners. These are host allocations, not Vulkan device memory. Licensed model inputs and translated resources remain subject to the process-local boundary in the [third-party notices](../../THIRD_PARTY_NOTICES.md). |
 
 The application-facing device and private backend device can differ. Export and import connect their exchange images to the same image payload. Dedicated `OPAQUE_FD` imports require identical image creation parameters on both devices, so each exchange image uses the combined usage flags for its renderer and backend operations.
 

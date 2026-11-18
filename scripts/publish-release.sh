@@ -80,8 +80,13 @@ github_repository="$(git remote get-url origin)"
 github_repository="${github_repository#git@github.com:}"
 github_repository="${github_repository#https://github.com/}"
 github_repository="${github_repository%.git}"
-if [[ "$github_repository" != */* ]]; then
+if [[ ! "$github_repository" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
   echo "Could not determine a GitHub owner/repository from origin." >&2
+  exit 1
+fi
+
+if [[ "${github_repository,,}" == eugeniosegala/mako ]]; then
+  echo "Point origin at the framegen-vulkan repository before publishing." >&2
   exit 1
 fi
 
@@ -224,13 +229,6 @@ fi
 if [[ "$renderer_verified" != true ]]; then
   echo "framegen-vulkan v$version did not pass the final release-state verification." >&2
   exit 1
-fi
-
-node scripts/update-release-links.mjs renderer "$version" "$github_repository"
-release_link_readmes=(README.md engine/README.md)
-if ! git diff --quiet -- "${release_link_readmes[@]}"; then
-  git add "${release_link_readmes[@]}"
-  git commit -m "docs: sync framegen-vulkan v$version release links$ci_skip_suffix"
 fi
 
 latest_tag="$(gh api "repos/$github_repository/releases/latest" --jq '.tag_name')"

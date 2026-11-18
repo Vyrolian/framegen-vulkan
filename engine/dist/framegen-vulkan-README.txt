@@ -38,8 +38,6 @@ Installing framegen-vulkan does not activate it for every game. A standalone nat
 
 Run ~/.local/bin/fgvk with no arguments to open the settings window. It edits the same conf.toml file.
 
-The full configuration guide is at https://github.com/eugeniosegala/MAKO/blob/main/engine/docs/CONFIGURATION.md.
-
 For a native Steam or Proton game, add this under Steam Properties > General > Launch Options:
 
     ~/.local/bin/fgvk %command%
@@ -73,14 +71,10 @@ The uninstaller then separately asks whether to remove profiles, settings, and d
 Documentation and support
 -------------------------
 
-Direct installation and usage:
-https://github.com/eugeniosegala/MAKO/blob/main/engine/README.md
+In the framegen-vulkan source repository, see:
 
-Flatpak setup:
-https://github.com/eugeniosegala/MAKO/blob/main/engine/docs/FLATPAK-GUIDE.md
-
-Troubleshooting:
-https://github.com/eugeniosegala/MAKO/blob/main/engine/docs/TROUBLESHOOTING.md
-
-Diagnostics:
-https://github.com/eugeniosegala/MAKO/blob/main/engine/docs/COLLECT_DIAGNOSTICS.md
+  README.md                           Installation and launch
+  engine/docs/CONFIGURATION.md         Profiles and settings
+  engine/docs/FLATPAK-GUIDE.md         Flatpak setup
+  engine/docs/TROUBLESHOOTING.md       Troubleshooting
+  engine/docs/COLLECT_DIAGNOSTICS.md   Diagnostics

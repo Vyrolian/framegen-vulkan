@@ -290,15 +290,18 @@ import sys
 source, destination = sys.argv[1:]
 with open(source, encoding="utf-8") as source_file:
     manifest = json.load(source_file)
-binary = manifest["remote_binary"][0]
 version = "9.8.7"
-binary["name"] = f"MAKO-Renderer-v{version}-linux.tar.xz"
-binary["version"] = version
-binary["url"] = (
-    "https://github.com/eugeniosegala/MAKO/releases/download/"
-    f"render-v{version}/{binary['name']}"
-)
-binary["sha256hash"] = "ab" * 32
+repository = "https://github.com/example/framegen-vulkan"
+tag = f"render-v{version}"
+name = f"framegen-vulkan-v{version}-linux.tar.xz"
+manifest["remote_binary"] = [{
+    "name": name,
+    "version": version,
+    "source_repository": repository,
+    "release_tag": tag,
+    "url": f"{repository}/releases/download/{tag}/{name}",
+    "sha256hash": "ab" * 32,
+}]
 with open(destination, "w", encoding="utf-8") as destination_file:
     json.dump(manifest, destination_file, indent=2)
     destination_file.write("\n")
@@ -318,32 +321,46 @@ python3 "$script_dir/sync-release-pin.py" \
     "$work_dir/package.json" "$work_dir/PKGBUILD" >/dev/null
 grep -Fqx 'pkgrel=7' "$work_dir/PKGBUILD"
 
-native_archive="$work_dir/MAKO-Renderer-v9.8.7-linux.tar.xz"
-flatpak_archive="$work_dir/MAKO-Renderer-v9.8.7-flatpaks.tar.xz"
-arch_package="$work_dir/mako-renderer-bin-9.8.7-7-x86_64.pkg.tar.zst"
+# Exercise the first public pin as well as an update to an existing pin.
+printf '%s\n' '{"remote_binary":[]}' > "$work_dir/package.json"
+native_archive="$work_dir/framegen-vulkan-v9.8.7-linux.tar.xz"
+flatpak_archive="$work_dir/framegen-vulkan-v9.8.7-flatpaks.tar.xz"
+arch_package="$work_dir/framegen-vulkan-bin-9.8.7-7-x86_64.pkg.tar.zst"
 node "$repo_root/engine/scripts/pin-renderer-release.mjs" \
     "$work_dir/package.json" \
     9.8.7 render-v9.8.7 "$(printf 'cd%.0s' {1..20})" \
-    eugeniosegala/MAKO \
+    example/framegen-vulkan \
     "$native_archive" "$(printf '12%.0s' {1..32})" \
     "$flatpak_archive" "$(printf '34%.0s' {1..32})" \
     "$arch_package" "$(printf '56%.0s' {1..32})" >/dev/null
 node -e '
 const binary = require(process.argv[1]).remote_binary[0];
 if (!binary.arch_package ||
-    binary.arch_package.name !== "mako-renderer-bin-9.8.7-7-x86_64.pkg.tar.zst" ||
+    binary.arch_package.name !== "framegen-vulkan-bin-9.8.7-7-x86_64.pkg.tar.zst" ||
     binary.arch_package.sha256hash !== "56".repeat(32)) process.exit(1);
 ' "$work_dir/package.json"
 node "$repo_root/engine/scripts/pin-renderer-release.mjs" \
     "$work_dir/package.json" \
     9.8.7 render-v9.8.7 "$(printf 'cd%.0s' {1..20})" \
-    eugeniosegala/MAKO \
+    example/framegen-vulkan \
     "$native_archive" "$(printf '12%.0s' {1..32})" \
     "$flatpak_archive" "$(printf '34%.0s' {1..32})" >/dev/null
 node -e '
 const binary = require(process.argv[1]).remote_binary[0];
 if (Object.prototype.hasOwnProperty.call(binary, "arch_package")) process.exit(1);
 ' "$work_dir/package.json"
+
+python3 "$script_dir/sync-release-pin.py" \
+    "$work_dir/package.json" "$work_dir/PKGBUILD" >/dev/null
+"$script_dir/check-release-pin.sh" \
+    "$work_dir/PKGBUILD" "$work_dir/package.json" >/dev/null
+grep -Fqx 'url="https://github.com/example/framegen-vulkan"' "$work_dir/PKGBUILD"
+printf '%s\n' '{"remote_binary":[]}' > "$work_dir/unpublished.json"
+if "$script_dir/check-release-pin.sh" \
+    "$work_dir/PKGBUILD" "$work_dir/unpublished.json" >"$work_dir/pin-drift.log" 2>&1; then
+    echo "Arch package check accepted a download source with no public pin" >&2
+    exit 1
+fi
 
 test_home="$work_dir/home with spaces"
 mkdir -p "$test_home/.local/share/framegen-vulkan"
@@ -423,6 +440,7 @@ output="$2"
 [[ "$(basename "$output")" == "framegen-vulkan-bin-9.8.7-1-x86_64.pkg.tar.zst" ]]
 grep -Fqx 'pkgver=9.8.7' "$script_dir/PKGBUILD"
 grep -Fqx 'pkgrel=1' "$script_dir/PKGBUILD"
+grep -Fqx 'source=("framegen-vulkan-v9.8.7-linux.tar.xz")' "$script_dir/PKGBUILD"
 checksum="$(sha256sum "$archive" | awk '{print $1}')"
 grep -Fqx "sha256sums=('$checksum')" "$script_dir/PKGBUILD"
 printf '%s\n' local-arch-package > "$output"

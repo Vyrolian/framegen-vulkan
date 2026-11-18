@@ -41,7 +41,7 @@ Use the absolute `/usr/bin` path so a separate `~/.local/bin/fgvk` cannot shadow
 
 ## Build from the tracked recipe
 
-To reproduce the package from the official archive instead, build and install from this directory:
+Once a public framegen-vulkan archive is pinned, build and install from this directory:
 
 ```bash
 cd engine/dist/arch
@@ -100,8 +100,7 @@ The package is checked against the host archive's checksums, required files, arc
 
 ## Links
 
-- [Upstream README](../../../README.md)
-- [Engine README](../../README.md)
+- [Project README](../../../README.md)
 - [Flatpak guide](../../docs/FLATPAK-GUIDE.md)
 - [Troubleshooting](../../docs/TROUBLESHOOTING.md)
 - [Collect diagnostics](../../docs/COLLECT_DIAGNOSTICS.md)
