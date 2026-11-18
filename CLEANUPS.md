@@ -66,7 +66,7 @@ Before deleting a current obligation:
 2. Identify the published release that first wrote the canonical replacement and compare it with the declared minimum direct-upgrade baseline.
 3. Verify that install, startup, rollback, and skipped-version upgrades cannot encounter the removed path within the supported contract.
 4. Remove the compatibility code, its ledger entry, and only the tests that no longer express a current invariant.
-5. Run the boundary-specific suite in `DEVELOPING.md`; package/install changes also require local archive verification.
+5. Run the relevant tests listed by `scripts/dev.sh help`. Package and installer changes also require local archive verification.
 6. Mention user-visible compatibility removals in the component release notes.
 
-Diagnostic input compatibility, stable package identifiers, and published archive names have their own contracts in `AGENTS.md`; do not treat them as generated-wrapper cleanup.
+Preserve diagnostic input compatibility, stable package identifiers, and published archive names when cleaning up generated wrappers.

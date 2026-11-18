@@ -52,8 +52,8 @@ Subcommands:
   check-arch-package                 Check the Arch release pin and the Arch package contract.
   check-color-conversion-spirv       Reject stale embedded colour-conversion SPIR-V without invoking glslangValidator.
   install-hooks                      Enable the commit hook that rejects licensed inputs (Lossless.dll) and binary payloads.
-  update-contributors                Update the README contributor gallery from this branch's history.
-  check-contributors                 Check that the README contributor gallery matches this branch's history.
+  update-contributors                Update CONTRIBUTORS.md from this branch's history.
+  check-contributors                 Check that CONTRIBUTORS.md matches this branch's history.
   check-links                        Check every relative Markdown link and #anchor in the tracked Markdown files.
 EOF
 }

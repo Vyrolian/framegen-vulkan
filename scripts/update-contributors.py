@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate the README gallery from commit authors and co-author trailers."""
+"""Generate CONTRIBUTORS.md from commit authors and co-author trailers."""
 
 import argparse
 import json
@@ -9,17 +9,15 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-README = ROOT / "README.md"
+CONTRIBUTORS = ROOT / "CONTRIBUTORS.md"
 CONFIG = ROOT / "scripts/contributors.json"
-START = "<!-- fgvk-contributors:start -->"
-END = "<!-- fgvk-contributors:end -->"
 COAUTHOR = re.compile(r"^Co-authored-by:\s*([^\n<>]+?)\s*<[^\n<>]+>\s*$", re.IGNORECASE | re.MULTILINE)
 LOGIN = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?")
 
 
-def git_names():
+def git_names(mako_base):
     result = subprocess.run(
-        ["git", "log", "--no-merges", "--format=%an%x1f%B%x1e", "HEAD"],
+        ["git", "log", "--no-merges", "--format=%an%x1f%B%x1e", f"{mako_base}..HEAD"],
         cwd=ROOT,
         check=True,
         capture_output=True,
@@ -44,9 +42,9 @@ def render():
             if name in name_to_login and name_to_login[name] != login:
                 raise ValueError(f"Commit name {alias!r} maps to multiple GitHub logins")
             name_to_login[name] = login
-    # AI co-author trailers (for example "Claude Opus 5.5") are not GitHub accounts; see AI_USE.md.
+    # Exclude AI co-author trailers from contributor credits.
     ignored = tuple(prefix.casefold() for prefix in config.get("ignored_name_prefixes", []))
-    names = {name for name in git_names() if not (ignored and name.startswith(ignored))}
+    names = {name for name in git_names(config["mako_base"]) if not (ignored and name.startswith(ignored))}
     missing = names - name_to_login.keys()
     if missing:
         raise ValueError(
@@ -55,38 +53,41 @@ def render():
         )
     logins = set(name_to_login[name] for name in names)
     logins.update(config.get("additional_logins", []))
-    for login in logins:
+    maintainer = config["maintainer_login"]
+    upstream = config["upstream_credits"]
+    for login in logins | {maintainer} | upstream.keys():
         if not LOGIN.fullmatch(login):
             raise ValueError(f"Invalid GitHub login in scripts/contributors.json: {login!r}")
-    avatar_revision = config["avatar_revision"]
-    if type(avatar_revision) is not int or avatar_revision < 1:
-        raise ValueError("avatar_revision must be a positive integer")
-    portraits = [
-        f'<a href="https://github.com/{login}"><img src="https://github.com/{login}.png?size=48&amp;v={avatar_revision}" width="48" height="48" alt="@{login}" /></a>'
-        for login in sorted(logins, key=str.casefold)
-    ]
-    return START + "\n\n" + " ".join(portraits) + "\n" + END
+
+    lines = ["# Contributors", ""]
+    lines.append(f"- framegen-vulkan maintainer. [@{maintainer}](https://github.com/{maintainer})")
+    lines.extend(
+        f"- [@{login}](https://github.com/{login})"
+        for login in sorted(logins - {maintainer}, key=str.casefold)
+    )
+    lines.extend(["", "## Upstream credits", ""])
+    lines.extend(
+        f"- {credit} [@{login}](https://github.com/{login})"
+        for login, credit in upstream.items()
+    )
+    return "\n".join(lines) + "\n"
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--check", action="store_true", help="fail if the README gallery is stale")
+    parser.add_argument("--check", action="store_true", help="fail if CONTRIBUTORS.md is missing or stale")
     args = parser.parse_args()
-    readme = README.read_text(encoding="utf-8")
-    if readme.count(START) != 1 or readme.count(END) != 1:
-        raise ValueError("README.md must contain exactly one contributor gallery marker pair")
-    before, rest = readme.split(START, 1)
-    _, after = rest.split(END, 1)
-    updated = before + render() + after
+    current = CONTRIBUTORS.read_text(encoding="utf-8") if CONTRIBUTORS.exists() else None
+    updated = render()
     if args.check:
-        if updated != readme:
-            parser.exit(1, "README contributor gallery is stale; run python3 scripts/update-contributors.py\n")
-        print("README contributor gallery is current")
-    elif updated != readme:
-        README.write_text(updated, encoding="utf-8")
-        print("Updated README contributor gallery")
+        if updated != current:
+            parser.exit(1, "CONTRIBUTORS.md is missing or stale. Run python3 scripts/update-contributors.py.\n")
+        print("CONTRIBUTORS.md is current")
+    elif updated != current:
+        CONTRIBUTORS.write_text(updated, encoding="utf-8")
+        print("Updated CONTRIBUTORS.md")
     else:
-        print("README contributor gallery is already current")
+        print("CONTRIBUTORS.md is already current")
 
 
 if __name__ == "__main__":

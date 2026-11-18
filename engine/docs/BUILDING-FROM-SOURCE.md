@@ -63,7 +63,7 @@ The release packager builds the 64-bit CLI, launcher, and both Renderer roles, t
 | Complete local release candidate | `engine/scripts/package-local-release.sh`, then `scripts/check-release-candidate.sh` with the host and Flatpak archives from `engine/out/` | Builds once from a clean pushed commit and checks the existing complete archives without a CI rebuild or installation |
 | Public release | `scripts/publish-release.sh X.Y.Z` from the repository root | Publishes framegen-vulkan, records its checksums in `engine/renderer-release.json`, and updates release links |
 
-`package-local-release.sh` writes under `engine/out/` and synchronizes a disposable Arch recipe. The complete local archives serve as release candidates; publication separately applies version and pin commits and rebuilds public assets. [Release](../../DEVELOPING.md#release) owns qualification, build alignment, and publication.
+`package-local-release.sh` writes under `engine/out/` and synchronizes a disposable Arch recipe. The complete local archives serve as release candidates. Publication separately applies version and pin commits and rebuilds public assets.
 
 Packaging is native and Linux only: it compiles against the pinned Vulkan-Headers revision (see [Vulkan-Headers](#vulkan-headers)), and the packaging scripts exit with status 2 on other hosts. Flatpak packaging needs `flatpak` and `flatpak-builder` on the host, and Arch package verification needs `makepkg` and `fakeroot`; when one is missing, the script stops with an install hint.
 
@@ -73,7 +73,7 @@ Local native builds of one clean commit are reproducible with the same toolchain
 
 Packaging builds `bin/fgvk` with the host `cargo` first, so a missing `cargo` stops packaging at once. A host-built `fgvk` needs the build host's glibc symbol versions: with the current toolchain it requires `GLIBC_2.43`, so it will not start on Ubuntu 22.04 (glibc 2.35). `package-local.sh` prints a warning when the requirement exceeds 2.35.
 
-For an explicitly requested maintainer exception, `FGVK_RELEASE_SKIP_TESTS=1` omits test compilation, CTest, and launcher tests while retaining build, ABI, archive, and checksum verification. See the [hotfix exception](../../DEVELOPING.md#maintainer-directed-hotfix-without-automated-validation). `engine/scripts/publish-package.sh` and complete tester packages from `package-local-release.sh` build the host and Flatpak archives on the local host, with the pinned Vulkan headers and `flatpak-builder` for each declared runtime. To match the release baseline, build on Ubuntu 22.04 with Clang 14; `package-local.sh` warns when `fgvk` needs a newer glibc. Follow the [build-alignment and evidence requirements](../../DEVELOPING.md#keep-tester-and-release-builds-aligned) when comparing tester and release artifacts.
+For an explicitly requested maintainer exception, `FGVK_RELEASE_SKIP_TESTS=1` omits test compilation, CTest, and launcher tests while retaining build, ABI, archive, and checksum verification. `engine/scripts/publish-package.sh` and complete tester packages from `package-local-release.sh` build the host and Flatpak archives on the local host, with the pinned Vulkan headers and `flatpak-builder` for each declared runtime. To match the release baseline, build on Ubuntu 22.04 with Clang 14. `package-local.sh` warns when `fgvk` needs a newer glibc.
 
 ## Package dependency pins
 

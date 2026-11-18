@@ -20,6 +20,19 @@ Thumbs.db
 # Local environment and secrets
 .env
 
+# Local guides and handoff notes
+/AGENTS.md
+/CONTRIBUTING.md
+/AI_USE.md
+/DEVELOPING.md
+/INSTALLATION-TRANSACTIONS.md
+*[Hh][Aa][Nn][Dd][Oo][Ff][Ff]*.md
+
+# Local source and reference archives
+/framegen-vulkan-*.tar.*
+/lsfg-vk-archive*.tar.*
+/MAKO_Cyberpunk_FG_Codex_Bundle.zip
+
 # User-supplied licensed inputs and binary/model payloads
 *.[Dd][Ll][Ll]
 *.[Ee][Xx][Ee]

@@ -5,7 +5,7 @@ description: Prepare framegen-vulkan release notes from the current branch, with
 
 # Prepare Release
 
-Prepare reviewable release materials for framegen-vulkan. Read the checkout's current `AGENTS.md`, component READMEs, [DEVELOPING.md](../../../DEVELOPING.md#notes-identity-and-artwork), and [ASSET_PROVENANCE.md](../../../ASSET_PROVENANCE.md). The release guide owns the format and publication boundary; follow its current rules instead of hardcoding a past release into this skill.
+Prepare reviewable release materials for framegen-vulkan. Read the component READMEs, [ASSET_PROVENANCE.md](../../../ASSET_PROVENANCE.md), and the checkout's local `AGENTS.md` and `DEVELOPING.md` release guidance when available.
 
 The deliverables are `engine/RELEASE_NOTES.md`, one release PNG under root `assets/`, and an accurate asset-provenance entry. This workflow ends with local files and a preparation summary. Commit, push, branch changes, tags, live GitHub release edits, deployment, and publication require a separate explicit request; invoking this skill does not authorize them.
 

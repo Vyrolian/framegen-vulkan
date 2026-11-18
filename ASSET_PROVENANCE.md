@@ -2,7 +2,9 @@
 
 This register records the known origin and intended licensing treatment of public visual assets in framegen-vulkan. Update it in the same change whenever an asset is added, replaced, or derived from a new source. Keep original prompts, editable sources, commissions, permissions, and source links outside release archives when they contain private information, but retain enough evidence for the maintainer to substantiate each entry.
 
-## framegen-vulkan project artwork
+## Historical project artwork
+
+These records describe artwork from the inherited project history. The files listed below were removed from the current source tree. The distribution column records the terms that accompanied those files when they were included.
 
 | Paths | Origin and processing | Distribution status |
 | --- | --- | --- |
@@ -13,7 +15,7 @@ This register records the known origin and intended licensing treatment of publi
 
 AI-assisted creation does not guarantee that an output is copyrightable in every jurisdiction. framegen-vulkan makes no claim beyond rights the contributors actually hold, and the GPL statement does not create rights in third-party material.
 
-## Third-party visual material
+## Historical third-party visual material
 
 | Location | Material | Treatment |
 | --- | --- | --- |

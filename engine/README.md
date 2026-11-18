@@ -109,4 +109,3 @@ For host, Flatpak, Arch, or complete local packages, choose an entry point in [B
 - [Troubleshooting](docs/TROUBLESHOOTING.md): activation, presentation, and diagnostics.
 - [Collect diagnostics](docs/COLLECT_DIAGNOSTICS.md): create a standalone support report.
 - [Building from source](docs/BUILDING-FROM-SOURCE.md): development and packaging requirements.
-- [Developing framegen-vulkan](../DEVELOPING.md): build and test gates, dependency owners, and the release procedure.

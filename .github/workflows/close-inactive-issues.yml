@@ -29,8 +29,6 @@ jobs:
               return labels.includes('bug') &&
                 !labels.includes('enhancement') && !labels.includes('question');
             };
-            const mascotUrl = `https://raw.githubusercontent.com/${context.repo.owner}/${context.repo.repo}/${context.payload.repository.default_branch}/assets/fgvk-cleaner.webp`;
-            const mascot = `<p align="center"><img src="${mascotUrl}" alt="framegen-vulkan Cleaner, a cyberpunk shark wearing a green police-style cap" width="160" /></p>`;
             const issues = await github.paginate(github.rest.issues.listForRepo, {
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -69,7 +67,6 @@ jobs:
                 issue_number: currentIssue.number,
                 body: [
                   '<!-- fgvk-cleaner-inactive-issue -->',
-                  mascot,
                   '🧹 **framegen-vulkan Cleaner** here.',
                   'This bug report was automatically closed because it has had no activity for more than seven days. Reply with new information if it should be reopened.',
                   '_This is an automated reply from framegen-vulkan Cleaner._',

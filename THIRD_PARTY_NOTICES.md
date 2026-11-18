@@ -1,16 +1,14 @@
 # framegen-vulkan third-party notices
 
-This document supplements [COPYRIGHT.md](COPYRIGHT.md) and the GPL text in [LICENSE](LICENSE). It identifies third-party material distributed with MAKO and proprietary software that MAKO can use but does not distribute. Each third-party copyright, license, and trademark remains with its owner.
+This document supplements [COPYRIGHT.md](COPYRIGHT.md) and the GPL text in [LICENSE](LICENSE). It identifies third-party material distributed with framegen-vulkan and describes its use of the user’s Lossless Scaling installation. Each third-party copyright, license, and trademark remains with its owner.
 
 ## Lossless Scaling is not distributed by framegen-vulkan
 
 framegen-vulkan is an independent open-source project. framegen-vulkan source archives, framegen-vulkan packages, and Flatpak extensions do not contain or distribute Lossless Scaling, `Lossless.dll`, or extracted LS1 or LSFG model and shader payloads.
 
-The open framegen-vulkan Scaler works without Lossless Scaling. A user who chooses LSFG frame generation or LS1 scaling must independently obtain a lawful copy of Lossless Scaling and select or permit discovery of its locally installed `Lossless.dll`. The user is responsible for complying with the terms and law applicable to that copy. framegen-vulkan grants no license or other rights in Lossless Scaling or its proprietary resources.
+framegen-vulkan reads frame-generation resources from a separately installed copy of Lossless Scaling. It may translate shaders for Vulkan or, in experimental builds, convert eligible shader arithmetic from FP32 to FP16. Extracted and transformed resources stay in process memory. framegen-vulkan does not install, upload, package, or alter the DLL, or save those resources as standalone files.
 
-framegen-vulkan reads the user-supplied local DLL at runtime for LSFG or LS1. It may translate shaders for Vulkan or, in experimental builds, convert eligible LSFG shader arithmetic from FP32 to FP16. Extracted and transformed resources stay in process memory. framegen-vulkan does not install, upload, package, or alter the DLL, or save those resources as standalone files.
-
-Lossless Scaling, LS1, and LSFG are used descriptively and remain the property of their respective owner. framegen-vulkan is not affiliated with or endorsed by Lossless Scaling.
+framegen-vulkan and its maintainer have no affiliation with Lossless Scaling.
 
 ## Incorporated Renderer source
 
@@ -20,11 +18,11 @@ The complete notices for the GPL-3.0-or-later lsfg-vk version 2 Renderer lineage
 
 MAKO Renderer descends directly from PancakeTAS's GPL-3.0-or-later lsfg-vk version 2 tree at upstream commit [`8b0da2661c6f3473a7fccc8ba643880050e71642`](https://github.com/PancakeTAS/lsfg-vk/commit/8b0da2661c6f3473a7fccc8ba643880050e71642). MAKO's experimental predecessor carried that baseline to `v2.0.0-dev28-experimental.25` at [`276030d4925c40038a61ecd66bd49ce777faec8c`](https://github.com/eugeniosegala/lsfg-vk-experimental/commit/276030d4925c40038a61ecd66bd49ce777faec8c), and that Renderer lineage entered this monorepo in [`8ed1cdbe7f5496fade8ad01d85ac3d671957fcac`](https://github.com/eugeniosegala/MAKO/commit/8ed1cdbe7f5496fade8ad01d85ac3d671957fcac).
 
-Copyright in the incorporated portions remains with the respective lsfg-vk copyright holders. The incorporated source files identify themselves as `GPL-3.0-or-later`, and MAKO remains distributed under that license. The MIT License used for lsfg-vk version 1 does not describe MAKO Renderer's version 2 lineage.
+Copyright in the incorporated portions remains with the respective lsfg-vk copyright holders. The incorporated source files identify themselves as `GPL-3.0-or-later`, and framegen-vulkan is distributed under that license. The MIT License used for lsfg-vk version 1 does not describe MAKO Renderer's version 2 lineage.
 
 ## Wayland presentation feedback protocol
 
-MAKO Renderer's optional native Wayland diagnostic observer declares the version-one requests and events of the stable [presentation-time protocol](https://gitlab.freedesktop.org/wayland/wayland-protocols/-/blob/main/stable/presentation-time/presentation-time.xml). The protocol material carries the following MIT notice:
+framegen-vulkan’s optional native Wayland diagnostic observer declares the version-one requests and events of the stable [presentation-time protocol](https://gitlab.freedesktop.org/wayland/wayland-protocols/-/blob/main/stable/presentation-time/presentation-time.xml). The protocol material carries the following MIT notice:
 
 Copyright © 2013-2014 Collabora, Ltd.
 
@@ -36,8 +34,8 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 ## Experimental LSFG FP16 optimizer
 
-The optional native FP16 experiment statically links official [SPIRV-Tools at commit `33e02568181e3312f49a3cf33df470bf96ef293a`](https://github.com/KhronosGroup/SPIRV-Tools/tree/33e02568181e3312f49a3cf33df470bf96ef293a), copyright © 2015–2025 The Khronos Group Inc. and its contributors, under the Apache License 2.0. Its generated tables use [SPIRV-Headers at commit `2a611a970fdbc41ac2e3e328802aed9985352dca`](https://github.com/KhronosGroup/SPIRV-Headers/tree/2a611a970fdbc41ac2e3e328802aed9985352dca), under the Khronos permissive terms recorded in that repository. The experimental CMake install includes their complete license files under `share/doc/mako-render/spirv-tools/` and `share/doc/mako-render/spirv-headers/`. The checksum-pinned source preparation is owned by `engine/scripts/prepare-lsfg-fp16-tools.sh`; ordinary builds do not include this optimizer. Neither this dependency nor conversion redistributes Lossless Scaling resources.
+The optional native FP16 experiment statically links official [SPIRV-Tools at commit `33e02568181e3312f49a3cf33df470bf96ef293a`](https://github.com/KhronosGroup/SPIRV-Tools/tree/33e02568181e3312f49a3cf33df470bf96ef293a), copyright © 2015–2025 The Khronos Group Inc. and its contributors, under the Apache License 2.0. Its generated tables use [SPIRV-Headers at commit `2a611a970fdbc41ac2e3e328802aed9985352dca`](https://github.com/KhronosGroup/SPIRV-Headers/tree/2a611a970fdbc41ac2e3e328802aed9985352dca), under the Khronos permissive terms recorded in that repository. The experimental CMake install includes their complete license files under `share/doc/framegen-vulkan/spirv-tools/` and `share/doc/mako-render/spirv-headers/`. The checksum-pinned source preparation is owned by `engine/scripts/prepare-lsfg-fp16-tools.sh`; ordinary builds do not include this optimizer. Neither this dependency nor conversion redistributes Lossless Scaling resources.
 
 ## Project artwork
 
-framegen-vulkan's project artwork and the provenance limits recorded for it are documented in [ASSET_PROVENANCE.md](ASSET_PROVENANCE.md). Third-party brand assets are not relicensed by framegen-vulkan.
+The asset register retains provenance and licensing records for artwork from the inherited project history. [Asset provenance](ASSET_PROVENANCE.md)

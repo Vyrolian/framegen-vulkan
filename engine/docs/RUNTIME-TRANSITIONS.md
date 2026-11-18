@@ -163,7 +163,7 @@ scripts/test-adaptive-scheduler.sh
 FGVK_ENABLE_SANITIZERS=ON scripts/test-adaptive-scheduler.sh
 ```
 
-`profile_update_tests.cpp` must cover a field alone, mixed with live and deferred fields, superseded or reverted requests, insufficient resources, inactive modes, and process-static baselines as applicable. Vulkan-facing changes also need the fgvk Gym suites selected by [Build and test](../../DEVELOPING.md#build-and-test). Mark unavailable hardware rows **not tested**.
+`profile_update_tests.cpp` must cover a field alone, mixed with live and deferred fields, superseded or reverted requests, insufficient resources, inactive modes, and process-static baselines as applicable. For Vulkan-facing changes, run the fgvk Gym suites that exercise the affected transitions. Mark unavailable hardware rows **not tested**.
 
 ### External descriptor ownership during resource construction
 

@@ -105,5 +105,4 @@ The package is checked against the host archive's checksums, required files, arc
 - [Flatpak guide](../../docs/FLATPAK-GUIDE.md)
 - [Troubleshooting](../../docs/TROUBLESHOOTING.md)
 - [Collect diagnostics](../../docs/COLLECT_DIAGNOSTICS.md)
-- [Installation transactions](../../../INSTALLATION-TRANSACTIONS.md)
 - [Cleanups](../../../CLEANUPS.md)

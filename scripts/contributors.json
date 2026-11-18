@@ -1,17 +1,13 @@
 {
+  "mako_base": "a293222362ac762495ac3a4b3b476904e63cae6f",
   "login_to_names": {
-    "eugeniosegala": ["Eugenio Segala", "eugeniosegala"],
-    "hugouchoasborges": ["Hugo Uchôas Borges", "hugouchoasborges"],
-    "Hu2ki3": ["Hu2ki3"],
-    "lordkaus": ["lordkaus"],
-    "PJ-568": ["PJ568"],
-    "rosakodu": ["rosakodu", "Mickhail Vorontsov"],
-    "Tak-attack": ["Tak-attack"],
-    "w169q169": ["senhtry"],
-    "WowOne987": ["WowOne987"],
     "Vyrolian": ["Vyrolian"]
   },
   "additional_logins": [],
   "ignored_name_prefixes": ["claude"],
-  "avatar_revision": 20261004
+  "maintainer_login": "Vyrolian",
+  "upstream_credits": {
+    "eugeniosegala": "Created MAKO, the project framegen-vulkan forked.",
+    "PancakeTAS": "Created lsfg-vk, the project MAKO Renderer descends from."
+  }
 }

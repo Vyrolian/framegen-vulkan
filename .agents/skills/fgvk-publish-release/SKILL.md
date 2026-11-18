@@ -5,7 +5,7 @@ description: Publish and verify a public framegen-vulkan release. Use for author
 
 # Publish framegen-vulkan
 
-Locate the framegen-vulkan checkout and read its current `AGENTS.md` and [DEVELOPING.md](../../../DEVELOPING.md#release). The guide and owning scripts are authoritative; follow their current instructions rather than a copied procedure or a commit SHA stored in this skill.
+Locate the framegen-vulkan checkout. Read the owning release scripts and the local `AGENTS.md` and `DEVELOPING.md` release guidance when available.
 
 Execution boundary: the host runs Git, release orchestration, the native Renderer and Flatpak builds, uploads, and published-asset checks. The host needs `cargo`, `flatpak-builder`, `makepkg`, and `fakeroot` in addition to the native build tools; a missing tool stops the build with an install hint.
 

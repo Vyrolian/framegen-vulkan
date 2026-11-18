@@ -33,7 +33,7 @@ Full trace additionally observes instance/device/surface/swapchain setup in `pre
 | `fgvk-render/src/swapchain/present_timing.hpp` | Bounds Renderer-owned Vulkan timing feedback, calibrates supported clocks, and supplies observed queue readiness to the shared ordered timeline. |
 | `fgvk-render/src/swapchain/present/internal.hpp` | Shares only presentation-local diagnostics, timing, and image-barrier helpers. It owns no mutable state or policy. |
 
-Keep new policy decisions in their existing policy or scheduler owner, and let `Swapchain::present()` consume the result. Keep live resource replacement in `swapchain/resources.cpp`, profile transitions in `swapchain/profile.cpp`, and runtime status in `swapchain/status.cpp`. A change that crosses those boundaries needs its corresponding contract test and the validation described in [Build and test](../../DEVELOPING.md#build-and-test).
+Keep new policy decisions in their existing policy or scheduler owner, and let `Swapchain::present()` consume the result. Keep live resource replacement in `swapchain/resources.cpp`, profile transitions in `swapchain/profile.cpp`, and runtime status in `swapchain/status.cpp`. Run the corresponding contract test and the relevant Renderer suites listed by `scripts/dev.sh help` for changes across those boundaries.
 
 ## Deliberate large-file boundaries
 

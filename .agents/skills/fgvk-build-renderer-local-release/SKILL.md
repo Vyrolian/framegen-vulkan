@@ -11,7 +11,7 @@ Execution boundary: the host runs the aggregate script, the native Renderer and 
 
 ## Workflow
 
-1. Locate the framegen-vulkan repository root and confirm it contains `AGENTS.md`, `scripts/dev.sh`, and `engine/scripts/package-local-release.sh`. Read the current `AGENTS.md` and `engine/docs/BUILDING-FROM-SOURCE.md`; they remain authoritative if this skill becomes stale.
+1. Locate the framegen-vulkan repository root and confirm it contains `scripts/dev.sh` and `engine/scripts/package-local-release.sh`. Read `engine/docs/BUILDING-FROM-SOURCE.md` and the local `AGENTS.md` when available.
 2. Inspect the branch and worktree and preserve all user changes. Tell the user the native build is starting and may take several minutes.
 3. Run the build on the actual host (`exec_command` with `sandbox_permissions: "require_escalated"` in Codex); the default isolated shell may not access the host build tools or the network. From the repository root run:
 
