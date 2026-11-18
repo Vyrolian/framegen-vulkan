@@ -17,9 +17,14 @@ framegen-vulkan (`fgvk`) is a Vulkan layer that brings Lossless Scaling frame ge
 
 - Linux on x86_64 with a Vulkan 1.2 driver. Testing has focused on NVIDIA. AMD and Intel remain unverified.
 - A purchased copy of Lossless Scaling installed through Steam on the default public branch. `fgvk` reads `Lossless.dll` from that installation at runtime. [Lossless Scaling on Steam](https://store.steampowered.com/app/993090/Lossless_Scaling/)
-- For source builds, use Clang with C++20 support, CMake 3.15 or newer, Ninja, Python 3, Git, Vulkan, X11 and XCB development files, and Rust 1.78 or newer with Cargo.
+
+### Install a release
+
+Download `framegen-vulkan-vX.Y.Z-linux.tar.xz` from GitHub Releases, extract it, and run **Install framegen-vulkan** from the extracted directory. The archive is built on Ubuntu 22.04 and includes both 64-bit and 32-bit Vulkan layers. [GitHub Releases](https://github.com/Vyrolian/framegen-vulkan/releases)
 
 ### Build dependencies
+
+For source builds, use Clang with C++20 support, CMake 3.15 or newer, Ninja, Python 3, Git, Vulkan, X11 and XCB development files, and Rust 1.78 or newer with Cargo.
 
 **Arch Linux and SteamOS with a writable root**
 

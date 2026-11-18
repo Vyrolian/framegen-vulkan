@@ -17,7 +17,7 @@ namespace {
     }
 
     // The production walks copy each pNext link with memcpy. For a local node
-    // reached only that way, GCC 16 at -O2/-O3 can lose track of the pointer
+    // reached only that way, GCC at -O2/-O3 can lose track of the pointer
     // and drop the stores that initialize the node. Publishing the node to an
     // opaque volatile sink makes it escape without changing its contents.
     const void* volatile publishedChainNode{};
@@ -47,6 +47,7 @@ namespace {
             .sType = VK_STRUCTURE_TYPE_PRESENT_ID_KHR,
             .pNext = &timing, .swapchainCount = 1, .pPresentIds = presentIds,
         };
+        publishChainNode(&mode);
         const GeneratedPresentPNextChain generated(&id);
         const auto* copied = static_cast<const VkSwapchainPresentModeInfoEXT*>(generated.head());
         expect(copied != nullptr, "generated output lost its persistent mode override");
