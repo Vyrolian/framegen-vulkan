@@ -39,6 +39,8 @@ For Flatpak apps, download and extract `framegen-vulkan-vX.Y.Z-flatpak.tar.xz` i
 
 The original v1.0.0 archives use `"./Install framegen-vulkan"` and `"./Install framegen-vulkan Flatpak Extensions"`.
 
+To remove a Flatpak extension, see [Uninstall the Flatpak extension](engine/docs/FLATPAK-GUIDE.md#uninstall-the-flatpak-extension).
+
 ### Build dependencies
 
 For source builds, use Clang with C++20 support, CMake 3.15 or newer, Ninja, Python 3, Git, Vulkan, X11 and XCB development files, and Rust 1.78 or newer with Cargo.

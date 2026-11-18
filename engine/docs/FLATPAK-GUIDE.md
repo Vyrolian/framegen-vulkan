@@ -129,6 +129,16 @@ flatpak override --user --unset-env=DISABLE_FGVK "$appid"
 
 Avoid `flatpak override --reset`: it also removes unrelated app settings.
 
+## Uninstall the Flatpak extension
+
+Close the Flatpak apps and games using framegen-vulkan. For each installed runtime branch, run the uninstall command and confirm removal. This command removes branch 26.08:
+
+```bash
+flatpak uninstall --user org.freedesktop.Platform.VulkanLayer.fgvkrender//26.08
+```
+
+Use `flatpak list --user --runtime --columns=application,branch` to find the installed branches. Removing the extension keeps your framegen-vulkan profiles and each app's overrides. Check `flatpak override --user --show "$appid"` and undo the settings you added for framegen-vulkan, including any variables that disabled other layers.
+
 ## Building extensions
 
 See [Flatpak extension builds](BUILDING-FROM-SOURCE.md#flatpak-extension-builds) for source builds and runtime catalogue maintenance.
