@@ -148,7 +148,7 @@ if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
     exit 1
 fi
 
-tag="render-v$version"
+tag="v$version"
 archive="out/framegen-vulkan-v$version-linux.tar.xz"
 flatpak_archive="out/framegen-vulkan-v$version-flatpaks.tar.xz"
 source_commit="$(git rev-parse HEAD)"
@@ -270,7 +270,7 @@ After installation, create a game profile in \`~/.config/framegen-vulkan/conf.to
 Download and extract \`$(basename "$flatpak_archive")\`. It contains one self-contained framegen-vulkan extension for each supported Flatpak runtime. Install the extension matching the application runtime, for example:
 
 \`\`\`bash
-flatpak install --user org.freedesktop.Platform.VulkanLayer.fgvkrender-24.08.flatpak
+flatpak install --user ./org.freedesktop.Platform.VulkanLayer.fgvkrender-26.08.flatpak
 \`\`\`
 
 ## Updating an existing framegen-vulkan installation

@@ -1,4 +1,6 @@
-## Unreleased: spatial scaling removed
+## What's new in framegen-vulkan v1.0.0
+
+This is the first framegen-vulkan release. It focuses on Fixed frame generation and removes the spatial scaling paths.
 
 - Vulkan conformance fixes use `GENERAL` for the layer's private application images when a game requests `PRESENT_SRC_KHR`. Lower swapchain images still use the presentation layout. Renderer and backend devices now use matching image usage flags when sharing dedicated external-memory images.
 - Gamescope on-screen profile (`FGVK_PACING_PROFILE=1` inside Gamescope): the layer owns the lower present IDs of its swapchain and logs when each lower present completed on screen (`pacing-profile-onscreen`); `engine/scripts/analyze-onscreen.py` reads it. Other sessions are unchanged.

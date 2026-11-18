@@ -49,9 +49,9 @@ if (
     );
 }
 
-if (releaseTag !== `render-v${version}`) {
+if (releaseTag !== `v${version}`) {
     throw new Error(
-        `Expected renderer tag render-v${version}, received ${releaseTag}`,
+        `Expected release tag v${version}, received ${releaseTag}`,
     );
 }
 if (!/^[0-9a-f]{40}$/i.test(sourceCommit)) {
@@ -113,7 +113,6 @@ async function pinRelease() {
     const releaseBase = `https://github.com/${repository}/releases/download/${releaseTag}`;
     binary.name = archiveName;
     binary.version = version;
-    binary.lineage_version = version;
     binary.source_repository = `https://github.com/${repository}`;
     binary.release_tag = releaseTag;
     binary.source_commit = sourceCommit;

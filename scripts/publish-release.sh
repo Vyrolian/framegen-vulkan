@@ -96,7 +96,7 @@ if [[ "$(git rev-parse HEAD)" != "$(git rev-parse refs/remotes/origin/main)" ]];
   exit 1
 fi
 
-renderer_tag="render-v$version"
+renderer_tag="v$version"
 renderer_archive="framegen-vulkan-v$version-linux.tar.xz"
 flatpak_archive="framegen-vulkan-v$version-flatpaks.tar.xz"
 
@@ -169,7 +169,7 @@ renderer_pin_matches() {
     const repository = process.argv[4];
     const archName = process.argv[5];
     const binary = manifest.remote_binary?.[0];
-    const tag = `render-v${version}`;
+    const tag = `v${version}`;
     const nativeName = `framegen-vulkan-v${version}-linux.tar.xz`;
     const flatpakName = `framegen-vulkan-v${version}-flatpaks.tar.xz`;
     const base = `https://github.com/${repository}/releases/download/${tag}`;

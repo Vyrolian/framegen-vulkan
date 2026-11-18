@@ -11,7 +11,7 @@ The deliverables are `engine/RELEASE_NOTES.md`, one release PNG under root `asse
 
 ## Establish the candidate
 
-- Inspect the selected branch and worktree, preserving unrelated changes. Identify the latest applicable released baseline from its `render-v*` tags and release metadata. Prefer a released tag reachable from the branch; investigate mismatched or missing history instead of choosing a newer unrelated tag. Record the actual comparison refs. A comparison only against current `main` can miss unreleased changes already merged there.
+- Inspect the selected branch and worktree, preserving unrelated changes. Identify the latest applicable baseline from published framegen-vulkan `vX.Y.Z` tags and release metadata. Prefer a released tag reachable from the branch and investigate mismatched history. For the first release, use the fork's current feature set and any relevant historical evidence. Record any comparison refs used.
 - Review the log and final diff from the baseline to the candidate, including relevant pending source changes when preparing the current worktree. Distinguish those pending changes in the handoff. Check final code and available test evidence so reverted experiments, plans, and earlier-release features do not become new-feature claims.
 - Resolve the intended `X.Y.Z` and display codename from the user's request or an established unreleased plan. A clear release branch such as `maelstrom` can suggest **Maelstrom**; a generic branch name cannot. Current notes can still describe the previous published release, so do not reuse their identity blindly. Ask only for missing identity information while continuing the history and style review; do not invent a final release version.
 

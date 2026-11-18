@@ -23,7 +23,7 @@ appid=org.DolphinEmu.dolphin-emu
 flatpak info --show-runtime "$appid"
 ```
 
-Use the reported Freedesktop branch. Supported x86_64 branches are **23.08, 24.08, 25.08, and 26.08**, with 64-bit and 32-bit game layers.
+framegen-vulkan provides a Freedesktop **26.08** extension on x86_64 with 64-bit and 32-bit game layers.
 
 For KDE/GNOME runtimes, inspect the metadata:
 
@@ -32,20 +32,19 @@ fgvk_app_runtime=$(flatpak info --show-runtime "$appid")
 flatpak info --show-metadata "$fgvk_app_runtime"
 ```
 
-Find `[Extension org.freedesktop.Platform.VulkanLayer]` and use a supported `version=` or `versions=` entry. If no supported branch appears, stop; do not guess.
+Check for `26.08` in the `version=` or `versions=` entry under `[Extension org.freedesktop.Platform.VulkanLayer]`.
 
 ## Packaged extensions
 
-Download and extract `framegen-vulkan-v<version>-flatpaks.tar.xz` from the matching framegen-vulkan release when available. You can also [build the bundle locally](BUILDING-FROM-SOURCE.md#choose-the-right-build-path). In the extracted folder, install your runtime branch; replace `24.08` as needed:
+Download and extract `framegen-vulkan-v<version>-flatpaks.tar.xz` from the matching framegen-vulkan release when available. You can also [build the bundle locally](BUILDING-FROM-SOURCE.md#choose-the-right-build-path). Run the following command from the extracted folder.
 
 ```bash
-fgvk_runtime=24.08
-flatpak install --user "./org.freedesktop.Platform.VulkanLayer.fgvkrender-$fgvk_runtime.flatpak"
+flatpak install --user ./org.freedesktop.Platform.VulkanLayer.fgvkrender-26.08.flatpak
 ```
 
 ### Graphical extension installation
 
-Alternatively, open **Install framegen-vulkan Flatpak Extensions** and select the matching branch. Install each required branch once, then prepare each app below.
+Alternatively, open **Install framegen-vulkan Flatpak Extensions** to install the extension. Then prepare each app below.
 
 ## Manual application override
 

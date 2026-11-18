@@ -191,7 +191,7 @@ cd framegen-vulkan/engine
 To build a specific Renderer release, check out its tag:
 
 ```bash
-git checkout tags/render-vX.Y.Z
+git checkout tags/vX.Y.Z
 ```
 
 2. **Configure with CMake**
@@ -260,7 +260,7 @@ Two details differ from the archive layout: the archived `share/doc/framegen-vul
 
 ### Release pins
 
-Before the first public framegen-vulkan release, the public pin and the Arch recipe’s download source are empty. Use `scripts/dev.sh package-renderer-local-release` to build from the current checkout. The first release version must have an unused `render-vX.Y.Z` tag, including tags inherited in this clone.
+Before the first public framegen-vulkan release, the public pin and the Arch recipe’s download source are empty. Use `scripts/dev.sh package-renderer-local-release` to build from the current checkout. Published releases use `vX.Y.Z` tags.
 
 The publisher pins the verified host archive in `engine/renderer-release.json`, runs `sync-release-pin.py` (resetting `pkgrel` to 1 for a new version), and checks it with `check-release-pin.sh`. `verify-release-package.sh` packages that exact local archive and retains the verified `.pkg.tar.zst` for publication and checksum recording. The archive manifest owns payload membership; do not maintain a second list.
 

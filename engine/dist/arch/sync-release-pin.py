@@ -83,7 +83,7 @@ def apply_pin(contents: str, binary: dict, pin_path: Path, pkgbuild_path: Path) 
     ):
         raise ValueError(f"Invalid framegen-vulkan repository in {pin_path}")
     expected_name = f"framegen-vulkan-v{version}-linux.tar.xz"
-    expected_tag = f"render-v{version}"
+    expected_tag = f"v{version}"
     expected_url = f"{repository}/releases/download/{expected_tag}/{expected_name}"
     if (
         binary.get("name") != expected_name
@@ -113,7 +113,7 @@ def apply_pin(contents: str, binary: dict, pin_path: Path, pkgbuild_path: Path) 
             "pkgrel",
             pkgbuild_path,
         )
-    source = f'{repository}/releases/download/render-v${{pkgver}}/framegen-vulkan-v${{pkgver}}-linux.tar.xz'
+    source = f'{repository}/releases/download/v${{pkgver}}/framegen-vulkan-v${{pkgver}}-linux.tar.xz'
     for field, line in (
         ("url", f'url="{repository}"'),
         ("source", f'source=("{source}")'),

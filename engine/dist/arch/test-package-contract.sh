@@ -292,7 +292,7 @@ with open(source, encoding="utf-8") as source_file:
     manifest = json.load(source_file)
 version = "9.8.7"
 repository = "https://github.com/example/framegen-vulkan"
-tag = f"render-v{version}"
+tag = f"v{version}"
 name = f"framegen-vulkan-v{version}-linux.tar.xz"
 manifest["remote_binary"] = [{
     "name": name,
@@ -328,7 +328,7 @@ flatpak_archive="$work_dir/framegen-vulkan-v9.8.7-flatpaks.tar.xz"
 arch_package="$work_dir/framegen-vulkan-bin-9.8.7-7-x86_64.pkg.tar.zst"
 node "$repo_root/engine/scripts/pin-renderer-release.mjs" \
     "$work_dir/package.json" \
-    9.8.7 render-v9.8.7 "$(printf 'cd%.0s' {1..20})" \
+    9.8.7 v9.8.7 "$(printf 'cd%.0s' {1..20})" \
     example/framegen-vulkan \
     "$native_archive" "$(printf '12%.0s' {1..32})" \
     "$flatpak_archive" "$(printf '34%.0s' {1..32})" \
@@ -341,7 +341,7 @@ if (!binary.arch_package ||
 ' "$work_dir/package.json"
 node "$repo_root/engine/scripts/pin-renderer-release.mjs" \
     "$work_dir/package.json" \
-    9.8.7 render-v9.8.7 "$(printf 'cd%.0s' {1..20})" \
+    9.8.7 v9.8.7 "$(printf 'cd%.0s' {1..20})" \
     example/framegen-vulkan \
     "$native_archive" "$(printf '12%.0s' {1..32})" \
     "$flatpak_archive" "$(printf '34%.0s' {1..32})" >/dev/null

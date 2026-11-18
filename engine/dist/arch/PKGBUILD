@@ -8,7 +8,7 @@
 # and sha256sums still match the release pinned in engine/renderer-release.json.
 
 pkgname=framegen-vulkan-bin
-pkgver=4.6.0
+pkgver=1.0.0
 pkgrel=1
 pkgdesc="Frame generation Vulkan layer for Linux games"
 arch=('x86_64')
