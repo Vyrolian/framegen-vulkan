@@ -36,18 +36,18 @@ Check for `26.08` in the `version=` or `versions=` entry under `[Extension org.f
 
 ## Packaged extensions
 
-Download and extract `framegen-vulkan-v<version>-flatpak.tar.xz` from the matching framegen-vulkan release when available. The v1.0.0 archive uses the original `-flatpaks.tar.xz` suffix. You can also [build the bundle locally](BUILDING-FROM-SOURCE.md#choose-the-right-build-path). Run the following command from the extracted folder.
+Download and extract `framegen-vulkan-v<version>-flatpak.tar.xz` from the matching release. You can also [build the bundle locally](BUILDING-FROM-SOURCE.md#choose-the-right-build-path). Run the installer from the extracted folder, then prepare each app below.
+
+```bash
+./install-flatpak
+```
+
+The original v1.0.0 archive has the suffix `-flatpaks.tar.xz` and uses `"./Install framegen-vulkan Flatpak Extensions"`.
+
+To install the 26.08 bundle directly, run the following from the extracted folder.
 
 ```bash
 flatpak install --user ./org.freedesktop.Platform.VulkanLayer.fgvkrender-26.08.flatpak
-```
-
-### Graphical extension installation
-
-Alternatively, run the installer from the extracted folder. Then prepare each app below.
-
-```bash
-"./Install framegen-vulkan Flatpak Extensions"
 ```
 
 ## Manual application override

@@ -20,9 +20,9 @@ package_root="$test_root/package"
 install_prefix="$test_root/installed prefix"
 config_home="$test_root/config"
 mkdir -p "$package_root/bin" "$package_root/libexec/framegen-vulkan" "$package_root/share/framegen-vulkan"
-cp "$installer" "$package_root/Install framegen-vulkan"
+cp "$installer" "$package_root/install"
 cp "$installer" "$package_root/bin/fgvk-installer"
-chmod 0755 "$package_root/Install framegen-vulkan" "$package_root/bin/fgvk-installer"
+chmod 0755 "$package_root/install" "$package_root/bin/fgvk-installer"
 printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$package_root/bin/fgvk-cli"
 printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$package_root/bin/fgvk"
 printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$package_root/libexec/framegen-vulkan/fgvk-launch"
@@ -40,7 +40,7 @@ write_manifest
 FGVK_INSTALL_PREFIX="$install_prefix" \
 XDG_CONFIG_HOME="$config_home" \
 FGVK_INSTALLER_ASSUME_YES=1 \
-"$package_root/Install framegen-vulkan" --install >"$test_root/install.log"
+"$package_root/install" >"$test_root/install.log"
 
 [[ -x "$install_prefix/bin/fgvk-cli" ]] || fail "legacy CLI was not installed"
 [[ -x "$install_prefix/bin/fgvk" ]] || fail "fgvk entry point was not installed"
@@ -79,7 +79,7 @@ FGVK_DIALOG_CAPTURE="$dialog_capture" \
 FGVK_INSTALL_PREFIX="$dialog_install_prefix" \
 XDG_CONFIG_HOME="$config_home" \
 FGVK_INSTALLER_ASSUME_YES=0 \
-"$package_root/Install framegen-vulkan" --install >/dev/null
+"$package_root/install" --install >/dev/null
 grep -Fxq -- '--title' "$dialog_capture" ||
     fail "KDialog invocation did not set a title"
 grep -Fxq 'framegen-vulkan' "$dialog_capture" ||
@@ -110,7 +110,7 @@ write_manifest
 FGVK_INSTALL_PREFIX="$install_prefix" \
 XDG_CONFIG_HOME="$config_home" \
 FGVK_INSTALLER_ASSUME_YES=1 \
-"$package_root/Install framegen-vulkan" --install >/dev/null
+"$package_root/install" --install >/dev/null
 
 grep -Fq 'exit 42' "$install_prefix/libexec/framegen-vulkan/fgvk-cli" || fail "update did not replace the CLI"
 [[ ! -e "$install_prefix/bin/fgvk-cli" ]] || fail "update left the legacy CLI on PATH"
@@ -149,7 +149,7 @@ write_manifest
 FGVK_INSTALL_PREFIX="$install_prefix" \
 XDG_CONFIG_HOME="$config_home" \
 FGVK_INSTALLER_ASSUME_YES=1 \
-"$package_root/Install framegen-vulkan" --install >/dev/null
+"$package_root/install" --install >/dev/null
 printf 'n\n' | HOME="$test_root" \
         DISPLAY= \
         WAYLAND_DISPLAY= \
@@ -181,7 +181,7 @@ printf 'obsolete payload\n' > "$package_root/bin/obsolete"
 mkdir -p "$package_root/share/framegen-vulkan/obsolete-dir/nested"
 printf 'obsolete nested payload\n' > "$package_root/share/framegen-vulkan/obsolete-dir/nested/old.txt"
 write_manifest
-"$package_root/Install framegen-vulkan" --install >/dev/null
+"$package_root/install" --install >/dev/null
 cp "$rollback_prefix/share/framegen-vulkan/installer/installed-files.sha256" "$test_root/before.sha256"
 rm "$package_root/bin/obsolete"
 rm -r "$package_root/share/framegen-vulkan/obsolete-dir"
@@ -191,7 +191,7 @@ write_manifest
 late_payload="$package_root/share/framegen-vulkan/payload.txt"
 cp "$late_payload" "$test_root/late-payload"
 printf '%s\n' 'corrupt late file' > "$late_payload"
-if "$package_root/Install framegen-vulkan" --install >"$test_root/rejected.log" 2>&1; then
+if "$package_root/install" --install >"$test_root/rejected.log" 2>&1; then
     fail "installer accepted a corrupted late package file"
 fi
 (
@@ -215,7 +215,7 @@ cp "$rollback_prefix/share/framegen-vulkan/active-renderer.json" "$test_root/bef
 if PATH="$test_root/failing-bin:$PATH" \
         FGVK_TEST_FAIL_DESTINATION="$rollback_prefix/share/framegen-vulkan/active-renderer.json" \
         FGVK_TEST_FAILURE_MARKER="$test_root/failed-once" \
-        "$package_root/Install framegen-vulkan" --install >"$test_root/rollback.log" 2>&1; then
+        "$package_root/install" --install >"$test_root/rollback.log" 2>&1; then
     fail "installer reported success after the active identity rename failed"
 fi
 [[ -f "$test_root/failed-once" ]] || fail "test never reached the final identity write"
@@ -231,14 +231,14 @@ cmp "$test_root/before-active.json" "$rollback_prefix/share/framegen-vulkan/acti
 
 if ((EUID != 0)); then
     chmod 0500 "$rollback_prefix"
-    if "$package_root/Install framegen-vulkan" --install >"$test_root/prefix-permissions.log" 2>&1; then
+    if "$package_root/install" --install >"$test_root/prefix-permissions.log" 2>&1; then
         fail "installer ignored a non-writable installation prefix"
     fi
     chmod 0755 "$rollback_prefix"
     grep -Fq 'previous installation was preserved' "$test_root/prefix-permissions.log" ||
         fail "installer did not report a staging permission failure"
     chmod 0500 "$rollback_prefix/bin"
-    if "$package_root/Install framegen-vulkan" --install >"$test_root/permissions.log" 2>&1; then
+    if "$package_root/install" --install >"$test_root/permissions.log" 2>&1; then
         fail "installer ignored a non-writable destination directory"
     fi
     chmod 0755 "$rollback_prefix/bin"
@@ -248,7 +248,7 @@ if ((EUID != 0)); then
     ) || fail "permission failure damaged the existing installation"
 fi
 
-"$package_root/Install framegen-vulkan" --install >/dev/null
+"$package_root/install" --install >/dev/null
 [[ ! -e "$rollback_prefix/bin/obsolete" && -f "$rollback_prefix/bin/new-file" ]] ||
     fail "successful retry did not update the obsolete and new payloads"
 [[ ! -e "$rollback_prefix/share/framegen-vulkan/obsolete-dir" && -d "$rollback_prefix/share/framegen-vulkan" ]] ||
@@ -262,7 +262,7 @@ purge_prefix="$test_root/purge-install"
 purge_config_home="$test_root/purge-config"
 FGVK_INSTALL_PREFIX="$purge_prefix" \
 XDG_CONFIG_HOME="$purge_config_home" \
-"$package_root/Install framegen-vulkan" --install >/dev/null
+"$package_root/install" --install >/dev/null
 mkdir -p "$purge_config_home/framegen-vulkan"
 printf '%s\n' 'version = 2' > "$purge_config_home/framegen-vulkan/conf.toml"
 printf '%s\n' 'private diagnostics' > \
@@ -290,7 +290,7 @@ printf '%s\n' 'old retired library' > "$package_root/$layer_library"
 printf '%s\n' '{"layer": {"name": "VK_LAYER_FGVK_retired_example"}}' > "$package_root/$layer_manifest"
 write_layer_manifest
 FGVK_INSTALL_PREFIX="$layer_prefix" FGVK_INSTALLER_ASSUME_YES=1 \
-    "$package_root/Install framegen-vulkan" --install >"$test_root/layer-first.log" 2>&1 ||
+    "$package_root/install" --install >"$test_root/layer-first.log" 2>&1 ||
     fail "installer rejected the package that still ships the layer library and manifest"
 [[ -f "$layer_prefix/$layer_library" && -f "$layer_prefix/$layer_manifest" ]] ||
     fail "the layer library or manifest was not installed before removal"
@@ -299,7 +299,7 @@ grep -Fq "$layer_library" "$layer_prefix/share/framegen-vulkan/installer/install
 rm "$package_root/$layer_library" "$package_root/$layer_manifest"
 write_layer_manifest
 FGVK_INSTALL_PREFIX="$layer_prefix" FGVK_INSTALLER_ASSUME_YES=1 \
-    "$package_root/Install framegen-vulkan" --install >"$test_root/layer-removed.log" 2>&1 ||
+    "$package_root/install" --install >"$test_root/layer-removed.log" 2>&1 ||
     fail "installer rejected the package after the layer library and manifest were removed"
 [[ ! -e "$layer_prefix/$layer_library" ]] ||
     fail "a library absent from the new package survived the update"

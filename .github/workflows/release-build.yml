@@ -107,7 +107,7 @@ jobs:
           done
           export FGVK_INSTALL_PREFIX="$RUNNER_TEMP/fgvk-installed"
           export FGVK_INSTALLER_ASSUME_YES=1
-          "./Install framegen-vulkan" --install
+          ./install
           installed_fgvk="$FGVK_INSTALL_PREFIX/bin/fgvk"
           unset FGVK_INSTALL_PREFIX
           "$installed_fgvk" /usr/bin/true

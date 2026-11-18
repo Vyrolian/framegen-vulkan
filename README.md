@@ -28,14 +28,16 @@ From the download directory, replace `X.Y.Z` with the version you downloaded and
 mkdir -p framegen-vulkan
 tar -xf framegen-vulkan-vX.Y.Z-linux.tar.xz -C framegen-vulkan
 cd framegen-vulkan
-"./Install framegen-vulkan"
+./install
 ```
 
 For Flatpak apps, download and extract `framegen-vulkan-vX.Y.Z-flatpak.tar.xz` into its own folder. From that folder, run the extension installer and follow the guide to configure each app. [Flatpak setup guide](engine/docs/FLATPAK-GUIDE.md)
 
 ```bash
-"./Install framegen-vulkan Flatpak Extensions"
+./install-flatpak
 ```
+
+The original v1.0.0 archives use `"./Install framegen-vulkan"` and `"./Install framegen-vulkan Flatpak Extensions"`.
 
 ### Build dependencies
 
@@ -75,7 +77,7 @@ Run these commands from the repository root.
 cd engine
 ./scripts/package-local.sh --64-bit-only build/package/framegen-vulkan.tar.xz
 mkdir -p build/package/x && tar -xf build/package/framegen-vulkan.tar.xz -C build/package/x
-cd build/package/x && "./Install framegen-vulkan"
+cd build/package/x && ./install
 ```
 
 The installer puts everything under `~/.local`, keeps existing profiles, and prints the launch option. Close games using `fgvk` before updating or uninstalling. To update, run the installer from a newer package. To uninstall, run `~/.local/bin/fgvk uninstall`.

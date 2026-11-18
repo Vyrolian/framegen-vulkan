@@ -286,13 +286,11 @@ for required_path in "${required_paths[@]}"; do
     fi
 done
 
-# Users extract the archive, double-click this file,
-# and the installer copies only the verified payload into their user-local
+# Users extract the archive and run ./install. It copies the verified payload into their user-local
 # prefix. The generated manifest gives upgrades and uninstalls an exact,
 # checksummed ownership record without treating the entire ~/.local tree as
 # disposable.
-cp "$repo_root/scripts/fgvk-installer" "$install_dir/Install framegen-vulkan"
-chmod 0755 "$install_dir/Install framegen-vulkan"
+install -m755 "$repo_root/scripts/fgvk-installer" "$install_dir/install"
 standalone_readme="$repo_root/dist/framegen-vulkan-README.txt"
 if [[ ! -s "$standalone_readme" ]]; then
     echo "Packaging failed: missing standalone Renderer README: $standalone_readme" >&2

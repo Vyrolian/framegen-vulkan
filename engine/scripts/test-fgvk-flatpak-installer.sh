@@ -18,8 +18,8 @@ package_root="$test_root/package"
 fake_bin="$test_root/bin"
 invocation_log="$test_root/flatpak.log"
 mkdir -p "$package_root" "$fake_bin"
-cp "$installer" "$package_root/Install framegen-vulkan Flatpak Extensions"
-chmod 0755 "$package_root/Install framegen-vulkan Flatpak Extensions"
+cp "$installer" "$package_root/install-flatpak"
+chmod 0755 "$package_root/install-flatpak"
 touch "$package_root/org.freedesktop.Platform.VulkanLayer.fgvkrender-24.08.flatpak"
 printf '%s\n' \
     '#!/usr/bin/env bash' \
@@ -32,7 +32,7 @@ env -u DISPLAY -u WAYLAND_DISPLAY \
     FGVK_TEST_FLATPAK_LOG="$invocation_log" \
     FGVK_INSTALLER_ASSUME_YES=1 \
     FGVK_FLATPAK_RUNTIME=24.08 \
-    "$package_root/Install framegen-vulkan Flatpak Extensions" >/dev/null
+    "$package_root/install-flatpak" >/dev/null
 
 package_root_physical="$(cd "$package_root" && pwd -P)"
 expected="install --user --noninteractive $package_root_physical/org.freedesktop.Platform.VulkanLayer.fgvkrender-24.08.flatpak"
@@ -44,7 +44,7 @@ printf '1\n' | env -u DISPLAY -u WAYLAND_DISPLAY -u FGVK_FLATPAK_RUNTIME \
     PATH="$fake_bin:$PATH" \
     FGVK_TEST_FLATPAK_LOG="$invocation_log" \
     FGVK_INSTALLER_ASSUME_YES=1 \
-    "$package_root/Install framegen-vulkan Flatpak Extensions" >"$test_root/terminal.log" 2>&1
+    "$package_root/install-flatpak" >"$test_root/terminal.log" 2>&1
 [[ "$(<"$invocation_log")" == "$expected" ]] ||
     fail "terminal runtime menu polluted the selected bundle path"
 
@@ -55,7 +55,7 @@ env -u DISPLAY -u WAYLAND_DISPLAY \
     FGVK_TEST_FLATPAK_LOG="$invocation_log" \
     FGVK_INSTALLER_ASSUME_YES=1 \
     FGVK_FLATPAK_RUNTIME=26.08 \
-    "$package_root/Install framegen-vulkan Flatpak Extensions" >/dev/null
+    "$package_root/install-flatpak" >/dev/null
 expected="install --user --noninteractive $package_root_physical/org.freedesktop.Platform.VulkanLayer.fgvkrender-26.08.flatpak"
 [[ "$(<"$invocation_log")" == "$expected" ]] ||
     fail "installer did not discover the new runtime bundle"
@@ -67,7 +67,7 @@ env -u FGVK_FLATPAK_RUNTIME \
     PATH="$fake_bin:$PATH" DISPLAY=:test \
     FGVK_TEST_FLATPAK_LOG="$invocation_log" \
     FGVK_INSTALLER_ASSUME_YES=1 \
-    "$package_root/Install framegen-vulkan Flatpak Extensions" >/dev/null
+    "$package_root/install-flatpak" >/dev/null
 [[ ! -e "$invocation_log" ]] || fail "cancelling the runtime menu still invoked Flatpak"
 
 printf '%s\n' 'fgvk-flatpak-installer contract test passed'

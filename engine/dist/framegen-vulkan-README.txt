@@ -10,7 +10,7 @@ Install or update
 
 1. Close every game currently using framegen-vulkan.
 2. Extract the entire archive into a new folder. Do not run the installer from an archive preview.
-3. Double-click "Install framegen-vulkan" and choose "Execute" if your file manager asks.
+3. Run ./install from the extracted folder.
 4. Confirm the installation location. The installer verifies every managed payload file, safely updates an existing installation, and preserves your profiles.
 5. When installation finishes, the installer shows the Steam launch option. Profiles live in ~/.config/framegen-vulkan/conf.toml; check them with ~/.local/bin/fgvk cli validate.
 
@@ -48,12 +48,12 @@ For a direct desktop command, replace %command% with the actual game executable 
 
     ~/.local/bin/fgvk "/path/to/your-game"
 
-Flatpak games, launchers, and emulators require the matching framegen-vulkan runtime extension and preparation for each application. Installing the extension does not prepare Flatpaks. "Install framegen-vulkan Flatpak Extensions" installs extensions only. Follow the Flatpak setup link below for runtime selection, configuration/DLL access, and sandbox environment, then restart and launch the app normally. The host fgvk command does not replace that preparation.
+Flatpak games, launchers, and emulators require the matching framegen-vulkan runtime extension and preparation for each application. Installing the extension does not prepare Flatpaks. Run ./install-flatpak from the extracted Flatpak archive to install the extension. Follow the Flatpak setup link below for runtime selection, configuration/DLL access, and sandbox environment, then restart and launch the app normally. The host fgvk command does not replace that preparation.
 
 Update
 ------
 
-Download and fully extract the newer framegen-vulkan archive, close games using framegen-vulkan, and run its "Install framegen-vulkan" file. The installer replaces only the managed payload and preserves your profiles and settings.
+Download and fully extract the newer framegen-vulkan archive, close games using framegen-vulkan, and run ./install from the extracted folder. The installer replaces only the managed payload and preserves your profiles and settings.
 
 The complete payload is verified and staged before any installed file is replaced. If a later update step fails, the installer restores the previous files and selected Renderer version. Check destination permissions and available disk space before retrying; do not run the user-local installer with sudo. If restoration also fails, the installer reports where it retained recovery backups.
 

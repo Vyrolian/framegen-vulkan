@@ -239,11 +239,10 @@ GitHub's automatically generated **Source code** ZIP and tarball contain source 
 
 ### Host archive
 
-Download \`$(basename "$archive")\`, extract it into a new folder, then use the included graphical installer:
+Download \`$(basename "$archive")\`, extract it into a new folder, then run the included installer.
 
-1. Double-click **Install framegen-vulkan**.
-2. Choose **Execute** if your file manager asks.
-3. Confirm the installation. The installer verifies the package, installs it under \`~/.local\`, safely updates existing files, and preserves profiles.
+1. Run \`./install\` from the extracted folder.
+2. Confirm the installation. The installer verifies the package, installs it under \`~/.local\`, safely updates existing files, and preserves profiles.
 
 To remove it later, run \`~/.local/bin/fgvk uninstall\` from a terminal. The removal keeps your profiles unless you explicitly choose to remove them.
 
@@ -267,16 +266,16 @@ After installation, create a game profile in \`~/.config/framegen-vulkan/conf.to
 
 ### Flatpak runtime extensions
 
-Download and extract \`$(basename "$flatpak_archive")\`. It contains one self-contained framegen-vulkan extension for each supported Flatpak runtime. Install the extension matching the application runtime, for example:
+Download and extract \`$(basename "$flatpak_archive")\`. It contains one self-contained framegen-vulkan extension for each supported Flatpak runtime. Run the installer from the extracted folder.
 
 \`\`\`bash
-flatpak install --user ./org.freedesktop.Platform.VulkanLayer.fgvkrender-26.08.flatpak
+./install-flatpak
 \`\`\`
 
 ## Updating an existing framegen-vulkan installation
 
 1. Quit every game or application currently using framegen-vulkan.
-2. For a user-local installation, download the newer host archive, extract it into a new folder, and run **Install framegen-vulkan** again. For the Arch package, download the newer \`.pkg.tar.zst\` and run \`sudo pacman -U\` on it.
+2. For a user-local installation, download the newer host archive, extract it into a new folder, and run \`./install\` again. For the Arch package, download the newer \`.pkg.tar.zst\` and run \`sudo pacman -U\` on it.
 3. If you use Flatpak applications, download the matching Flatpak archive and reinstall the extension for each runtime you use.
 4. Restart the game. Revalidate the configuration with \`fgvk cli validate\` if you changed the DLL path or profiles.
 

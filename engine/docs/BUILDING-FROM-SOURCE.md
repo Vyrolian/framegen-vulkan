@@ -255,7 +255,7 @@ The package installs:
 
 The package deliberately excludes:
 
-- `libexec/framegen-vulkan/fgvk-installer` and the `Install framegen-vulkan` launcher, which form the user-local installer and target `~/.local`.
+- `libexec/framegen-vulkan/fgvk-installer` and the `./install` script, which form the user-local installer and target `~/.local`.
 - the archive's `README.txt`, which documents the user-local installer flow that this package does not provide.
 
 Two details differ from the archive layout: the archived `share/doc/framegen-vulkan/*` files are installed under `/usr/share/licenses/framegen-vulkan-bin/` and `/usr/share/doc/framegen-vulkan-bin/`, and shared libraries are installed as mode `0755` instead of the archive's `0644`, following Arch convention. Content hashes are unaffected, so the checksum manifest still matches.

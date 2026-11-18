@@ -259,10 +259,9 @@ fi
 # installation. The script selects one matching runtime and performs the
 # normal user-scoped Flatpak installation; per-application access remains a
 # separate explicit configuration step.
-cp "$repo_root/scripts/fgvk-install-flatpaks" "$bundle_dir/Install framegen-vulkan Flatpak Extensions"
-chmod 0755 "$bundle_dir/Install framegen-vulkan Flatpak Extensions"
-if ! bash -n "$bundle_dir/Install framegen-vulkan Flatpak Extensions"; then
-    echo "Flatpak packaging failed: graphical installer has invalid shell syntax" >&2
+install -m755 "$repo_root/scripts/fgvk-install-flatpaks" "$bundle_dir/install-flatpak"
+if ! bash -n "$bundle_dir/install-flatpak"; then
+    echo "Flatpak packaging failed: install-flatpak has invalid shell syntax" >&2
     exit 1
 fi
 

@@ -258,7 +258,7 @@ prepare_install_destination() {
 
 install_payload() {
     [[ -f "$payload_manifest" && -f "$version_file" ]] ||
-        fail "Open ‘Install framegen-vulkan’ from the extracted framegen-vulkan archive."
+        fail "Run ./install from the extracted framegen-vulkan archive."
 
     local version
     version="$(tr -d '[:space:]' < "$version_file")"
@@ -383,10 +383,10 @@ uninstall_payload() {
 
 usage() {
     cat <<'EOF'
-Usage: ./Install\ framegen-vulkan [--install]
+Usage: ./install [--install]
        fgvk uninstall [--purge-configuration]
 
-Run ‘Install framegen-vulkan’ from an extracted framegen-vulkan archive to install
+Run ./install from an extracted framegen-vulkan archive to install
 or update the user-local Renderer. Run fgvk uninstall to remove the managed
 Renderer files. You can also choose to remove profiles, settings and diagnostics.
 EOF
