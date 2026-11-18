@@ -167,7 +167,8 @@ namespace {
         const GlobalConf conf{
             .dll = tbl["dll"].value<std::string>(),
             .allow_fp16 = tbl["allow_fp16"].value_or(true),
-            .pacing_correction = tbl["pacing_correction"].value_or(true)
+            .pacing_correction = tbl["pacing_correction"].value_or(true),
+            .default_profile = tbl["default_profile"].value<std::string>()
         };
 
         // Availability belongs to LSFG loading, not profile validity.
@@ -363,6 +364,8 @@ void ConfigFile::write(const std::filesystem::path& path) const {
         global.insert("dll", *this->globalConf.dll);
     global.insert("allow_fp16", this->globalConf.allow_fp16);
     global.insert("pacing_correction", this->globalConf.pacing_correction);
+    if (this->globalConf.default_profile)
+        global.insert("default_profile", *this->globalConf.default_profile);
     table.insert("global", global);
 
     toml::array profiles;

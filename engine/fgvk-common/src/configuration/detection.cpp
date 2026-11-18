@@ -90,6 +90,9 @@ Identification ls::identify() {
     if (fallback && *fallback != '\0')
         id.fallback = std::string(fallback);
 
+    const char* useDefault = std::getenv("FGVK_USE_DEFAULT_PROFILE");
+    id.use_default_profile = useDefault && std::string_view(useDefault) == "1";
+
     return id;
 }
 
@@ -190,6 +193,13 @@ std::optional<std::pair<IdentType, GameConf>> ls::findProfile(
         const auto profile = matchByName(profiles, id.fallback.value());
         if (profile.has_value())
             return std::make_pair(IdentType::FALLBACK, profile.value());
+    }
+
+    const auto& defaultProfile = config.global().default_profile;
+    if (id.use_default_profile && defaultProfile && !defaultProfile->empty()) {
+        const auto profile = matchByName(profiles, *defaultProfile);
+        if (profile)
+            return std::make_pair(IdentType::FALLBACK, *profile);
     }
 
     return std::nullopt;

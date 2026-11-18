@@ -63,11 +63,12 @@ default_output="$({
                 "${VKBASALT_CONFIG_FILE:-unset}" \
                 "${VKBASALT_CONFIG_RELOAD:-unset}" \
                 "${FGVK_PROFILE:-unset}" \
+                "${FGVK_USE_DEFAULT_PROFILE:-unset}" \
                 "$1" "$2"
         ' _ "argument with spaces" '$literal'
 } 2>&1)" || fail "default launch failed: $default_output"
 
-expected_default="$(printf '1\n1\n1\nunset\n%s\nunset\nVK_LAYER_existing\nunset\n1\nunset\nunset\nprofile with spaces\nargument with spaces\n$literal' "$expected_layer_path")"
+expected_default="$(printf '1\n1\n1\nunset\n%s\nunset\nVK_LAYER_existing\nunset\n1\nunset\nunset\nprofile with spaces\n1\nargument with spaces\n$literal' "$expected_layer_path")"
 if [[ "$default_output" != "$expected_default" ]]; then
     fail "default environment or argument forwarding changed:\n$default_output"
 fi
@@ -614,10 +615,10 @@ if [[ "$allow_output" != "$expected_allow" ]]; then
 fi
 
 disable_output="$({
-    DISABLE_FGVK=1 "$launcher" bash -c \
-        'printf "%s\n" "${ENABLE_FGVK:-unset}" "${DISABLE_FGVK:-unset}"'
+    env -u FGVK_USE_DEFAULT_PROFILE DISABLE_FGVK=1 "$launcher" bash -c \
+        'printf "%s\n" "${ENABLE_FGVK:-unset}" "${DISABLE_FGVK:-unset}" "${FGVK_USE_DEFAULT_PROFILE:-unset}"'
 } 2>&1)" || fail "framegen-vulkan disable-gate forwarding failed: $disable_output"
-if [[ "$disable_output" != $'1\n1' ]]; then
+if [[ "$disable_output" != $'1\n1\nunset' ]]; then
     fail "DISABLE_FGVK was not preserved:\n$disable_output"
 fi
 

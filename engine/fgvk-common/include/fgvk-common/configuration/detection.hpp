@@ -24,6 +24,8 @@ namespace ls {
         std::optional<std::string> wine_executable;
         /// traditional process name (e.g. GameThread)
         std::string process_name;
+        /// whether this game was launched through fgvk
+        bool use_default_profile{false};
     };
 
     /// enum describing which identification method was used
@@ -32,7 +34,7 @@ namespace ls {
         EXECUTABLE, // identified by executable path
         WINE_EXECUTABLE, // identified by wine executable path
         PROCESS_NAME, // identified by process name
-        FALLBACK // no process match; use the wrapper's safe default
+        FALLBACK // no process match; use a fallback profile
     };
 
     /// identify the current process

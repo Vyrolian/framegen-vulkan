@@ -8,7 +8,7 @@ Only `version = 2` is supported. Unknown keys are ignored. Launcher compatibilit
 
 ## Profiles
 
-`active_in` matches executable names, process names, or executable-path suffixes. `FGVK_PROFILE` selects an exact profile and overrides automatic matching. If nothing matches, framegen-vulkan stays inactive. A minimal example:
+`active_in` matches executable names, process names, or executable-path suffixes. `FGVK_PROFILE` selects an exact profile and overrides automatic matching. An unmatched game launched through `fgvk` uses the configured default profile, if any. A minimal example:
 
 ```toml
 version = 2
@@ -34,6 +34,7 @@ Known launchers and helpers stay inactive while their child games can match. The
 | Setting | Default | Meaning |
 | --- | --- | --- |
 | `dll` | Automatic | Optional absolute path to `Lossless.dll`. Frame Generation requires it. |
+| `default_profile` | Unset | Exact profile name to use for unmatched games started through `fgvk`. The settings window updates this name on rename and clears it on deletion. |
 | `allow_fp16` | `true` | Selects FP16 for supported LSFG models; `false` selects FP32. If a model lacks native FP16, select FP32. Requires restart; Ultra Performance respects this choice. [Experimental source builds](BUILDING-FROM-SOURCE.md#experimental-forced-lsfg-fp16) have separate limits. |
 | `pacing_correction` | `true` | Fixed Frame Generation with internal images: a GPU timestamp after each output's present measures when the private present queue next runs, and each generated frame is moved (at most ±2.5 ms) onto its own ideal point between its two reals, at every multiplier. Real frames are never moved. No target times, no waits. Requires restart. `FGVK_REAL_OFFSET_US` accepts only `auto`, which turns it on; any other value, such as `0` or a number, turns it off. The screen time of each output (Xwayland, X11, Gamescope or native Wayland feedback) drives the correction when it is available, with or without the pacing profile; `FGVK_ONSCREEN_CORRECTION=0` keeps the GPU timing only. See [diagnostics](COLLECT_DIAGNOSTICS.md#on-screen-correction-os1). |
 

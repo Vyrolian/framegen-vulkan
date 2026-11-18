@@ -24,6 +24,8 @@ namespace ls {
         /// present times; real outputs are never moved (FGVK_REAL_OFFSET_US=auto turns it on, any
         /// other value off); read once when the layer starts
         bool pacing_correction{true};
+        /// optional profile for unmatched games launched through fgvk
+        std::optional<std::string> default_profile{};
     };
 
     /// pacing methods

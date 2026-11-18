@@ -20,6 +20,9 @@ use crate::theme::{self, Accent, Flavour};
 use crate::themes::{Catalog, Note};
 
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
+// egui sizes the glyph atlas to the reported texture limit, up to 16,384 pixels
+// wide. Its portable 2,048-pixel default is enough for this text-only window.
+const MAX_TEXTURE_SIDE: usize = 2048;
 const FPS_SLIDER_RANGE: RangeInclusive<i64> = 10..=360;
 const ROW_HEIGHT: f32 = 26.0;
 /// Entry text starts this far inside its row.
@@ -218,6 +221,7 @@ impl App {
     fn editor(&mut self, ui: &mut Ui, settings: Settings) {
         let Settings {
             profiles,
+            default_profile,
             dll,
             allow_fp16,
             pacing_correction,
@@ -234,7 +238,18 @@ impl App {
         self.delete_confirm(ui, &profiles);
 
         match profiles.get(self.selected) {
-            Some(profile) => self.profile_fields(ui, profile),
+            Some(profile) => {
+                let mut is_default = default_profile.as_deref() == Some(profile.key.name.as_str());
+                if ui
+                    .checkbox(&mut is_default, "Use as default for fgvk launches")
+                    .on_hover_text("Uses this profile when no per-game profile matches.")
+                    .changed()
+                {
+                    let result = self.config.set_default_profile(&profile.key, is_default);
+                    self.report(result);
+                }
+                self.profile_fields(ui, profile);
+            }
             None => {
                 self.clear_profile_drafts();
                 hint(ui, "No profiles. Use New to add one.");
@@ -799,6 +814,10 @@ impl App {
 }
 
 impl eframe::App for App {
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, input: &mut egui::RawInput) {
+        input.max_texture_side = input.max_texture_side.map(|side| side.min(MAX_TEXTURE_SIDE));
+    }
+
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         ctx.request_repaint_after(POLL_INTERVAL);
         if self.last_poll.elapsed() < POLL_INTERVAL {

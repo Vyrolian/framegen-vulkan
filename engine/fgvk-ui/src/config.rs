@@ -132,6 +132,7 @@ pub struct Profile {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Settings {
     pub profiles: Vec<Profile>,
+    pub default_profile: Option<String>,
     pub dll: Option<String>,
     pub allow_fp16: bool,
     pub pacing_correction: bool,
@@ -212,6 +213,7 @@ impl Config {
             Document::Invalid(message) => ConfigView::Invalid(message.clone()),
             Document::Ready(doc) => ConfigView::Ready(Settings {
                 profiles: read_profiles(doc),
+                default_profile: read_default_profile(doc).map(str::to_owned),
                 dll: read_global_dll(doc),
                 allow_fp16: read_global_allow_fp16(doc),
                 pacing_correction: read_global_bool(
@@ -279,6 +281,18 @@ impl Config {
 
     pub fn delete_profile(&mut self, key: &ProfileKey) -> Result<(), String> {
         self.edit(|doc| remove_profile_in(doc, key))
+    }
+
+    pub fn set_default_profile(&mut self, key: &ProfileKey, enabled: bool) -> Result<(), String> {
+        self.edit(|doc| {
+            verified_index(doc, key)?;
+            if enabled {
+                write_default_profile(doc, &key.name);
+            } else {
+                clear_default_profile(doc, &key.name);
+            }
+            Ok(())
+        })
     }
 
     pub fn set_active_in(&mut self, key: &ProfileKey, entries: &[String]) -> Result<(), String> {
@@ -521,6 +535,28 @@ fn read_active_in(item: Option<&Item>) -> Vec<String> {
     }
 }
 
+fn read_default_profile(doc: &DocumentMut) -> Option<&str> {
+    doc.get("global")?
+        .as_table_like()?
+        .get("default_profile")?
+        .as_str()
+        .filter(|name| !name.is_empty())
+}
+
+fn write_default_profile(doc: &mut DocumentMut, name: &str) {
+    if let Some(global) = global_mut(doc) {
+        set_value(global, "default_profile", Value::from(name));
+    }
+}
+
+fn clear_default_profile(doc: &mut DocumentMut, name: &str) {
+    if read_default_profile(doc) == Some(name) {
+        if let Some(global) = global_mut(doc) {
+            global.remove("default_profile");
+        }
+    }
+}
+
 fn read_global_dll(doc: &DocumentMut) -> Option<String> {
     doc.get("global")?
         .as_table_like()?
@@ -601,6 +637,9 @@ fn rename_profile_in(doc: &mut DocumentMut, key: &ProfileKey, name: &str) -> Res
         .get_mut(index)
         .ok_or_else(|| STALE_PROFILE.to_owned())?;
     set_value(table, "name", Value::from(name));
+    if read_default_profile(doc) == Some(key.name.as_str()) {
+        write_default_profile(doc, name);
+    }
     Ok(())
 }
 
@@ -611,6 +650,7 @@ fn remove_profile_in(doc: &mut DocumentMut, key: &ProfileKey) -> Result<(), Stri
         return Err("The last profile cannot be deleted.".to_owned());
     }
     profiles.remove(index);
+    clear_default_profile(doc, &key.name);
     Ok(())
 }
 
@@ -1305,6 +1345,49 @@ mod tests {
             Ok(PathBuf::from("/h/.config/framegen-vulkan/conf.toml"))
         );
         assert!(resolve_path(env(&[])).is_err());
+    }
+
+    #[test]
+    fn default_profile_tracks_rename_and_delete() {
+        let dir = temp_dir("default-profile");
+        let path = dir.join(FILE_NAME);
+        fs::write(&path, BASE).expect("write fixture");
+        let mut config = Config::open(Ok(path.clone()));
+        let alpha = key(0, "Alpha");
+        let beta = config.add_profile("Beta").expect("add second profile");
+
+        config
+            .set_default_profile(&alpha, true)
+            .expect("select Alpha");
+        config
+            .set_default_profile(&beta, true)
+            .expect("select Beta");
+        config
+            .set_default_profile(&alpha, false)
+            .expect("clear Alpha");
+        config
+            .rename_profile(&beta, "Renamed")
+            .expect("rename Beta");
+        assert_eq!(
+            read_default_profile(&parse_document(&fs::read_to_string(&path).unwrap()).unwrap()),
+            Some("Renamed")
+        );
+
+        let renamed = key(beta.index, "Renamed");
+        config
+            .set_default_profile(&renamed, false)
+            .expect("clear default");
+        assert!(
+            matches!(config.view(), ConfigView::Ready(settings) if settings.default_profile.is_none())
+        );
+        config
+            .set_default_profile(&renamed, true)
+            .expect("restore default");
+        config.delete_profile(&renamed).expect("delete default");
+        assert!(
+            matches!(config.view(), ConfigView::Ready(settings) if settings.default_profile.is_none())
+        );
+        fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

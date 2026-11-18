@@ -26,7 +26,7 @@ multiplier = 2
 
 ```
 
-framegen-vulkan activates on the next launch of a matched process. If nothing matches, framegen-vulkan stays inactive. `FGVK_PROFILE` selects an exact profile and overrides automatic matching.
+framegen-vulkan activates on the next launch of a matched process. To cover games without a match, select a profile in the settings window and check **Use as default for fgvk launches**. Set the game's Steam launch options to `fgvk %command%`. Per-game matches take priority over the default. `FGVK_PROFILE` selects an exact profile and takes priority over both.
 
 ### Lossless Scaling availability
 
@@ -41,6 +41,7 @@ The window has these controls:
 | Control | What it sets |
 | --- | --- |
 | Profile | Chooses the profile to edit. New, Rename and Delete manage profiles; each profile needs a unique name. |
+| Use as default for fgvk launches | Uses the selected profile for games launched through `fgvk` that have no per-game match. Turn the checkbox off to clear the default. |
 | Games | Lists the `active_in` entries. Type an executable name and press Add, or choose Pick running… to add a program that is running now. The × button removes an entry. |
 | Frame generation | `Off` or a fixed `2x` to `5x` multiplier. |
 | Quality (flow scale) | `flow_scale` from 25% to 100%. Higher values track motion more precisely and cost more GPU time. |

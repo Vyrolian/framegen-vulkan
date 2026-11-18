@@ -199,6 +199,56 @@ active_in = "CoolGame.exe"
             "A legacy root current_profile key must not select the fallback profile");
     }
 
+    void testDefaultProfile(const std::filesystem::path& directory) {
+        const auto path = directory / "default-profile.toml";
+        writeText(path, R"(version = 2
+[global]
+default_profile = "General settings"
+
+[[profile]]
+name = "General settings"
+
+[[profile]]
+name = "Specific"
+active_in = "Game.exe"
+)");
+        ls::ConfigFile config(path);
+        config.write(path);
+        config = ls::ConfigFile(path);
+        ls::Identification game;
+        game.executable = "/games/Unmatched.exe";
+        expect(!ls::findProfile(config, game, false),
+            "Ordinary launches must ignore the saved default");
+
+        game.use_default_profile = true;
+        const auto fallback = ls::findProfile(config, game, false);
+        expect(fallback && fallback->first == ls::IdentType::FALLBACK &&
+                fallback->second.name == "General settings",
+            "An unmatched fgvk launch must use the saved default after a round trip");
+
+        game.executable = "/games/Game.exe";
+        const auto matched = ls::findProfile(config, game, false);
+        expect(matched && matched->first == ls::IdentType::EXECUTABLE &&
+                matched->second.name == "Specific",
+            "A per-game profile must win over the default");
+        game.override = "General settings";
+        const auto overridden = ls::findProfile(config, game, false);
+        expect(overridden && overridden->first == ls::IdentType::OVERRIDE &&
+                overridden->second.name == "General settings",
+            "An explicit override must win over the per-game profile");
+
+        game.override.reset();
+        game.wine_executable = "C:\\Games\\UbisoftConnect.exe";
+        expect(!ls::findProfile(config, game, false),
+            "A launcher exclusion must win over the saved default");
+
+        game.wine_executable.reset();
+        game.executable = "/games/Unmatched.exe";
+        config.global().default_profile = "Removed profile";
+        expect(!ls::findProfile(config, game, false),
+            "A missing default profile must leave unmatched games inactive");
+    }
+
     constexpr std::string_view validConfiguration = R"(version = 2
 [global]
 allow_fp16 = true
@@ -360,6 +410,7 @@ int main() {
     testRetiredPowerTables(directory);
     testRetiredCapLeadFrames(directory);
     testLegacyRootSelectionIsIgnored(directory);
+    testDefaultProfile(directory);
 
     const auto defaultPath = directory / "default.toml";
     ls::ConfigFile::createDefaultConfigFile(defaultPath);
