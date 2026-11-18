@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -22,9 +23,12 @@
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
+#include <sys/stat.h>
 #include <unistd.h>
 
 namespace {
@@ -589,15 +593,31 @@ namespace {
                 first->resourceLayoutSha256.size() == 64U,
             "DLL fingerprints were not emitted");
 
+        const auto changeTime = [&firstPath] {
+            struct stat status{};
+            require(::stat(firstPath.c_str(), &status) == 0, "could not stat the DLL fixture");
+            return std::pair{status.st_ctim.tv_sec, status.st_ctim.tv_nsec};
+        };
         const auto oldTime = std::filesystem::last_write_time(firstPath);
-        writeFile(firstPath, syntheticPe(
+        const auto oldChangeTime = changeTime();
+        const auto replacement = syntheticPe(
             {3U, 2U, 1U}, {
                 .extraRootResource = true,
                 .namedRootResource = true,
                 .additionalLanguage = true,
             }
-        ));
-        std::filesystem::last_write_time(firstPath, oldTime);
+        );
+        // Some filesystems stamp successive writes with the same ctime. Keep
+        // the inode and mtime fixed while arranging a distinct ctime for this test.
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        do {
+            writeFile(firstPath, replacement);
+            std::filesystem::last_write_time(firstPath, oldTime);
+            if (changeTime() != oldChangeTime)
+                break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        } while (std::chrono::steady_clock::now() < deadline);
+        require(changeTime() != oldChangeTime, "DLL fixture ctime did not advance");
         const auto replaced = fgvk::backend::loadDllResourceArchive(firstPath);
         require(first->fileSha256 != replaced->fileSha256 &&
                 first->resourceLayoutSha256 != replaced->resourceLayoutSha256,
