@@ -36,4 +36,6 @@ Boundary docs (`engine/docs/`): `RENDERER-ARCHITECTURE`, `CONFIGURATION` / `CONF
 
 - Markdown prose unwrapped: one line per paragraph or list item.
 - Log records use the `framegen-vulkan:` prefix.
-- Do not switch branches, pull, rebase, push, tag, publish or install without an explicit request. Local commits on the current work branch are allowed when the user approves the change. Report final branch and commit state.
+- Commit in-scope changes locally on the current work branch once the relevant checks confirm they work. The user has given standing approval for these commits.
+- After every local commit, immediately create `~/fgvk-src/framegen-vulkan-<8-character-commit>.tar.gz` with `git archive --format=tar.gz`. Verify the gzip archive and check that `git get-tar-commit-id` on the decompressed tar returns the full commit ID.
+- Do not switch branches, pull, rebase, push, tag, publish or install without an explicit request. Report final branch, commit and source archive state.
