@@ -1,5 +1,6 @@
 ## Unreleased: spatial scaling removed
 
+- Vulkan conformance fixes use `GENERAL` for the layer's private application images when a game requests `PRESENT_SRC_KHR`. Lower swapchain images still use the presentation layout. Renderer and backend devices now use matching image usage flags when sharing dedicated external-memory images.
 - Gamescope on-screen profile (`FGVK_PACING_PROFILE=1` inside Gamescope): the layer owns the lower present IDs of its swapchain and logs when each lower present completed on screen (`pacing-profile-onscreen`); `engine/scripts/analyze-onscreen.py` reads it. Other sessions are unchanged.
 - On-screen correction (on with `pacing_correction`, with or without the pacing profile): generated outputs are moved by when they reached the screen (on-screen watcher on Xwayland, X11 and Gamescope; `wp_presentation` feedback on native Wayland), with the GPU timing as the fallback; `FGVK_ONSCREEN_CORRECTION=0` turns the screen sources off. The correction limit is 2.5 ms (was 1 ms).
 - A released batch's first generated output takes its pacing correction after the batch's readiness start, so a correction is no longer lost when the batch starts later than its planned slot.
