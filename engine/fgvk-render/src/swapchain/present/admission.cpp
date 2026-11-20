@@ -180,16 +180,20 @@ void Swapchain::recordOutputGpuSplit(const vk::Vulkan& vk, const RenderSlot& slo
     bool available = false;
     int64_t copyStartNs{};
     int64_t copyEndNs{};
+    int64_t stagingStartNs{};
+    int64_t stagingEndNs{};
     try {
         if (slot.outputQueries) {
             this->ensureSplitRenderClock(vk, slot.outputQueries->timestampValidBits(),
                 slot.outputQueries->timestampPeriodNanoseconds());
             this->refreshSplitRenderCalibration();
             // No WAIT flag: a skipped or unfinished copy returns no values, so this output is unavailable.
-            if (const auto ticks = slot.outputQueries->tryTimestamps(2);
+            if (const auto ticks = slot.outputQueries->tryTimestamps(4);
                     ticks && this->splitRenderClock && this->splitRenderClock->calibrated()) {
                 copyStartNs = this->splitRenderClock->monotonicNanoseconds(ticks->at(0));
                 copyEndNs = this->splitRenderClock->monotonicNanoseconds(ticks->at(1));
+                stagingStartNs = this->splitRenderClock->monotonicNanoseconds(ticks->at(2));
+                stagingEndNs = this->splitRenderClock->monotonicNanoseconds(ticks->at(3));
                 available = copyStartNs != 0 && copyEndNs != 0;
             }
         }
@@ -197,7 +201,7 @@ void Swapchain::recordOutputGpuSplit(const vk::Vulkan& vk, const RenderSlot& slo
         // A failed diagnostic read affects only this output's record.
     }
     present_diagnostics::logPacingOutputGpu(this->diagnosticsState.contextId, slot.outputSource,
-        available, copyStartNs, copyEndNs);
+        available, copyStartNs, copyEndNs, stagingStartNs, stagingEndNs);
 }
 
 void Swapchain::collectRenderSplitTimestamps(const vk::Vulkan& vk) {

@@ -500,11 +500,12 @@ void logPacingGpuSplitFrame(const uint64_t context, const uint64_t source, const
 }
 
 void logPacingOutputGpu(const uint64_t context, const uint64_t source, const bool available,
-        const int64_t copyStartNs, const int64_t copyEndNs) noexcept {
+        const int64_t copyStartNs, const int64_t copyEndNs, const int64_t stagingStartNs, const int64_t stagingEndNs) noexcept {
     if (!pacingProfileEnabled()) return;
     present_records::enqueue(trace_recorder::RecordKind::PacingOutputGpu,
         present_records::PacingOutputGpuPayload{context, source, available,
-            available ? copyStartNs : 0, available ? copyEndNs : 0});
+            available ? copyStartNs : 0, available ? copyEndNs : 0,
+            available ? stagingStartNs : 0, available ? stagingEndNs : 0});
 }
 
 void logPacingRealCopyGpu(const uint64_t context, const uint64_t source, const bool available,

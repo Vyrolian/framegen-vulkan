@@ -396,15 +396,17 @@ static void formatTimedCopy(const char* operation, const PacingOutputGpuPayload&
     line << "framegen-vulkan: present diagnostics: operation=" << operation << " version=1"
          << " pid=" << getpid() << " context=" << payload.context << " source=" << payload.source
          << " available=" << payload.available << " copy_start_ns=" << payload.copyStartNs
-         << " copy_end_ns=" << payload.copyEndNs << '\n';
+         << " copy_end_ns=" << payload.copyEndNs;
 }
 
 void formatPacingOutputGpu(const PacingOutputGpuPayload& payload, std::ostream& line) {
     formatTimedCopy("pacing-profile-output-gpu", payload, line);
+    line << " staging_start_ns=" << payload.stagingStartNs << " staging_end_ns=" << payload.stagingEndNs << '\n';
 }
 
 void formatPacingRealCopyGpu(const PacingOutputGpuPayload& payload, std::ostream& line) {
     formatTimedCopy("pacing-profile-real-copy-gpu", payload, line);
+    line << '\n';
 }
 
 void formatPacingPresentMarkerGpu(const PacingPresentMarkerPayload& payload, std::ostream& line) {

@@ -70,11 +70,11 @@ bool Swapchain::recordGeneratedCopies(const vk::Vulkan& vk, RenderSlot& slot, si
     if (this->destinationImages.empty() ||
             this->info.images.size() > DeferredPresent::maxCopyImages)
         return false;
-    // Diagnostic output split: two timestamps around each worker copy. Created once per slot.
+    // Diagnostic output split: timestamp pairs around staging and the first worker copy. Created once per slot.
     // A failure leaves the copies untimed, as they are without the split gate.
     if (pass == 0 && present_diagnostics::pacingGpuSplitProfileEnabled() && this->pacingProfile && !slot.outputQueries) {
         try {
-            slot.outputQueries = std::make_unique<vk::TimestampQueryPool>(vk, 2);
+            slot.outputQueries = std::make_unique<vk::TimestampQueryPool>(vk, 4);
         } catch (const std::exception& error) {
             present_diagnostics::reportPacingGpuSplitUnavailable("output-queries", error.what());
         } catch (...) {
@@ -97,7 +97,10 @@ bool Swapchain::recordGeneratedCopies(const vk::Vulkan& vk, RenderSlot& slot, si
             vk::acquireExternalImage(vk, command.handle(), destinationImage.handle(),
                 VK_ACCESS_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
             // The staged signal orders this reset before the worker copies' timestamps.
-            if (outputTimer) outputTimer->reset(command.handle());
+            if (outputTimer) {
+                outputTimer->reset(command.handle());
+                outputTimer->write(command.handle(), VK_PIPELINE_STAGE_TRANSFER_BIT, 2);
+            }
             const std::array preBarriers{
                 present_detail::barrierHelper(destinationImage.handle(),
                     VK_ACCESS_NONE,
@@ -124,6 +127,7 @@ bool Swapchain::recordGeneratedCopies(const vk::Vulkan& vk, RenderSlot& slot, si
             command.blitImage(vk, preBarriers,
                 {destinationImage.handle(), stagingImage},
                 extent, postBarriers);
+            if (outputTimer) outputTimer->write(command.handle(), VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 3);
             command.end(vk);
         }
 

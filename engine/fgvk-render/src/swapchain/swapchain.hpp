@@ -431,8 +431,8 @@ namespace fgvk::layer {
             std::unique_ptr<vk::TimestampQueryPool> splitQueries;
             uint64_t splitSource{};
             bool splitPending{};
-            // Diagnostic output split: the start and end of this slot's worker copy of a
-            // generated output. Created with the recorded copies; read only after the slot fence.
+            // Diagnostic output split: staging and worker copies of the first generated
+            // output. Created with the recorded copies; read only after the slot fence.
             std::unique_ptr<vk::TimestampQueryPool> outputQueries;
             uint64_t outputSource{};
             bool outputPending{};

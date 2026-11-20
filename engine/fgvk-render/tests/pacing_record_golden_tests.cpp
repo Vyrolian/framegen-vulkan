@@ -96,8 +96,8 @@ void profileScenario() {
     logPacingGpuFrame(17, 1, 1, 0, 1.5, 2.25, 3.0, 125.0, 250.0, 1.75, generated);
     logPacingGpuSplitFrame(17, 1, 0, 1000, 2000, 3000, 4000, 5000, 6000);
     // The output copy's timestamps; an unavailable output keeps no times even when given some.
-    logPacingOutputGpu(17, 1, true, 10003000, 10004500);
-    logPacingOutputGpu(17, 2, false, 10005000, 10006000);
+    logPacingOutputGpu(17, 1, true, 10003000, 10004500, 10001000, 10002000);
+    logPacingOutputGpu(17, 2, false, 10005000, 10006000, 10003000, 10004000);
     // T3b: the real copy's timestamps share the format under their own operation.
     logPacingRealCopyGpu(17, 3, true, 10007000, 10007100);
     // T4: the private queue marker after a lower present; unavailable keeps no times.

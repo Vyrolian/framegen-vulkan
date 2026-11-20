@@ -9,8 +9,8 @@ framegen-vulkan: present diagnostics: operation=pacing-profile-skip version=1 pi
 framegen-vulkan: present diagnostics: operation=pacing-profile-skip version=1 pid=N context=17 source=2 reason=give-up scheduled_ns=10003000000 now_ns=10004000000
 framegen-vulkan: present diagnostics: operation=pacing-profile-gpu version=1 pid=N context=17 source=1 backend_epoch=1 backend_frame=0 previous_wait_us=1.5 prepass_submit_us=2.25 generation_submit_us=3 prepass_us=125 span_us=250 readback_us=1.75 outputs=2 output_0_us=125 output_1_us=8.5
 framegen-vulkan: present diagnostics: operation=pacing-profile-gpu-split version=1 pid=N context=17 source=1 backend_frame=0 game_done_ns=1000 source_copy_end_ns=2000 fg_start_ns=3000 prepass_end_ns=4000 generated_end_ns=5000 batch_end_ns=6000
-framegen-vulkan: present diagnostics: operation=pacing-profile-output-gpu version=1 pid=N context=17 source=1 available=1 copy_start_ns=10003000 copy_end_ns=10004500
-framegen-vulkan: present diagnostics: operation=pacing-profile-output-gpu version=1 pid=N context=17 source=2 available=0 copy_start_ns=0 copy_end_ns=0
+framegen-vulkan: present diagnostics: operation=pacing-profile-output-gpu version=1 pid=N context=17 source=1 available=1 copy_start_ns=10003000 copy_end_ns=10004500 staging_start_ns=10001000 staging_end_ns=10002000
+framegen-vulkan: present diagnostics: operation=pacing-profile-output-gpu version=1 pid=N context=17 source=2 available=0 copy_start_ns=0 copy_end_ns=0 staging_start_ns=0 staging_end_ns=0
 framegen-vulkan: present diagnostics: operation=pacing-profile-real-copy-gpu version=1 pid=N context=17 source=3 available=1 copy_start_ns=10007000 copy_end_ns=10007100
 framegen-vulkan: present diagnostics: operation=pacing-profile-present-marker-gpu version=1 pid=N context=17 source=4 feedback=9 generated=1 available=1 marker_start_ns=10008000 marker_end_ns=10008050
 framegen-vulkan: present diagnostics: operation=pacing-profile-present-marker-gpu version=1 pid=N context=17 source=5 feedback=10 generated=0 available=0 marker_start_ns=0 marker_end_ns=0

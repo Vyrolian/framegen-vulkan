@@ -94,6 +94,8 @@ struct PacingOutputGpuPayload {
     bool available{};
     int64_t copyStartNs{};
     int64_t copyEndNs{};
+    int64_t stagingStartNs{};
+    int64_t stagingEndNs{};
 };
 
 struct PacingPresentMarkerPayload {

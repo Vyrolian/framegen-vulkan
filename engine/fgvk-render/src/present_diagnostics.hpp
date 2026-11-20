@@ -510,11 +510,11 @@ namespace fgvk::layer::present_diagnostics {
     void logPacingGpuSplitFrame(uint64_t context, uint64_t source, uint64_t backendFrame,
         int64_t gameDoneNs, int64_t sourceCopyEndNs, int64_t fgStartNs, int64_t prepassEndNs,
         int64_t generatedEndNs, int64_t batchEndNs) noexcept;
-    /// Copy-side split of one generated output's worker copy, in CLOCK_MONOTONIC nanoseconds.
+    /// Staging and worker copies of the first generated output, in CLOCK_MONOTONIC nanoseconds.
     /// available is false when no copy timestamps were read (a skipped output, or uncalibrated);
-    /// both times are then zero.
+    /// all four times are then zero.
     void logPacingOutputGpu(uint64_t context, uint64_t source, bool available,
-        int64_t copyStartNs, int64_t copyEndNs) noexcept;
+        int64_t copyStartNs, int64_t copyEndNs, int64_t stagingStartNs, int64_t stagingEndNs) noexcept;
     /// T3b: the same split for the private -> lower copy of a real output (internal images),
     /// FG on or off. With FG off its start follows the game's present waits.
     void logPacingRealCopyGpu(uint64_t context, uint64_t source, bool available,
