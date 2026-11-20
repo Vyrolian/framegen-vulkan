@@ -616,7 +616,13 @@ public:
         const std::lock_guard lock(mutex);
         if (stopping || !limit || limit > capacity) return false;
         if (count == 0) {
-            if (completedQueue[0]) return false;
+            // The last active batch may retire after the producer polls for completions.
+            // A successful completion can stay queued while the next overlap batch starts.
+            if (completedQueue[0] && (!readiness.overlap || !completionRoomLocked() ||
+                    std::any_of(completedQueue.begin(), completedQueue.end(), [](const auto& completion) {
+                        return completion && (completion->result != VK_SUCCESS || completion->readinessMiss);
+                    })))
+                return false;
         } else if (!readiness.overlap || count == slots || !retainableLocked() || !completionRoomLocked()) {
             return false;
         }

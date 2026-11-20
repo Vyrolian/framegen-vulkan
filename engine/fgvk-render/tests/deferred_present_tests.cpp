@@ -735,6 +735,44 @@ void overlappingBatchRetainsOlder() {
     expect(timedImages[2].second >= timedImages[1].second,
         "newer overlapping batch started before the older batch's last output");
 }
+void overlappingBatchAdmitsAfterWorkerRetires() {
+    auto queue = std::make_shared<DeferredPresentQueue>();
+    queue->queue = handle<VkQueue>(7);
+    VkSwapchainKHR swapchain = handle<VkSwapchainKHR>(11);
+    VkSemaphore wait = handle<VkSemaphore>(12);
+    uint32_t image = 0;
+    VkPresentInfoKHR info{.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+        .waitSemaphoreCount = 1, .pWaitSemaphores = &wait,
+        .swapchainCount = 1, .pSwapchains = &swapchain, .pImageIndices = &image};
+    DeferredPresent worker(queue, present);
+    const auto retireBatch = [&] {
+        expect(worker.beginBatch(1, {.overlap = true}), "retiring overlap batch rejected");
+        expect(worker.enqueue(info, DeferredPresent::Clock::now()), "retiring overlap output rejected");
+        worker.closeBatch();
+        const auto deadline = DeferredPresent::Clock::now() + 1s;
+        while (worker.pending() && DeferredPresent::Clock::now() < deadline)
+            std::this_thread::sleep_for(100us);
+        expect(!worker.pending() && worker.hasCompletion(), "worker did not queue its retired batch");
+    };
+    // Model a completion that arrives after the game thread's last poll.
+    expect(!worker.hasCompletion(), "unexpected completion before the first batch");
+    retireBatch();
+    expect(!worker.beginBatch(1), "ordinary batch bypassed an uncollected completion");
+    for (image = 1; image < 4; ++image) retireBatch();
+    expect(!worker.beginBatch(1, {.overlap = true}), "batch admitted without a completion slot");
+    for (image = 0; image < 4; ++image) {
+        const auto completion = worker.finish(0);
+        expect(completion && completion->count == 1 && completion->calls[0].imageIndex == image,
+            "overlap admission lost or reordered a completion");
+    }
+
+    lowerResult = VK_ERROR_OUT_OF_DATE_KHR;
+    retireBatch();
+    expect(!worker.beginBatch(1, {.overlap = true}), "overlap batch bypassed an uncollected error");
+    const auto failed = worker.finish(0);
+    expect(failed && failed->result == VK_ERROR_OUT_OF_DATE_KHR, "present error was lost");
+    lowerResult = VK_SUCCESS;
+}
 void nonOverlappableDoesNotRetain() {
     auto queue = std::make_shared<DeferredPresentQueue>();
     queue->queue = handle<VkQueue>(7);
@@ -4496,7 +4534,8 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char** argv) {
     privateSubmitWithoutHistoryRecordsNothing(); skipReasonNamesFollowEnumOrder();
     lifecycle(); boundedBatch(); completePresentationOrder(); readinessDoesNotBlockProducer();
     waitForRetainedId(); observeCopiesWithoutChangingDelivery(); observerLifetimeAndForwarding();
-    releasedBatchBoundsAndExpedites(); overlappingBatchRetainsOlder(); nonOverlappableDoesNotRetain();
+    releasedBatchBoundsAndExpedites(); overlappingBatchRetainsOlder(); overlappingBatchAdmitsAfterWorkerRetires();
+    nonOverlappableDoesNotRetain();
     overlapAcquireDoesNotDrainFutureOutputs();
     overlapRingOfThree(); overlapAcceptsPresentId(); overlapAcceptsOwnedPresentId(); crossBatchChaining();
     twoIdentifiedBatchesJoinTheirOwnRecords(); threeIdentifiedBatchesJoinInAnyOrder();
