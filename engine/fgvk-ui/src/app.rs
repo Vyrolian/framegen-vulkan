@@ -649,7 +649,7 @@ impl App {
         }
         hint(
             ui,
-            "Centres generated frames between real frames from measured GPU timing. Restart the game to apply.",
+            "Centres generated frames between real frames using timing feedback. Applies while the game is running.",
         );
 
         ui.label("Lossless.dll");

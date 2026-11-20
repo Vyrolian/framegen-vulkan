@@ -2,6 +2,7 @@
 #include "wayland_presentation_feedback.hpp"
 #include "present_diagnostics.hpp"
 #include "swapchain/screen_samples.hpp"
+#include "swapchain/output_margin.hpp"
 
 #include <array>
 #include <cstdlib>
@@ -119,6 +120,7 @@ int main() {
         expect(static_cast<bool>(observer));
         auto ring=std::make_shared<fgvk::layer::ScreenSampleRing>();
         observer->setScreenSink(ring);
+        fgvk::layer::setRealOffsetAutoConfigured(true);
         lowerResult=VK_SUCCESS;
         for (int i=0;i<12;++i)
             expect(WaylandPresentationFeedback::observe(observer.get(),lower,VK_NULL_HANDLE,info,
@@ -133,12 +135,23 @@ int main() {
             // The fixture's presented time is 10 s plus the commit's sequence times 8 ms.
             expect(out[k].screenNs==10'000'000'000LL+static_cast<int64_t>(k+1)*8'000'000LL);
         }
+        fgvk::layer::setRealOffsetAutoConfigured(false);
+        for (int i=0;i<2;++i)
+            expect(WaylandPresentationFeedback::observe(observer.get(),lower,VK_NULL_HANDLE,info,200,10,false)==VK_SUCCESS);
+        expect(fgvk_test_wayland_feedbacks()==12);
+        expect(ring->read(&cursor,out.data(),out.size())==0);
+        fgvk::layer::setRealOffsetAutoConfigured(true);
+        for (int i=0;i<2;++i)
+            expect(WaylandPresentationFeedback::observe(observer.get(),lower,VK_NULL_HANDLE,info,200,11,false)==VK_SUCCESS);
+        expect(fgvk_test_wayland_feedbacks()==14);
+        expect(ring->read(&cursor,out.data(),out.size())==1 && out[0].source==11);
         observer->stop();
         expect(fgvk_test_wayland_objects()==0);
         observer.reset();
         expect(fgvk_test_wayland_objects()==0);
     }
     // OS1: without an open sink (closed, or its ring gone) only the refresh cadence asks, as before.
+    fgvk::layer::setRealOffsetAutoConfigured(true);
     for (int variant=0;variant<2;++variant) {
         fgvk_test_wayland_mode(0);
         auto observer=WaylandPresentationFeedback::create(fgvk_test_wayland_display(),fgvk_test_wayland_surface(),false);
@@ -159,6 +172,7 @@ int main() {
         observer.reset();
         expect(fgvk_test_wayland_objects()==0);
     }
+    fgvk::layer::setRealOffsetAutoConfigured(false);
     // Records reach the file through the writer; the test reads it now, so flush first.
     fgvk::layer::present_diagnostics::flushPacingProfileForTests();
     std::ifstream file(path);

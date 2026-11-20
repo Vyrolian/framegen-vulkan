@@ -46,7 +46,7 @@ struct PresentMarker {
     // Records go to the pacing profile only when its GPU split gate created the marker, and
     // only for presents with a feedback id (the same set as before S8b).
     bool log{};
-    // S8b, FGVK_REAL_OFFSET_US=auto only: finished markers, sampleNext % sampleCount.
+    // Whether correction can be enabled for this process.
     bool keep{};
     double periodNs{};
     std::array<PresentMarkerSample, sampleCount> samples{};
@@ -109,7 +109,7 @@ struct PresentMarker {
 std::shared_ptr<void> createPresentMarker(const vk::Vulkan& vk, const bool calibration) noexcept {
     const bool log = present_diagnostics::pacingProfileEnabled() &&
         present_diagnostics::pacingGpuSplitProfileEnabled();
-    const bool keep = realOffsetAuto();
+    const bool keep = realOffsetMayEnable();
     if (!log && !keep) return nullptr;
     try {
         auto marker = std::make_shared<PresentMarker>();
@@ -165,6 +165,7 @@ size_t readPresentMarkerSamples(void* const owner, uint64_t* const cursor, Prese
 void presentMarkerAfterPresent(void* const owner, const VkQueue queue, const uint64_t context,
         const uint64_t source, const uint64_t feedback, const bool generated) noexcept {
     auto& marker = *static_cast<PresentMarker*>(owner);
+    if (!(marker.keep && realOffsetAuto()) && !(marker.log && feedback != 0)) return;
     marker.collect();
     for (auto& slot : marker.slots) {
         if (slot.busy || !slot.fence) continue;

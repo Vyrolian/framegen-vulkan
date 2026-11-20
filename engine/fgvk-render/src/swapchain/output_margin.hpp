@@ -59,17 +59,37 @@ template <typename Duration>
 
 // FGVK_REAL_OFFSET_US=auto turns the automatic output correction on, and any other value (a
 // number, 0) turns it off; there is no fixed offset. Unset, it follows the `[global]
-// pacing_correction` key (default true), which the layer stores here at startup, before any
-// device exists; without that (tests, tools) it is off.
-inline std::atomic<bool> realOffsetAutoConfigured{false};
-[[nodiscard]] inline bool realOffsetAuto() noexcept {
+// pacing_correction` key (default true), read on startup and on config reload.
+[[nodiscard]] inline int realOffsetEnvironment() noexcept {
     static const int fromEnvironment = [] {
         const char* text = std::getenv("FGVK_REAL_OFFSET_US");
         if (!text) return -1;
         return std::strcmp(text, "auto") == 0 ? 1 : 0;
     }();
-    const bool on = fromEnvironment >= 0 ? fromEnvironment == 1
-        : realOffsetAutoConfigured.load(std::memory_order_relaxed);
+    return fromEnvironment;
+}
+
+// The low bit is the current setting. The whole value lets workers detect even a pair
+// of changes between batches and discard feedback from the old setting.
+inline std::atomic<uint64_t> realOffsetConfiguration{0};
+inline void setRealOffsetAutoConfigured(const bool enabled) noexcept {
+    auto state = realOffsetConfiguration.load(std::memory_order_relaxed);
+    while ((state & 1) != enabled && !realOffsetConfiguration.compare_exchange_weak(
+            state, state + 1, std::memory_order_relaxed)) {}
+}
+
+[[nodiscard]] inline uint64_t realOffsetAutoState() noexcept {
+    const auto override = realOffsetEnvironment();
+    return override < 0 ? realOffsetConfiguration.load(std::memory_order_relaxed)
+                        : static_cast<uint64_t>(override);
+}
+
+[[nodiscard]] inline bool realOffsetMayEnable() noexcept {
+    return realOffsetEnvironment() != 0;
+}
+
+[[nodiscard]] inline bool realOffsetAuto() noexcept {
+    const bool on = (realOffsetAutoState() & 1) != 0;
     static std::atomic<bool> reported{false};
     if (on && !reported.exchange(true, std::memory_order_relaxed))
         std::fprintf(stderr, "framegen-vulkan: real offset: auto\n");

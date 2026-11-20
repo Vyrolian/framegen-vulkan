@@ -1020,7 +1020,7 @@ namespace {
                         instance_info->copyCalibrationDevices.contains(*device));
                     if (privateQueue->marker) {
                         privateQueue->markAfterPresent = &presentMarkerAfterPresent;
-                        if (realOffsetAuto()) privateQueue->readMarkerSamples = &readPresentMarkerSamples;
+                        if (realOffsetMayEnable()) privateQueue->readMarkerSamples = &readPresentMarkerSamples;
                     }
                 }
                 if (privateQueue->queue)
@@ -2112,8 +2112,8 @@ namespace {
                 const auto nextWaitForPresent2 = reinterpret_cast<PFN_vkWaitForPresent2KHR>(
                     instance_info->funcs.GetDeviceProcAddr(device, "vkWaitForPresent2KHR"));
                 const bool profiling = present_diagnostics::pacingProfileEnabled();
-                // OS1: the automatic correction needs the watcher's samples, with or without the profile.
-                const bool correction = realOffsetAuto() && onScreenCorrectionEnvironment();
+                // Keep the lower present ID mapping stable if correction is enabled after creation.
+                const bool correction = realOffsetMayEnable() && onScreenCorrectionEnvironment();
                 // The session kind: a gamescope session first, else an X11 surface (Xwayland or plain X11).
                 // Native Wayland surfaces outside gamescope have no kind and never take the watcher.
                 const auto origin = surfaceOrigin(info->surface);

@@ -13,7 +13,7 @@ Saving a clone under a new name changes the runtime profile identity without res
 | Process start | Frame Generation provisioning, Game Swapchain Images compatibility, layer membership and order, Zink, audio compatibility, and the shared FP16 precision choice | Start a new game process |
 | Process-wide backend | DLL, GPU, and Ultra Performance policy | Construct a new backend, normally by restarting the process |
 | Private FG context | Flow Scale, lighter model, and generated-output capacity | Prepare, drain framegen-vulkan-owned work, and atomically replace |
-| Live policy | Frame Generation `0x`/active execution state, Fixed policy, caps, and cadence controls | Next successful reload and application present |
+| Live policy | Frame Generation `0x`/active execution state, Fixed policy, caps, pacing correction, and cadence controls | Next successful reload and application present |
 | Dormant value | A setting for an inactive mode or unavailable private resource | Save now; apply when its owning mode or resource becomes active |
 
 The process-wide backend is created lazily when the first active swapchain needs it. FP16 is captured at process start even when the backend is still dormant, so a later FG backend cannot disagree with it after a config reload. Once built, pending DLL, GPU, and Ultra changes are compared with the actual construction baseline, not merely the previous file.

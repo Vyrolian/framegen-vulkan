@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 
 #include "wayland_presentation_feedback.hpp"
+#include "swapchain/output_margin.hpp"
 #include "wayland_client_abi.hpp"
 #include "present_diagnostics.hpp"
 #include "swapchain/uncapped_auto_cap.hpp"
@@ -107,13 +108,15 @@ struct WaylandPresentationFeedback::Impl {
     std::weak_ptr<ScreenSampleRing> screenSink;
     bool clockLogged{};
 
-    // OS1: whether the screen sink is open. Every present asks for feedback while it is.
+    // OS1: an open sink asks for every present while correction is enabled.
     bool screenSinkOpen() const {
+        if (!realOffsetAuto()) return false;
         const auto ring = screenSink.lock();
         return ring && ring->accepting();
     }
     // OS1: a presented event with a valid timestamp feeds the sink, on CLOCK_MONOTONIC only. Caller holds mutex.
     void pushScreenSample(const Sample& sample) noexcept {
+        if (!realOffsetAuto()) return;
         const auto ring = screenSink.lock();
         if (!ring) return;
         if (!screenSampleClockSupported(clockId)) {

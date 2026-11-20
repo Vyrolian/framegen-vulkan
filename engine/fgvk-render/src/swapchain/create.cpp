@@ -309,18 +309,19 @@ void Swapchain::attachDeferredOnScreen() {
 
 void Swapchain::configureScreenCorrection(const bool watcherActive, const char* gateReason,
         const bool gamescopeSession) {
-    const auto plan = screenCorrectionSource(realOffsetAuto(), onScreenCorrectionEnvironment(),
+    const auto plan = screenCorrectionSource(realOffsetMayEnable(), onScreenCorrectionEnvironment(),
         watcherActive, gateReason, static_cast<bool>(this->info.waylandPresentation));
     this->screenSource = plan.source;
     std::clog << "framegen-vulkan: on-screen correction: source=" << screenSourceName(plan.source)
-              << " reason=" << plan.reason << '\n';
+              << " reason=" << plan.reason << " enabled=" << realOffsetAuto() << '\n';
     // GT1: the tick lock needs the watcher's samples on a gamescope surface and is logged for gamescope only.
     const auto tick = tickLockPlan(gamescopeTickLockEnvironment(), gamescopeSession,
-        plan.source == ScreenSource::Watcher, realOffsetAuto());
+        plan.source == ScreenSource::Watcher, realOffsetMayEnable());
     this->screenTickLock = tick.enabled;
     if (gamescopeSession) {
-        std::clog << "framegen-vulkan: gamescope tick lock: state=" << (tick.enabled ? "on" : "off");
+        std::clog << "framegen-vulkan: gamescope tick lock: state=" << (tick.enabled && realOffsetAuto() ? "on" : "off");
         if (!tick.enabled) std::clog << " reason=" << tick.reason;
+        else if (!realOffsetAuto()) std::clog << " reason=correction-off";
         std::clog << '\n';
     }
 }

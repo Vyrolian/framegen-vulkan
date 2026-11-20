@@ -3297,7 +3297,7 @@ void generatedChainOutputOffsetsMoveEachOutput() {
     auto pool = std::make_shared<PreparedPool>();
     preparedPool = pool.get();
     copySubmits.clear();
-    realOffsetAutoConfigured.store(true);
+    setRealOffsetAutoConfigured(true);
     auto queue = std::make_shared<DeferredPresentQueue>();
     queue->queue = handle<VkQueue>(7);
     DeferredPresent worker(queue, preparedPresent);
@@ -3318,7 +3318,7 @@ void generatedChainOutputOffsetsMoveEachOutput() {
     expect(worker.enqueueInternalReal(real, first + 20ms, realCopy), "offset batch real rejected");
     worker.closeBatch();
     const auto done = worker.finish(UINT64_MAX, false);
-    realOffsetAutoConfigured.store(false);
+    setRealOffsetAutoConfigured(false);
     expect(done && done->count == 3 && done->result == VK_SUCCESS &&
         !done->calls[0].skipped && !done->calls[1].skipped && !done->calls[2].skipped,
         "offset batch failed");
@@ -3787,7 +3787,7 @@ ReleasedPair releasedPair(const bool justInTime, const std::chrono::milliseconds
     simulatedReady[2] = pair.start + readyB;
     // OS2: the automatic correction is on for this pair only; the offset is set before B is admitted.
     if (generatedOffset) {
-        realOffsetAutoConfigured.store(true);
+        setRealOffsetAutoConfigured(true);
         copySubmits.clear();
         copyAcquireResult = VK_SUCCESS;
         copyAcquireImage = 2;
@@ -3819,7 +3819,7 @@ ReleasedPair releasedPair(const bool justInTime, const std::chrono::milliseconds
     worker.closeBatch();
     pair.first = worker.finish(UINT64_MAX);
     pair.second = worker.finish(UINT64_MAX);
-    realOffsetAutoConfigured.store(false);
+    setRealOffsetAutoConfigured(false);
     return pair;
 }
 bool releasedPairCompleted(const ReleasedPair& pair) {
@@ -4018,7 +4018,7 @@ DeferredPresent::Completion nonOverlapGeneratedBatch(const std::chrono::nanoseco
     const auto start = DeferredPresent::Clock::now();
     const auto interval = 8ms;
     simulatedReady[1] = start + 10ms;
-    realOffsetAutoConfigured.store(true);
+    setRealOffsetAutoConfigured(true);
     copySubmits.clear();
     copyAcquireResult = VK_SUCCESS;
     copyAcquireImage = 2;
@@ -4035,7 +4035,7 @@ DeferredPresent::Completion nonOverlapGeneratedBatch(const std::chrono::nanoseco
     expect(worker.enqueue(info, start + interval), "non-overlap batch's real output rejected");
     worker.closeBatch();
     auto completion = worker.finish(UINT64_MAX);
-    realOffsetAutoConfigured.store(false);
+    setRealOffsetAutoConfigured(false);
     expect(completion && completion->count == 2 && !completion->calls[0].skipped && !completion->calls[1].skipped,
         "non-overlap batch did not complete");
     return *completion;
@@ -4074,7 +4074,7 @@ void nonOverlapPendingRealSurvivesBatches() {
     DeferredPresent worker(queue, timedPresent);
     auto ring = std::make_shared<ScreenSampleRing>();
     worker.setScreenSamples(ring);
-    realOffsetAutoConfigured.store(true);
+    setRealOffsetAutoConfigured(true);
     const int64_t base = steadyNanoseconds(DeferredPresent::Clock::now());
     const auto push = [&](const uint64_t source, const bool generated, const int64_t offsetNs) {
         ring->push(ScreenSample{0, source, generated, base + offsetNs, 0, 0});
@@ -4106,9 +4106,58 @@ void nonOverlapPendingRealSurvivesBatches() {
     worker.closeBatch();
     expect(worker.finish(UINT64_MAX).has_value(), "second non-overlap batch did not finish");
     const auto accepted = DeferredPresentTestAccess::acceptedOffsetSamples(worker);
-    realOffsetAutoConfigured.store(false);
+    setRealOffsetAutoConfigured(false);
     expect(accepted == 1,
         "a screen sample of the previous non-overlap batch's real was not accepted across the batch boundary");
+}
+
+void pacingCorrectionReloadsOnAnExistingWorker() {
+    auto queue = std::make_shared<DeferredPresentQueue>();
+    queue->queue = handle<VkQueue>(7);
+    DeferredPresent worker(queue, timedPresent);
+    auto ring = std::make_shared<ScreenSampleRing>();
+    worker.setScreenSamples(ring);
+    const auto swapchain = handle<VkSwapchainKHR>(11);
+    const auto wait = handle<VkSemaphore>(12);
+    const uint32_t image = 0;
+    const VkPresentInfoKHR info{.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+        .waitSemaphoreCount = 1, .pWaitSemaphores = &wait,
+        .swapchainCount = 1, .pSwapchains = &swapchain, .pImageIndices = &image};
+    const auto batch = [&](const uint64_t source) {
+        const auto at = DeferredPresent::Clock::now() + 2ms;
+        expect(worker.beginBatch(2, {.outputInterval = 5ms, .source = source}),
+            "live correction batch was rejected");
+        expect(worker.enqueue(info, at, true) && worker.enqueue(info, at + 5ms),
+            "live correction outputs were rejected");
+        worker.closeBatch();
+        const auto done = worker.finish(UINT64_MAX);
+        expect(done && done->count == 2 && done->calls[1].offset == 0ns,
+            "live correction changed the real output's offset");
+        return done->calls[0].offset;
+    };
+    const auto base = steadyNanoseconds(DeferredPresent::Clock::now());
+    const auto sample = [&](const uint64_t source, const bool generated, const int64_t ms) {
+        ring->push(ScreenSample{0, source, generated, base + ms * 1'000'000});
+    };
+
+    setRealOffsetAutoConfigured(false);
+    expect(batch(1) == 0ns, "a worker started with correction disabled moved an output");
+    sample(0, false, 0);
+    sample(1, true, 7);
+    sample(1, false, 12);
+    setRealOffsetAutoConfigured(true);
+    expect(batch(2) == 0ns && DeferredPresentTestAccess::acceptedOffsetSamples(worker) == 0,
+        "enabling correction consumed feedback from earlier batches");
+    sample(2, false, 24);
+    sample(3, true, 31);
+    sample(3, false, 36);
+    static_cast<void>(batch(3));
+    expect(batch(4) < 0ns, "fresh feedback did not drive the existing worker after enabling");
+    setRealOffsetAutoConfigured(false);
+    expect(batch(5) == 0ns, "disabling correction left a generated offset active");
+    setRealOffsetAutoConfigured(true);
+    expect(batch(6) == 0ns, "re-enabling correction reused its old offset");
+    setRealOffsetAutoConfigured(false);
 }
 
 // OS1c: one worker batch whose first output is a plain deferred generated present (no worker copy: its lower image is
@@ -4140,7 +4189,7 @@ PlainGeneratedBatch plainGeneratedBatch(const std::chrono::nanoseconds generated
     const auto start = DeferredPresent::Clock::now();
     const auto interval = 8ms;
     simulatedReady[1] = start + ready;
-    realOffsetAutoConfigured.store(true);
+    setRealOffsetAutoConfigured(true);
     DeferredPresentTestAccess::setOutputOffsets(worker, 1, {generatedOffset, 0ns, 0ns, 0ns});
     expect(worker.beginBatch(2, {.device = handle<VkDevice>(21), .semaphore = handle<VkSemaphore>(31),
             .value = 1, .wait = readyAtInstant, .deadline = start + 1s, .expediteOnJoin = expedite,
@@ -4152,7 +4201,7 @@ PlainGeneratedBatch plainGeneratedBatch(const std::chrono::nanoseconds generated
     auto completion = worker.finish(UINT64_MAX);
     PlainGeneratedBatch result;
     result.controller = DeferredPresentTestAccess::offsetController(worker);
-    realOffsetAutoConfigured.store(false);
+    setRealOffsetAutoConfigured(false);
     expect(completion && completion->count == 2 && !completion->calls[0].skipped && !completion->calls[1].skipped,
         "plain generated batch did not complete");
     result.batch = *completion;
@@ -4591,7 +4640,7 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char** argv) {
     justInTimeBatchHoldOffStartsAtReadiness();
     chainedBatchHoldStartsAfterReadiness(); chainedBatchHoldOffStartsAtReadiness(); chainedBatchHoldKeepsItsSchedule();
     offsetAppliesAfterReadinessStart(); chainedPairOffsetsFromItsUnmovedStart();
-    nonOverlapBatchOffsetMovesGeneratedOnly(); nonOverlapPendingRealSurvivesBatches();
+    nonOverlapBatchOffsetMovesGeneratedOnly(); nonOverlapPendingRealSurvivesBatches(); pacingCorrectionReloadsOnAnExistingWorker();
     plainGeneratedPresentOffsetMoves(); plainGeneratedPresentCutLimitsOffset();
     generatedCopyPresentsAcquiredImage(); generatedCopySkipsWithoutImage(); generatedCopySkipsOutOfRangeImage();
     generatedCopyNeedsOpenBatch(); generatedCopyChainWaitsPreceding(); generatedCopyChainSkipWaitsPreceding();

@@ -21,8 +21,8 @@ public:
     static std::shared_ptr<WaylandPresentationFeedback> create(wl_display*, wl_surface*, bool diagnostics) noexcept;
     ~WaylandPresentationFeedback();
     void stop() noexcept;
-    // OS1: the ring that presented outputs of this surface are pushed to, held weakly. While the sink is open
-    // every present asks for feedback (not only on the refresh cadence). A presented event with a valid
+    // OS1: the ring that presented outputs of this surface are pushed to, held weakly. With an open sink and
+    // correction enabled every present asks for feedback. A presented event with a valid
     // timestamp on CLOCK_MONOTONIC is pushed; other clocks give no sample.
     void setScreenSink(std::weak_ptr<ScreenSampleRing> sink) noexcept;
     // The output refresh in nanoseconds from the last presented feedback; 0 when unknown or variable. Lock-free.

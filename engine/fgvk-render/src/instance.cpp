@@ -218,9 +218,7 @@ namespace {
 
 Root::Root() {
     this->fp16AtStartup = this->config.get().global().allow_fp16;
-    // S8b: restart-bound, before any device or worker reads realOffsetAuto().
-    fgvk::layer::realOffsetAutoConfigured.store(this->config.get().global().pacing_correction,
-        std::memory_order_relaxed);
+    fgvk::layer::setRealOffsetAutoConfigured(this->config.get().global().pacing_correction);
     std::cerr << fgvkBuildIdentity << '\n';
 
     // H3: read for every process, before the gamescope and profile gates. A Wine
@@ -336,6 +334,11 @@ ConfigurationUpdateResult Root::update(const bool forceConfigurationPoll) {
 
     result.reloaded = true;
     const auto& currentGlobal = this->config.get().global();
+    const auto previousCorrection = realOffsetAutoState();
+    setRealOffsetAutoConfigured(currentGlobal.pacing_correction);
+    if (previousCorrection != realOffsetAutoState())
+        std::clog << "framegen-vulkan: pacing correction reloaded: "
+                  << (realOffsetAuto() ? "on" : "off") << '\n';
     result.globalChangeDeferred = backendGlobalChangePending(
         this->backendGlobal, currentGlobal
     ) || currentGlobal.allow_fp16 != this->fp16AtStartup;

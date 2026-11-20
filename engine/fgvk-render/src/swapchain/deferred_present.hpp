@@ -139,7 +139,7 @@ struct DeferredPresentQueue {
     // T4, GPU split profile only: a GPU marker submitted on queue right after each observed
     // lower present, under mutex. Set once at device creation before any present, released at
     // device destruction; null otherwise.
-    // S8b: also set with FGVK_REAL_OFFSET_US=auto; readMarkerSamples then returns finished markers.
+    // S8b: also set when live correction is available; readMarkerSamples returns finished markers.
     std::shared_ptr<void> marker;
     void (*markAfterPresent)(void*, VkQueue, uint64_t, uint64_t, uint64_t, bool) noexcept {};
     size_t (*readMarkerSamples)(void*, uint64_t*, PresentMarkerSample*, size_t) noexcept {};
@@ -1050,6 +1050,8 @@ private:
     bool stopping{};
     // W2, FGVK_REAL_OFFSET_US=auto: worker thread only; the cursor is used under queue->mutex.
     OutputOffsetController outputOffsetController;
+    std::optional<uint64_t> correctionState;
+    uint64_t correctionFirstSource{};
     // L3, low_latency: worker thread only, like outputOffsetController. The phase of consecutive
     // batches that take the hold (BH2: just in time or not, with batch_hold on).
     BatchPhaseLock batchPhase;
@@ -1066,17 +1068,38 @@ private:
     // before the first job is admitted (setTickLock).
     bool tickLockEnabled{};
     TickLock tickLock;
+    [[nodiscard]] bool correctionEnabled() const noexcept {
+        return (correctionState.value_or(0) & 1) != 0;
+    }
+
+    void updateCorrection(const uint64_t source) noexcept {
+        const auto state = realOffsetAutoState();
+        if (correctionState && *correctionState != state) {
+            outputOffsetController = {};
+            screenMode = {};
+            tickLock = {};
+            correctionFirstSource = source;
+            realOffsetAutoNs.store(0, std::memory_order_relaxed);
+            realOffsetScreen.store(false, std::memory_order_relaxed);
+            if (tickLockEnabled) {
+                tickLockOn.store(false, std::memory_order_relaxed);
+                tickLockPeriodNs.store(0, std::memory_order_relaxed);
+                tickLockLeadNs.store(0, std::memory_order_relaxed);
+            }
+        }
+        correctionState = state;
+    }
     // Caller holds queue->mutex, right after a worker present was marked. OS1: the screen samples of this
     // context are read first; while they drive the correction, the marker samples are drained and ignored.
     void observeOutputOffsetLocked(const uint64_t context) noexcept {
-        if (!realOffsetAuto()) return;
+        if (!correctionEnabled()) return;
         const bool screen = screenRing && observeScreenSamplesLocked(context);
         std::array<PresentMarkerSample, 16> samples;
         for (;;) {
             const auto count = queue->readMarkerSamplesLocked(&markerCursor, samples.data(), samples.size());
             for (size_t i = 0; i < count; ++i) {
                 const auto& sample = samples[i];
-                if (sample.context != context || screen) continue;
+                if (sample.context != context || sample.source < correctionFirstSource || screen) continue;
                 const auto heldBefore = outputOffsetController.held;
                 if (outputOffsetController.observe(sample.generated, sample.source,
                         std::chrono::nanoseconds{sample.gpuNs})) {
@@ -1100,7 +1123,7 @@ private:
             const size_t count = screenRing->read(&screenCursor, samples.data(), samples.size());
             for (size_t i = 0; i < count; ++i) {
                 const ScreenSample& sample = samples[i];
-                if (sample.context != context) continue;
+                if (sample.context != context || sample.source < correctionFirstSource) continue;
                 if (screenMode.sample(now)) {
                     outputOffsetController.forget();
                     tickLock.resetOutputs();
@@ -1228,8 +1251,9 @@ private:
             const VkResult result, const Clock::time_point started, const Clock::time_point target) noexcept {
         if (!onScreenIds || !lowerId || result < 0) return;
         if (!job.generated) onScreenIds->record(applicationIdOf(job.metadata), lowerId);
-        onScreenWatch->push(lowerId, ready.context, ready.source, job.generated,
-            steadyNanoseconds(target), steadyNanoseconds(started));
+        if (correctionEnabled() || present_diagnostics::pacingProfileEnabled())
+            onScreenWatch->push(lowerId, ready.context, ready.source, job.generated,
+                steadyNanoseconds(target), steadyNanoseconds(started));
     }
 
     // One registry entry per live worker, shared by all of its identified batches.
@@ -1576,8 +1600,9 @@ private:
                 tickLock.resetOutputs();
             }
             const auto ready = batch.readiness;
+            if (first) updateCorrection(ready.source);
             // GT1: a new refresh period starts the tick grid again (rule 6). Only the first output of a batch asks.
-            if (first && tickLockEnabled) tickLock.setRefresh(ready.refreshNs);
+            if (first && tickLockEnabled && correctionEnabled()) tickLock.setRefresh(ready.refreshNs);
             const size_t limit = batch.limit;
             outputOffsetController.setExpected(limit > 1 ? static_cast<uint32_t>(limit - 1) : 1);
             const bool copyTail = index > 0 && batch.jobs[index - 1].copyActive &&
@@ -1622,7 +1647,7 @@ private:
             const auto unmovedDeadline = deadline;
             Clock::duration commandedOffset{}, appliedOffset{};
             const bool offsetOutput = current.generated && (!current.copyActive || current.copy.internalImages) &&
-                realOffsetAuto() && index < OutputOffsetController::maxPositions;
+                correctionEnabled() && index < OutputOffsetController::maxPositions;
             // OS2: the first output of a batch with a readiness wait takes its correction after that wait (in the
             // readiness block below). Its move here would be replaced by the readiness start.
             const bool offsetAfterReadiness = offsetOutput && first && ready.wait;
@@ -1775,7 +1800,7 @@ private:
             const auto scheduledDeadline = deadline;
             Clock::duration tickSnap{};
             Clock::time_point targetTick{};
-            if (!readinessMiss && !prep.settled && tickLockEnabled && tickLock.snapping() &&
+            if (!readinessMiss && !prep.settled && tickLockEnabled && correctionEnabled() && tickLock.snapping() &&
                     scheduledDeadline != Clock::time_point::max()) {
                 const int64_t floorNs = first ? (ready.wait ? steadyNanoseconds(readyAt) : int64_t{0})
                     : havePrevious ? steadyNanoseconds(previousActualStarted) + tickLock.currentPeriod() / 2
