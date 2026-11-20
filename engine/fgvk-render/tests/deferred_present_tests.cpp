@@ -3795,8 +3795,8 @@ constexpr std::chrono::nanoseconds outputOffsetWindup(bool hold) {
 static_assert(outputOffsetWindup(false) == -OutputOffsetController::limit);
 static_assert(outputOffsetWindup(true) >= -std::chrono::microseconds{270});
 static_assert(outputOffsetWindup(true) <= -std::chrono::microseconds{200});
-// OS1: the limit is 2.5 ms, still under a quarter of the 2x output interval at 120 fps base. The constant
-// error checks above (outputOffsetSimulation, outputOffsetWindup) hold at this limit.
+// OS1: the controller limit is 2.5 ms. The scheduler separately bounds the
+// applied offset against readiness, the previous output and the release limit.
 static_assert(OutputOffsetController::limit == std::chrono::microseconds{2500});
 
 // L2 (low_latency): readiness at a simulated instant. The wait returns once the value's instant has

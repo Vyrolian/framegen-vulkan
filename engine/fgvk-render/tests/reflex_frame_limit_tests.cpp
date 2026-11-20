@@ -138,6 +138,45 @@ void driverResultIsReturned() {
     const auto result = limit.applicationRequest(swapchain, request(true, 0), driver.send());
     expect(result == VK_ERROR_EXTENSION_NOT_PRESENT,
         "the application request did not return the driver's result");
+    expect(!limit.reflexLowLatency(), "a rejected Reflex-on request changed the accepted mode");
+    limit.observe(swapchain, true, 60.0, driver.send());
+    expect(driver.calls.size() == 1, "a rejected application request was replayed by the present path");
+}
+
+void nullRequestDisablesReflex() {
+    ReflexFrameLimit limit;
+    Recorder driver;
+    limit.observe(swapchain, true, 60.0, driver.send());
+    limit.applicationRequest(swapchain, request(true, 0, true), driver.send());
+    const auto failed = limit.clearRequest([] { return VK_ERROR_UNKNOWN; });
+    expect(failed == VK_ERROR_UNKNOWN && limit.reflexLowLatency(),
+        "a rejected clear changed the accepted mode");
+
+    const auto cleared = limit.clearRequest([] { return VK_SUCCESS; });
+    expect(cleared == VK_SUCCESS && !limit.reflexLowLatency(),
+        "a successful clear left Reflex on");
+    limit.observe(swapchain, true, 48.0, driver.send());
+    expect(driver.calls.size() == 1, "a cap change replayed the disabled Reflex request");
+
+    limit.applicationRequest(swapchain, request(true, 0), driver.send());
+    expect(driver.calls.size() == 2 && driver.calls.back().previousIntervalUs == 0 &&
+            driver.calls.back().info.minimumIntervalUs == 20834,
+        "re-enabling Reflex did not use the current cap and reset driver interval");
+}
+
+void failedCapUpdateIsNotApplied() {
+    ReflexFrameLimit limit;
+    Recorder driver;
+    limit.applicationRequest(swapchain, request(true, 0), driver.send());
+    driver.result = VK_ERROR_UNKNOWN;
+    limit.observe(swapchain, true, 60.0, driver.send());
+    driver.result = VK_SUCCESS;
+    limit.observe(swapchain, true, 60.0, driver.send());
+    expect(driver.calls.size() == 3 && driver.calls.back().previousIntervalUs == 0 &&
+            driver.calls.back().info.minimumIntervalUs == 16667,
+        "a rejected interval was cached as applied");
+    limit.observe(swapchain, true, 60.0, driver.send());
+    expect(driver.calls.size() == 3, "an accepted retry was sent again");
 }
 
 // The present path reads whether the last request asks for low latency mode. A present does not change it.
@@ -182,6 +221,8 @@ int main() {
     forwardsOnlyChanges();
     reSendDropsPNext();
     driverResultIsReturned();
+    nullRequestDisablesReflex();
+    failedCapUpdateIsNotApplied();
     lowLatencyStateFollowsTheLastRequest();
     concurrentRequestsKeepDriverState();
     std::cout << "reflex frame limit tests passed\n";

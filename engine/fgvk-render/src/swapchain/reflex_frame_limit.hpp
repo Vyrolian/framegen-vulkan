@@ -52,8 +52,6 @@ public:
     VkResult applicationRequest(const VkSwapchainKHR swapchain,
             const VkLatencySleepModeInfoNV& application, Send&& send) {
         const std::lock_guard lock(this->mutex);
-        this->request = application;
-        this->request->pNext = nullptr;
         Forward forward{
             .info = application,
             .applicationIntervalUs = application.minimumIntervalUs,
@@ -61,7 +59,24 @@ public:
         };
         forward.info.minimumIntervalUs =
             reflexMinimumIntervalUs(application, this->frameGeneration, this->capFps);
-        return this->forwardLocked(swapchain, std::move(forward), send);
+        const auto result = this->forwardLocked(swapchain, std::move(forward), send);
+        if (result == VK_SUCCESS) {
+            this->request = application;
+            this->request->pNext = nullptr;
+        }
+        return result;
+    }
+
+    // A null sleep-mode request disables the driver state and must retire the cached request.
+    template<typename Send>
+    VkResult clearRequest(Send&& send) {
+        const std::lock_guard lock(this->mutex);
+        const auto result = send();
+        if (result == VK_SUCCESS) {
+            this->request.reset();
+            this->forwardedIntervalUs = 0;
+        }
+        return result;
     }
 
     // The present path, once per present with that present's frame generation
@@ -86,7 +101,7 @@ public:
         this->forwardLocked(swapchain, std::move(forward), send);
     }
 
-    // Whether the application's last sleep mode asks for low latency mode, so the game's own
+    // Whether the application's last accepted sleep mode asks for low latency mode, so the game's own
     // limiter holds its frames. Read per present under the same lock as the requests.
     [[nodiscard]] bool reflexLowLatency() const {
         const std::lock_guard lock(this->mutex);
@@ -98,7 +113,8 @@ private:
     VkResult forwardLocked(const VkSwapchainKHR swapchain, Forward forward, Send& send) {
         forward.previousIntervalUs = this->forwardedIntervalUs;
         const auto result = send(static_cast<const Forward&>(forward));
-        this->forwardedIntervalUs = forward.info.minimumIntervalUs;
+        if (result == VK_SUCCESS)
+            this->forwardedIntervalUs = forward.info.minimumIntervalUs;
         // One line per applied change of the interval; a repeated request logs nothing.
         if (forward.info.minimumIntervalUs != forward.previousIntervalUs) {
             std::clog << "framegen-vulkan: reflex frame limit: swapchain=" << swapchain
@@ -114,7 +130,7 @@ private:
     std::optional<VkLatencySleepModeInfoNV> request;
     bool frameGeneration{false};
     double capFps{0.0};
-    // Last interval sent to the driver for this swapchain; 0 before any call.
+    // Last interval accepted by the driver for this swapchain.
     uint32_t forwardedIntervalUs{0};
 };
 

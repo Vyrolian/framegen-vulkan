@@ -1530,13 +1530,14 @@ namespace {
         const auto next = lower.get(device, [&] {
             return instance_info->funcs.GetDeviceProcAddr(device, "vkSetLatencySleepModeNV"); });
         if (!next) return VK_ERROR_EXTENSION_NOT_PRESENT;
-        if (!info) return next(device, swapchain, info);
-        const auto send = [&](const ReflexFrameLimit::Forward& forward) {
-            return next(device, swapchain, &forward.info);
-        };
-        const auto result = ReflexFrameLimitRegistry::get(swapchain)->applicationRequest(swapchain, *info, send);
-        present_diagnostics::recordReflexMode(info->lowLatencyMode, info->lowLatencyBoost,
-            info->minimumIntervalUs, result);
+        const auto limit = ReflexFrameLimitRegistry::get(swapchain);
+        const auto result = info
+            ? limit->applicationRequest(swapchain, *info, [&](const ReflexFrameLimit::Forward& forward) {
+                return next(device, swapchain, &forward.info);
+            })
+            : limit->clearRequest([&] { return next(device, swapchain, nullptr); });
+        present_diagnostics::recordReflexMode(info ? info->lowLatencyMode : VK_FALSE,
+            info ? info->lowLatencyBoost : VK_FALSE, info ? info->minimumIntervalUs : 0, result);
         return result;
     }
 
