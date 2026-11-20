@@ -132,6 +132,7 @@ int main() {
             expect(out[k].context==200 && out[k].source==k/2+1 && out[k].generated==(k%2==1));
             // The fixture's presented time is 10 s plus the commit's sequence times 8 ms.
             expect(out[k].screenNs==10'000'000'000LL+static_cast<int64_t>(k+1)*8'000'000LL);
+            expect(out[k].startedNs > 0 && out[k].receivedNs >= out[k].startedNs && out[k].flags == 7);
         }
         observer->stop();
         expect(fgvk_test_wayland_objects()==0);
