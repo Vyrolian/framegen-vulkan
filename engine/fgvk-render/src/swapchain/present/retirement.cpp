@@ -19,6 +19,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <exception>
 #include <iostream>
 #include <optional>
@@ -122,6 +123,7 @@ VkResult Swapchain::completeDeferredPresent(const uint64_t timeoutNs, const bool
                     .slack = i == 0 ? completion.slack : DiagnosticsClock::duration{},
                     .offset = call.offset, .appPresentId = call.appPresentId,
                     .tickSnap = call.tickSnap, .targetTick = call.targetTick,
+                    .copySubmitStarted = call.copySubmitStarted,
                 });
                 present_diagnostics::logPacingOutput(this->diagnosticsState.contextId, call.swapchain, sample);
             }
@@ -154,6 +156,10 @@ bool Swapchain::beginDeferredPresentBatch(const vk::Vulkan& vk, const size_t lim
             this->attachScreenSamples();
         } catch (const std::exception&) { return false; }
     }
+    static const bool earlyGeneratedCopy = [] {
+        const auto* value = std::getenv("FGVK_EARLY_GENERATED_COPY");
+        return value && std::string_view(value) == "1";
+    }();
     return this->deferredPresent->beginBatch(limit, {
         .device = vk.dev(), .semaphore = this->syncSemaphore->handle(),
         .value = readyValue, .wait = vk.df().WaitSemaphoresKHR, .deadline = readyDeadline,
@@ -162,7 +168,11 @@ bool Swapchain::beginDeferredPresentBatch(const vk::Vulkan& vk, const size_t lim
         .expediteOnJoin = releasedOutputLimit.has_value(),
         .overlap = overlap, .justInTime = justInTime,
         // batch_hold is the live profile setting, read where the batch is admitted, as justInTime is.
-        .batchHold = this->profile.batch_hold, .outputInterval = outputInterval,
+        .batchHold = this->profile.batch_hold,
+        .copyBeforeReadiness = earlyGeneratedCopy && this->info.surfaceOrigin == SurfaceOrigin::Wayland &&
+            (this->currentPresentMode == VK_PRESENT_MODE_FIFO_KHR ||
+             this->currentPresentMode == VK_PRESENT_MODE_IMMEDIATE_KHR),
+        .outputInterval = outputInterval,
         // GT1: the refresh period the cap uses; the worker's tick lock starts from it. Variable refresh has no tick
         // grid, so it passes 0 and the lock never snaps.
         .refreshNs = this->applicationRefreshVariable ? 0 : refreshPeriodNs(this->applicationRefreshHz),

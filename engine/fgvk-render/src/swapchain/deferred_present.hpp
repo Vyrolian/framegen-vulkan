@@ -300,6 +300,7 @@ public:
         bool generated{}, copyChecked{};
         VkResult copyStatus{VK_NOT_READY};
         Clock::time_point copySampledAt{};
+        Clock::time_point copySubmitStarted{};
         Clock::time_point enqueued{}, queueLockStarted{}, queueLockAcquired{};
         bool readinessChecked{};
         Clock::time_point readinessStarted{}, readinessFinished{}, readinessDeadline{};
@@ -406,6 +407,7 @@ public:
         // batch_hold: the phase lock adds its 2 ms margin to the batch's start, just in time or not. Off starts
         // the batch at its readiness, with no lock; a just-in-time batch keeps the quarter-interval guard.
         bool batchHold{true};
+        bool copyBeforeReadiness{};
         Clock::duration outputInterval{};
         // GT1: the refresh period the cap uses, in nanoseconds (0 when unknown). The tick lock starts from it.
         int64_t refreshNs{};
@@ -1334,6 +1336,7 @@ private:
         uint32_t lowerIndex{};
         VkSemaphore presentWait{};
         uint64_t acquireNs{}, submitNs{};
+        Clock::time_point copySubmitStarted{};
     };
     // F9b: one non-blocking attempt, made when the worker takes an internal real, so
     // its lower acquire and copy finish before the deadline. Not-ready results leave
@@ -1406,6 +1409,7 @@ private:
         if (!prep.acquired) return prep; // The unchanged path retries at the deadline.
         prep.presentWait = job.copy.presentWaits.at(prep.lowerIndex);
         const auto submitted = profiledLockCall(ready.profile, prep.submitNs, [&] {
+            if (ready.profile) prep.copySubmitStarted = Clock::now();
             return submitGeneratedWork(*queue, job.copy, true,
                 job.copy.copies.at(prep.lowerIndex), prep.presentWait, prep.lowerIndex,
                 0, ready.source);
@@ -1636,6 +1640,25 @@ private:
                 appliedOffset = deadline - unmovedDeadline;
             }
             lock.unlock();
+            // A preparation holds at most one lower image for the current output.
+            InternalPreparation prep{};
+            const bool earlyGenerated = current.copyActive && current.copy.internalImages && ready.overlap;
+            const auto prepare = [&] {
+                {
+                    const std::lock_guard stopLock(mutex);
+                    if (stopping) return;
+                }
+                assert(heldLowerImages == 0);
+                assert(heldLowerImages < layerHeldLowerImages);
+                prep = current.internalActive ? prepareInternalReal(current, ready.profile)
+                                               : prepareGenerated(current, ready);
+                if (prep.prepared || prep.acquired) ++heldLowerImages;
+                assert(heldLowerImages <= layerHeldLowerImages);
+            };
+            // The producer submitted the staging signal before publishing this job. A queued
+            // copy waits on staging and acquire, and owns its present even if the host wait times out.
+            if (ready.copyBeforeReadiness && first && limit == 2 && earlyGenerated && ready.wait)
+                prepare();
             // The batch's unmoved deadline after its readiness (today's deadline with no correction).
             auto unmovedReady = unmovedDeadline;
             if (first) {
@@ -1742,27 +1765,10 @@ private:
                 }
                 batchShift = unmovedReady - current.deadline;
             }
-            // F9b: an internal real gets one lower-image attempt before its wait. The
-            // present still waits for the deadline. Stopping is read under mutex, as
-            // presentInternalReal reads it, and the lock is not held here.
-            InternalPreparation prep{};
-            const bool earlyGenerated = current.copyActive && current.copy.internalImages && ready.overlap;
-            if ((current.internalActive || earlyGenerated) && !readinessMiss) {
-                bool stopped{};
-                {
-                    const std::lock_guard stopLock(mutex);
-                    stopped = stopping;
-                }
-                if (!stopped) {
-                    // The previous job has already returned its lower image through present.
-                    assert(heldLowerImages == 0);
-                    assert(heldLowerImages < layerHeldLowerImages);
-                    prep = current.internalActive ? prepareInternalReal(current, ready.profile)
-                        : prepareGenerated(current, ready);
-                    if (prep.prepared || prep.acquired) ++heldLowerImages;
-                    assert(heldLowerImages <= layerHeldLowerImages);
-                }
-            }
+            // F9b: try a lower image before the present deadline. An unavailable image on
+            // the pre-readiness attempt can take this normal path.
+            if ((current.internalActive || earlyGenerated) && !readinessMiss && !prep.prepared && !prep.settled)
+                prepare();
             // GT1, rule 4: the snapped deadline is the last rule before the sleep, after OS2 and the W2 move. The deadline
             // before the snap stays the scheduled time and the bookkeeping reference (Call::unmovedStart). The floor is the
             // batch's readyAt for its first output and the previous output's actual start plus P/2 for a later one.
@@ -1912,9 +1918,10 @@ private:
                     job.image = prep.lowerIndex;
                     job.wait = prep.presentWait;
                     result.generatedPrepared = true;
+                    result.copySubmitStarted = prep.copySubmitStarted;
                 }
                 // Why this generated output presents no image, when it does not. Readiness
-                // and stopping always skip. Expedite skips only a non-overlapped batch: an
+                // and stopping skip unprepared outputs. Expedite skips only a non-overlapped batch: an
                 // overlapped batch keeps polling for its lower image (F7 rule 4). A window
                 // that ends with no lower image is an acquire skip (F7 rule 2).
                 SkipReason skipWhy = SkipReason::None;
@@ -1999,6 +2006,7 @@ private:
                     if (job.copyActive && !generatedPrepared) {
                         if (copyPending) {
                             const VkResult copied = profiledLockCall(ready.profile, result.lockSubmitNs, [&] {
+                                if (ready.profile) result.copySubmitStarted = Clock::now();
                                 return submitGeneratedWork(*queue, job.copy, true,
                                     job.copy.copies.at(job.image), job.wait, job.image,
                                     0, ready.source);

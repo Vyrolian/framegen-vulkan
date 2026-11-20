@@ -3243,6 +3243,52 @@ void generatedPreparedOrderAndBudget() {
             "prepared generated work was submitted more than once");
     }
 }
+
+void generatedCopyCanPrecedeHostReadiness() {
+    struct Case { bool enabled, unavailable, timeout; };
+    for (const auto test : {Case{}, Case{true,false,false}, Case{true,true,false}, Case{true,false,true}}) {
+        auto pool = std::make_shared<PreparedPool>();
+        preparedPool = pool.get();
+        pool->misses = test.unavailable ? 1 : 0;
+        copySubmits.clear();
+        auto queue = std::make_shared<DeferredPresentQueue>();
+        queue->queue = handle<VkQueue>(7);
+        DeferredPresent worker(queue, preparedPresent);
+        readinessResult = test.timeout ? VK_TIMEOUT : VK_SUCCESS;
+        const auto swapchain = handle<VkSwapchainKHR>(11);
+        const auto wait = handle<VkSemaphore>(12);
+        const uint32_t image = 4;
+        const VkPresentInfoKHR real{.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+            .waitSemaphoreCount = 1, .pWaitSemaphores = &wait,
+            .swapchainCount = 1, .pSwapchains = &swapchain, .pImageIndices = &image};
+        const auto first = DeferredPresent::Clock::now() + 8ms;
+        const DeferredPresent::InternalRealCopy realCopy{.owner = pool, .tryAcquire = poolRealAcquire,
+            .submit = poolRealSubmit, .abandon = poolRealAbandon};
+        const auto timedWait = [](VkDevice, const VkSemaphoreWaitInfo*, uint64_t) -> VkResult {
+            return readinessResult;
+        };
+        expect(worker.beginBatch(2, {.device = handle<VkDevice>(21), .semaphore = handle<VkSemaphore>(31),
+            .value = 17, .wait = timedWait, .overlap = true, .batchHold = false,
+            .copyBeforeReadiness = test.enabled, .outputInterval = 5ms, .profile = true}),
+            "pre-readiness experiment batch rejected");
+        expect(worker.enqueueGeneratedCopy(swapchain, nullptr, first, preparedCopy()) &&
+            worker.enqueueInternalReal(real, first + 5ms, realCopy), "pre-readiness experiment outputs rejected");
+        worker.closeBatch();
+        const auto done = worker.finish(UINT64_MAX, false);
+        expect(done && done->count == 2 && done->readinessMiss == test.timeout &&
+            done->calls[0].generatedPrepared && !done->calls[0].skipped &&
+            !done->calls[1].skipped && pool->held == 0 && pool->order == std::vector<uint32_t>{0,1} &&
+            copySubmits.size() == 1 && copySubmits[0].count == 1,
+            "pre-readiness experiment lost, reordered or duplicated a copy or present");
+        const auto& generated = done->calls[0];
+        expect(generated.copySubmitStarted != DeferredPresent::Clock::time_point{} &&
+            (test.enabled && !test.unavailable
+                ? generated.copySubmitStarted <= generated.readinessStarted
+                : generated.copySubmitStarted >= generated.readinessFinished),
+            "final copy was submitted on the wrong side of the host readiness wait");
+    }
+    readinessResult = VK_SUCCESS;
+}
 // W2: in a three-output batch each generated output takes its own correction and the real is never
 // moved. The first generated output moves 1 ms earlier from its own slot. The second moves 1 ms later
 // from its own slot, so the first's move does not push it. The real keeps its slot, so the second's
@@ -4524,7 +4570,7 @@ void zeroSnapIsIdentical() {
 }
 
 int main([[maybe_unused]] int argc, [[maybe_unused]] char** argv) {
-    generatedPreparedOrderAndBudget(); generatedPreparationFallbackAndGates();
+    generatedPreparedOrderAndBudget(); generatedCopyCanPrecedeHostReadiness(); generatedPreparationFallbackAndGates();
     generatedChainOutputOffsetsMoveEachOutput();
     generatedPreparedRetirement(); generatedPreparedStop(); generatedPreparationErrors();
     queueRequest();
