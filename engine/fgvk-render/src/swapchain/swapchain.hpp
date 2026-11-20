@@ -355,6 +355,8 @@ namespace fgvk::layer {
             // Value of the batch being scheduled in the current present; the
             // source copy moves it into sourceReleaseTimelineValue.
             uint64_t nextSourceReleaseTimelineValue{0};
+            // Private queue tail value that protects the preceding staging read.
+            uint64_t privateStagingValue{0};
         };
 
         struct RecoveryState {

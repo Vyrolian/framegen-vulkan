@@ -158,14 +158,14 @@ void Swapchain::submitSourceCopy(const PresentInvocation& invocation,
         this->recordRenderSplitEnd(commandBuffer.handle(), this->currentRenderSlot());
     commandBuffer.end(invocation.vk);
 
-    const auto sourceTimelineValue =
+    const uint64_t sourceTimelineValue =
         this->frameState.backendTimelineIndex++;
     this->frameState.sequenceIndex++;
     // The copy overwrites the source image that the previous backend batch
-    // read. That batch's S + G orders the overwrite. The source copy and the
-    // generated copies stay on one queue, which orders the next backend batch
-    // behind this batch's generated copies through the timeline signal.
+    // read. That batch's S + G orders the overwrite. The next backend batch
+    // also waits for the graphics queue's reads of the generated images.
     const uint64_t reuseWait = this->frameState.sourceReleaseTimelineValue;
+    const uint64_t privateStaging = this->frameState.privateStagingValue;
     present_diagnostics::observeCopySubmission({
         .context = this->diagnosticsState.contextId,
         .source = this->pacingProfile ? this->pacingProfile->sourceOrdinal() : 0,
@@ -177,6 +177,39 @@ void Swapchain::submitSourceCopy(const PresentInvocation& invocation,
         .waitValue = reuseWait,
         .signalValue = sourceTimelineValue,
     }, [&] {
+        if (privateStaging) {
+            // Staging was submitted to the private queue. Wait for its tail
+            // value before releasing the next backend batch, without waiting
+            // for the subsequent final copy or present.
+            const auto backend = this->syncSemaphore->handle();
+            const auto command = commandBuffer.handle();
+            std::vector<VkSemaphore> waits(invocation.waitSemaphores.begin(), invocation.waitSemaphores.end());
+            std::vector<uint64_t> waitValues(waits.size(), 0);
+            if (reuseWait) {
+                waits.push_back(backend);
+                waitValues.push_back(reuseWait);
+            }
+            waits.push_back(this->info.deferredPresentQueue->tail);
+            waitValues.push_back(privateStaging);
+            const std::vector<VkPipelineStageFlags> stages(waits.size(), VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+            const auto count = static_cast<uint32_t>(waits.size());
+            const VkTimelineSemaphoreSubmitInfo timeline{
+                .sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
+                .waitSemaphoreValueCount = count, .pWaitSemaphoreValues = waitValues.data(),
+                .signalSemaphoreValueCount = 1, .pSignalSemaphoreValues = &sourceTimelineValue,
+            };
+            const VkSubmitInfo submit{
+                .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .pNext = &timeline,
+                .waitSemaphoreCount = count, .pWaitSemaphores = waits.data(), .pWaitDstStageMask = stages.data(),
+                .commandBufferCount = 1, .pCommandBuffers = &command,
+                .signalSemaphoreCount = 1, .pSignalSemaphores = &backend,
+            };
+            const auto result = invocation.vk.df().QueueSubmit(invocation.vk.queue(), 1, &submit, VK_NULL_HANDLE);
+            if (result != VK_SUCCESS)
+                throw ls::vulkan_error(result, "vkQueueSubmit() failed");
+            this->frameState.privateStagingValue = 0;
+            return;
+        }
         commandBuffer.submit(invocation.vk,
             invocation.waitSemaphores,
             reuseWait ? this->syncSemaphore->handle() : VK_NULL_HANDLE, reuseWait,

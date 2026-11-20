@@ -16,8 +16,10 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <exception>
 #include <iostream>
+#include <mutex>
 #include <optional>
 #include <sstream>
 #include <span>
@@ -86,6 +88,17 @@ VkResult Swapchain::presentGeneratedFrames(
     for (size_t i = 0; workerCopies && i < plan.scheduledGeneratedFrames.size(); ++i)
         workerCopies = this->recordGeneratedCopies(invocation.vk, this->currentRenderSlot(), i);
 
+    static const bool sameQueueCopies = [] {
+        const auto* value = std::getenv("FGVK_SAME_QUEUE_GENERATED_COPY");
+        return value && std::string_view(value) == "1";
+    }();
+    const bool privateStaging = sameQueueCopies && workerCopies && this->internalPresent &&
+        plan.scheduledGeneratedFrames.size() == 1 && this->info.surfaceOrigin == SurfaceOrigin::Wayland &&
+        this->currentPresentMode == VK_PRESENT_MODE_IMMEDIATE_KHR &&
+        this->info.deferredPresentQueue->tail != VK_NULL_HANDLE &&
+        // Earlier outputs still need the private queue ahead of this backend wait.
+        !this->deferredPresent->olderBatchPending();
+
     for (size_t i = 0; i < plan.scheduledGeneratedFrames.size(); ++i) {
         auto& postCopy = this->postCopySemaphores.at(
             this->frameState.sequenceIndex % this->postCopySemaphores.size()
@@ -97,11 +110,36 @@ VkResult Swapchain::presentGeneratedFrames(
         if (workerCopies && deferredTail) {
             const bool last = i + 1 == plan.scheduledGeneratedFrames.size();
             auto& slot = this->currentRenderSlot();
-            // The staging copy stays on the game queue, ahead of the source copy
-            // that releases the next backend batch. Its signal is consumed below.
-            pass.stagingCopy->submit(invocation.vk, {}, this->syncSemaphore->handle(),
-                this->frameState.backendTimelineIndex, std::array{pass.staged->handle()},
-                VK_NULL_HANDLE, 0);
+            if (privateStaging) {
+                auto& queue = *this->info.deferredPresentQueue;
+                const VkSemaphore backend = this->syncSemaphore->handle();
+                const VkCommandBuffer command = pass.stagingCopy->handle();
+                const VkPipelineStageFlags stage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+                const uint64_t backendValue = this->frameState.backendTimelineIndex;
+                const VkTimelineSemaphoreSubmitInfo timeline{
+                    .sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
+                    .waitSemaphoreValueCount = 1,
+                    .pWaitSemaphoreValues = &backendValue,
+                };
+                const VkSubmitInfo submit{
+                    .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .pNext = &timeline,
+                    .waitSemaphoreCount = 1, .pWaitSemaphores = &backend, .pWaitDstStageMask = &stage,
+                    .commandBufferCount = 1, .pCommandBuffers = &command,
+                    .signalSemaphoreCount = 1, .pSignalSemaphores = &pass.staged->handle(),
+                };
+                {
+                    const std::lock_guard lock(queue.mutex);
+                    const auto result = submitPrivate(queue, invocation.vk.df().QueueSubmit, submit, VK_NULL_HANDLE);
+                    if (result != VK_SUCCESS)
+                        throw ls::vulkan_error(result, "vkQueueSubmit() failed");
+                    this->frameState.privateStagingValue = queue.tailNext;
+                }
+            } else {
+                // Game-queue order protects this read from the next backend batch.
+                pass.stagingCopy->submit(invocation.vk, {}, this->syncSemaphore->handle(),
+                    this->frameState.backendTimelineIndex, std::array{pass.staged->handle()},
+                    VK_NULL_HANDLE, 0);
+            }
             if (present_diagnostics::pacingProfileEnabled()) {
                 // D7c: the generated value this staging copy waits, before its increment below.
                 present_diagnostics::noteFgStagingWait(this->diagnosticsState.contextId,
@@ -130,6 +168,12 @@ VkResult Swapchain::presentGeneratedFrames(
             if (this->deferredPresent->enqueueGeneratedCopy(invocation.swapchain, generatedChain.head(),
                     invocation.pacedOutputs->at(i), copy,
                     DeferredPresent::OutputIdentity{this->frameState.backendFrameIndex - 1, plan.scheduledGeneratedFrames[i]})) {
+                if (privateStaging && present_diagnostics::pacingGpuSplitProfileEnabled() && this->pacingProfile) {
+                    std::ostringstream record;
+                    record << "framegen-vulkan: same-queue generated copy context=" << this->diagnosticsState.contextId
+                           << " source=" << this->pacingProfile->sourceOrdinal() << '\n';
+                    std::cerr << record.str();
+                }
                 this->deferredOutputQueuedThisFrame = true;
                 if (this->pacingProfile) this->pacingProfile->generatedPresentMode(generatedMode);
                 if (last) slot.inFlight = true;

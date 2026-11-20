@@ -134,6 +134,8 @@ Set `FGVK_ENV=1` to build one profile from environment variables instead of TOML
 
 `FGVK_EARLY_GENERATED_COPY=1` lets the worker try a lower image and submit the generated frame's final copy before its host readiness wait. It applies to overlapping internal-image 2× batches on native Wayland FIFO and IMMEDIATE. The copy still waits for the staging and image-acquire semaphores. The worker keeps its existing present deadline calculation. If the lower image is unavailable, it retries on the normal path. With `FGVK_PACING_PROFILE=1`, `copy_submit_ns` records when the worker called the final-copy submit on both paths. Compare it with `ready_ns` and with `copy_start_ns` and `copy_end_ns` from the GPU split profile.
 
+`FGVK_SAME_QUEUE_GENERATED_COPY=1` tests staging on the same private graphics queue as the final copy for overlapping internal-image 2× batches on native Wayland IMMEDIATE. It uses the game queue while an older batch still needs the private queue. The next source copy waits on the staging submission's GPU timeline value so the backend can safely reuse the generated image. Use with `FGVK_EARLY_GENERATED_COPY=1` and GPU split profiling. Join the `same-queue generated copy` stderr records to the GPU split trace by context and source, then compare both the stage-to-copy gap and generation-to-presentation time.
+
 ## Presentation acquisition timeout
 
 `FGVK_PRESENT_ACQUIRE_TIMEOUT_MS` limits how long framegen-vulkan waits for generated-image availability before native recovery. Constrained Fixed image pools enforce a 50 ms limit when no explicit value is set. For a focused stall reproduction, try `25` and include the log. See [presentation recovery](LIFECYCLE.md) for deadline and fallback rules.

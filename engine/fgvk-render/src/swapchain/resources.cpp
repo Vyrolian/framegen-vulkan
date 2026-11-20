@@ -73,8 +73,8 @@ Swapchain::GeneratedAcquireFence::~GeneratedAcquireFence() {
 }
 
 // The worker resubmits these copies, so they are recorded once per destination
-// and swapchain image set. The slot's staging copy runs on the game queue at
-// present time, before the source copy that releases the next backend batch.
+// and swapchain image set. The slot's staging copy runs before the source
+// copy that releases the next backend batch.
 // The worker therefore copies only staging into each swapchain image.
 bool Swapchain::recordGeneratedCopies(const vk::Vulkan& vk, RenderSlot& slot, size_t pass) {
     if (pass >= this->destinationImages.size()) return false;
@@ -322,6 +322,7 @@ void Swapchain::commitFrameGenerationResources(
     }
     this->frameState.sourceReleaseTimelineValue = 0;
     this->frameState.nextSourceReleaseTimelineValue = 0;
+    this->frameState.privateStagingValue = 0;
     this->recoveryState.backendPending = false;
     this->recoveryState.generatedImageAdmission.reset();
     this->recoveryState.orderedAcquireRecovery.reset();
