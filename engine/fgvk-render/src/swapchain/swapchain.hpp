@@ -400,9 +400,18 @@ namespace fgvk::layer {
         // Members are destroyed in reverse order, so it must stay declared after syncSemaphore.
         present_diagnostics::FgTimelineLease fgTimelineLease;
 
+        struct GeneratedAcquireFence {
+            explicit GeneratedAcquireFence(const vk::Vulkan& vk);
+            ~GeneratedAcquireFence();
+            vk::Fence fence;
+            DeferredPresent::AcquireProbe probe;
+            VkDevice device;
+            PFN_vkWaitForFences wait;
+        };
         struct RenderPass {
             vk::CommandBuffer commandBuffer;
             vk::Semaphore acquireSemaphore;
+            std::unique_ptr<GeneratedAcquireFence> acquireFence;
             // Staging, its binary signal and its recorded game-queue copy are
             // created with generatedCopies and released with them when the
             // destination images are replaced.

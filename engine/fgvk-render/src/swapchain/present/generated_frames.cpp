@@ -118,6 +118,7 @@ VkResult Swapchain::presentGeneratedFrames(
                     this->presentationSlotFor(invocation.imageIndex)).first.handle()
                     : pass.copied->handle(),
                 .fence = last ? slot.fence.handle() : VK_NULL_HANDLE,
+                .acquireProbe = pass.acquireFence ? &pass.acquireFence->probe : nullptr,
                 .imageCount = static_cast<uint32_t>(this->info.images.size()),
                 .giveUp = invocation.pacedOutputs->interval / 2,
                 .internalImages = this->internalPresent != nullptr,

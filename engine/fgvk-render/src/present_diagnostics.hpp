@@ -169,9 +169,9 @@ namespace fgvk::layer::present_diagnostics {
             Clock::time_point copySampledAt{};
             uint64_t source{};
             Clock::time_point enqueued{}, queueLockStarted{}, queueLockAcquired{};
-            bool readinessChecked{};
             Clock::time_point readinessStarted{}, readinessFinished{}, readinessDeadline{};
             VkResult readinessResult{VK_NOT_READY};
+            bool readinessChecked{};
             // The real output of the application's own image, as opposed to a generated frame.
             bool applicationImage{};
             VkQueue queue{};
@@ -198,6 +198,7 @@ namespace fgvk::layer::present_diagnostics {
             Clock::duration tickSnap{};
             Clock::time_point targetTick{};
             Clock::time_point copyAcquireReturned{}, copySubmitStarted{}, copySubmitReturned{};
+            uint32_t copyAcquirePendingNs{}, copyAcquireReadyNs{};
         };
         struct OutputSample {
             size_t ordinal{};

@@ -3130,6 +3130,8 @@ struct PreparedPool {
     uint32_t next{}, held{}, peak{};
     unsigned attempts{}, misses{};
     bool failAcquire{}, failSubmit{};
+    VkFence acquireFence{};
+    unsigned acquireFencePolls{}, acquireFenceResets{};
     VkResult presentResult{VK_SUCCESS};
     std::vector<uint32_t> order;
     std::vector<DeferredPresent::Clock::time_point> acquiredAt, copiedAt;
@@ -3150,8 +3152,9 @@ VkResult poolAcquire(uint32_t* image) {
     return VK_SUCCESS;
 }
 VkResult VKAPI_CALL preparedAcquire(VkDevice, VkSwapchainKHR, uint64_t timeout,
-        VkSemaphore, VkFence, uint32_t* image) {
+        VkSemaphore, VkFence fence, uint32_t* image) {
     expect(timeout == 0, "early generated acquire blocked");
+    preparedPool->acquireFence = fence;
     return poolAcquire(image);
 }
 VkResult VKAPI_CALL preparedSubmit(VkQueue queue, uint32_t count, const VkSubmitInfo* info, VkFence fence) {
@@ -3267,11 +3270,23 @@ void generatedCopyCanPrecedeHostReadiness() {
         const auto timedWait = [](VkDevice, const VkSemaphoreWaitInfo*, uint64_t) -> VkResult {
             return readinessResult;
         };
+        DeferredPresent::AcquireProbe probe{
+            .fence = handle<VkFence>(110),
+            .status = [](VkDevice, VkFence) -> VkResult {
+                return ++preparedPool->acquireFencePolls == 1 ? VK_NOT_READY : VK_SUCCESS;
+            },
+            .reset = [](VkDevice, uint32_t, const VkFence*) -> VkResult {
+                ++preparedPool->acquireFenceResets;
+                return VK_SUCCESS;
+            },
+        };
+        auto copy = preparedCopy();
+        copy.acquireProbe = &probe;
         expect(worker.beginBatch(2, {.device = handle<VkDevice>(21), .semaphore = handle<VkSemaphore>(31),
             .value = 17, .wait = timedWait, .overlap = true, .batchHold = false,
             .copyBeforeReadiness = test.enabled, .outputInterval = 5ms, .profile = true}),
             "pre-readiness experiment batch rejected");
-        expect(worker.enqueueGeneratedCopy(swapchain, nullptr, first, preparedCopy()) &&
+        expect(worker.enqueueGeneratedCopy(swapchain, nullptr, first, copy) &&
             worker.enqueueInternalReal(real, first + 5ms, realCopy), "pre-readiness experiment outputs rejected");
         worker.closeBatch();
         const auto done = worker.finish(UINT64_MAX, false);
@@ -3281,6 +3296,13 @@ void generatedCopyCanPrecedeHostReadiness() {
             copySubmits.size() == 1 && copySubmits[0].count == 1,
             "pre-readiness experiment lost, reordered or duplicated a copy or present");
         const auto& generated = done->calls[0];
+        expect(probe.used && pool->acquireFence == probe.fence &&
+            generated.copyAcquireBounds.pendingNs != 0 &&
+            generated.copyAcquireBounds.readyNs >= generated.copyAcquireBounds.pendingNs &&
+            pool->acquireFencePolls == 2 && pool->acquireFenceResets == 0,
+            "probe must observe the successful acquire and stop polling once the fence signals");
+        expect(probe.prepare(handle<VkDevice>(21)) == probe.fence && !probe.used &&
+            pool->acquireFenceResets == 1, "a signaled acquire fence must reset before reuse");
         expect(generated.copyAcquireReturned != DeferredPresent::Clock::time_point{} &&
             generated.copyAcquireReturned <= generated.copySubmitStarted &&
             generated.copySubmitStarted <= generated.copySubmitReturned &&

@@ -74,9 +74,10 @@ void profileScenario() {
         .scheduled = start + 1ms, .imageIndex = 4, .generated = true, .deferred = true,
         .copyChecked = true, .copyStatus = VK_NOT_READY, .copySampledAt = start + 3ms,
         .source = 1, .enqueued = start + 1ms, .queueLockStarted = start + 1ms,
-        .queueLockAcquired = start + 2ms, .readinessChecked = true, .readinessStarted = start + 1ms,
+        .queueLockAcquired = start + 2ms, .readinessStarted = start + 1ms,
         .readinessFinished = start + 2ms, .readinessDeadline = start + 2ms,
-        .readinessResult = VK_SUCCESS, .queue = fakeQueue(), .presentWait = fakeSemaphore(0x5000),
+        .readinessResult = VK_SUCCESS, .readinessChecked = true,
+        .queue = fakeQueue(), .presentWait = fakeSemaphore(0x5000),
         .arrival = start, .readyAt = start + 2ms, .slack = -1ms});
     const auto sample = profile.output(start + 9ms, start + 10ms, VK_ERROR_OUT_OF_DATE_KHR, {
         .scheduled = start + 9ms, .imageIndex = 2, .deferred = true, .copyChecked = true,
@@ -133,8 +134,8 @@ void traceScenario() {
     const auto sample = profile.output(start + 1ms, start + 2ms, VK_SUCCESS, {
         .imageIndex = 4, .generated = true, .deferred = true, .source = 1,
         .enqueued = start, .queueLockStarted = start, .queueLockAcquired = start + 1ms,
-        .readinessChecked = true, .readinessStarted = start, .readinessFinished = start + 1ms,
-        .readinessDeadline = start + 1ms, .readinessResult = VK_SUCCESS, .queue = fakeQueue(),
+        .readinessStarted = start, .readinessFinished = start + 1ms,
+        .readinessDeadline = start + 1ms, .readinessResult = VK_SUCCESS, .readinessChecked = true, .queue = fakeQueue(),
         .presentWait = fakeSemaphore(0x6000)});
     logPacingOutput(77, fakeSwapchain(), sample);
     recordApplicationFrameTiming(ApplicationFrameApi::Present, 1, fakeSwapchain(), start,

@@ -11,12 +11,14 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <exception>
 #include <functional>
 #include <iostream>
 #include <optional>
 #include <span>
 #include <sstream>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -57,6 +59,17 @@ void Swapchain::ensureFrameGenerationExecutionResources(
             vk::Semaphore(vk), vk::Semaphore(vk)
         );
     }
+}
+
+Swapchain::GeneratedAcquireFence::GeneratedAcquireFence(const vk::Vulkan& vk)
+    : fence(vk), probe{fence.handle(), vk.df().GetFenceStatus, vk.df().ResetFences},
+      device(vk.dev()), wait(vk.df().WaitForFences) {}
+
+Swapchain::GeneratedAcquireFence::~GeneratedAcquireFence() {
+    // The worker has joined. The acquire fence is ordered after the semaphore
+    // used by the copy, so a completed render slot alone does not prove it idle.
+    if (probe.used && probe.status(device, probe.fence) == VK_NOT_READY)
+        static_cast<void>(wait(device, 1, &probe.fence, VK_TRUE, UINT64_MAX));
 }
 
 // The worker resubmits these copies, so they are recorded once per destination
@@ -161,6 +174,18 @@ bool Swapchain::recordGeneratedCopies(const vk::Vulkan& vk, RenderSlot& slot, si
             command.end(vk);
         }
         renderPass.generatedCopies = std::move(copies);
+        static const bool acquireProbe = [] {
+            const auto* value = std::getenv("FGVK_PACING_PROFILE_ACQUIRE_FENCE");
+            return value && std::string_view(value) == "1";
+        }();
+        if (acquireProbe && outputTimer && this->info.surfaceOrigin == SurfaceOrigin::Wayland &&
+                !renderPass.acquireFence) {
+            try {
+                renderPass.acquireFence = std::make_unique<GeneratedAcquireFence>(vk);
+            } catch (const std::exception& error) {
+                present_diagnostics::reportPacingGpuSplitUnavailable("generated-acquire-fence", error.what());
+            }
+        }
         return true;
     } catch (...) {
         renderPass.generatedCopies.clear();

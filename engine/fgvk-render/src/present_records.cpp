@@ -336,6 +336,12 @@ void appendPacingOutput(std::ostream& line, const uint64_t context, const VkSwap
         line << " copy_submit_ns=" << ns(observed.copySubmitStarted)
              << " copy_acquire_return_ns=" << ns(observed.copyAcquireReturned)
              << " copy_submit_return_ns=" << ns(observed.copySubmitReturned);
+    if (observed.copyAcquirePendingNs != 0)
+        line << " acquire_fence_pending_ns="
+             << ns(observed.copyAcquireReturned + std::chrono::nanoseconds{observed.copyAcquirePendingNs});
+    if (observed.copyAcquireReadyNs != 0)
+        line << " acquire_fence_ready_ns="
+             << ns(observed.copyAcquireReturned + std::chrono::nanoseconds{observed.copyAcquireReadyNs});
     line << '\n';
 }
 

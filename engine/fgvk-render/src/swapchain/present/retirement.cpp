@@ -113,9 +113,10 @@ VkResult Swapchain::completeDeferredPresent(const uint64_t timeoutNs, const bool
                     .copyChecked = call.copyChecked, .copyStatus = call.copyStatus,
                     .copySampledAt = call.copySampledAt, .source = completion.source,
                     .enqueued = call.enqueued, .queueLockStarted = call.queueLockStarted,
-                    .queueLockAcquired = call.queueLockAcquired, .readinessChecked = call.readinessChecked,
+                    .queueLockAcquired = call.queueLockAcquired,
                     .readinessStarted = call.readinessStarted, .readinessFinished = call.readinessFinished,
                     .readinessDeadline = call.readinessDeadline, .readinessResult = call.readinessResult,
+                    .readinessChecked = call.readinessChecked,
                     .queue = call.outputQueue, .presentWait = call.presentWait,
                     .arrival = call.arrival, .feedback = call.feedback,
                     .backendFrame = call.backendFrame, .phase = call.phase, .presentId = call.presentId,
@@ -126,6 +127,8 @@ VkResult Swapchain::completeDeferredPresent(const uint64_t timeoutNs, const bool
                     .copyAcquireReturned = call.copyAcquireReturned,
                     .copySubmitStarted = call.copySubmitStarted,
                     .copySubmitReturned = call.copySubmitReturned,
+                    .copyAcquirePendingNs = call.copyAcquireBounds.pendingNs,
+                    .copyAcquireReadyNs = call.copyAcquireBounds.readyNs,
                 });
                 present_diagnostics::logPacingOutput(this->diagnosticsState.contextId, call.swapchain, sample);
             }

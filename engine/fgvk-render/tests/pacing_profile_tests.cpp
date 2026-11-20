@@ -237,8 +237,8 @@ void detailedTrace() {
     const auto sample = profile.output(now, now, VK_SUCCESS, {
         .imageIndex = 3, .generated = true, .deferred = true, .source = 1,
         .enqueued = now, .queueLockStarted = now, .queueLockAcquired = now,
-        .readinessChecked = true, .readinessStarted = now, .readinessFinished = now,
-        .readinessDeadline = now, .readinessResult = VK_SUCCESS});
+        .readinessStarted = now, .readinessFinished = now,
+        .readinessDeadline = now, .readinessResult = VK_SUCCESS, .readinessChecked = true});
     logPacingOutput(77, {}, sample);
 }
 

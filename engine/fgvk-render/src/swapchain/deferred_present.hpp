@@ -288,6 +288,10 @@ public:
         uint64_t backendFrame;
         double phase;
     };
+    struct AcquireBounds {
+        uint32_t pendingNs{}, readyNs{};
+        bool attached{};
+    };
     struct Call {
         VkResult result{VK_SUCCESS};
         Clock::time_point started{}, finished{};
@@ -301,6 +305,7 @@ public:
         VkResult copyStatus{VK_NOT_READY};
         Clock::time_point copySampledAt{};
         Clock::time_point copyAcquireReturned{}, copySubmitStarted{}, copySubmitReturned{};
+        AcquireBounds copyAcquireBounds{};
         Clock::time_point enqueued{}, queueLockStarted{}, queueLockAcquired{};
         bool readinessChecked{};
         Clock::time_point readinessStarted{}, readinessFinished{}, readinessDeadline{};
@@ -440,6 +445,35 @@ public:
     // image k and signals presentWaits[k] and continuation. On a skip an empty
     // submit waits staged and signals continuation and fence, so the real present
     // and the render slot never wait on an unsignalled object.
+    struct AcquireProbe {
+        VkFence fence{};
+        PFN_vkGetFenceStatus status{};
+        PFN_vkResetFences reset{};
+        bool used{};
+
+        VkFence prepare(const VkDevice device) {
+            if (used) {
+                if (status(device, fence) != VK_SUCCESS || reset(device, 1, &fence) != VK_SUCCESS)
+                    return VK_NULL_HANDLE;
+                used = false;
+            }
+            return fence;
+        }
+
+        void sample(const VkDevice device, const Clock::time_point acquired, AcquireBounds& bounds) const {
+            if (!bounds.attached || acquired == Clock::time_point{} || bounds.readyNs != 0) return;
+            const auto before = Clock::now();
+            const auto result = status(device, fence);
+            if (result != VK_SUCCESS && result != VK_NOT_READY) return;
+            const auto at = result == VK_SUCCESS ? Clock::now() : before;
+            const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(at - acquired).count();
+            if (elapsed <= 0 || elapsed > UINT32_MAX) return;
+            if (result == VK_SUCCESS)
+                bounds.readyNs = static_cast<uint32_t>(elapsed);
+            else
+                bounds.pendingNs = static_cast<uint32_t>(elapsed);
+        }
+    };
     struct GeneratedCopy {
         VkDevice device{};
         PFN_vkAcquireNextImageKHR acquire{};
@@ -451,6 +485,7 @@ public:
         VkSemaphore continuation{};
         // Optional: only the last generated output of a batch carries the render slot fence.
         VkFence fence{};
+        AcquireProbe* acquireProbe{};
         uint32_t imageCount{};
         std::array<VkCommandBuffer, maxCopyImages> copies{};
         std::array<VkSemaphore, maxCopyImages> presentWaits{};
@@ -1365,6 +1400,7 @@ private:
         VkSemaphore presentWait{};
         uint64_t acquireNs{}, submitNs{};
         Clock::time_point copyAcquireReturned{}, copySubmitStarted{}, copySubmitReturned{};
+        AcquireBounds copyAcquireBounds{};
     };
     // F9b: one non-blocking attempt, made when the worker takes an internal real, so
     // its lower acquire and copy finish before the deadline. Not-ready results leave
@@ -1409,6 +1445,21 @@ private:
         return prep;
     }
 
+    static VkResult acquireGenerated(const Job& job, const bool profile, uint32_t& index,
+            uint64_t& longestNs, Clock::time_point& returnedAt, AcquireBounds& bounds) {
+        const auto& copy = job.copy;
+        const auto fence = copy.acquireProbe ? copy.acquireProbe->prepare(copy.device) : VK_NULL_HANDLE;
+        const auto result = profiledLockCall(profile, longestNs, [&] {
+            return copy.acquire(copy.device, job.swapchain, 0, copy.acquireSemaphore, fence, &index);
+        }, &returnedAt);
+        if (fence != VK_NULL_HANDLE && (result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR)) {
+            copy.acquireProbe->used = true;
+            bounds.attached = true;
+            copy.acquireProbe->sample(copy.device, returnedAt, bounds);
+        }
+        return result;
+    }
+
     // S2: prepare only the current generated output. The single worker finishes its
     // lower present before it takes the next job (including an internal real), so
     // preparations never accumulate across outputs or batches. An acquired copy is
@@ -1419,10 +1470,8 @@ private:
         const bool noted = queue->history;
         const auto started = noted ? Clock::now() : Clock::time_point{};
         queue->beginCall(lowerOpAcquireGenerated, UINT32_MAX);
-        const auto acquired = profiledLockCall(ready.profile, prep.acquireNs, [&] {
-            return job.copy.acquire(job.copy.device, job.swapchain, 0,
-                job.copy.acquireSemaphore, VK_NULL_HANDLE, &prep.lowerIndex);
-        }, &prep.copyAcquireReturned);
+        const auto acquired = acquireGenerated(job, ready.profile, prep.lowerIndex,
+            prep.acquireNs, prep.copyAcquireReturned, prep.copyAcquireBounds);
         queue->endCall();
         prep.acquired = acquired == VK_SUCCESS || acquired == VK_SUBOPTIMAL_KHR;
         if (noted && acquired != VK_NOT_READY && acquired != VK_TIMEOUT)
@@ -1793,6 +1842,9 @@ private:
                 }
                 batchShift = unmovedReady - current.deadline;
             }
+            if (prep.acquired && current.copy.acquireProbe)
+                current.copy.acquireProbe->sample(current.copy.device,
+                    prep.copyAcquireReturned, prep.copyAcquireBounds);
             // F9b: try a lower image before the present deadline. An unavailable image on
             // the pre-readiness attempt can take this normal path.
             if ((current.internalActive || earlyGenerated) && !readinessMiss && !prep.prepared && !prep.settled)
@@ -1949,6 +2001,7 @@ private:
                     result.copyAcquireReturned = prep.copyAcquireReturned;
                     result.copySubmitStarted = prep.copySubmitStarted;
                     result.copySubmitReturned = prep.copySubmitReturned;
+                    result.copyAcquireBounds = prep.copyAcquireBounds;
                 }
                 // Why this generated output presents no image, when it does not. Readiness
                 // and stopping skip unprepared outputs. Expedite skips only a non-overlapped batch: an
@@ -1979,10 +2032,8 @@ private:
                             const bool noted = queue->history;
                             const auto acquireStarted = noted ? Clock::now() : Clock::time_point{};
                             queue->beginCall(lowerOpAcquireGenerated, UINT32_MAX);
-                            acquireResult = profiledLockCall(ready.profile, result.lockAcquireNs, [&] {
-                                return job.copy.acquire(job.copy.device, job.swapchain, 0,
-                                    job.copy.acquireSemaphore, VK_NULL_HANDLE, &image);
-                            }, &result.copyAcquireReturned);
+                            acquireResult = acquireGenerated(job, ready.profile, image,
+                                result.lockAcquireNs, result.copyAcquireReturned, result.copyAcquireBounds);
                             queue->endCall();
                             if (noted && acquireResult != VK_NOT_READY && acquireResult != VK_TIMEOUT) {
                                 const bool gotImage = acquireResult == VK_SUCCESS || acquireResult == VK_SUBOPTIMAL_KHR;
@@ -2056,6 +2107,9 @@ private:
                         }
                     }
                     if (presentOutput) {
+                        if (job.copy.acquireProbe)
+                            job.copy.acquireProbe->sample(job.copy.device,
+                                result.copyAcquireReturned, result.copyAcquireBounds);
                         result.started = Clock::now();
                         // GP1: the lower ID of this present, handed out under queue->mutex.
                         if (onScreenIds) onScreenLowerId = onScreenIds->allocate();
@@ -2067,6 +2121,9 @@ private:
                             : present(queue->queue, &info);
                         queue->endCall();
                         result.finished = Clock::now();
+                        if (job.copy.acquireProbe)
+                            job.copy.acquireProbe->sample(job.copy.device,
+                                result.copyAcquireReturned, result.copyAcquireBounds);
                         queue->markPresentLocked(ready.context, ready.source, result.feedback, job.generated);
                         observeOutputOffsetLocked(ready.context);
                         if (onScreenIds)
