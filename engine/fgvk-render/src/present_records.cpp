@@ -152,16 +152,34 @@ public:
             if (requested && *requested) {
                 path = requested;
                 if (!path.is_absolute()) return;
+                descriptor = ::open(path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK, 0600);
             } else {
+                const std::string name = "fgvk-pacing-" + std::to_string(geteuid()) + "-" +
+                    std::to_string(getpid()) + "-" + std::to_string(Clock::now().time_since_epoch().count()) + ".log";
+                constexpr int flags = O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK;
+                if (const char* home = std::getenv("HOME"); home && std::filesystem::path(home).is_absolute()) {
+                    path = std::filesystem::path(home) / "fgvk-logs" / name;
+                    const auto directory = path.parent_path();
+                    if (::mkdir(directory.c_str(), 0700) == 0 || errno == EEXIST) {
+                        const int folder = ::open(directory.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+                        if (folder >= 0) {
+                            struct stat info{};
+                            if (::fstat(folder, &info) == 0 && info.st_uid == geteuid() && (info.st_mode & 0077) == 0)
+                                descriptor = ::openat(folder, name.c_str(), flags, 0600);
+                            ::close(folder);
+                        }
+                    }
+                }
                 const char* temporary = std::getenv("TMPDIR");
-                std::filesystem::path directory = temporary && *temporary ? temporary : "/tmp";
-                if (!directory.is_absolute()) directory = "/tmp";
-                path = directory / ("fgvk-pacing-" + std::to_string(geteuid()) + "-" +
-                    std::to_string(getpid()) + "-" + std::to_string(Clock::now().time_since_epoch().count()) + ".log");
+                if (descriptor < 0) {
+                    std::filesystem::path directory = temporary && *temporary ? temporary : "/tmp";
+                    if (!directory.is_absolute()) directory = "/tmp";
+                    path = directory / name;
+                    descriptor = ::open(path.c_str(), flags, 0600);
+                }
             }
             // Exclusive creation refuses old files, symlinks, FIFOs and devices.
             // This log contains only framegen-vulkan timing, never launcher/game output.
-            descriptor = ::open(path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK, 0600);
             if (descriptor < 0) {
                 std::cerr << "framegen-vulkan: pacing profile capture unavailable; choose a new absolute FGVK_PACING_PROFILE_LOG path\n";
                 return;
@@ -564,7 +582,7 @@ void formatCallWindow(const PacingCallWindowPayload& payload, std::ostream& line
 
 void formatAppFrame(const PacingAppFramePayload& payload, std::ostream& line) {
     line << "framegen-vulkan: present diagnostics: operation=pacing-profile-app-frame version=1"
-         << " pid=" << getpid() << " tid=" << payload.thread << " source=" << payload.source
+         << " pid=" << getpid() << " tid=" << payload.thread << " context=" << payload.context << " source=" << payload.source
          << " enter_ns=" << epochNanoseconds(payload.enter) << " exit_ns=" << epochNanoseconds(payload.exit)
          << " previous_exit_ns=" << epochNanoseconds(payload.previousExit)
          << " inside_layer_ns=" << payload.insideLayer << " inside_submit_ns=" << payload.insideSubmit

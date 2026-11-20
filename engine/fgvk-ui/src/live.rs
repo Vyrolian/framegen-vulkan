@@ -1,7 +1,7 @@
 //! Live readings for the settings window, taken from the pacing log that a game's layer writes.
 //!
 //! The window reads only the file the layer already writes. Once a second while the window is
-//! open, `Follower::poll` picks the newest `fgvk-pacing-<uid>-*.log` in the temporary directory.
+//! open, `Follower::poll` picks a recent `fgvk-pacing-<uid>-*.log` in the log directories.
 //! The file must be a regular file owned by this user, not a symbolic link, and modified in the
 //! last three seconds. Only the bytes added since the previous poll are read, and the readings
 //! keep only the window they show plus the records that finish it. No process, window or desktop
@@ -30,25 +30,25 @@ const TAIL_BYTES: u64 = 4 << 20;
 /// More new bytes than this in one poll means skipping ahead to the tail.
 const MAX_READ: u64 = 8 << 20;
 /// A partial line longer than this is dropped. Every pacing record is far shorter.
-const MAX_LINE: usize = 256 << 10;
+pub(crate) const MAX_LINE: usize = 256 << 10;
 const READ_CHUNK: usize = 32 << 10;
-const OPERATION: &str = "framegen-vulkan: present diagnostics: operation=";
-/// `O_NOFOLLOW`, checked on x86_64; aarch64 and riscv64 use the same asm-generic value. Elsewhere
-/// the flag is 0 and the identity check in `open_checked` still refuses a symbolic link.
+pub(crate) const OPERATION: &str = "framegen-vulkan: present diagnostics: operation=";
+/// `O_NOFOLLOW | O_NONBLOCK`, checked on x86_64. The latter keeps a replaced FIFO from blocking.
+/// Aarch64 and riscv64 use the same values. The identity check also verifies the file on other targets.
 /// `libc` is not a dependency of this crate, so the value is written out here.
 #[cfg(any(
     target_arch = "x86_64",
     target_arch = "aarch64",
     target_arch = "riscv64"
 ))]
-const O_NOFOLLOW: i32 = 0o400000;
+const LOG_OPEN_FLAGS: i32 = 0o404000;
 #[cfg(not(any(
     target_arch = "x86_64",
     target_arch = "aarch64",
     target_arch = "riscv64"
 )))]
-const O_NOFOLLOW: i32 = 0;
-const SKIP_KEYS: [&str; 5] = [
+const LOG_OPEN_FLAGS: i32 = 0;
+pub(crate) const SKIP_KEYS: [&str; 5] = [
     "generated_skip_readiness",
     "generated_skip_expedite",
     "generated_skip_give_up",
@@ -89,7 +89,7 @@ impl fmt::Display for Row {
 
 /// The followed log, the readings from it and whether the last poll found it fresh.
 pub struct Follower {
-    directory: PathBuf,
+    directories: Vec<PathBuf>,
     uid: Option<u32>,
     tail: Option<Tail>,
     readings: Readings,
@@ -100,7 +100,7 @@ impl Follower {
     /// `uid` is the owner the layer gives its logs. `None` (no uid could be read) follows nothing.
     pub fn new(directory: PathBuf, uid: Option<u32>) -> Self {
         Self {
-            directory,
+            directories: vec![directory],
             uid,
             tail: None,
             readings: Readings::default(),
@@ -108,19 +108,26 @@ impl Follower {
         }
     }
 
+    pub fn with_saved_directory(mut self, directory: Option<PathBuf>) -> Self {
+        if let Some(path) = directory.filter(|path| !self.directories.contains(path)) {
+            self.directories.insert(0, path);
+        }
+        self
+    }
+
     /// Reads what was appended since the previous poll. Call once a second.
     pub fn poll(&mut self, now: SystemTime) {
         self.fresh = false;
         let Some(uid) = self.uid else { return };
-        let Some((path, listed)) = newest_log(&self.directory, uid) else {
+        let Some((path, listed)) = self
+            .directories
+            .iter()
+            .filter_map(|path| newest_log(path, uid))
+            .filter(|(_, meta)| meta.modified().is_ok_and(|time| is_fresh(time, now)))
+            .max_by_key(|(_, meta)| (meta.len(), meta.modified().ok()))
+        else {
             return;
         };
-        let Ok(modified) = listed.modified() else {
-            return;
-        };
-        if !is_fresh(modified, now) {
-            return;
-        }
         let Some((mut file, meta)) = open_checked(&path, uid, &listed) else {
             return;
         };
@@ -181,6 +188,11 @@ pub fn log_directory(lookup: impl Fn(&str) -> Option<OsString>) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("/tmp"))
 }
 
+pub fn saved_log_directory(lookup: impl Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
+    let home = PathBuf::from(lookup("HOME")?);
+    home.is_absolute().then(|| home.join("fgvk-logs"))
+}
+
 /// This process's effective uid, which the layer uses in its log names. `/proc/self` takes the
 /// effective uid as its owner while the process is dumpable, which a settings window always is.
 pub fn own_uid() -> Option<u32> {
@@ -217,44 +229,41 @@ fn is_fresh(modified: SystemTime, now: SystemTime) -> bool {
 
 /// The newest regular file named for `uid`, judged by its own metadata (not a followed link).
 fn newest_log(directory: &Path, uid: u32) -> Option<(PathBuf, fs::Metadata)> {
+    log_files(directory, uid).max_by_key(|(_, meta)| meta.modified().ok())
+}
+
+pub fn log_files(directory: &Path, uid: u32) -> impl Iterator<Item = (PathBuf, fs::Metadata)> {
     let prefix = format!("{FILE_PREFIX}{uid}-");
-    let mut newest: Option<(SystemTime, PathBuf, fs::Metadata)> = None;
-    for entry in fs::read_dir(directory).ok()?.flatten() {
-        let name = entry.file_name();
-        let Some(name) = name.to_str() else {
-            continue;
-        };
-        if !(name.starts_with(&prefix) && name.ends_with(FILE_SUFFIX)) {
-            continue;
-        }
-        let path = entry.path();
-        // lstat: a symbolic link is never a log, whatever it points to.
-        let Ok(meta) = fs::symlink_metadata(&path) else {
-            continue;
-        };
-        if !meta.file_type().is_file() || meta.uid() != uid {
-            continue;
-        }
-        let Ok(modified) = meta.modified() else {
-            continue;
-        };
-        let newer = match &newest {
-            Some((time, _, _)) => modified > *time,
-            None => true,
-        };
-        if newer {
-            newest = Some((modified, path, meta));
-        }
-    }
-    newest.map(|(_, path, meta)| (path, meta))
+    fs::read_dir(directory)
+        .ok()
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(move |entry| {
+            let name = entry.file_name();
+            let name = name.to_str()?;
+            if !(name.starts_with(&prefix) && name.ends_with(FILE_SUFFIX)) {
+                return None;
+            }
+            let path = entry.path();
+            let meta = fs::symlink_metadata(&path).ok()?;
+            (meta.file_type().is_file() && meta.uid() == uid).then_some((path, meta))
+        })
 }
 
 /// Opens `path` without following a link, then checks that the open file is the one listed (same
 /// device and inode), is regular and belongs to `uid`.
-fn open_checked(path: &Path, uid: u32, listed: &fs::Metadata) -> Option<(File, fs::Metadata)> {
+pub(crate) fn open_checked(
+    path: &Path,
+    uid: u32,
+    listed: &fs::Metadata,
+) -> Option<(File, fs::Metadata)> {
+    if !listed.file_type().is_file() || listed.uid() != uid {
+        return None;
+    }
     let file = fs::OpenOptions::new()
         .read(true)
-        .custom_flags(O_NOFOLLOW)
+        .custom_flags(LOG_OPEN_FLAGS)
         .open(path)
         .ok()?;
     let meta = file.metadata().ok()?;
@@ -373,14 +382,14 @@ struct SplitSample {
 }
 
 /// The value of `key` among the space-separated `key=value` tokens of a record.
-fn field<'a>(fields: &'a str, key: &str) -> Option<&'a str> {
+pub(crate) fn field<'a>(fields: &'a str, key: &str) -> Option<&'a str> {
     fields.split(' ').find_map(|token| {
         let (name, value) = token.split_once('=')?;
         (name == key).then_some(value)
     })
 }
 
-fn number<T: FromStr>(fields: &str, key: &str) -> Option<T> {
+pub(crate) fn number<T: FromStr>(fields: &str, key: &str) -> Option<T> {
     field(fields, key)?.parse().ok()
 }
 

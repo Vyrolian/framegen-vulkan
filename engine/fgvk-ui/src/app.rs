@@ -10,6 +10,7 @@ use egui::{
     Sense, Stroke, StrokeKind, TextStyle, Ui, UiBuilder,
 };
 
+use crate::capture_ui::Captures;
 use crate::config::{self, Config, ConfigView, FpsMemory, Mode, Profile, ProfileKey, Settings};
 use crate::launcher_conf::{LauncherConf, Logging, Switch};
 use crate::live::{self, Row, View};
@@ -46,7 +47,11 @@ const MODES: [Mode; 5] = [
 ];
 /// The Logging section, in launcher order: the switch, its checkbox label and the hint under it.
 const LOGGING: [(Switch, &str, &str); 4] = [
-    (Switch::Pacing, "Pacing log", "Light timing summaries."),
+    (
+        Switch::Pacing,
+        "Pacing log",
+        "Records FPS, presentation timing, latency and skipped frames when available.",
+    ),
     (
         Switch::Trace,
         "Detailed trace",
@@ -102,6 +107,7 @@ pub struct App {
     last_poll: Instant,
     /// The Live section's reader of the newest fresh pacing log. Polled with `last_poll`.
     live: live::Follower,
+    captures: Captures,
     /// Where the selected profile's name is remembered. `None` when no state directory is known.
     state_path: Option<PathBuf>,
     /// The profile name last selected, or loaded from the state file at start.
@@ -138,7 +144,9 @@ impl App {
             live: live::Follower::new(
                 live::log_directory(|key| std::env::var_os(key)),
                 live::own_uid(),
-            ),
+            )
+            .with_saved_directory(live::saved_log_directory(|key| std::env::var_os(key))),
+            captures: Captures::default(),
             state_path,
             remembered,
             restored: false,
@@ -705,18 +713,25 @@ impl App {
                 Logging::default()
             }
         };
-        for (switch, label, text) in LOGGING {
+        let mut checkbox = |ui: &mut Ui, (switch, label, text): (Switch, &str, &str)| {
             let mut on = logging.get(switch);
             if ui.checkbox(&mut on, label).changed() {
                 let result = self.launcher.set(switch, on);
                 self.report(result);
             }
             hint(ui, text);
-        }
+        };
+        checkbox(ui, LOGGING[0]);
         hint(
             ui,
-            "Applies the next time a game starts. Logs: /tmp/fgvk-pacing-*.log",
+            "Applies when the game starts. Captures are saved in ~/fgvk-logs.",
         );
+        egui::CollapsingHeader::new("Extra logging options").show(ui, |ui| {
+            for option in &LOGGING[1..] {
+                checkbox(ui, *option);
+            }
+        });
+        self.captures.show(ui);
     }
 
     /// Theme and Catppuccin accent, saved in `ui.toml`. A change applies at once.
@@ -815,7 +830,9 @@ impl App {
 
 impl eframe::App for App {
     fn raw_input_hook(&mut self, _ctx: &egui::Context, input: &mut egui::RawInput) {
-        input.max_texture_side = input.max_texture_side.map(|side| side.min(MAX_TEXTURE_SIDE));
+        input.max_texture_side = input
+            .max_texture_side
+            .map(|side| side.min(MAX_TEXTURE_SIDE));
     }
 
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {

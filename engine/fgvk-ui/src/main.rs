@@ -1,6 +1,8 @@
 //! fgvk: a small settings window for framegen-vulkan frame generation profiles.
 
+mod analysis;
 mod app;
+mod capture_ui;
 mod config;
 mod launch;
 mod launcher_conf;

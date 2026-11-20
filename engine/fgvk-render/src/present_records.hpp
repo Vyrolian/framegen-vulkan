@@ -221,6 +221,7 @@ struct PacingCallWindowPayload {
 
 struct PacingAppFramePayload {
     uint32_t thread{};
+    uint64_t context{};
     uint64_t source{};
     Clock::time_point enter{};
     Clock::time_point exit{};

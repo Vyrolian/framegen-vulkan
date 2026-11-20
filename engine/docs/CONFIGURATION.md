@@ -149,7 +149,7 @@ log_gpu_cost = 0
 - `log_wayland`: compositor presentation feedback; exports `FGVK_PACING_PROFILE_WAYLAND=1`.
 - `log_gpu_cost`: frame-generation GPU time, which does not change pacing; exports `FGVK_PACING_PROFILE_GPU_SPLIT=1` and `FGVK_PACING_PROFILE=1`.
 
-The logging switches default to 0 and take only 0 or 1. The Logging section of the `fgvk` settings window writes them. A launcher exports its variable only when the launch options do not already set that variable, so a value typed there wins, including `=0`. Logs are written under `${TMPDIR:-/tmp}` and apply the next time a game starts.
+The logging switches default to 0 and take only 0 or 1. Enable **Pacing log** under **Logging** in `fgvk`, then restart the game. **Capture analyzer** opens the most recent capture when expanded. Choose another capture or enter a file path to inspect it. The report shows base FPS, latency, output spacing, GPU times when recorded, and presentation issues for each stretch of matching settings. Enter a start and end in seconds from the beginning of the capture to focus on gameplay or a benchmark. Captures are saved in `~/fgvk-logs`, with `${TMPDIR:-/tmp}` as the fallback. Values explicitly set in the game's launch options take priority over the corresponding switches.
 
 The retired `log_present` key from earlier builds is still accepted (0 or 1, no duplicates) and ignored; framegen-vulkan does not write it.
 

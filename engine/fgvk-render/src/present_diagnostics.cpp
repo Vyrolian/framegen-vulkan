@@ -49,6 +49,7 @@ struct LayerCallThreadState {
     };
     std::array<Aggregate, static_cast<size_t>(LayerCall::Count)> aggregates{};
     Clock::time_point windowStart{};
+    uint64_t boundContext{};
     uint64_t boundSource{};
 };
 
@@ -56,10 +57,6 @@ LayerCallThreadState& layerThreadState() {
     thread_local LayerCallThreadState state;
     if (!state.thread) state.thread = trace_recorder::currentThreadId();
     return state;
-}
-
-uint64_t& layerThreadBoundSource() {
-    return layerThreadState().boundSource;
 }
 
 constexpr int64_t layerCallRecordNs = 250'000;
@@ -673,7 +670,11 @@ void bindApplicationPresentSource(const uint64_t context, const uint64_t source)
         applicationPresentScope->context = context;
         applicationPresentScope->source = source;
     }
-    layerThreadBoundSource() = source;
+    if (pacingProfileEnabled()) {
+        auto& state = layerThreadState();
+        state.boundContext = context;
+        state.boundSource = source;
+    }
 }
 
 ApplicationPresentScope::ApplicationPresentScope(const VkQueue queue,
@@ -851,12 +852,14 @@ LayerCallSpan::~LayerCallSpan() {
         aggregate.sumNs += duration;
         aggregate.maxNs = std::max(aggregate.maxNs, duration);
         if (call == LayerCall::QueuePresent) {
-            present_records::PacingAppFramePayload frame{.thread = state.thread, .source = state.boundSource,
+            present_records::PacingAppFramePayload frame{.thread = state.thread,
+                .context = state.boundContext, .source = state.boundSource,
                 .enter = enter, .exit = exit, .previousExit = previousExit, .insideLayer = inside[0],
                 .insideSubmit = inside[1], .insideWait = inside[2], .insideAcquire = inside[3]};
             present_records::enqueue(trace_recorder::RecordKind::PacingAppFrame, frame);
             state.inside = {};
             state.previousExit = exit;
+            state.boundContext = 0;
             state.boundSource = 0;
         } else if (outermost) {
             state.inside[0] += duration;
