@@ -3281,9 +3281,14 @@ void generatedCopyCanPrecedeHostReadiness() {
             copySubmits.size() == 1 && copySubmits[0].count == 1,
             "pre-readiness experiment lost, reordered or duplicated a copy or present");
         const auto& generated = done->calls[0];
-        expect(generated.copySubmitStarted != DeferredPresent::Clock::time_point{} &&
+        expect(generated.copyAcquireReturned != DeferredPresent::Clock::time_point{} &&
+            generated.copyAcquireReturned <= generated.copySubmitStarted &&
+            generated.copySubmitStarted <= generated.copySubmitReturned &&
+            generated.copySubmitReturned <= generated.started,
+            "generated copy acquire and submit timestamps must precede the present");
+        expect(
             (test.enabled && !test.unavailable
-                ? generated.copySubmitStarted <= generated.readinessStarted
+                ? generated.copySubmitReturned <= generated.readinessStarted
                 : generated.copySubmitStarted >= generated.readinessFinished),
             "final copy was submitted on the wrong side of the host readiness wait");
     }
@@ -3352,7 +3357,7 @@ void generatedPreparationFallbackAndGates(bool disabled = false) {
         auto copy = preparedCopy();
         if (mode == 1) copy.internalImages = false;
         const auto due = DeferredPresent::Clock::now() + 60ms;
-        expect(worker.beginBatch(1, {.overlap = mode != 2}), "fallback batch rejected");
+        expect(worker.beginBatch(1, {.overlap = mode != 2, .profile = mode == 0}), "fallback batch rejected");
         expect(worker.enqueueGeneratedCopy(handle<VkSwapchainKHR>(11), nullptr, due, copy),
             "fallback generated output rejected");
         worker.closeBatch();
@@ -3361,6 +3366,16 @@ void generatedPreparationFallbackAndGates(bool disabled = false) {
             !done->calls[0].generatedPrepared && pool.held == 0 &&
             pool.attempts == (mode == 0 ? 2u : 1u) && copySubmits.size() == 1 &&
             pool.acquiredAt[0] >= due, "fallback or preparation gate changed deadline delivery");
+        const auto& call = done->calls[0];
+        if (mode == 0)
+            expect(call.copyAcquireReturned >= due && call.copyAcquireReturned <= call.copySubmitStarted &&
+                call.copySubmitStarted <= call.copySubmitReturned && call.copySubmitReturned <= call.started,
+                "fallback timestamps must identify the acquire that returned an image and the submitted copy");
+        else
+            expect(call.copyAcquireReturned == DeferredPresent::Clock::time_point{} &&
+                call.copySubmitStarted == DeferredPresent::Clock::time_point{} &&
+                call.copySubmitReturned == DeferredPresent::Clock::time_point{},
+                "disabled profiling recorded generated copy timestamps");
     }
 }
 // Retirement drains the worker before resources die (the destructor is that

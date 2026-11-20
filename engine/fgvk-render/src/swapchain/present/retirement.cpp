@@ -123,7 +123,9 @@ VkResult Swapchain::completeDeferredPresent(const uint64_t timeoutNs, const bool
                     .slack = i == 0 ? completion.slack : DiagnosticsClock::duration{},
                     .offset = call.offset, .appPresentId = call.appPresentId,
                     .tickSnap = call.tickSnap, .targetTick = call.targetTick,
+                    .copyAcquireReturned = call.copyAcquireReturned,
                     .copySubmitStarted = call.copySubmitStarted,
+                    .copySubmitReturned = call.copySubmitReturned,
                 });
                 present_diagnostics::logPacingOutput(this->diagnosticsState.contextId, call.swapchain, sample);
             }

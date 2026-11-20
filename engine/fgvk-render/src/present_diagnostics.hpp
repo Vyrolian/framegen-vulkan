@@ -172,10 +172,10 @@ namespace fgvk::layer::present_diagnostics {
             bool readinessChecked{};
             Clock::time_point readinessStarted{}, readinessFinished{}, readinessDeadline{};
             VkResult readinessResult{VK_NOT_READY};
-            VkQueue queue{};
-            VkSemaphore presentWait{};
             // The real output of the application's own image, as opposed to a generated frame.
             bool applicationImage{};
+            VkQueue queue{};
+            VkSemaphore presentWait{};
             // Limiter arrival of a worker batch, on its first output only; zero otherwise.
             Clock::time_point arrival{};
             // Display identity: the Wayland feedback id of the lower present (0 if none), the backend
@@ -197,7 +197,7 @@ namespace fgvk::layer::present_diagnostics {
             // (zero when the output was not snapped).
             Clock::duration tickSnap{};
             Clock::time_point targetTick{};
-            Clock::time_point copySubmitStarted{};
+            Clock::time_point copyAcquireReturned{}, copySubmitStarted{}, copySubmitReturned{};
         };
         struct OutputSample {
             size_t ordinal{};

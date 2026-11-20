@@ -300,7 +300,7 @@ public:
         bool generated{}, copyChecked{};
         VkResult copyStatus{VK_NOT_READY};
         Clock::time_point copySampledAt{};
-        Clock::time_point copySubmitStarted{};
+        Clock::time_point copyAcquireReturned{}, copySubmitStarted{}, copySubmitReturned{};
         Clock::time_point enqueued{}, queueLockStarted{}, queueLockAcquired{};
         bool readinessChecked{};
         Clock::time_point readinessStarted{}, readinessFinished{}, readinessDeadline{};
@@ -1336,11 +1336,15 @@ private:
     // call in longestNs, so a poll loop reports its worst attempt. Clock reads happen
     // only when profile is set.
     template<typename Fn>
-    static auto profiledLockCall(const bool profile, uint64_t& longestNs, Fn&& fn) {
+    static auto profiledLockCall(const bool profile, uint64_t& longestNs, Fn&& fn,
+            Clock::time_point* const returnedAt = nullptr, Clock::time_point* const startedAt = nullptr) {
         if (!profile) return fn();
         const auto started = Clock::now();
+        if (startedAt) *startedAt = started;
         const auto value = fn();
-        longestNs = std::max(longestNs, nanosecondsOf(Clock::now() - started));
+        const auto returned = Clock::now();
+        if (returnedAt) *returnedAt = returned;
+        longestNs = std::max(longestNs, nanosecondsOf(returned - started));
         return value;
     }
     static uint64_t nanosecondsOf(const Clock::duration duration) {
@@ -1360,7 +1364,7 @@ private:
         uint32_t lowerIndex{};
         VkSemaphore presentWait{};
         uint64_t acquireNs{}, submitNs{};
-        Clock::time_point copySubmitStarted{};
+        Clock::time_point copyAcquireReturned{}, copySubmitStarted{}, copySubmitReturned{};
     };
     // F9b: one non-blocking attempt, made when the worker takes an internal real, so
     // its lower acquire and copy finish before the deadline. Not-ready results leave
@@ -1418,7 +1422,7 @@ private:
         const auto acquired = profiledLockCall(ready.profile, prep.acquireNs, [&] {
             return job.copy.acquire(job.copy.device, job.swapchain, 0,
                 job.copy.acquireSemaphore, VK_NULL_HANDLE, &prep.lowerIndex);
-        });
+        }, &prep.copyAcquireReturned);
         queue->endCall();
         prep.acquired = acquired == VK_SUCCESS || acquired == VK_SUBOPTIMAL_KHR;
         if (noted && acquired != VK_NOT_READY && acquired != VK_TIMEOUT)
@@ -1433,11 +1437,10 @@ private:
         if (!prep.acquired) return prep; // The unchanged path retries at the deadline.
         prep.presentWait = job.copy.presentWaits.at(prep.lowerIndex);
         const auto submitted = profiledLockCall(ready.profile, prep.submitNs, [&] {
-            if (ready.profile) prep.copySubmitStarted = Clock::now();
             return submitGeneratedWork(*queue, job.copy, true,
                 job.copy.copies.at(prep.lowerIndex), prep.presentWait, prep.lowerIndex,
                 0, ready.source);
-        });
+        }, &prep.copySubmitReturned, &prep.copySubmitStarted);
         if (submitted != VK_SUCCESS) {
             prep.settled = true;
             prep.error = submitted;
@@ -1943,7 +1946,9 @@ private:
                     job.image = prep.lowerIndex;
                     job.wait = prep.presentWait;
                     result.generatedPrepared = true;
+                    result.copyAcquireReturned = prep.copyAcquireReturned;
                     result.copySubmitStarted = prep.copySubmitStarted;
+                    result.copySubmitReturned = prep.copySubmitReturned;
                 }
                 // Why this generated output presents no image, when it does not. Readiness
                 // and stopping skip unprepared outputs. Expedite skips only a non-overlapped batch: an
@@ -1977,7 +1982,7 @@ private:
                             acquireResult = profiledLockCall(ready.profile, result.lockAcquireNs, [&] {
                                 return job.copy.acquire(job.copy.device, job.swapchain, 0,
                                     job.copy.acquireSemaphore, VK_NULL_HANDLE, &image);
-                            });
+                            }, &result.copyAcquireReturned);
                             queue->endCall();
                             if (noted && acquireResult != VK_NOT_READY && acquireResult != VK_TIMEOUT) {
                                 const bool gotImage = acquireResult == VK_SUCCESS || acquireResult == VK_SUBOPTIMAL_KHR;
@@ -2031,11 +2036,10 @@ private:
                     if (job.copyActive && !generatedPrepared) {
                         if (copyPending) {
                             const VkResult copied = profiledLockCall(ready.profile, result.lockSubmitNs, [&] {
-                                if (ready.profile) result.copySubmitStarted = Clock::now();
                                 return submitGeneratedWork(*queue, job.copy, true,
                                     job.copy.copies.at(job.image), job.wait, job.image,
                                     0, ready.source);
-                            });
+                            }, &result.copySubmitReturned, &result.copySubmitStarted);
                             presentOutput = copied == VK_SUCCESS;
                             if (copied < 0) skipResult = copied;
                         }

@@ -333,7 +333,9 @@ void appendPacingOutput(std::ostream& line, const uint64_t context, const VkSwap
          << " tick_snap_ns=" << std::chrono::duration_cast<std::chrono::nanoseconds>(observed.tickSnap).count()
          << " target_tick_ns=" << ns(observed.targetTick);
     if (observed.copySubmitStarted != Clock::time_point{})
-        line << " copy_submit_ns=" << ns(observed.copySubmitStarted);
+        line << " copy_submit_ns=" << ns(observed.copySubmitStarted)
+             << " copy_acquire_return_ns=" << ns(observed.copyAcquireReturned)
+             << " copy_submit_return_ns=" << ns(observed.copySubmitReturned);
     line << '\n';
 }
 
