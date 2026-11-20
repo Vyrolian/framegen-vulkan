@@ -1749,7 +1749,7 @@ void lateGeneratedCopyPastQuarterSkips() {
         "skipped generated output was presented or the real output was lost");
 }
 // Without a release limit, a copy tail keeps the full output spacing.
-void generatedCopyTailKeepsSpacingWithoutLimit() {
+void generatedCopyTailKeepsSpacingWithoutLimit(const bool direct) {
     auto queue = std::make_shared<DeferredPresentQueue>();
     queue->queue = handle<VkQueue>(7);
     DeferredPresent worker(queue, recordingPresent);
@@ -1763,12 +1763,22 @@ void generatedCopyTailKeepsSpacingWithoutLimit() {
         .swapchainCount = 1, .pSwapchains = &swapchain, .pImageIndices = &realImage};
     const auto interval = 80ms;
     const auto now = DeferredPresent::Clock::now();
+    const auto first = direct ? now + interval : now;
+    uint32_t generatedImage = 2;
+    const auto generatedWait = handle<VkSemaphore>(72);
+    const VkPresentInfoKHR generatedInfo{.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+        .waitSemaphoreCount = 1, .pWaitSemaphores = &generatedWait,
+        .swapchainCount = 1, .pSwapchains = &swapchain, .pImageIndices = &generatedImage};
     auto copy = generatedCopy();
     copy.giveUp = 1s;
     expect(worker.beginBatch(2, {.overlap = true, .outputInterval = interval}),
         "unlimited copy batch rejected");
-    expect(worker.enqueueGeneratedCopy(swapchain, nullptr, now, copy) &&
-        worker.enqueue(realInfo, now + 1ms), "unlimited copy outputs rejected");
+    expect(worker.canPreacquireGenerated(), "empty batch held a direct reservation");
+    expect(direct ? worker.enqueue(generatedInfo, first, true, {}, true)
+                  : worker.enqueueGeneratedCopy(swapchain, nullptr, first, copy),
+        "unlimited generated copy rejected");
+    if (direct) expect(!worker.canPreacquireGenerated(), "direct reservation was not counted");
+    expect(worker.enqueue(realInfo, first + 1ms), "unlimited real output rejected");
     worker.closeBatch();
     const auto completion = worker.finish(UINT64_MAX);
     expect(completion && completion->count == 2 && completion->result == VK_SUCCESS &&
@@ -1776,7 +1786,12 @@ void generatedCopyTailKeepsSpacingWithoutLimit() {
         "unlimited generated copy was skipped");
     expect(completion->calls[1].started >= completion->calls[0].started + interval,
         "copy tail lost its full output spacing without a release limit");
-    expect(copyPresents.size() == 2 && copyPresents[0] == std::pair{2u, handle<VkSemaphore>(72)} &&
+    if (direct) {
+        expect(worker.canPreacquireGenerated(), "presented direct reservation was retained");
+        expect(copySubmits.empty() && copyAcquireCalls == 0 && completion->calls[0].generatedPrepared,
+            "worker tried to acquire or copy a producer-prepared generated image");
+    }
+    expect(copyPresents.size() == 2 && copyPresents[0] == std::pair{2u, generatedWait} &&
         copyPresents[1] == std::pair{4u, realWait},
         "unlimited copy presented the wrong images");
 }
@@ -4684,7 +4699,8 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char** argv) {
     generatedCopyAddsPrivateTail(); generatedSkipAddsPrivateTail();
     generatedCopyUnsafeSpacingModes(); generatedCopyTailSurvivesAJoin();
     lateGeneratedCopyPresentsBeforeLimit(); lateGeneratedCopyPastQuarterSkips();
-    generatedCopyTailKeepsSpacingWithoutLimit();
+    generatedCopyTailKeepsSpacingWithoutLimit(false);
+    generatedCopyTailKeepsSpacingWithoutLimit(true);
     expeditedOverlapKeepsGeneratedAndTail(); expeditePullsSleepingTail();
     lateGeneratedUsesOneAttempt(); readinessExtensionIsBounded();
     nonOverlapKeepsSkipBehaviour(); compressedPairsAreCounted();

@@ -164,7 +164,7 @@ namespace fgvk::layer::present_diagnostics {
         struct OutputObservation {
             Clock::time_point scheduled{};
             uint32_t imageIndex{UINT32_MAX};
-            bool generated{}, deferred{}, copyExpected{}, copyChecked{};
+            bool generated{}, deferred{}, copyExpected{}, copyChecked{}, directGenerated{};
             VkResult copyStatus{VK_NOT_READY};
             Clock::time_point copySampledAt{};
             uint64_t source{};

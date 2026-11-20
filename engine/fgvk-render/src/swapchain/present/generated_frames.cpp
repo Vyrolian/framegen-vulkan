@@ -92,9 +92,17 @@ VkResult Swapchain::presentGeneratedFrames(
         const auto* value = std::getenv("FGVK_SAME_QUEUE_GENERATED_COPY");
         return value && std::string_view(value) == "1";
     }();
-    const bool privateStaging = sameQueueCopies && workerCopies && this->internalPresent &&
+    static const bool directCopies = [] {
+        const auto* value = std::getenv("FGVK_DIRECT_GENERATED_COPY");
+        return value && std::string_view(value) == "1";
+    }();
+    const bool nativeImmediate2x = workerCopies && this->internalPresent &&
         plan.scheduledGeneratedFrames.size() == 1 && this->info.surfaceOrigin == SurfaceOrigin::Wayland &&
-        this->currentPresentMode == VK_PRESENT_MODE_IMMEDIATE_KHR &&
+        this->currentPresentMode == VK_PRESENT_MODE_IMMEDIATE_KHR;
+    const bool tryDirect = directCopies && nativeImmediate2x && this->info.surfaceMinImageCount &&
+        this->info.images.size() >= static_cast<size_t>(this->info.surfaceMinImageCount) + layerHeldLowerImages &&
+        this->deferredPresent->canPreacquireGenerated();
+    const bool privateStaging = sameQueueCopies && nativeImmediate2x &&
         this->info.deferredPresentQueue->tail != VK_NULL_HANDLE &&
         // Earlier outputs still need the private queue ahead of this backend wait.
         !this->deferredPresent->olderBatchPending();
@@ -105,9 +113,19 @@ VkResult Swapchain::presentGeneratedFrames(
         );
         auto& destinationImage = this->destinationImages.at(i);
         auto& pass = this->currentRenderSlot().passes.at(i);
+        uint32_t acquiredImageIndex{};
+        VkResult result{};
+        const bool direct = tryDirect && ([&] {
+            result = this->deferredPresent->pollAcquire([&] {
+                return invocation.vk.df().AcquireNextImageKHR(
+                    invocation.vk.dev(), invocation.swapchain, 0,
+                    pass.acquireSemaphore.handle(), VK_NULL_HANDLE, &acquiredImageIndex);
+            });
+            return result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR;
+        })();
 
         // Any refusal keeps the path below.
-        if (workerCopies && deferredTail) {
+        if (workerCopies && deferredTail && !direct) {
             const bool last = i + 1 == plan.scheduledGeneratedFrames.size();
             auto& slot = this->currentRenderSlot();
             if (privateStaging) {
@@ -182,6 +200,7 @@ VkResult Swapchain::presentGeneratedFrames(
                     // beginDeferredPresentBatch set from the same ordinal in this present.
                     slot.outputSource = this->pacingProfile->sourceOrdinal();
                     slot.outputPending = true;
+                    slot.outputDirect = false;
                 }
                 // Worker copies are counted on completion, when a pressure
                 // skip can be distinguished from a submitted generated image.
@@ -214,13 +233,11 @@ VkResult Swapchain::presentGeneratedFrames(
                 throw ls::vulkan_error(released, "vkQueueSubmit() failed");
         }
 
-        uint32_t acquiredImageIndex{};
-        VkResult result{};
         bool acquireBudgetExhausted = false;
-        if (plan.generatedImagesPreacquired) {
+        if (!direct && plan.generatedImagesPreacquired) {
             acquiredImageIndex = plan.preacquiredGeneratedImages.at(i);
             result = VK_SUCCESS;
-        } else {
+        } else if (!direct) {
             // Recovery classification is active even when diagnostics are
             // disabled, so this one clock sample cannot use the opt-in timer.
             const auto acquireStarted = DiagnosticsClock::now();
@@ -397,7 +414,13 @@ VkResult Swapchain::presentGeneratedFrames(
             acquiredImageIndex
         );
         auto& commandBuffer = pass.commandBuffer;
+        auto& slot = this->currentRenderSlot();
+        auto* const outputTimer = direct ? slot.outputQueries.get() : nullptr;
         commandBuffer.begin(invocation.vk);
+        if (outputTimer) {
+            outputTimer->reset(commandBuffer.handle());
+            outputTimer->write(commandBuffer.handle(), VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 0);
+        }
         vk::acquireExternalImage(invocation.vk, commandBuffer.handle(), destinationImage.handle(),
             VK_ACCESS_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
         const std::array preBarriers{
@@ -428,6 +451,8 @@ VkResult Swapchain::presentGeneratedFrames(
             destinationImage.getExtent(),
             postBarriers
         );
+        if (outputTimer)
+            outputTimer->write(commandBuffer.handle(), VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 1);
 
         std::array<VkSemaphore, 2> waitSemaphores{
             pass.acquireSemaphore.handle(), VK_NULL_HANDLE
@@ -469,7 +494,12 @@ VkResult Swapchain::presentGeneratedFrames(
             );
         });
         if (i == plan.scheduledGeneratedFrames.size() - 1)
-            this->currentRenderSlot().inFlight = true;
+            slot.inFlight = true;
+        if (outputTimer && this->pacingProfile) {
+            slot.outputSource = this->pacingProfile->sourceOrdinal();
+            slot.outputPending = true;
+            slot.outputDirect = true;
+        }
         generatedSubmitDuration += finishPhaseTimer(
             generatedSubmitStarted
         );
@@ -496,6 +526,7 @@ VkResult Swapchain::presentGeneratedFrames(
                 .scheduled = invocation.pacedOutputs ? invocation.pacedOutputs->at(i)
                     : invocation.originalPresentDeadline.value_or(DiagnosticsClock::time_point{}),
                 .generated = true, .copyExpected = true,
+                .directGenerated = direct,
                 .backendFrame = this->frameState.backendFrameIndex - 1,
                 .phase = plan.scheduledGeneratedFrames[i],
             }

@@ -363,7 +363,8 @@ VkResult Swapchain::queuePresentWithRetirementFence(
             const bool admitted = this->deferredPresent && (internalReal
                 ? this->enqueueInternalRealPresent(vk, info, *this->deferredPresentDeadline)
                 : this->deferredPresent->enqueue(info, *this->deferredPresentDeadline, observation.generated,
-                    DeferredPresent::OutputIdentity{observation.backendFrame, observation.phase}));
+                    DeferredPresent::OutputIdentity{observation.backendFrame, observation.phase},
+                    observation.directGenerated));
             if (admitted) {
                 // X3: the worker now owns the application chain, and signals its fence if the job skips.
                 if (observation.applicationImage)

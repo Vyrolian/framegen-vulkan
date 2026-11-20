@@ -37,6 +37,7 @@ namespace fgvk::layer {
     struct SwapchainCreateModification {
         bool privateOrderedTransport{false};
         bool swapchainImageCountCompatibility{false};
+        uint32_t surfaceMinImageCount{};
         VkExtent2D applicationExtent{};
         VkExtent2D presentationExtent{};
     };

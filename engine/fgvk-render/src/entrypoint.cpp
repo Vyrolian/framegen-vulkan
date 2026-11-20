@@ -2048,6 +2048,7 @@ namespace {
                 .colorSpace = newInfo.imageColorSpace,
                 .requestedMinImageCount = info->minImageCount,
                 .provisionedMinImageCount = newInfo.minImageCount,
+                .surfaceMinImageCount = modification.surfaceMinImageCount,
                 .swapchainImageCountCompatibility =
                     modification.swapchainImageCountCompatibility,
                 .applicationOldSwapchainProvided =

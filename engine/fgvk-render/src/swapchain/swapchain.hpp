@@ -83,6 +83,7 @@ namespace fgvk::layer {
         // generated-capacity admission without changing presentation behavior.
         uint32_t requestedMinImageCount{0};
         uint32_t provisionedMinImageCount{0};
+        uint32_t surfaceMinImageCount{};
         bool swapchainImageCountCompatibility{false};
         // Preserve whether the application supplied the Vulkan replacement
         // lineage explicitly so retirement and replacement stabilization keep
@@ -447,6 +448,7 @@ namespace fgvk::layer {
             std::unique_ptr<vk::TimestampQueryPool> outputQueries;
             uint64_t outputSource{};
             bool outputPending{};
+            bool outputDirect{};
         };
         std::vector<RenderSlot> renderSlots;
         size_t renderSlotIndex{0};

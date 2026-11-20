@@ -703,8 +703,19 @@ public:
     }
     // identity is diagnostics only: the backend frame and the interpolation position of a generated output.
     bool enqueue(const VkPresentInfoKHR& info, Clock::time_point deadline, bool generated = false,
-            OutputIdentity identity = {}) {
-        return admit(info, deadline, generated, nullptr, identity);
+            OutputIdentity identity = {}, bool directGenerated = false) {
+        return admit(info, deadline, generated, nullptr, identity, directGenerated);
+    }
+    // The producer is serialized by the swapchain owner. Allow one retained
+    // producer-acquired lower image in addition to the worker's current image.
+    [[nodiscard]] bool canPreacquireGenerated() const {
+        const std::lock_guard lock(mutex);
+        for (size_t i = 0; i < count; ++i) {
+            const auto& batch = batches[slotAt(i)];
+            for (size_t j = batch.consumed; j < batch.produced; ++j)
+                if (batch.jobs[j].directGenerated) return false;
+        }
+        return true;
     }
     // The real output of an internal application image. Admission matches
     // enqueue. The worker acquires a lower image, copies the application image
@@ -1019,11 +1030,12 @@ private:
         // Diagnostics only: the backend frame and interpolation position of a generated output.
         uint64_t backendFrame{};
         double phase{};
+        bool directGenerated{};
     };
     // Shared admission for enqueue and enqueueInternalReal. The metadata snapshot,
     // present-ID registration and batch rules are the same for both.
     bool admit(const VkPresentInfoKHR& info, Clock::time_point deadline, bool generated,
-            const InternalRealCopy* internal, OutputIdentity identity = {}) {
+            const InternalRealCopy* internal, OutputIdentity identity = {}, bool directGenerated = false) {
         if (info.swapchainCount != 1 || info.waitSemaphoreCount != 1 || info.pResults ||
                 !info.pSwapchains || !info.pImageIndices || !info.pWaitSemaphores)
             return false;
@@ -1055,6 +1067,7 @@ private:
             }
             job.backendFrame = identity.backendFrame;
             job.phase = identity.phase;
+            job.directGenerated = directGenerated;
             batch.jobs[batch.produced++] = std::move(job);
         }
         changed.notify_all();
@@ -1657,7 +1670,8 @@ private:
             if (first && tickLockEnabled && correctionEnabled()) tickLock.setRefresh(ready.refreshNs);
             const size_t limit = batch.limit;
             outputOffsetController.setExpected(limit > 1 ? static_cast<uint32_t>(limit - 1) : 1);
-            const bool copyTail = index > 0 && batch.jobs[index - 1].copyActive &&
+            const bool copyTail = index > 0 &&
+                (batch.jobs[index - 1].copyActive || batch.jobs[index - 1].directGenerated) &&
                 !batch.aggregate.calls[index - 1].skipped;
             auto deadline = first ? current.deadline :
                 nextOutputDeadline(current.deadline + batchShift,
@@ -1956,7 +1970,8 @@ private:
             result.appPresentId = job.generated ? 0 : applicationIdOf(metadata);
             result.backendFrame = current.backendFrame;
             result.phase = current.phase;
-            result.workerCopy = job.copyActive;
+            result.workerCopy = job.copyActive || job.directGenerated;
+            result.generatedPrepared = job.directGenerated;
             result.outputQueue = queue->queue;
             result.lateReadiness = first && lateReadiness;
             result.arrival = first ? ready.arrival : Clock::time_point{};

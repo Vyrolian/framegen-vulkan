@@ -188,12 +188,14 @@ void Swapchain::recordOutputGpuSplit(const vk::Vulkan& vk, const RenderSlot& slo
                 slot.outputQueries->timestampPeriodNanoseconds());
             this->refreshSplitRenderCalibration();
             // No WAIT flag: a skipped or unfinished copy returns no values, so this output is unavailable.
-            if (const auto ticks = slot.outputQueries->tryTimestamps(4);
+            if (const auto ticks = slot.outputQueries->tryTimestamps(slot.outputDirect ? 2 : 4);
                     ticks && this->splitRenderClock && this->splitRenderClock->calibrated()) {
                 copyStartNs = this->splitRenderClock->monotonicNanoseconds(ticks->at(0));
                 copyEndNs = this->splitRenderClock->monotonicNanoseconds(ticks->at(1));
-                stagingStartNs = this->splitRenderClock->monotonicNanoseconds(ticks->at(2));
-                stagingEndNs = this->splitRenderClock->monotonicNanoseconds(ticks->at(3));
+                if (!slot.outputDirect) {
+                    stagingStartNs = this->splitRenderClock->monotonicNanoseconds(ticks->at(2));
+                    stagingEndNs = this->splitRenderClock->monotonicNanoseconds(ticks->at(3));
+                }
                 available = copyStartNs != 0 && copyEndNs != 0;
             }
         }
