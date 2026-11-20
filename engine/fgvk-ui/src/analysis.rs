@@ -274,19 +274,56 @@ fn subtract(end: u64, start: u64) -> Option<u64> {
     (start != 0 && end > start).then(|| end - start)
 }
 
-fn percentiles(values: &mut [u64]) -> String {
-    if values.is_empty() {
-        return "Unavailable".to_owned();
+pub const TIMING_COLUMNS: [&str; 5] = ["Timing (ms)", "Median", "p95", "p99", "Samples"];
+
+pub struct TimingRow {
+    pub label: String,
+    pub values: [String; 4],
+}
+
+impl TimingRow {
+    fn new(label: impl Into<String>, sample: &mut [u64]) -> Self {
+        sample.sort_unstable();
+        let at = |percent: usize| {
+            if sample.is_empty() {
+                return "—".to_owned();
+            }
+            let index = (sample.len() * percent).div_ceil(100) - 1;
+            format!("{:.2}", sample[index] as f64 / MS as f64)
+        };
+        Self {
+            label: label.into(),
+            values: [at(50), at(95), at(99), sample.len().to_string()],
+        }
     }
-    values.sort_unstable();
-    let at = |percent: usize| values[(values.len() * percent).div_ceil(100) - 1] as f64 / MS as f64;
-    format!(
-        "{:.2} / {:.2} / {:.2} ms  ({} frames)",
-        at(50),
-        at(95),
-        at(99),
-        values.len()
-    )
+}
+
+pub struct ReportSection {
+    pub heading: String,
+    pub details: String,
+    pub timings: Vec<TimingRow>,
+}
+
+pub struct Report {
+    pub title: String,
+    pub overview: String,
+    pub sections: Vec<ReportSection>,
+}
+
+impl Report {
+    pub fn markdown(&self) -> String {
+        use std::fmt::Write;
+        let mut text = format!("# {}\n\n{}", self.title, self.overview);
+        for section in &self.sections {
+            let _ = writeln!(text, "\n## {}\n\n{}", section.heading, section.details);
+            let _ = writeln!(text, "| {} |", TIMING_COLUMNS.join(" | "));
+            let _ = writeln!(text, "| --- | ---: | ---: | ---: | ---: |");
+            for row in &section.timings {
+                let _ = writeln!(text, "| {} | {} |", row.label, row.values.join(" | "));
+            }
+        }
+        text
+    }
 }
 
 #[derive(Default)]
@@ -397,7 +434,7 @@ impl Capture {
         simulations
     }
 
-    fn report(mut self, range: Option<(f64, f64)>) -> Option<String> {
+    fn report(mut self, range: Option<(f64, f64)>) -> Option<Report> {
         self.windows.sort_by_key(|w| (w.stream, w.end));
         let origin = self
             .windows
@@ -586,24 +623,27 @@ impl Capture {
 
         segments.sort_by_key(Segment::start);
         use std::fmt::Write;
-        let mut report = String::new();
-        if !self.game.is_empty() {
-            let _ = writeln!(report, "{}", self.game);
-        }
-        let _ = writeln!(
-            report,
-            "Capture {:.1} s · {} segments",
-            (last - origin) as f64 / SECOND as f64,
-            segments.len()
+        let title = if self.game.is_empty() {
+            "Pacing capture".to_owned()
+        } else {
+            self.game
+        };
+        let count = segments.len();
+        let unit = if count == 1 { "segment" } else { "segments" };
+        let mut overview = format!(
+            "{:.1} s capture · {count} {unit}\n",
+            (last - origin) as f64 / SECOND as f64
         );
-        let _ = writeln!(report, "Timing columns show median / p95 / p99.");
-        let _ = writeln!(report, "Presentation times come from Wayland. Reflex timing matches the present-start marker to a nearby application present. The report uses complete timing windows.");
         if self.incomplete {
-            let _ = writeln!(report, "Capture contains a gap, wrap, or recording limit.");
+            let _ = writeln!(
+                overview,
+                "The capture has a gap or reached its recording limit."
+            );
         }
         if segments.is_empty() {
-            let _ = writeln!(report, "No complete timing windows in this range.");
+            let _ = writeln!(overview, "No complete timing windows in this range.");
         }
+        let mut sections = Vec::new();
         for segment in &mut segments {
             let fps = segment.sources as f64 * 1000.0 / segment.duration_ms;
             let mode = match segment.first.mode {
@@ -620,40 +660,38 @@ impl Capture {
             };
             let start = (segment.start() - origin) as f64 / SECOND as f64;
             let end = (segment.last.end - origin) as f64 / SECOND as f64;
-            let _ = write!(
-                report,
-                "\n{start:.1}–{end:.1} s · {multiplier} · {fps:.1} base FPS · {mode}"
-            );
+            let heading = format!("{start:.1}–{end:.1} s · {multiplier} · {fps:.1} base FPS");
+            let mut details = mode.to_owned();
             if segment.first.cap > 0 {
                 let _ = write!(
-                    report,
-                    " · {:.1} FPS cap",
+                    details,
+                    " · {:.0} FPS cap",
                     segment.first.cap as f64 / 1000.0
                 );
             }
             if segment.first.configured_cap > 0 {
                 let _ = write!(
-                    report,
-                    " · {} FPS configured limit",
+                    details,
+                    " (configured limit {} FPS)",
                     segment.first.configured_cap
                 );
             }
             let on = |enabled| if enabled { "on" } else { "off" };
             let _ = writeln!(
-                report,
+                details,
                 "\nBatch Hold {} · Pacing Correction {}",
                 on(segment.first.hold),
                 on(segment.first.correction)
             );
             let timing = &mut segment.timing;
             let _ = writeln!(
-                report,
+                details,
                 "{} generated skips · {} present errors",
                 segment.skips, segment.errors
             );
             if timing.shown > 0 || timing.discarded > 0 {
                 let _ = writeln!(
-                    report,
+                    details,
                     "{} presented · {} discarded (matched compositor reports)",
                     timing.shown, timing.discarded
                 );
@@ -661,43 +699,44 @@ impl Capture {
             if timing.shown > 0 {
                 let share = |count| count as f64 * 100.0 / timing.shown as f64;
                 let _ = writeln!(
-                    report,
-                    "Compositor flags   VSync {:.1}% · Zero copy {:.1}%",
+                    details,
+                    "Wayland flags · VSync {:.1}% · Zero copy {:.1}%",
                     share(timing.vsync),
                     share(timing.zero_copy),
                 );
             }
-            for (label, values) in [
-                ("Simulation → real presentation", &mut timing.sim_to_real),
-                (
-                    "Application present → real presentation",
-                    &mut timing.app_to_real,
-                ),
-                ("Simulation → application present", &mut timing.sim_to_app),
-                (
-                    "Gap between consecutive displayed outputs",
-                    &mut timing.display_gap,
-                ),
+            let mut timings = [
+                ("Simulation to real frame", &mut timing.sim_to_real),
+                ("Game present to real frame", &mut timing.app_to_real),
+                ("Simulation to game present", &mut timing.sim_to_app),
+                ("Gap between displayed frames", &mut timing.display_gap),
                 ("Frame generation GPU time", &mut timing.gpu_cost),
-            ] {
-                let _ = writeln!(report, "{label}   {}", percentiles(values));
+            ]
+            .into_iter()
+            .map(|(label, values)| TimingRow::new(label, values))
+            .collect::<Vec<_>>();
+            for ordinal in 1..segment.first.multiplier {
+                let phase = ordinal * (60 / segment.first.multiplier);
+                timings.push(TimingRow::new(
+                    format!("Simulation to generated frame {ordinal}"),
+                    timing.sim_to_generated.entry(phase).or_default(),
+                ));
             }
-            if segment.first.multiplier > 1 {
-                for ordinal in 1..segment.first.multiplier {
-                    let phase = ordinal * (60 / segment.first.multiplier);
-                    let _ = writeln!(
-                        report,
-                        "Simulation → generated {ordinal}   {}",
-                        percentiles(timing.sim_to_generated.entry(phase).or_default())
-                    );
-                }
-            }
+            sections.push(ReportSection {
+                heading,
+                details,
+                timings,
+            });
         }
-        Some(report)
+        Some(Report {
+            title,
+            overview,
+            sections,
+        })
     }
 }
 
-pub fn analyze(path: &Path, uid: u32, range: Option<(f64, f64)>) -> io::Result<Option<String>> {
+pub fn analyze(path: &Path, uid: u32, range: Option<(f64, f64)>) -> io::Result<Option<Report>> {
     let listed = fs::symlink_metadata(path)?;
     let (file, meta) = live::open_checked(path, uid, &listed)
         .ok_or_else(|| io::Error::other("Could not open the capture as an owned regular file"))?;
@@ -789,13 +828,18 @@ mod tests {
                 });
         }
         let report = capture.report(None).unwrap();
-        assert!(report
-            .contains("Simulation → real presentation   45.00 / 45.00 / 45.00 ms  (1 frames)"));
-        assert!(report
-            .contains("Simulation → real presentation   25.00 / 25.00 / 25.00 ms  (1 frames)"));
+        assert_eq!(
+            report.sections[0].timings[0].values,
+            ["45.00", "45.00", "45.00", "1"]
+        );
+        assert_eq!(
+            report.sections[1].timings[0].values,
+            ["25.00", "25.00", "25.00", "1"]
+        );
         assert_eq!(
             report
-                .matches("Application present → real presentation   20.00")
+                .markdown()
+                .matches("| Game present to real frame | 20.00 |")
                 .count(),
             2
         );
@@ -819,8 +863,8 @@ mod tests {
     fn ranks_and_capture_gap_without_a_pid() {
         let mut sample = [3, 1, 9, 2].map(|n| n * MS);
         assert_eq!(
-            percentiles(&mut sample),
-            "2.00 / 9.00 / 9.00 ms  (4 frames)"
+            TimingRow::new("Sample", &mut sample).values,
+            ["2.00", "9.00", "9.00", "4"]
         );
         let mut capture = Capture::default();
         capture.read_record(&format!(

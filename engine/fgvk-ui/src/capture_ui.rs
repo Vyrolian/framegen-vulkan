@@ -12,8 +12,8 @@ pub struct Captures {
     path: String,
     start: String,
     end: String,
-    report: String,
-    progress: Option<Receiver<String>>,
+    report: Option<Result<analysis::Report, String>>,
+    progress: Option<Receiver<Result<analysis::Report, String>>>,
     loaded: bool,
 }
 
@@ -106,13 +106,13 @@ impl Captures {
         let range = match self.range() {
             Ok(range) => range,
             Err(error) => {
-                self.report = error.to_owned();
+                self.report = Some(Err(error.to_owned()));
                 return;
             }
         };
         let path = PathBuf::from(self.path.trim());
         if !path.is_absolute() {
-            self.report = "Enter an absolute capture path.".to_owned();
+            self.report = Some(Err("Enter an absolute capture path.".to_owned()));
             return;
         }
         let (send, receive) = mpsc::channel();
@@ -121,18 +121,18 @@ impl Captures {
             .name("fgvk-capture-analysis".to_owned())
             .spawn(move || {
                 let report = match analysis::analyze(&path, uid, range) {
-                    Ok(Some(report)) => report,
-                    Ok(None) => "No complete pacing windows in this capture.".to_owned(),
-                    Err(error) => format!("Could not read the capture. {error}"),
+                    Ok(Some(report)) => Ok(report),
+                    Ok(None) => Err("No complete pacing windows in this capture.".to_owned()),
+                    Err(error) => Err(format!("Could not read the capture. {error}")),
                 };
                 let _ = send.send(report);
                 ctx.request_repaint();
             });
         if worker.is_ok() {
             self.progress = Some(receive);
-            self.report.clear();
+            self.report = None;
         } else {
-            self.report = "Could not start capture analysis.".to_owned();
+            self.report = Some(Err("Could not start capture analysis.".to_owned()));
         }
     }
 
@@ -151,12 +151,12 @@ impl Captures {
                 let result = match progress.try_recv() {
                     Ok(report) => Some(report),
                     Err(TryRecvError::Disconnected) => {
-                        Some("Capture analysis was interrupted.".to_owned())
+                        Some(Err("Capture analysis was interrupted.".to_owned()))
                     }
                     Err(TryRecvError::Empty) => None,
                 };
                 if let Some(report) = result {
-                    self.report = report;
+                    self.report = Some(report);
                     self.progress = None;
                 }
             }
@@ -193,7 +193,7 @@ impl Captures {
                     )
                     .changed()
                 {
-                    self.report.clear();
+                    self.report = None;
                 }
                 let mut analyze = changed_capture;
                 ui.horizontal_wrapped(|ui| {
@@ -224,12 +224,53 @@ impl Captures {
                     ui.spinner();
                     ui.label("Reading capture…");
                 });
-            } else if !self.report.is_empty() {
-                if ui.button("Copy report").clicked() {
-                    ui.ctx().copy_text(self.report.clone());
+            } else if let Some(report) = &self.report {
+                match report {
+                    Ok(report) => show_report(ui, report),
+                    Err(message) => {
+                        ui.label(message);
+                    }
                 }
-                ui.add(egui::Label::new(&self.report).selectable(true));
             }
         });
     }
+}
+
+fn show_report(ui: &mut Ui, report: &analysis::Report) {
+    ui.horizontal_wrapped(|ui| {
+        ui.heading(&report.title);
+        if ui
+            .button("Copy report")
+            .on_hover_text("Copy as Markdown")
+            .clicked()
+        {
+            ui.ctx().copy_text(report.markdown());
+        }
+    });
+    ui.label(report.overview.trim_end());
+    for (index, section) in report.sections.iter().enumerate() {
+        ui.separator();
+        ui.label(egui::RichText::new(&section.heading).strong());
+        ui.label(section.details.trim_end());
+        egui::ScrollArea::horizontal()
+            .id_salt(("timing-scroll", index))
+            .show(ui, |ui| {
+                egui::Grid::new(("capture-timings", index))
+                    .striped(true)
+                    .show(ui, |ui| {
+                        for header in analysis::TIMING_COLUMNS {
+                            ui.label(egui::RichText::new(header).strong());
+                        }
+                        ui.end_row();
+                        for row in &section.timings {
+                            ui.label(&row.label);
+                            for value in &row.values {
+                                ui.label(egui::RichText::new(value).monospace());
+                            }
+                            ui.end_row();
+                        }
+                    });
+            });
+    }
+    ui.label(egui::RichText::new("Presentation timing comes from Wayland. Simulation timing uses matched Reflex markers.").small());
 }
