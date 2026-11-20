@@ -130,10 +130,6 @@ Set `FGVK_ENV=1` to build one profile from environment variables instead of TOML
 
 `FGVK_PACING_PROFILE_WAYLAND=1` implies CPU capture and adds native Wayland `wp_presentation` feedback on the application's borrowed surface. It records compositor-reported presentation timestamps/discards separately from lower-call timing, without GPU queries, socket reads, commits, target-time changes or an event-reader worker. It uses a private event queue serviced by the application's existing display reader. The [capture guide](COLLECT_DIAGNOSTICS.md#lightweight-minecraft-pacing-capture) describes clock domains, bounded storage, protocol/callback gaps and ambiguous commit association. This process-start observer adds protocol and dispatch overhead; remove it after the capture.
 
-## Experimental predictive pacing
-
-`FGVK_PREDICTIVE_PACING=1` lets the worker move a prepared generated output earlier by up to 1 ms within its existing readiness, correction and spacing bounds. It applies to native Wayland IMMEDIATE at 2× with Batch Hold off, on-screen pacing correction active and recent unsynchronized zero-copy presentation feedback. It uses recent source intervals and the timing of received feedback. The worker keeps the existing real-output scheduling rules. `FGVK_PACING_PROFILE=1` records a nonzero deadline advance as `predictive_advance_ns` on the generated output.
-
 ## Presentation acquisition timeout
 
 `FGVK_PRESENT_ACQUIRE_TIMEOUT_MS` limits how long framegen-vulkan waits for generated-image availability before native recovery. Constrained Fixed image pools enforce a 50 ms limit when no explicit value is set. For a focused stall reproduction, try `25` and include the log. See [presentation recovery](LIFECYCLE.md) for deadline and fallback rules.

@@ -81,7 +81,6 @@ struct WaylandPresentationFeedback::Impl {
         Impl* owner{};
         wl_proxy* proxy{};
         Sample sample;
-        uint64_t started{};
         uint32_t syncedMilliHz{}; // X7: the mode rate of the output sync_output named, if it is ours.
     };
     std::array<Pending, 256> pending{};
@@ -114,7 +113,7 @@ struct WaylandPresentationFeedback::Impl {
         return ring && ring->accepting();
     }
     // OS1: a presented event with a valid timestamp feeds the sink, on CLOCK_MONOTONIC only. Caller holds mutex.
-    void pushScreenSample(const Sample& sample, const uint64_t started) noexcept {
+    void pushScreenSample(const Sample& sample) noexcept {
         const auto ring = screenSink.lock();
         if (!ring) return;
         if (!screenSampleClockSupported(clockId)) {
@@ -125,8 +124,7 @@ struct WaylandPresentationFeedback::Impl {
             return;
         }
         ring->push(ScreenSample{sample.context, sample.source, sample.generated,
-            static_cast<int64_t>(sample.presented), 0, static_cast<int64_t>(started),
-            static_cast<int64_t>(sample.received), sample.flags});
+            static_cast<int64_t>(sample.presented)});
     }
 
     // The mode rate of the only bound output; 0 when no output or several outputs are bound.
@@ -228,7 +226,7 @@ struct WaylandPresentationFeedback::Impl {
         sample.refresh = refresh;
         sample.flags = flags;
         item.owner->record(sample);
-        if (validTimestamp) item.owner->pushScreenSample(sample, item.started);
+        if (validTimestamp) item.owner->pushScreenSample(sample);
         item.owner->destroy(item.proxy);
         item.proxy = nullptr;
     }
@@ -303,7 +301,7 @@ struct WaylandPresentationFeedback::Impl {
         }
     }
 
-    uint64_t before(uint64_t context, uint64_t source, uint32_t image, bool generated, Pending*& timing) {
+    uint64_t before(uint64_t context, uint64_t source, uint32_t image, bool generated) {
         if (stopped) return 0;
         if (dispatchPending(display, queue) < 0) { cleanup(); return 0; }
         requestedId = 0;
@@ -341,7 +339,6 @@ struct WaylandPresentationFeedback::Impl {
                 }
                 record(sample);
                 requestedId = sample.id;
-                timing = &item;
                 return sample.id;
             }
             if (!reason) reason = 4; // Bounded outstanding-feedback capacity.
@@ -421,7 +418,6 @@ VkResult WaylandPresentationFeedback::observe(void* owner, PFN_vkQueuePresentKHR
     auto& self = *static_cast<WaylandPresentationFeedback*>(owner)->impl;
     std::unique_lock lock(self.mutex, std::defer_lock);
     uint64_t id{};
-    Impl::Pending* timing{};
     // The display probe's own cost (before, dispatch, after) is measured only when it is reported.
     const bool measured = self.diagnostics;
     const auto costStarted = measured ? Clock::now() : Clock::time_point{};
@@ -429,11 +425,10 @@ VkResult WaylandPresentationFeedback::observe(void* owner, PFN_vkQueuePresentKHR
     try {
         lock.lock();
         if (info.swapchainCount == 1 && info.pImageIndices)
-            id = self.before(context, source, *info.pImageIndices, generated, timing);
+            id = self.before(context, source, *info.pImageIndices, generated);
     } catch (...) {}
     if (measured) costBefore = Clock::now();
     const auto started = hostNow();
-    if (timing) timing->started = started;
     const auto result = lower(queue, &info); // Exactly once, unchanged arguments/result.
     const auto finished = hostNow();
     try {

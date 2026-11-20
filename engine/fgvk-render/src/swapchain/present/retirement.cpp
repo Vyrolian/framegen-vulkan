@@ -122,7 +122,6 @@ VkResult Swapchain::completeDeferredPresent(const uint64_t timeoutNs, const bool
                     .slack = i == 0 ? completion.slack : DiagnosticsClock::duration{},
                     .offset = call.offset, .appPresentId = call.appPresentId,
                     .tickSnap = call.tickSnap, .targetTick = call.targetTick,
-                    .predictiveAdvance = call.predictiveAdvance,
                 });
                 present_diagnostics::logPacingOutput(this->diagnosticsState.contextId, call.swapchain, sample);
             }
@@ -155,8 +154,6 @@ bool Swapchain::beginDeferredPresentBatch(const vk::Vulkan& vk, const size_t lim
             this->attachScreenSamples();
         } catch (const std::exception&) { return false; }
     }
-    const bool predictiveImmediate = predictivePacingEnabled() &&
-        this->screenSource == ScreenSource::Wayland && this->currentPresentMode == VK_PRESENT_MODE_IMMEDIATE_KHR;
     return this->deferredPresent->beginBatch(limit, {
         .device = vk.dev(), .semaphore = this->syncSemaphore->handle(),
         .value = readyValue, .wait = vk.df().WaitSemaphoresKHR, .deadline = readyDeadline,
@@ -169,8 +166,8 @@ bool Swapchain::beginDeferredPresentBatch(const vk::Vulkan& vk, const size_t lim
         // GT1: the refresh period the cap uses; the worker's tick lock starts from it. Variable refresh has no tick
         // grid, so it passes 0 and the lock never snaps.
         .refreshNs = this->applicationRefreshVariable ? 0 : refreshPeriodNs(this->applicationRefreshHz),
-        .predictiveImmediate = predictiveImmediate,
-        .arrival = this->pacingProfile || predictiveImmediate ? arrival : DiagnosticsClock::time_point{},
+        // Diagnostics only: the arrival is observed when the pacing profile is enabled.
+        .arrival = this->pacingProfile ? arrival : DiagnosticsClock::time_point{},
         .copyFence = this->pacingProfile && present_diagnostics::pacingGpuProfileEnabled() && !this->renderSlots.empty()
             ? this->currentRenderSlot().fence.handle() : VK_NULL_HANDLE,
         .copyStatus = this->pacingProfile && present_diagnostics::pacingGpuProfileEnabled()

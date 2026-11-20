@@ -6,7 +6,6 @@
 #include "swapchain/onscreen_ids.hpp"
 #include "swapchain/onscreen_watch.hpp"
 #include "swapchain/output_margin.hpp"
-#include "swapchain/predictive_pacing.hpp"
 #include "swapchain/present_marker.hpp"
 #include "swapchain/screen_samples.hpp"
 #include "swapchain/tick_lock.hpp"
@@ -334,7 +333,6 @@ public:
         // target tick. Both are zero without the tick lock.
         Clock::duration tickSnap{};
         Clock::time_point targetTick{};
-        Clock::duration predictiveAdvance{};
         // GT1: the start in unsnapped time. The bookkeeping (BatchPhaseLock, W2, the chain) reads this, never
         // the actual start, so the snap is a quantization only. Zero snap: the actual start.
         [[nodiscard]] Clock::time_point startedUnsnapped() const { return started - tickSnap; }
@@ -411,8 +409,7 @@ public:
         Clock::duration outputInterval{};
         // GT1: the refresh period the cap uses, in nanoseconds (0 when unknown). The tick lock starts from it.
         int64_t refreshNs{};
-        bool predictiveImmediate{};
-        // Limiter arrival, used by diagnostics and the opt-in predictor.
+        // Diagnostics only: limiter arrival of the batch. Set only with the pacing profile.
         Clock::time_point arrival{};
         // Optional profiling only: observe existing final-copy completion
         // without waiting or changing presentation/readiness policy.
@@ -1063,7 +1060,6 @@ private:
     std::shared_ptr<ScreenSampleRing> screenRing;
     uint64_t screenCursor{};
     ScreenOffsetMode screenMode;
-    PredictivePacing predictivePacing;
     // GT1, worker thread only (like the controller): the gamescope tick grid and lead. tickLockEnabled is set once,
     // before the first job is admitted (setTickLock).
     bool tickLockEnabled{};
@@ -1103,7 +1099,6 @@ private:
             for (size_t i = 0; i < count; ++i) {
                 const ScreenSample& sample = samples[i];
                 if (sample.context != context) continue;
-                if (predictivePacingEnabled()) predictivePacing.observe(sample);
                 if (screenMode.sample(now)) {
                     outputOffsetController.forget();
                     tickLock.resetOutputs();
@@ -1575,7 +1570,6 @@ private:
                 outputOffsetController.forget();
                 batchPhase.reset();
                 tickLock.resetOutputs();
-                predictivePacing = {};
             }
             const auto ready = batch.readiness;
             // GT1: a new refresh period starts the tick grid again (rule 6). Only the first output of a batch asks.
@@ -1628,10 +1622,6 @@ private:
             // OS2: the first output of a batch with a readiness wait takes its correction after that wait (in the
             // readiness block below). Its move here would be replaced by the readiness start.
             const bool offsetAfterReadiness = offsetOutput && first && ready.wait;
-            const bool predict = offsetAfterReadiness && ready.predictiveImmediate && limit == 2 &&
-                !ready.batchHold && ready.overlap && current.copyActive && current.copy.internalImages &&
-                (!current.metadata.hasMode || current.metadata.mode == VK_PRESENT_MODE_IMMEDIATE_KHR);
-            Clock::duration predictedAdvance{};
             if (offsetOutput) commandedOffset = outputOffsetController.offset[index];
             if (offsetOutput && !offsetAfterReadiness) {
                 const bool hasPrevious = index > 0 || havePrevious;
@@ -1704,9 +1694,6 @@ private:
                         batchPhase.reset();
                     } else {
                         readyAt = Clock::now();
-                        if (predict)
-                            predictedAdvance = predictivePacing.advance(ready.source,
-                                steadyNanoseconds(ready.arrival), steadyNanoseconds(readyAt));
                         slack = unmovedReady - readyAt;
                         // L3: a just-in-time batch starts at its phase-locked time after its readiness
                         // (batch_phase.hpp). Only the quarter-interval guard after the previous real
@@ -1775,20 +1762,6 @@ private:
                     if (prep.prepared || prep.acquired) ++heldLowerImages;
                     assert(heldLowerImages <= layerHeldLowerImages);
                 }
-            }
-            // Advance only the scheduled sleep of a prepared generated output. Keep the original
-            // readiness, spacing and correction bounds, and leave any elapsed preparation time alone.
-            Clock::duration predictiveAdvance{};
-            if (prep.prepared && predictedAdvance > Clock::duration{} && deadline != Clock::time_point::max()) {
-                const auto offset = std::max(commandedOffset - predictedAdvance,
-                    Clock::duration{-OutputOffsetController::limit});
-                const auto earlier = readyDeadlineWithOffset(readyAt, unmovedReady, previousStarted,
-                    havePrevious, ready.latestOutput, ready.outputInterval, offset);
-                const auto advanced = std::min(deadline, std::max(Clock::now(), earlier));
-                predictiveAdvance = deadline - advanced;
-                deadline = advanced;
-                commandedOffset -= predictiveAdvance;
-                appliedOffset -= predictiveAdvance;
             }
             // GT1, rule 4: the snapped deadline is the last rule before the sleep, after OS2 and the W2 move. The deadline
             // before the snap stays the scheduled time and the bookkeeping reference (Call::unmovedStart). The floor is the
@@ -1891,7 +1864,6 @@ private:
             result.readinessResult = readinessResult;
             result.scheduled = scheduledDeadline;
             result.tickSnap = tickSnap;
-            result.predictiveAdvance = predictiveAdvance;
             result.targetTick = targetTick;
             result.swapchain = job.swapchain;
             result.generated = job.generated;

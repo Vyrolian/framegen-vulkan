@@ -197,7 +197,6 @@ namespace fgvk::layer::present_diagnostics {
             // (zero when the output was not snapped).
             Clock::duration tickSnap{};
             Clock::time_point targetTick{};
-            Clock::duration predictiveAdvance{};
         };
         struct OutputSample {
             size_t ordinal{};

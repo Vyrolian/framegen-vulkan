@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 // OS1 tests: the screen sample ring, the producer mode of one context and the source rule. Pure: no
 // Vulkan, no Wayland, no threads except the ring's push-after-close check.
-#include "swapchain/predictive_pacing.hpp"
+#include "swapchain/screen_samples.hpp"
 
 #include <array>
 #include <cstdlib>
@@ -135,32 +135,6 @@ void aSampleKeepsScreenModeAlive() {
     expect(mode.screen(), "screen mode stays on for a steady stream of samples");
 }
 
-void predictivePacingRequiresFreshAsynchronousFeedback() {
-    using namespace std::chrono_literals;
-    constexpr int64_t ms = 1'000'000;
-    PredictivePacing pacer;
-    for (uint64_t source = 1; source <= 9; ++source) {
-        const auto arrival = static_cast<int64_t>(source) * 14 * ms;
-        const auto ready = arrival + 14 * ms;
-        pacer.observe(ScreenSample{.generated = true, .screenNs = ready - 8 * ms,
-            .startedNs = ready - 10 * ms, .receivedNs = ready - 7 * ms, .flags = 0xE});
-        pacer.observe(ScreenSample{.screenNs = ready - 14 * ms, .startedNs = ready - 16 * ms,
-            .receivedNs = ready - 13 * ms, .flags = 0xE});
-        const auto advance = pacer.advance(source, arrival, ready);
-        if (source < 9) expect(advance == 0ns, "prediction needs a full history");
-        else expect(advance > 0ns && advance < 1ms, "fresh asynchronous feedback permits an advance");
-    }
-    auto future = pacer;
-    future.observe(ScreenSample{.generated = true, .screenNs = 154 * ms, .startedNs = 152 * ms,
-        .receivedNs = 155 * ms, .flags = 0xE});
-    expect(future.advance(10, 140 * ms, 154 * ms) == 0ns, "future feedback cannot drive prediction");
-    expect(pacer.advance(10, 140 * ms, 159 * ms) == 1ms, "prediction is capped at one millisecond");
-    auto synchronized = pacer;
-    synchronized.observe(ScreenSample{.flags = 0xF});
-    expect(synchronized.advance(11, 154 * ms, 168 * ms) == 0ns, "synchronized feedback clears prediction");
-    expect(pacer.advance(11, 154 * ms, 255 * ms) == 0ns, "stale feedback cannot drive prediction");
-}
-
 // ---- Clock and source rule ----------------------------------------------------------------------
 
 void onlyTheMonotonicClockGivesScreenSamples() {
@@ -212,7 +186,6 @@ int main() {
     pushAfterCloseFromAnotherThreadIsSafe();
     modeSwitchesOnScreenSamplesAndTimesOut();
     aSampleKeepsScreenModeAlive();
-    predictivePacingRequiresFreshAsynchronousFeedback();
     onlyTheMonotonicClockGivesScreenSamples();
     sourceRuleNamesTheFirstMissingInput();
     std::cout << "framegen-vulkan: screen sample tests passed\n";
