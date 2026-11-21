@@ -14,6 +14,7 @@
 #include "swapchain/create_policy.hpp"
 #include "swapchain/retirement.hpp"
 #include "swapchain/private_present_queue.hpp"
+#include "swapchain/transfer_queue.hpp"
 #include "swapchain/release_gate.hpp"
 #include "swapchain/low_latency.hpp"
 #include "swapchain/internal_images.hpp"
@@ -77,6 +78,8 @@ namespace {
 
         std::unordered_map<VkDevice, vk::Vulkan> devices;
         std::unordered_map<VkDevice, std::shared_ptr<DeferredPresentQueue>> deferredPresentQueues;
+        // QH2: the transfer queue of generated copies, with the device's private queue (see transfer_queue.hpp).
+        std::unordered_map<VkDevice, std::shared_ptr<TransferCopyQueue>> transferCopyQueues;
         std::unordered_set<VkDevice> nativeDevices;
         std::unordered_set<VkDevice> presentRetirementDevices;
         std::unordered_set<VkDevice> presentTimingDevices;
@@ -660,6 +663,19 @@ namespace {
         return result;
     }
 
+    // QH2: destroys the device's transfer pool while its wrapper still holds the device functions, then forgets the
+    // queue. Swapchains that still hold the queue keep a non-owning reference only, and their copies are gone with them.
+    void destroyTransferCopyQueue(const VkDevice device) noexcept {
+        const auto owned = instance_info->transferCopyQueues.find(device);
+        if (owned == instance_info->transferCopyQueues.end()) return;
+        if (owned->second->pool != VK_NULL_HANDLE) {
+            if (const auto wrapper = instance_info->devices.find(device); wrapper != instance_info->devices.end())
+                wrapper->second.df().DestroyCommandPool(device, owned->second->pool, nullptr);
+            owned->second->pool = VK_NULL_HANDLE;
+        }
+        instance_info->transferCopyQueues.erase(owned);
+    }
+
     VkResult myvkCreateDevice(
             VkPhysicalDevice physdev,
             const VkDeviceCreateInfo* info,
@@ -733,6 +749,11 @@ namespace {
         instance_info->funcs.GetPhysicalDeviceQueueFamilyProperties(physdev, &privateFamilyCount, privateFamilies.data());
         const PrivatePresentQueueRequest privatePresentQueue(*info, privateFamilies,
             frameGenerationInteropEnabled ? layerQueueFamily : std::nullopt);
+        // QH2: one queue on the transfer family, only with the switch, frame-generation interop and the private
+        // queue that its copies are presented through. Built inside the create try below: unset means no object.
+        std::optional<TransferQueueRequest> transferQueue;
+        const bool transferCopyRequested = transferGeneratedCopyRequested() &&
+            frameGenerationInteropEnabled && privatePresentQueue.index.has_value();
         bool ownedPresentTiming = false;
         bool presentMeteringEnabled = false;
 #if defined(VK_NV_present_metering)
@@ -807,6 +828,10 @@ namespace {
         try {
             VkDeviceCreateInfo newInfo = *info;
             privatePresentQueue.apply(newInfo);
+            if (transferCopyRequested) {
+                transferQueue.emplace(newInfo, privateFamilies);
+                transferQueue->apply(newInfo);
+            }
 #if defined(VK_EXT_present_timing) && defined(VK_KHR_present_id2)
             std::vector<const char*> timingExtensions;
             VkPhysicalDevicePresentId2FeaturesKHR timingIds{
@@ -943,6 +968,7 @@ namespace {
         // create layer instance
         bool layerDeviceInserted = false;
         const auto discardLayerDevice = [&]() noexcept {
+            destroyTransferCopyQueue(*device);
             std::erase_if(
                 instance_info->queueIdentities,
                 [deviceHandle = *device](const auto& entry) {
@@ -1052,6 +1078,43 @@ namespace {
                 }
                 if (privateQueue->queue)
                     instance_info->deferredPresentQueues.emplace(*device, std::move(privateQueue));
+            }
+
+            // QH2: the transfer queue and its pool. Its presents are the private queue's, so it exists only with one.
+            if (transferQueue) {
+                auto transfer = std::make_shared<TransferCopyQueue>();
+                const bool requested = transferQueue->family && transferQueue->index &&
+                    instance_info->deferredPresentQueues.contains(*device);
+                if (requested) {
+                    transfer->family = *transferQueue->family;
+                    transfer->index = *transferQueue->index;
+                    transfer->timestamps = transferQueue->timestamps;
+                    wrapper->second.df().GetDeviceQueue(*device, transfer->family,
+                        transfer->index, &transfer->queue);
+                    if (transfer->queue && wrapper->second.loaderdatafunc()) {
+                        const auto result = (*wrapper->second.loaderdatafunc())(*device, transfer->queue);
+                        if (result != VK_SUCCESS) transfer->queue = VK_NULL_HANDLE;
+                    }
+                    const VkCommandPoolCreateInfo poolInfo{
+                        .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+                        .flags = 0,
+                        .queueFamilyIndex = transfer->family,
+                    };
+                    if (transfer->queue && wrapper->second.df().CreateCommandPool(*device, &poolInfo,
+                            nullptr, &transfer->pool) != VK_SUCCESS)
+                        transfer->pool = VK_NULL_HANDLE;
+                }
+                const bool applied = requested && transfer->queue != VK_NULL_HANDLE &&
+                    transfer->pool != VK_NULL_HANDLE;
+                if (applied) instance_info->transferCopyQueues.emplace(*device, std::move(transfer));
+                transferCopyApplied.store(applied ? 1u : 0u, std::memory_order_relaxed);
+                const auto describe = [](const std::optional<uint32_t> value) {
+                    return value ? std::to_string(*value) : std::string{"none"};
+                };
+                std::cerr << "framegen-vulkan: transfer generated copy: family=" << describe(transferQueue->family)
+                          << " index=" << describe(transferQueue->index)
+                          << " applied=" << (applied ? 1 : 0)
+                          << " timestamps=" << (applied && transferQueue->timestamps ? 1 : 0) << '\n';
             }
 
             // Queue handles are stable for the device lifetime. Register
@@ -1340,6 +1403,8 @@ namespace {
                 wrapper->second.df().DestroySemaphore(device, owned->second->tail, nullptr);
             owned->second->tail = VK_NULL_HANDLE;
         }
+        // QH2: the transfer pool goes with the device, before its wrapper and the device.
+        destroyTransferCopyQueue(device);
         // T4: the marker's pools and fences go before the device. The device is idle here.
         if (const auto owned = instance_info->deferredPresentQueues.find(device);
                 owned != instance_info->deferredPresentQueues.end()) {
@@ -2006,11 +2071,32 @@ namespace {
             // H3: Wine maps HDR10/PQ and scRGB to PASS_THROUGH on a native Wayland surface.
             const bool winePassThroughHdr = layer_info->root.wineProcess() &&
                 surfaceOrigin(info->surface) == SurfaceOrigin::Wayland;
+            // QH2: an active swapchain of a device with a transfer queue has concurrent lower images, shared with the
+            // layer and transfer families. transferFamilies outlives the create call that reads it.
+            const auto transferCopyOwner = instance_info->transferCopyQueues.find(device);
+            const std::shared_ptr<TransferCopyQueue> transferCopy =
+                transferCopyOwner != instance_info->transferCopyQueues.end() && layer_info->root.active()
+                    ? transferCopyOwner->second : nullptr;
+            std::vector<uint32_t> transferFamilies;
+            bool transferConcurrent = false;
             auto modification =
                 layer_info->root.modifySwapchainCreateInfo(
                     it->second, newInfo, winePassThroughHdr,
                     [&, newInfo = &newInfo]() {
                         auto driverInfo = *newInfo;
+                        bool concurrentDriverImages = false;
+                        if (transferCopy) {
+                            transferFamilies = transferSharingFamilies(driverInfo.imageSharingMode,
+                                std::span<const uint32_t>{driverInfo.pQueueFamilyIndices,
+                                    driverInfo.queueFamilyIndexCount},
+                                it->second.queueFamilyIndex(), transferCopy->family);
+                            concurrentDriverImages = transferFamilies.size() >= 2;
+                            if (concurrentDriverImages) {
+                                driverInfo.imageSharingMode = VK_SHARING_MODE_CONCURRENT;
+                                driverInfo.queueFamilyIndexCount = static_cast<uint32_t>(transferFamilies.size());
+                                driverInfo.pQueueFamilyIndices = transferFamilies.data();
+                            }
+                        }
 #if defined(VK_EXT_present_timing) && defined(VK_KHR_present_id2)
                         // Native surfaces negotiate their own Vulkan timing contract.
                         if (instance_info->presentTimingDevices.contains(device) &&
@@ -2071,6 +2157,8 @@ namespace {
                         }
                         createdSwapchain = *swapchain;
                         lowerSwapchainCreated = true;
+                        // A retry copies driverInfo, so its images carry the same sharing.
+                        transferConcurrent = concurrentDriverImages;
                     }
                 );
 
@@ -2107,6 +2195,8 @@ namespace {
                 .waylandPresentation = std::move(waylandPresentation),
                 .deferredPresentQueue = instance_info->deferredPresentQueues.contains(device)
                     ? instance_info->deferredPresentQueues.at(device) : nullptr,
+                .transferConcurrent = transferConcurrent,
+                .transferCopy = transferConcurrent ? transferCopy : nullptr,
                 .ownedPresentTiming = ownedPresentTiming,
                 .presentMetering = instance_info->presentMeteringDevices.contains(device),
                 .applicationPresentTiming = instance_info->applicationTimingDevices.contains(device),

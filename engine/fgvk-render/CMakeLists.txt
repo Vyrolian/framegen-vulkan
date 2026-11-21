@@ -388,6 +388,13 @@ if(BUILD_TESTING)
     add_test(NAME present-layout COMMAND fgvk-present-layout-tests)
     fgvk_register_portable_policy_test(fgvk-present-layout-tests present-layout)
 
+    # QH2: the transfer family choice, the transfer queue request and the queue families a lower swapchain
+    # shares with it. Pure policy, so no device is needed.
+    add_executable(fgvk-transfer-queue-tests "tests/transfer_queue_tests.cpp")
+    target_include_directories(fgvk-transfer-queue-tests PRIVATE "src")
+    add_test(NAME transfer-queue COMMAND fgvk-transfer-queue-tests)
+    fgvk_register_portable_policy_test(fgvk-transfer-queue-tests transfer-queue)
+
     # fgvk-backend is configured only for layer, CLI or develop builds. Its
     # fence ring is header-only, so the portable policy set builds this backend
     # test from the backend tree and keeps it in the same label.

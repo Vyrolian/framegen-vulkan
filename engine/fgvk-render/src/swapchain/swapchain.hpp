@@ -31,6 +31,7 @@
 #include "swapchain/release_gate.hpp"
 #include "swapchain/screen_samples.hpp"
 #include "swapchain/surface_origin.hpp"
+#include "swapchain/transfer_queue.hpp"
 #include "swapchain/uncapped_auto_cap.hpp"
 
 #include <array>
@@ -64,6 +65,10 @@ namespace fgvk::layer {
         bool winePassThroughHdr{false};
         std::shared_ptr<WaylandPresentationFeedback> waylandPresentation;
         std::shared_ptr<DeferredPresentQueue> deferredPresentQueue;
+        // QH2: the lower images are concurrent with the device's transfer family. transferCopy is that
+        // device queue in that case, and null otherwise.
+        bool transferConcurrent{false};
+        std::shared_ptr<TransferCopyQueue> transferCopy;
         bool ownedPresentTiming{false};
         bool presentMetering{false};
         // Observational device capability state, not a CPU-spacing exclusion.
@@ -429,6 +434,9 @@ namespace fgvk::layer {
             // Binary signal of this pass's worker copy or skip, waited once by the next
             // generated pass of the same batch. Created and released with the staged resources.
             std::optional<vk::Semaphore> copied;
+            // QH2: generatedCopies were recorded from the transfer family's pool. Their jobs submit on
+            // that queue. Reset with generatedCopies.
+            bool generatedOnTransfer{false};
         };
         // One slot per frame-generation batch. A slot is reused only after the
         // fence of the batch three presents earlier signals; source-image

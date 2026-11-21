@@ -23,13 +23,13 @@
 using namespace vk;
 
 namespace {
-    /// create a command buffer
-    ls::owned_ptr<VkCommandBuffer> createCommandBuffer(const vk::Vulkan& vk) {
+    /// create a command buffer from the given pool
+    ls::owned_ptr<VkCommandBuffer> createCommandBuffer(const vk::Vulkan& vk, const VkCommandPool pool) {
         VkCommandBuffer handle{};
 
         const VkCommandBufferAllocateInfo commandBufferInfo{
             .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-            .commandPool = vk.cmdpool(),
+            .commandPool = pool,
             .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
             .commandBufferCount = 1
         };
@@ -46,7 +46,7 @@ namespace {
 
         return ls::owned_ptr<VkCommandBuffer>(
             new VkCommandBuffer(handle),
-            [dev = vk.dev(), pool = vk.cmdpool(), defunc = vk.df().FreeCommandBuffers](
+            [dev = vk.dev(), pool, defunc = vk.df().FreeCommandBuffers](
                 VkCommandBuffer& commandBufferModule
             ) {
                 defunc(dev, pool, 1, &commandBufferModule);
@@ -56,7 +56,10 @@ namespace {
 }
 
 CommandBuffer::CommandBuffer(const vk::Vulkan& vk)
-        : commandBuffer(createCommandBuffer(vk)) {}
+        : commandBuffer(createCommandBuffer(vk, vk.cmdpool())) {}
+
+CommandBuffer::CommandBuffer(const vk::Vulkan& vk, const VkCommandPool pool)
+        : commandBuffer(createCommandBuffer(vk, pool)) {}
 
 void CommandBuffer::begin(const vk::Vulkan& vk, const VkCommandBufferUsageFlags flags) const {
     const VkCommandBufferBeginInfo beginInfo = {
@@ -164,6 +167,46 @@ void CommandBuffer::blitImage(const vk::Vulkan& vk,
 
     vk.df().CmdPipelineBarrier(*this->commandBuffer,
         VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+        0,
+        0, VK_NULL_HANDLE,
+        0, VK_NULL_HANDLE,
+        static_cast<uint32_t>(postBarriers.size()), postBarriers.data()
+    );
+}
+
+void CommandBuffer::copyImage(const vk::Vulkan& vk,
+        const std::span<const vk::Barrier> preBarriers,
+        std::pair<VkImage, VkImage> images, VkExtent2D extent,
+        const std::span<const vk::Barrier> postBarriers) const {
+    // Pre-barriers reach the transfer stage. Post-barriers end at all commands, so a semaphore
+    // signalled after the copy also orders the layout change.
+    vk.df().CmdPipelineBarrier(*this->commandBuffer,
+        VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+        0,
+        0, VK_NULL_HANDLE,
+        0, VK_NULL_HANDLE,
+        static_cast<uint32_t>(preBarriers.size()), preBarriers.data()
+    );
+
+    const VkImageCopy region{
+        .srcSubresource = {
+            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+            .layerCount = 1
+        },
+        .dstSubresource = {
+            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+            .layerCount = 1
+        },
+        .extent = {extent.width, extent.height, 1}
+    };
+    vk.df().CmdCopyImage(*this->commandBuffer,
+        images.first, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        images.second, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        1, &region
+    );
+
+    vk.df().CmdPipelineBarrier(*this->commandBuffer,
+        VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
         0,
         0, VK_NULL_HANDLE,
         0, VK_NULL_HANDLE,

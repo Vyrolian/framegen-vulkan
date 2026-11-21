@@ -13,6 +13,7 @@
 #include "swapchain/real_present_lead.hpp"
 #include "swapchain/reflex_out_of_band.hpp"
 #include "swapchain/tick_lock.hpp"
+#include "swapchain/transfer_queue.hpp"
 
 #include <algorithm>
 #include <array>
@@ -833,6 +834,9 @@ void formatPacingWindowBody(const PacingWindowPayload& payload, const PacingProf
     // RP1: real_lead=1 while the real present lead is in effect, and its current lead in microseconds.
     line << " real_lead=" << (fgvk::layer::realPresentLeadOn.load(std::memory_order_relaxed) ? 1 : 0)
          << " real_lead_us=" << fgvk::layer::realPresentLeadNs.load(std::memory_order_relaxed) / 1000;
+    // QH2: 1 when this context's generated copies ran on the transfer queue, and the device created one.
+    line << " transfer_copy="
+         << (window.transferCopy && fgvk::layer::transferCopyApplied.load(std::memory_order_relaxed) ? 1 : 0);
     line << '\n';
     for (size_t i = 0; i < window.outputTraceCount; ++i) {
         const auto& sample = window.outputTrace[i];

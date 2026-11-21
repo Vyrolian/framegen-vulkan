@@ -11,6 +11,7 @@
 #include "swapchain/reflex_present_attribution.hpp"
 #include "swapchain/screen_samples.hpp"
 #include "swapchain/tick_lock.hpp"
+#include "swapchain/transfer_queue.hpp"
 #include "swapchain/create_policy.hpp"
 #include "swapchain/retirement.hpp"
 #include "present_diagnostics.hpp"
@@ -495,6 +496,9 @@ public:
         Clock::duration giveUp{};
         // S2: only Fixed FG with internal application images may prepare early.
         bool internalImages{};
+        // QH2: when set, the copy and the skip submit on this device transfer queue instead of the private queue.
+        // Null for every other job.
+        TransferCopyQueue* transfer{};
     };
     // The real output of an internal application image. The worker polls for a
     // lower image at its deadline and never skips the output. The callbacks get
@@ -1406,7 +1410,8 @@ private:
     // binary staged semaphore, the acquire too when it succeeded, and the preceding
     // copy of the same batch when set. A copy signals that image's present wait and
     // the continuation. A skip signals only the continuation. Every submit signals
-    // the fence. The private queue's tail is signalled too (F9c, see submitPrivate).
+    // the fence. The private queue's tail is signalled too (F9c, see submitPrivate),
+    // except a QH2 transfer job, which submits on the transfer queue and has no tail.
     // D7b: lowerIndex is the lower image of a
     // copy and UINT32_MAX for a skip, which has no image. D7c: reason is the skip's SkipReason
     // (0 for a copy) and source the batch ordinal; both only label the submit's history record.
@@ -1437,6 +1442,12 @@ private:
             .signalSemaphoreCount = signalCount,
             .pSignalSemaphores = signals.data() + (2 - signalCount),
         };
+        // QH2: a transfer job submits with a plain vkQueueSubmit. The transfer queue has no tail value, so the
+        // submit is not in the private queue's history. Its waits and signals are the same binary semaphores.
+        if (copy.transfer) {
+            const std::lock_guard transferLock(copy.transfer->mutex);
+            return copy.submit(copy.transfer->queue, 1, &submit, copy.fence);
+        }
         const bool copying = command != VK_NULL_HANDLE;
         const SubmitTag tag{
             .kind = copying ? submitKindGeneratedCopy : submitKindGeneratedSkip,

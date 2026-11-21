@@ -20,7 +20,7 @@ namespace {
     /// create a image
     ls::owned_ptr<VkImage> createImage(const vk::Vulkan& vk,
             VkExtent2D extent, VkFormat format, VkImageUsageFlags usage,
-            bool external) {
+            bool external, std::span<const uint32_t> concurrentFamilies) {
         VkImage handle{};
 
         const VkExternalMemoryImageCreateInfo externalInfo{
@@ -41,7 +41,10 @@ namespace {
             .arrayLayers = 1,
             .samples = VK_SAMPLE_COUNT_1_BIT,
             .usage = usage,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE
+            .sharingMode = concurrentFamilies.empty()
+                ? VK_SHARING_MODE_EXCLUSIVE : VK_SHARING_MODE_CONCURRENT,
+            .queueFamilyIndexCount = static_cast<uint32_t>(concurrentFamilies.size()),
+            .pQueueFamilyIndices = concurrentFamilies.empty() ? nullptr : concurrentFamilies.data(),
         };
         auto res = vk.df().CreateImage(vk.dev(), &imageInfo, VK_NULL_HANDLE, &handle);
         if (res != VK_SUCCESS)
@@ -169,7 +172,8 @@ Image::Image(const vk::Vulkan& vk,
             VkImageUsageFlags usage,
             std::optional<int> importFd,
             std::optional<int*> exportFd,
-            std::shared_ptr<ImageMemoryPool> internalPool) :
+            std::shared_ptr<ImageMemoryPool> internalPool,
+            std::span<const uint32_t> concurrentFamilies) :
         extent(extent), externalMemory(importFd.has_value() || exportFd.has_value()) {
     const int incomingFd = importFd.value_or(-1);
     ls::FileDescriptorScope imported{{&incomingFd, 1}};
@@ -177,8 +181,12 @@ Image::Image(const vk::Vulkan& vk,
         throw std::invalid_argument(
             "external Vulkan images cannot use the internal image pool"
         );
-    this->image = createImage(vk, extent, format, usage,
-        importFd.has_value() || exportFd.has_value());
+    const bool sharedMemory = importFd.has_value() || exportFd.has_value();
+    if (concurrentFamilies.size() == 1 || (sharedMemory && !concurrentFamilies.empty()))
+        throw std::invalid_argument(
+            "concurrent Vulkan images need two or more queue families and no external memory"
+        );
+    this->image = createImage(vk, extent, format, usage, sharedMemory, concurrentFamilies);
     if (internalPool) {
         this->pooledMemory = internalPool->bind(*this->image);
     } else {

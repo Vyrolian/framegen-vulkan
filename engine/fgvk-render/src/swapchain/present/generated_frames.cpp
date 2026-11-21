@@ -96,13 +96,22 @@ VkResult Swapchain::presentGeneratedFrames(
         const auto* value = std::getenv("FGVK_DIRECT_GENERATED_COPY");
         return value && std::string_view(value) == "1";
     }();
+    // QH2: any pass of this batch whose copies were recorded on the transfer family makes the batch transfer-recorded.
+    // Their submits never advance the private queue's tail, so the same-queue staging and the direct copy stay off.
+    // Every scheduled pass is checked, since a failed recording can leave a mix of passes.
+    const bool transferCopies = workerCopies && [&] {
+        const auto& batchPasses = this->currentRenderSlot().passes;
+        for (size_t i = 0; i < plan.scheduledGeneratedFrames.size() && i < batchPasses.size(); ++i)
+            if (batchPasses.at(i).generatedOnTransfer) return true;
+        return false;
+    }();
     const bool nativeImmediate2x = workerCopies && this->internalPresent &&
         plan.scheduledGeneratedFrames.size() == 1 && this->info.surfaceOrigin == SurfaceOrigin::Wayland &&
         this->currentPresentMode == VK_PRESENT_MODE_IMMEDIATE_KHR;
-    const bool tryDirect = directCopies && nativeImmediate2x && this->info.surfaceMinImageCount &&
+    const bool tryDirect = directCopies && !transferCopies && nativeImmediate2x && this->info.surfaceMinImageCount &&
         this->info.images.size() >= static_cast<size_t>(this->info.surfaceMinImageCount) + layerHeldLowerImages &&
         this->deferredPresent->canPreacquireGenerated();
-    const bool privateStaging = sameQueueCopies && nativeImmediate2x &&
+    const bool privateStaging = sameQueueCopies && !transferCopies && nativeImmediate2x &&
         this->info.deferredPresentQueue->tail != VK_NULL_HANDLE &&
         // Earlier outputs still need the private queue ahead of this backend wait.
         !this->deferredPresent->olderBatchPending();
@@ -178,6 +187,8 @@ VkResult Swapchain::presentGeneratedFrames(
                 .imageCount = static_cast<uint32_t>(this->info.images.size()),
                 .giveUp = invocation.pacedOutputs->interval / 2,
                 .internalImages = this->internalPresent != nullptr,
+                // QH2: a transfer-recorded pass submits on the device's transfer queue.
+                .transfer = pass.generatedOnTransfer ? this->info.transferCopy.get() : nullptr,
             };
             for (uint32_t k = 0; k < copy.imageCount; ++k) {
                 copy.copies.at(k) = pass.generatedCopies.at(k).handle();
@@ -194,6 +205,7 @@ VkResult Swapchain::presentGeneratedFrames(
                     std::cerr << record.str();
                 }
                 this->deferredOutputQueuedThisFrame = true;
+                if (copy.transfer && this->pacingProfile) this->pacingProfile->transferCopiesActive();
                 if (this->pacingProfile) this->pacingProfile->generatedPresentMode(generatedMode);
                 if (last) slot.inFlight = true;
                 if (i == 0 && slot.outputQueries && this->pacingProfile) {

@@ -5,8 +5,10 @@
 #include "../helpers/pointers.hpp"
 #include "vulkan.hpp"
 
+#include <cstdint>
 #include <memory>
 #include <optional>
+#include <span>
 
 #include <vulkan/vulkan_core.h>
 
@@ -25,6 +27,9 @@ namespace vk {
         /// the caller an owned descriptor only after construction succeeds.
         /// @param importFd optional file descriptor for shared memory
         /// @param exportFd optional pointer to an integer where the file descriptor will be stored
+        /// @param internalPool optional context-local memory pool
+        /// @param concurrentFamilies queue families that share the image. Empty (the default) makes
+        ///     the image exclusive; otherwise at least two distinct families make it concurrent.
         /// @throws ls::vulkan_error on failure
         Image(const vk::Vulkan& vk,
             VkExtent2D extent,
@@ -32,7 +37,8 @@ namespace vk {
             VkImageUsageFlags usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
             std::optional<int> importFd = std::nullopt,
             std::optional<int*> exportFd = std::nullopt,
-            std::shared_ptr<ImageMemoryPool> internalPool = nullptr);
+            std::shared_ptr<ImageMemoryPool> internalPool = nullptr,
+            std::span<const uint32_t> concurrentFamilies = {});
 
         /// create an internal image backed by a context-local non-aliasing pool
         Image(const vk::Vulkan& vk,

@@ -95,12 +95,21 @@ bool Swapchain::recordGeneratedCopies(const vk::Vulkan& vk, RenderSlot& slot, si
         }
     }
     vk::TimestampQueryPool* const outputTimer = pass == 0 ? slot.outputQueries.get() : nullptr;
+    // QH2: the lower images share the device's transfer family, so the staging image does too.
+    const TransferCopyQueue* const transfer = this->info.transferConcurrent ? this->info.transferCopy.get() : nullptr;
     try {
         const auto& destinationImage = this->destinationImages.at(pass);
         const VkExtent2D extent = destinationImage.getExtent();
+        const std::array<uint32_t, 2> sharedFamilies{vk.queueFamilyIndex(), transfer ? transfer->family : 0U};
         renderPass.staging.emplace(vk, extent, this->info.format,
-            VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+            VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+            std::nullopt, std::nullopt, nullptr,
+            transfer ? std::span<const uint32_t>{sharedFamilies} : std::span<const uint32_t>{});
         const VkImage stagingImage = renderPass.staging->handle();
+        // QH2: the final copies move to the transfer family only when the application never touches lower images
+        // (this present uses internal images), and the copy is exact: same format, same extent as the swapchain.
+        const bool onTransfer = transfer && this->internalPresent &&
+            extent.width == this->info.extent.width && extent.height == this->info.extent.height;
         renderPass.staged.emplace(vk);
         renderPass.copied.emplace(vk);
         renderPass.stagingCopy.emplace(vk);
@@ -147,9 +156,12 @@ bool Swapchain::recordGeneratedCopies(const vk::Vulkan& vk, RenderSlot& slot, si
         std::vector<vk::CommandBuffer> copies;
         copies.reserve(this->info.images.size());
         for (const VkImage swapchainImage : this->info.images) {
-            copies.emplace_back(vk);
+            if (onTransfer) copies.emplace_back(vk, transfer->pool);
+            else copies.emplace_back(vk);
             const auto& command = copies.back();
             command.begin(vk, 0);
+            // QH2: a transfer family without timestamp bits leaves its copies untimed; they read as unavailable.
+            vk::TimestampQueryPool* const copyTimer = onTransfer && !transfer->timestamps ? nullptr : outputTimer;
             const std::array preBarriers{
                 present_detail::barrierHelper(swapchainImage,
                     VK_ACCESS_NONE,
@@ -166,14 +178,23 @@ bool Swapchain::recordGeneratedCopies(const vk::Vulkan& vk, RenderSlot& slot, si
                     VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
                 ),
             };
-            if (outputTimer) outputTimer->write(command.handle(), VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 0);
-            command.blitImage(vk, preBarriers,
-                {stagingImage, swapchainImage},
-                extent, postBarriers);
-            if (outputTimer) outputTimer->write(command.handle(), VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 1);
+            if (copyTimer) copyTimer->write(command.handle(),
+                onTransfer ? VK_PIPELINE_STAGE_TRANSFER_BIT : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 0);
+            if (onTransfer) {
+                command.copyImage(vk, preBarriers,
+                    {stagingImage, swapchainImage},
+                    extent, postBarriers);
+            } else {
+                command.blitImage(vk, preBarriers,
+                    {stagingImage, swapchainImage},
+                    extent, postBarriers);
+            }
+            if (copyTimer) copyTimer->write(command.handle(),
+                onTransfer ? VK_PIPELINE_STAGE_TRANSFER_BIT : VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 1);
             command.end(vk);
         }
         renderPass.generatedCopies = std::move(copies);
+        renderPass.generatedOnTransfer = onTransfer;
         static const bool acquireProbe = [] {
             const auto* value = std::getenv("FGVK_PACING_PROFILE_ACQUIRE_FENCE");
             return value && std::string_view(value) == "1";
@@ -189,6 +210,7 @@ bool Swapchain::recordGeneratedCopies(const vk::Vulkan& vk, RenderSlot& slot, si
         return true;
     } catch (...) {
         renderPass.generatedCopies.clear();
+        renderPass.generatedOnTransfer = false;
         renderPass.stagingCopy.reset();
         renderPass.staged.reset();
         renderPass.copied.reset();
@@ -311,6 +333,7 @@ void Swapchain::commitFrameGenerationResources(
         // Release them before the staging image they read.
         for (auto& pass : slot.passes) {
             pass.generatedCopies.clear();
+            pass.generatedOnTransfer = false;
             pass.stagingCopy.reset();
             pass.staged.reset();
             pass.copied.reset();

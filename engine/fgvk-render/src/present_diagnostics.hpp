@@ -272,6 +272,8 @@ namespace fgvk::layer::present_diagnostics {
             size_t internalRealPrepared{}, internalRealAtDeadline{};
             size_t generatedPrepared{}, generatedAtDeadline{};
             bool internalImages{};
+            // QH2: the context's generated copies run on the transfer queue (persistent, like internalImages).
+            bool transferCopy{};
             size_t fifoCallerTimingSources{};
             std::array<OutputSample, outputTraceCapacity> outputTrace{};
             size_t outputTraceCount{}, outputTraceDropped{};
@@ -461,6 +463,8 @@ namespace fgvk::layer::present_diagnostics {
         }
         // Persistent for this swapchain: set once a present uses F5 internal images.
         void internalImagesActive() { internalImages = true; }
+        // QH2: persistent for this swapchain: set once a generated copy is submitted on the transfer queue.
+        void transferCopiesActive() { transferCopies = true; }
         std::optional<Window> finishSource(Clock::time_point now) {
             if (!sourceStarted || !windowStarted) return {};
             window.metrics[LayerPresent].add(now - *sourceStarted);
@@ -468,6 +472,7 @@ namespace fgvk::layer::present_diagnostics {
             if (now - *windowStarted < std::chrono::seconds(1)) return {};
             window.elapsed = now - *windowStarted;
             window.internalImages = internalImages;
+            window.transferCopy = transferCopies;
             const auto completed = window;
             window = {};
             windowStarted = now;
@@ -483,6 +488,7 @@ namespace fgvk::layer::present_diagnostics {
         Clock::duration lastPublish{};
         size_t batch{}, previousBatch{}, outputOrdinal{};
         bool internalImages{};
+        bool transferCopies{};
         std::optional<Clock::time_point> windowStarted, sourceStarted, sourceFinished, previousOutput;
         std::optional<Clock::time_point> previousTarget;
         OutputTiming previousTimingOwner{DriverTiming};

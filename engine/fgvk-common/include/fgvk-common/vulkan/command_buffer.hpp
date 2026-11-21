@@ -27,6 +27,12 @@ namespace vk {
         /// @throws ls::vulkan_error on failure
         CommandBuffer(const vk::Vulkan& vk);
 
+        /// create a command buffer from a pool of another queue family of the same device
+        /// @param vk the vulkan instance
+        /// @param pool the command pool; it must outlive the command buffer
+        /// @throws ls::vulkan_error on failure
+        CommandBuffer(const vk::Vulkan& vk, VkCommandPool pool);
+
         /// begin recording commands
         /// @param vk the vulkan instance
         /// @param flags recording usage; use zero for sequential resubmission
@@ -42,6 +48,18 @@ namespace vk {
         /// @param postBarriers image memory barriers to apply after blit
         /// throws ls::vulkan_error on failure
         void blitImage(const vk::Vulkan& vk,
+            std::span<const vk::Barrier> preBarriers,
+            std::pair<VkImage, VkImage> images, VkExtent2D extent,
+            std::span<const vk::Barrier> postBarriers) const;
+
+        /// copy an image into another image of the same format and extent
+        /// @param vk the vulkan instance
+        /// @param preBarriers image memory barriers to apply before the copy
+        /// @param images source and destination images
+        /// @param extent the extent of the copy
+        /// @param postBarriers image memory barriers to apply after the copy
+        /// throws ls::vulkan_error on failure
+        void copyImage(const vk::Vulkan& vk,
             std::span<const vk::Barrier> preBarriers,
             std::pair<VkImage, VkImage> images, VkExtent2D extent,
             std::span<const vk::Barrier> postBarriers) const;
