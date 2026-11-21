@@ -600,7 +600,8 @@ void formatAcquire(const PacingAcquirePayload& payload, std::ostream& line) {
 void formatReflexMarker(const ReflexMarkerPayload& payload, std::ostream& line) {
     line << "framegen-vulkan: present diagnostics: operation=pacing-profile-reflex-marker version=1"
          << " pid=" << getpid() << " tid=" << payload.thread << " present_id=" << payload.presentId
-         << " marker=" << static_cast<int>(payload.marker) << " ns=" << payload.ns << '\n';
+         << " marker=" << static_cast<int>(payload.marker) << " ns=" << payload.ns
+         << (payload.layer ? " origin=layer" : " origin=app") << '\n';
 }
 
 void formatReflexSleep(const ReflexSleepPayload& payload, std::ostream& line) {

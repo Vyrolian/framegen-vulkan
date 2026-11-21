@@ -183,6 +183,17 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
     this->internalPresent = internal;
     // X3: no application chain has reached a lower present yet in this call.
     this->applicationChainHandedOff = false;
+    // RA1: this application present's Reflex ID, taken once. The lower marker sink is filled at the first present.
+    if (!this->reflexAttribution) {
+        this->reflexAttribution = ReflexPresentAttributionRegistry::get(swapchain);
+        this->reflexMarkers = ReflexMarkerSink{
+            .device = vk.dev(),
+            .mark = reinterpret_cast<PFN_vkSetLatencyMarkerNV>(
+                vk.fi().GetDeviceProcAddr(vk.dev(), "vkSetLatencyMarkerNV")),
+            .record = &present_diagnostics::recordLayerReflexMarker,
+        };
+    }
+    this->reflexPresentId = this->reflexAttribution->takeApplicationPresent();
     // Diagnostics only: marks this swapchain's pacing window as using F5 internal images.
     if (internal && this->pacingProfile) this->pacingProfile->internalImagesActive();
     if (internal && internal->applicationIndex != imageIndex)

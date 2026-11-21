@@ -573,8 +573,12 @@ namespace fgvk::layer::present_diagnostics {
         std::array<int64_t, 4> inside{};
         Clock::time_point previousExit{};
     };
-    /// Reflex markers and mode calls, recorded only with the pacing profile.
-    void recordReflexMarker(uint64_t presentId, VkLatencyMarkerNV marker, Clock::time_point at) noexcept;
+    /// Reflex markers and mode calls, recorded only with the pacing profile. `layer` marks a marker fgvk sent
+    /// around its own lower present (origin=layer), not the application's (origin=app).
+    void recordReflexMarker(uint64_t presentId, VkLatencyMarkerNV marker, Clock::time_point at,
+        bool layer = false) noexcept;
+    /// A marker fgvk sent, stamped now (ReflexMarkerSink::record).
+    void recordLayerReflexMarker(uint64_t presentId, VkLatencyMarkerNV marker) noexcept;
     void recordReflexSleep(Clock::time_point entered, Clock::time_point exited, VkResult result) noexcept;
     void recordReflexMode(VkBool32 lowLatency, VkBool32 boost, uint32_t minimumIntervalUs, VkResult result) noexcept;
 

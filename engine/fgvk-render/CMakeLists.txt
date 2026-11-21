@@ -350,6 +350,12 @@ if(BUILD_TESTING)
     add_test(NAME reflex-frame-limit COMMAND fgvk-reflex-frame-limit-tests)
     fgvk_register_portable_policy_test(fgvk-reflex-frame-limit-tests reflex-frame-limit)
 
+    # Reflex present attribution: the application's marker rule, the present's ID and the lower out-of-band pair.
+    add_executable(fgvk-reflex-present-attribution-tests "tests/reflex_present_attribution_tests.cpp")
+    target_include_directories(fgvk-reflex-present-attribution-tests PRIVATE "src")
+    add_test(NAME reflex-present-attribution COMMAND fgvk-reflex-present-attribution-tests)
+    fgvk_register_portable_policy_test(fgvk-reflex-present-attribution-tests reflex-present-attribution)
+
     add_executable(fgvk-render-slot-ring-tests "tests/render_slot_ring_tests.cpp")
     target_include_directories(fgvk-render-slot-ring-tests PRIVATE "src")
     add_test(NAME render-slot-ring COMMAND fgvk-render-slot-ring-tests)

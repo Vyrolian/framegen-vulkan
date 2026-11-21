@@ -4474,6 +4474,70 @@ void presentedJobsKeepTheirFenceForTheLowerPresent() {
     lowerResult = VK_SUCCESS;
 }
 
+// RA1: two outputs of one batch, admitted with Reflex IDs 7 and 8, present on the worker each inside its own
+// out-of-band pair, one pair after the other: 10(7), present, 11(7), 10(8), present, 11(8).
+namespace {
+struct SentMarker {
+    uint64_t presentId{};
+    VkLatencyMarkerNV marker{};
+    // Lower presents finished when the marker was sent.
+    size_t presentsDone{};
+    bool operator==(const SentMarker& other) const {
+        return presentId == other.presentId && marker == other.marker && presentsDone == other.presentsDone;
+    }
+};
+std::mutex sentMarkerMutex;
+std::vector<SentMarker> sentMarkers;
+void VKAPI_CALL recordSentMarker(VkDevice device, VkSwapchainKHR swapchain, const VkSetLatencyMarkerInfoNV* info) {
+    expect(device == handle<VkDevice>(9) && swapchain == handle<VkSwapchainKHR>(11) && info,
+        "a worker marker went to the wrong device or swapchain");
+    const auto presentsDone = presentedIds().size();
+    const std::lock_guard lock(sentMarkerMutex);
+    sentMarkers.push_back({info->presentID, info->marker, presentsDone});
+}
+}
+
+void reflexMarkersEncloseEachWorkerPresent() {
+    clearPresentLog();
+    {
+        const std::lock_guard lock(sentMarkerMutex);
+        sentMarkers.clear();
+    }
+    lowerResult = VK_SUCCESS;
+    auto queue = std::make_shared<DeferredPresentQueue>();
+    queue->queue = handle<VkQueue>(7);
+    DeferredPresent worker(queue, present);
+    worker.setReflexMarkers({.device = handle<VkDevice>(9), .mark = recordSentMarker});
+    const auto swapchain = handle<VkSwapchainKHR>(11);
+    const auto wait = handle<VkSemaphore>(12);
+    uint32_t image = 0;
+    const VkPresentInfoKHR info{.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+        .waitSemaphoreCount = 1, .pWaitSemaphores = &wait,
+        .swapchainCount = 1, .pSwapchains = &swapchain, .pImageIndices = &image};
+    const auto deadline = DeferredPresent::Clock::now();
+    expect(worker.beginBatch(2), "reflex batch rejected");
+    expect(worker.enqueue(info, deadline, false, {}, false, 7), "the output with Reflex ID 7 was rejected");
+    image = 1;
+    expect(worker.enqueue(info, deadline, false, {}, false, 8), "the output with Reflex ID 8 was rejected");
+    worker.closeBatch();
+    const auto completion = worker.finish(UINT64_MAX);
+    expect(completion && completion->count == 2 && !completion->calls[0].skipped && !completion->calls[1].skipped &&
+        completion->calls[0].result == VK_SUCCESS && completion->calls[1].result == VK_SUCCESS,
+        "a Reflex output was skipped or lost its lower result");
+    std::vector<SentMarker> sent;
+    {
+        const std::lock_guard lock(sentMarkerMutex);
+        sent = sentMarkers;
+    }
+    const std::vector<SentMarker> expected{
+        {7, VK_LATENCY_MARKER_OUT_OF_BAND_PRESENT_START_NV, 0},
+        {7, VK_LATENCY_MARKER_OUT_OF_BAND_PRESENT_END_NV, 1},
+        {8, VK_LATENCY_MARKER_OUT_OF_BAND_PRESENT_START_NV, 1},
+        {8, VK_LATENCY_MARKER_OUT_OF_BAND_PRESENT_END_NV, 2},
+    };
+    expect(sent == expected, "the worker's out-of-band pairs did not each enclose one lower present in order");
+}
+
 // (X3d) A generated output that skips for want of a lower image signals its application fence once.
 void skippedGeneratedCopySignalsItsFenceOnce() {
     auto queue = std::make_shared<DeferredPresentQueue>();
@@ -4717,5 +4781,6 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char** argv) {
     // counts calls for the earlier lifecycle test.
     skippedInternalRealSignalsItsFenceOnce(); stoppedInternalRealSignalsItsFenceOnce();
     presentedJobsKeepTheirFenceForTheLowerPresent(); skippedGeneratedCopySignalsItsFenceOnce();
+    reflexMarkersEncloseEachWorkerPresent();
     gamescopeTickLockRemovesSameTickPairs(); nonGamescopeGatesScheduleAsToday(); zeroSnapIsIdentical();
 }

@@ -1561,6 +1561,11 @@ namespace {
         if (!next) return;
         if (info) present_diagnostics::recordReflexMarker(info->presentID, info->marker,
             present_diagnostics::Clock::now());
+        // A managed swapchain's out-of-band pair is fgvk's own (reflex_present_attribution.hpp).
+        if (info) {
+            const auto attribution = ReflexPresentAttributionRegistry::find(swapchain);
+            if (attribution && !attribution->applicationMarker(info->marker, info->presentID)) return;
+        }
         next(device, swapchain, info);
     }
 
@@ -1867,6 +1872,7 @@ namespace {
             instance_info->swapchains.erase(createdSwapchain);
             instance_info->swapchainInfos.erase(createdSwapchain);
             instance_info->nativeSwapchains.erase(createdSwapchain);
+            ReflexPresentAttributionRegistry::erase(createdSwapchain);
             if (auto internal = instance_info->internalSwapchains.extract(createdSwapchain); !internal.empty())
                 present_layout::unregisterImages(device, internal.mapped()->images());
             try {
@@ -2158,6 +2164,8 @@ namespace {
             installInternalSwapchainImages(it->second, *info, *swapchain,
                 swapchainInfo);
 
+            // RA1: the Reflex attribution entry of this managed swapchain (native paths have none).
+            static_cast<void>(ReflexPresentAttributionRegistry::get(*swapchain));
             instance_info->swapchains.emplace(*swapchain,
                 ls::R<vk::Vulkan>(it->second));
 
@@ -2747,6 +2755,7 @@ namespace {
             instance_info->nativeSwapchains.contains(swapchain);
         auto context = layer_info->root.takeSwapchainContext(swapchain);
         ReflexFrameLimitRegistry::erase(swapchain);
+        ReflexPresentAttributionRegistry::erase(swapchain);
         instance_info->swapchainInfos.erase(swapchain);
         instance_info->swapchains.erase(swapchain);
         instance_info->nativeSwapchains.erase(swapchain);

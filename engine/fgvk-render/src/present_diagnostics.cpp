@@ -753,10 +753,14 @@ void recordApplicationPresentWait(const VkDevice device, const VkSwapchainKHR sw
 }
 
 void recordReflexMarker(const uint64_t presentId, const VkLatencyMarkerNV marker,
-        const Clock::time_point at) noexcept {
+        const Clock::time_point at, const bool layer) noexcept {
     if (!pacingProfileEnabled()) return;
     present_records::enqueue(trace_recorder::RecordKind::ReflexMarker, present_records::ReflexMarkerPayload{
-        trace_recorder::currentThreadId(), presentId, marker, trace_recorder::nanoseconds(at)});
+        trace_recorder::currentThreadId(), presentId, marker, trace_recorder::nanoseconds(at), layer});
+}
+
+void recordLayerReflexMarker(const uint64_t presentId, const VkLatencyMarkerNV marker) noexcept {
+    recordReflexMarker(presentId, marker, Clock::now(), true);
 }
 
 void recordReflexSleep(const Clock::time_point entered, const Clock::time_point exited,

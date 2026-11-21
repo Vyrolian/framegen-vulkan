@@ -157,6 +157,7 @@ bool Swapchain::beginDeferredPresentBatch(const vk::Vulkan& vk, const size_t lim
             this->deferredPresent = std::make_unique<DeferredPresent>(
                 this->info.deferredPresentQueue, vk.df().QueuePresentKHR, vk.dev(), vk.df().QueueSubmit);
             this->deferredPresent->setOwnedPresentIdStorage(&this->presentFeedbackTag);
+            this->deferredPresent->setReflexMarkers(this->reflexMarkers);
             this->attachDeferredOnScreen();
             this->attachScreenSamples();
         } catch (const std::exception&) { return false; }
@@ -263,7 +264,7 @@ bool Swapchain::enqueueInternalRealPresent(const vk::Vulkan& vk,
         .abandon = &internalRealAbandon,
         .applicationIndex = image.applicationIndex,
     };
-    if (!this->deferredPresent->enqueueInternalReal(presentInfo, deadline, copy))
+    if (!this->deferredPresent->enqueueInternalReal(presentInfo, deadline, copy, {}, this->reflexPresentId))
         return false;
     image.handedOff = true;
     return true;
@@ -354,6 +355,7 @@ VkResult Swapchain::queuePresentWithRetirementFence(
                     this->deferredPresent = std::make_unique<DeferredPresent>(
                         this->info.deferredPresentQueue, vk.df().QueuePresentKHR, vk.dev(), vk.df().QueueSubmit);
                     this->deferredPresent->setOwnedPresentIdStorage(&this->presentFeedbackTag);
+                    this->deferredPresent->setReflexMarkers(this->reflexMarkers);
                     this->attachDeferredOnScreen();
                     this->attachScreenSamples();
                 } catch (const std::exception&) {
@@ -364,7 +366,7 @@ VkResult Swapchain::queuePresentWithRetirementFence(
                 ? this->enqueueInternalRealPresent(vk, info, *this->deferredPresentDeadline)
                 : this->deferredPresent->enqueue(info, *this->deferredPresentDeadline, observation.generated,
                     DeferredPresent::OutputIdentity{observation.backendFrame, observation.phase},
-                    observation.directGenerated));
+                    observation.directGenerated, this->reflexPresentId));
             if (admitted) {
                 // X3: the worker now owns the application chain, and signals its fence if the job skips.
                 if (observation.applicationImage)
@@ -463,7 +465,9 @@ VkResult Swapchain::queuePresentWithRetirementFence(
                     // D7d: noted as a synchronous lower present only when the pacing profile keeps history.
                     const VkResult presented = this->info.deferredPresentQueue->presentSyncLocked(info, [&] {
                         allocateOnScreen();
-                        return observedPresent(this->info.deferredPresentQueue->queue, info);
+                        return attributedPresent(this->reflexMarkers, info.pSwapchains[0], this->reflexPresentId, [&] {
+                            return observedPresent(this->info.deferredPresentQueue->queue, info);
+                        });
                     });
                     // T4: the private queue marker, outside the timed present bracket.
                     this->info.deferredPresentQueue->markPresentLocked(this->diagnosticsState.contextId,
@@ -474,14 +478,23 @@ VkResult Swapchain::queuePresentWithRetirementFence(
                     const std::lock_guard lock(this->info.deferredPresentQueue->mutex);
                     return this->info.deferredPresentQueue->presentSyncLocked(info, [&] {
                         allocateOnScreen();
-                        return vk.df().QueuePresentKHR(this->info.deferredPresentQueue->queue, &info);
+                        return attributedPresent(this->reflexMarkers, info.pSwapchains[0], this->reflexPresentId, [&] {
+                            return vk.df().QueuePresentKHR(this->info.deferredPresentQueue->queue, &info);
+                        });
                     });
                 }
-                return this->info.deferredPresentQueue->presentNow(vk.df().QueuePresentKHR, info);
+                const std::lock_guard lock(this->info.deferredPresentQueue->mutex);
+                return this->info.deferredPresentQueue->presentSyncLocked(info, [&] {
+                    return attributedPresent(this->reflexMarkers, info.pSwapchains[0], this->reflexPresentId, [&] {
+                        return vk.df().QueuePresentKHR(this->info.deferredPresentQueue->queue, &info);
+                    });
+                });
             }
             // No private queue: no worker presents to this swapchain, so nothing can interleave.
             allocateOnScreen();
-            return observedPresent(queue, info);
+            return attributedPresent(this->reflexMarkers, info.pSwapchains[0], this->reflexPresentId, [&] {
+                return observedPresent(queue, info);
+            });
         };
         const auto submit = [&]() -> VkResult {
 #if defined(VK_KHR_present_id2)

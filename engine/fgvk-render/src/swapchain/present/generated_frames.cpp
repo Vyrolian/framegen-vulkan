@@ -185,7 +185,8 @@ VkResult Swapchain::presentGeneratedFrames(
             }
             if (this->deferredPresent->enqueueGeneratedCopy(invocation.swapchain, generatedChain.head(),
                     invocation.pacedOutputs->at(i), copy,
-                    DeferredPresent::OutputIdentity{this->frameState.backendFrameIndex - 1, plan.scheduledGeneratedFrames[i]})) {
+                    DeferredPresent::OutputIdentity{this->frameState.backendFrameIndex - 1, plan.scheduledGeneratedFrames[i]},
+                    this->reflexPresentId)) {
                 if (privateStaging && present_diagnostics::pacingGpuSplitProfileEnabled() && this->pacingProfile) {
                     std::ostringstream record;
                     record << "framegen-vulkan: same-queue generated copy context=" << this->diagnosticsState.contextId

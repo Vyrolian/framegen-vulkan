@@ -138,15 +138,24 @@ private:
 // (any application thread) and the swapchain's present path. Guarded by its own
 // lock because the application may call Reflex while another thread creates or
 // destroys swapchains. An entry is made by whichever side comes first, so a
-// request made before the first present is kept, and erased at destroy.
-class ReflexFrameLimitRegistry {
+// request made before the first present is kept, and erased at destroy. One
+// registry per entry type T.
+template<class T>
+class ReflexSwapchainRegistry {
 public:
-    [[nodiscard]] static std::shared_ptr<ReflexFrameLimit> get(const VkSwapchainKHR swapchain) {
+    [[nodiscard]] static std::shared_ptr<T> get(const VkSwapchainKHR swapchain) {
         auto& self = instance();
         const std::lock_guard lock(self.mutex);
         auto& entry = self.entries[swapchain];
-        if (!entry) entry = std::make_shared<ReflexFrameLimit>();
+        if (!entry) entry = std::make_shared<T>();
         return entry;
+    }
+    // The swapchain's entry, or null. Never creates one.
+    [[nodiscard]] static std::shared_ptr<T> find(const VkSwapchainKHR swapchain) {
+        auto& self = instance();
+        const std::lock_guard lock(self.mutex);
+        const auto entry = self.entries.find(swapchain);
+        return entry == self.entries.end() ? std::shared_ptr<T>{} : entry->second;
     }
     static void erase(const VkSwapchainKHR swapchain) {
         auto& self = instance();
@@ -155,12 +164,14 @@ public:
     }
 
 private:
-    static ReflexFrameLimitRegistry& instance() {
-        static ReflexFrameLimitRegistry registry;
+    static ReflexSwapchainRegistry& instance() {
+        static ReflexSwapchainRegistry registry;
         return registry;
     }
     std::mutex mutex;
-    std::unordered_map<VkSwapchainKHR, std::shared_ptr<ReflexFrameLimit>> entries;
+    std::unordered_map<VkSwapchainKHR, std::shared_ptr<T>> entries;
 };
+
+using ReflexFrameLimitRegistry = ReflexSwapchainRegistry<ReflexFrameLimit>;
 
 }

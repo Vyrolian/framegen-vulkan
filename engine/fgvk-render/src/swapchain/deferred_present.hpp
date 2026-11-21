@@ -7,6 +7,7 @@
 #include "swapchain/onscreen_watch.hpp"
 #include "swapchain/output_margin.hpp"
 #include "swapchain/present_marker.hpp"
+#include "swapchain/reflex_present_attribution.hpp"
 #include "swapchain/screen_samples.hpp"
 #include "swapchain/tick_lock.hpp"
 #include "swapchain/create_policy.hpp"
@@ -695,6 +696,11 @@ public:
     void setTickLock(const bool enabled) {
         this->tickLockEnabled = enabled;
     }
+    // RA1: the driver markers of this worker's lower presents (reflex_present_attribution.hpp). Set once, before the
+    // first job is admitted, like setTickLock.
+    void setReflexMarkers(const ReflexMarkerSink sink) {
+        this->reflexMarkers = sink;
+    }
     // Only fixed-size metadata is admitted. Copy every scalar before returning
     // to the application; unknown nodes and caller-owned result arrays stay
     // synchronous. The same parser is used for policy and actual admission.
@@ -703,8 +709,8 @@ public:
     }
     // identity is diagnostics only: the backend frame and the interpolation position of a generated output.
     bool enqueue(const VkPresentInfoKHR& info, Clock::time_point deadline, bool generated = false,
-            OutputIdentity identity = {}, bool directGenerated = false) {
-        return admit(info, deadline, generated, nullptr, identity, directGenerated);
+            OutputIdentity identity = {}, bool directGenerated = false, uint64_t reflexPresentId = 0) {
+        return admit(info, deadline, generated, nullptr, identity, directGenerated, reflexPresentId);
     }
     // The producer is serialized by the swapchain owner. Allow one retained
     // producer-acquired lower image in addition to the worker's current image.
@@ -724,14 +730,15 @@ public:
     // the deadline (see presentInternalReal). info.pWaitSemaphores[0] is the
     // continuation that copy waits.
     bool enqueueInternalReal(const VkPresentInfoKHR& info, Clock::time_point deadline,
-            const InternalRealCopy& copy, OutputIdentity identity = {}) {
+            const InternalRealCopy& copy, OutputIdentity identity = {}, uint64_t reflexPresentId = 0) {
         return copy.tryAcquire && copy.submit && copy.abandon && copy.owner &&
-            admit(info, deadline, false, &copy, identity);
+            admit(info, deadline, false, &copy, identity, false, reflexPresentId);
     }
     // A generated output whose lower acquire/copy belongs to the worker. Only
     // the newest open batch admits it, so the real output follows in that batch.
     bool enqueueGeneratedCopy(VkSwapchainKHR swapchain, const void* chain,
-            Clock::time_point deadline, const GeneratedCopy& copy, OutputIdentity identity = {}) {
+            Clock::time_point deadline, const GeneratedCopy& copy, OutputIdentity identity = {},
+            uint64_t reflexPresentId = 0) {
         if (copy.imageCount == 0 || copy.imageCount > maxCopyImages || !copy.acquire || !copy.submit ||
                 !copy.staged || !copy.continuation)
             return false;
@@ -743,7 +750,8 @@ public:
             Batch& batch = batches[slotAt(count - 1)];
             if (batch.produced == batch.limit) return false;
             batch.jobs[batch.produced++] = {swapchain, UINT32_MAX, VK_NULL_HANDLE, *metadata, deadline, true,
-                batch.readiness.trace ? Clock::now() : Clock::time_point{}, true, copy, false, {}, identity.backendFrame, identity.phase};
+                batch.readiness.trace ? Clock::now() : Clock::time_point{}, true, copy, false, {}, identity.backendFrame, identity.phase,
+                false, reflexPresentId};
         }
         changed.notify_all();
         return true;
@@ -1031,11 +1039,14 @@ private:
         uint64_t backendFrame{};
         double phase{};
         bool directGenerated{};
+        // RA1: the Reflex ID of the application present this output belongs to (0 for none).
+        uint64_t reflexPresentId{};
     };
     // Shared admission for enqueue and enqueueInternalReal. The metadata snapshot,
     // present-ID registration and batch rules are the same for both.
     bool admit(const VkPresentInfoKHR& info, Clock::time_point deadline, bool generated,
-            const InternalRealCopy* internal, OutputIdentity identity = {}, bool directGenerated = false) {
+            const InternalRealCopy* internal, OutputIdentity identity = {}, bool directGenerated = false,
+            uint64_t reflexPresentId = 0) {
         if (info.swapchainCount != 1 || info.waitSemaphoreCount != 1 || info.pResults ||
                 !info.pSwapchains || !info.pImageIndices || !info.pWaitSemaphores)
             return false;
@@ -1068,6 +1079,7 @@ private:
             job.backendFrame = identity.backendFrame;
             job.phase = identity.phase;
             job.directGenerated = directGenerated;
+            job.reflexPresentId = reflexPresentId;
             batch.jobs[batch.produced++] = std::move(job);
         }
         changed.notify_all();
@@ -1091,6 +1103,8 @@ private:
     std::array<std::optional<Completion>, 4> completedQueue{};
     std::shared_ptr<DeferredPresentQueue> queue;
     PFN_vkQueuePresentKHR present;
+    // RA1: the lower markers of this worker's presents, set once by setReflexMarkers.
+    ReflexMarkerSink reflexMarkers;
     // X3: the device's vkQueueSubmit, used only to signal a skipped job's application present fence.
     PFN_vkQueueSubmit queueSubmit{};
     mutable std::mutex mutex;
@@ -1533,10 +1547,12 @@ private:
         if (onScreenIds) *onScreenId = onScreenIds->allocate();
         queue->beginCall(lowerOpPresentReal, lowerIndex);
         result.presentId = present_diagnostics::lowerPresentId(chain);
-        result.result = ready.observer && ready.observe
-            ? ready.observe(ready.observer.get(), present, queue->queue,
-                info, ready.context, ready.source, job.generated, &result.feedback)
-            : present(queue->queue, &info);
+        result.result = attributedPresent(reflexMarkers, job.swapchain, job.reflexPresentId, [&] {
+            return ready.observer && ready.observe
+                ? ready.observe(ready.observer.get(), present, queue->queue,
+                    info, ready.context, ready.source, job.generated, &result.feedback)
+                : present(queue->queue, &info);
+        });
         queue->endCall();
         result.finished = Clock::now();
         queue->markPresentLocked(ready.context, ready.source, result.feedback, job.generated);
@@ -2130,10 +2146,12 @@ private:
                         if (onScreenIds) onScreenLowerId = onScreenIds->allocate();
                         queue->beginCall(lowerOpPresentGenerated, job.image);
                         result.presentId = present_diagnostics::lowerPresentId(chain);
-                        result.result = ready.observer && ready.observe
-                            ? ready.observe(ready.observer.get(), present, queue->queue,
-                                info, ready.context, ready.source, job.generated, &result.feedback)
-                            : present(queue->queue, &info);
+                        result.result = attributedPresent(reflexMarkers, job.swapchain, job.reflexPresentId, [&] {
+                            return ready.observer && ready.observe
+                                ? ready.observe(ready.observer.get(), present, queue->queue,
+                                    info, ready.context, ready.source, job.generated, &result.feedback)
+                                : present(queue->queue, &info);
+                        });
                         queue->endCall();
                         result.finished = Clock::now();
                         if (job.copy.acquireProbe)

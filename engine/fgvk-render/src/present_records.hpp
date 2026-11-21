@@ -247,6 +247,7 @@ struct ReflexMarkerPayload {
     uint64_t presentId{};
     VkLatencyMarkerNV marker{};
     int64_t ns{};
+    bool layer{};
 };
 
 struct ReflexSleepPayload {

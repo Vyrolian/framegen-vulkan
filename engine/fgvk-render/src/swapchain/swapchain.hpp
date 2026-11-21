@@ -27,6 +27,7 @@
 #include "swapchain/onscreen_watch.hpp"
 #include "swapchain/present_feedback_probe.hpp"
 #include "swapchain/reflex_frame_limit.hpp"
+#include "swapchain/reflex_present_attribution.hpp"
 #include "swapchain/release_gate.hpp"
 #include "swapchain/screen_samples.hpp"
 #include "swapchain/surface_origin.hpp"
@@ -529,6 +530,11 @@ namespace fgvk::layer {
         // Reflex request of this swapchain, shared with the Reflex wrapper through
         // ReflexFrameLimitRegistry; fetched at the first present.
         std::shared_ptr<ReflexFrameLimit> reflexLimit;
+        // RA1: this swapchain's Reflex attribution, fetched at the first present, the Reflex ID of the present in
+        // progress, and the sink its own lower markers are sent to (reflex_present_attribution.hpp).
+        std::shared_ptr<ReflexPresentAttribution> reflexAttribution;
+        uint64_t reflexPresentId{};
+        ReflexMarkerSink reflexMarkers;
         // Actual scheduled batch, including the real image; never the user's
         // unproven maximum multiplier. Reset before native/history fallbacks.
         size_t bridgeOutputBatchSize{1};
