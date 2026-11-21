@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
+#include "swapchain/reflex_out_of_band.hpp"
 #include "swapchain/reflex_present_attribution.hpp"
 
 #include <cstdint>
@@ -170,18 +171,24 @@ void attributedPresentEndsWhenPresentThrows() {
     expect(events == expected, "the out-of-band end was not sent after a throwing present");
 }
 
+// ---- RL2 ----
+
+void outOfBandParse() {
+    expect(parseReflexOutOfBandRequest(nullptr) == ReflexOutOfBandType::Present,
+        "an unset FGVK_REFLEX_OUT_OF_BAND did not mark the present queue");
+    expect(parseReflexOutOfBandRequest("present") == ReflexOutOfBandType::Present, "present was not the present type");
+    expect(parseReflexOutOfBandRequest("render") == ReflexOutOfBandType::Render, "render was not the render type");
+    expect(parseReflexOutOfBandRequest("off") == ReflexOutOfBandType::None, "off did not mark nothing");
+    for (const char* garbage : {"", "OFF", "0", "1", "none", "render "})
+        expect(parseReflexOutOfBandRequest(garbage) == ReflexOutOfBandType::Present,
+            "an unrecognised FGVK_REFLEX_OUT_OF_BAND value did not fall back to the present type");
+}
+
 // The timing query is due on every 16th sleep: calls 1 to 15 are not, 16 is, 17 to 31 are not, and 32 is.
 void timingQueryIsDueEverySixteenthCall() {
     ReflexTimingCursor cursor;
     for (uint32_t call = 1; call <= 32; ++call)
         expect(cursor.due() == (call == 16 || call == 32), "the timing query was not due on every 16th sleep");
-}
-
-// RT1: the queue drain reads on every fourth sleep: calls 1 to 3 are not due, 4 is, 5 to 7 are not, and 8 is.
-void timingQueryIsDueEveryFourthCallForTheDrain() {
-    ReflexTimingCursor cursor;
-    for (uint32_t call = 1; call <= 8; ++call)
-        expect(cursor.due(4) == (call == 4 || call == 8), "the timing query was not due on every fourth sleep");
 }
 
 // A report is fresh once; an equal or older present ID is not fresh, and a newer one is.
@@ -204,8 +211,8 @@ int main() {
     attributedPresentBracketsThePresent();
     attributedPresentWithoutAMarkerIsPlain();
     attributedPresentEndsWhenPresentThrows();
+    outOfBandParse();
     timingQueryIsDueEverySixteenthCall();
-    timingQueryIsDueEveryFourthCallForTheDrain();
     timingReportsAreFreshOnlyWhenNewer();
     std::cout << "reflex present attribution tests passed\n";
 }

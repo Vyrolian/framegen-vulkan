@@ -465,16 +465,10 @@ int main() {
     unleaded.write(precisionPath);
     expect(!ls::ConfigFile(precisionPath).global().real_present_lead,
         "Saving must preserve real_present_lead = false");
-    expect(ls::GlobalConf{}.reflex_queue_drain && generatedDefaults.global().reflex_queue_drain &&
-            inMemoryDefaults.global().reflex_queue_drain && fp32Config.global().reflex_queue_drain,
-        "Reflex queue drain must default on, also when the key is missing");
-    writeText(precisionPath, "version = 2\n[global]\nreflex_queue_drain = false\n[[profile]]\n");
-    const ls::ConfigFile undrained(precisionPath);
-    expect(!undrained.global().reflex_queue_drain && undrained.global().real_present_lead,
-        "An explicit reflex_queue_drain = false must be read, and real present lead keeps its default");
-    undrained.write(precisionPath);
-    expect(!ls::ConfigFile(precisionPath).global().reflex_queue_drain,
-        "Saving must preserve reflex_queue_drain = false");
+    writeText(precisionPath, "version = 2\n[global]\nreflex_queue_drain = false\nallow_fp16 = false\n[[profile]]\n");
+    const ls::ConfigFile retiredDrainKey(precisionPath);
+    expect(!retiredDrainKey.global().allow_fp16 && retiredDrainKey.global().real_present_lead,
+        "A file with a retired reflex_queue_drain key must still load, and its other global keys must still be read");
 
     const auto path = directory / "conf.toml";
     writeText(path, validConfiguration);

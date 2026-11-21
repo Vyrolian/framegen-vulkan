@@ -27,9 +27,6 @@ namespace ls {
         /// present each real output after a generated output earlier by its measured GPU wait;
         /// FGVK_REAL_PRESENT_LEAD=1 or 0 overrides it; read on startup and on reload
         bool real_present_lead{true};
-        /// after each Reflex sleep, wait until the game's GPU queue is empty (the driver's own queue-wait reports);
-        /// FGVK_REFLEX_QUEUE_DRAIN=1 or 0 overrides it; read on startup and on reload
-        bool reflex_queue_drain{true};
         /// optional profile for unmatched games launched through fgvk
         std::optional<std::string> default_profile{};
     };

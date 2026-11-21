@@ -20,7 +20,6 @@
 #include "swapchain/present_layout.hpp"
 #include "swapchain/present_marker.hpp"
 #include "swapchain/reflex_out_of_band.hpp"
-#include "swapchain/reflex_queue_drain.hpp"
 #include "pnext_chain.hpp"
 
 #include <algorithm>
@@ -1316,8 +1315,6 @@ namespace {
         if (!instance_info)
             return;
         deviceDispatchEpoch.fetch_add(1, std::memory_order_acq_rel);
-        // RT1: queue drain relays of this device stop while its semaphores can still be destroyed.
-        retireReflexSleepRelays(device);
 
         collectRetiredSwapchains(device, 250'000'000);
         forceFinalizeRetiredSwapchains(device);
@@ -1570,74 +1567,13 @@ namespace {
         return result;
     }
 
-    // RT1: the queue drain is in effect for this swapchain's sleep: its setting is on, the swapchain is managed, and low
-    // latency mode is requested with frame generation active (the G2 condition, reflex_frame_limit.hpp).
-    [[nodiscard]] bool reflexQueueDrainInEffect(const VkSwapchainKHR swapchain) {
-        if (!reflexQueueDrainOn() || !ReflexPresentAttributionRegistry::find(swapchain)) return false;
-        const auto limit = ReflexFrameLimitRegistry::find(swapchain);
-        return limit && limit->lowLatencyFrameGeneration();
-    }
-
-    // RT1: the lower device's semaphore functions for the queue drain relay.
-    ReflexSemaphoreFunctions lowerSemaphoreFunctions(const VkDevice device) {
-        const auto lookup = [&](const char* name) { return instance_info->funcs.GetDeviceProcAddr(device, name); };
-        return ReflexSemaphoreFunctions{
-            .create = reinterpret_cast<PFN_vkCreateSemaphore>(lookup("vkCreateSemaphore")),
-            .destroy = reinterpret_cast<PFN_vkDestroySemaphore>(lookup("vkDestroySemaphore")),
-            .wait = reinterpret_cast<PFN_vkWaitSemaphores>(lookup("vkWaitSemaphores")),
-            .counter = reinterpret_cast<PFN_vkGetSemaphoreCounterValue>(lookup("vkGetSemaphoreCounterValue")),
-            .signal = reinterpret_cast<PFN_vkSignalSemaphore>(lookup("vkSignalSemaphore")),
-        };
-    }
-
-    // RT1: the Reflex sleep of a managed swapchain. With the queue drain in effect and an extra wait due, the sleep is
-    // made with the relay's private semaphore as its signal, and the application's value follows that sleep plus the
-    // extra wait (reflex_queue_drain.hpp). Otherwise, or when that substituted call fails, `info` is forwarded unchanged.
-    VkResult reflexQueueDrainSleep(const VkDevice device, const VkSwapchainKHR swapchain,
-            const VkLatencySleepInfoNV* info, const PFN_vkLatencySleepNV next) {
-        if (!info || !reflexQueueDrainInEffect(swapchain)) {
-            reflexQueueDrainActive.store(false, std::memory_order_relaxed);
-            reflexQueueDrainNs.store(0, std::memory_order_relaxed);
-            if (const auto relay = ReflexSleepRelayRegistry::find(swapchain)) {
-                relay->drain.reset();
-                // Earlier values are still queued: this one follows them through the relay, with no extra wait.
-                if (info && relay->busy()) {
-                    const auto substituted = relay->sleep(*info, {}, [&](const VkLatencySleepInfoNV& sub) {
-                        return next(device, swapchain, &sub);
-                    });
-                    if (substituted && *substituted == VK_SUCCESS) return VK_SUCCESS;
-                }
-            }
-            return next(device, swapchain, info);
-        }
-        const auto relay = ReflexSleepRelayRegistry::get(swapchain);
-        if (!relay->attached()) relay->attach(device, lowerSemaphoreFunctions(device));
-        const auto limit = ReflexFrameLimitRegistry::find(swapchain);
-        const uint32_t periodUs = limit ? limit->acceptedIntervalUs() : 0;
-        if (periodUs != 0) relay->drain.setPeriodUs(periodUs);
-        const auto extra = relay->drain.extra(reflexQueueDrainNow());
-        reflexQueueDrainActive.store(true, std::memory_order_relaxed);
-        reflexQueueDrainNs.store(extra.count(), std::memory_order_relaxed);
-        if (extra > std::chrono::nanoseconds{} || relay->busy()) {
-            const auto substituted = relay->sleep(*info, extra, [&](const VkLatencySleepInfoNV& sub) {
-                return next(device, swapchain, &sub);
-            });
-            if (substituted && *substituted == VK_SUCCESS) return VK_SUCCESS;
-        }
-        return next(device, swapchain, info);
-    }
-
-    // Driver Reflex frame reports of a managed swapchain. Every 16th sleep makes two vkGetLatencyTimingsNV calls (the
-    // count, then up to 64 reports) with the pacing profile on; with the queue drain setting on, every 4th sleep does.
-    // Each report with a new present ID is recorded with the profile and, while the drain is in effect, feeds its
-    // queue wait (max of GPU render start less OS render queue start, microseconds) to the drain. Nothing here changes
-    // the sleep's result, and no other path calls it.
+    // Driver Reflex frame reports of a managed swapchain, read with the pacing profile on. Every 16th sleep makes two
+    // vkGetLatencyTimingsNV calls (the count, then up to 64 reports); each report with a new present ID is recorded.
+    // Nothing here changes the sleep's result, and no other path calls it.
     void recordReflexTimings(const VkDevice device, const VkSwapchainKHR swapchain) {
-        const bool profile = present_diagnostics::pacingProfileEnabled();
-        const bool drain = reflexQueueDrainOn();
-        if (!profile && !drain) return;
+        if (!present_diagnostics::pacingProfileEnabled()) return;
         const auto attribution = ReflexPresentAttributionRegistry::find(swapchain);
-        if (!attribution || !attribution->timing().due(drain ? 4 : 16)) return;
+        if (!attribution || !attribution->timing().due()) return;
         static thread_local CachedLower<PFN_vkGetLatencyTimingsNV, VkDevice> lower;
         const auto query = lower.get(device, [&] {
             return instance_info->funcs.GetDeviceProcAddr(device, "vkGetLatencyTimingsNV"); });
@@ -1657,21 +1593,10 @@ namespace {
         const auto queryNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
             present_diagnostics::Clock::now() - started).count();
         const auto returned = std::min(info.timingCount, capacity);
-        // RT1: while the drain is in effect, the fresh reports' queue waits (microseconds) feed it as one group.
-        const bool feed = reflexQueueDrainInEffect(swapchain);
-        std::array<int64_t, capacity> queuedUs{};
-        size_t queued = 0;
         for (uint32_t index = 0; index < returned; ++index) {
             const auto& report = reports[index];
-            if (report.presentID == 0 || !attribution->timing().fresh(report.presentID)) continue;
-            if (profile) present_diagnostics::recordReflexTiming(report, queryNs);
-            if (feed && report.gpuRenderStartTimeUs != 0 && report.osRenderQueueStartTimeUs != 0)
-                queuedUs[queued++] = std::max<int64_t>(0, static_cast<int64_t>(report.gpuRenderStartTimeUs) -
-                    static_cast<int64_t>(report.osRenderQueueStartTimeUs));
-        }
-        if (feed) {
-            if (const auto relay = ReflexSleepRelayRegistry::find(swapchain))
-                relay->drain.observe(std::span{queuedUs.data(), queued}, reflexQueueDrainNow());
+            if (report.presentID != 0 && attribution->timing().fresh(report.presentID))
+                present_diagnostics::recordReflexTiming(report, queryNs);
         }
     }
 
@@ -1682,7 +1607,7 @@ namespace {
             return instance_info->funcs.GetDeviceProcAddr(device, "vkLatencySleepNV"); });
         if (!next) return VK_ERROR_EXTENSION_NOT_PRESENT;
         const auto entered = present_diagnostics::Clock::now();
-        const auto result = reflexQueueDrainSleep(device, swapchain, info, next);
+        const auto result = next(device, swapchain, info);
         present_diagnostics::recordReflexSleep(entered, present_diagnostics::Clock::now(), result);
         recordReflexTimings(device, swapchain);
         return result;
@@ -2008,7 +1933,6 @@ namespace {
             instance_info->swapchainInfos.erase(createdSwapchain);
             instance_info->nativeSwapchains.erase(createdSwapchain);
             ReflexPresentAttributionRegistry::erase(createdSwapchain);
-            retireReflexSleepRelay(createdSwapchain);
             if (auto internal = instance_info->internalSwapchains.extract(createdSwapchain); !internal.empty())
                 present_layout::unregisterImages(device, internal.mapped()->images());
             try {
@@ -2890,8 +2814,6 @@ namespace {
         const bool native =
             instance_info->nativeSwapchains.contains(swapchain);
         auto context = layer_info->root.takeSwapchainContext(swapchain);
-        // RT1: the relay stops (flushing its queued application values) before the lower swapchain is destroyed.
-        retireReflexSleepRelay(swapchain);
         ReflexFrameLimitRegistry::erase(swapchain);
         ReflexPresentAttributionRegistry::erase(swapchain);
         instance_info->swapchainInfos.erase(swapchain);
