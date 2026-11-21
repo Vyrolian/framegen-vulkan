@@ -9,13 +9,16 @@
 
 namespace fgvk::layer {
 
-// FI1: FGVK_FG_INLINE=1 attaches frame generation to the application's device and queue. Read once per process.
-// Unset or any other value changes nothing: the descriptor backend and its queues stay as they are.
+// FI1: frame generation attaches to the application's device and queue, on by default. FGVK_FG_INLINE=0 turns it off
+// and keeps the separate private device, with the descriptor backend and its queues as they were. Only the exact value
+// "0" is off: unset (null), empty and every other value attach.
+[[nodiscard]] constexpr bool parseInlineGenerationSwitch(const char* value) noexcept {
+    return !(value && std::string_view(value) == "0");
+}
+
+// Read once per process.
 [[nodiscard]] inline bool inlineGenerationRequested() noexcept {
-    static const bool requested = [] {
-        const auto* value = std::getenv("FGVK_FG_INLINE");
-        return value && std::string_view(value) == "1";
-    }();
+    static const bool requested = parseInlineGenerationSwitch(std::getenv("FGVK_FG_INLINE"));
     return requested;
 }
 

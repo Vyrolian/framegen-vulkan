@@ -850,7 +850,8 @@ void formatPacingWindowBody(const PacingWindowPayload& payload, const PacingProf
     // GP2: 1 when FGVK_BACKEND_OVERLAP=1 grouped the backend recording, so a capture names its arm.
     line << " backend_overlap="
          << (vk::parseBackendOverlap(std::getenv("FGVK_BACKEND_OVERLAP")) ? 1 : 0);
-    // FI1: 1 when this context's generated frames are scheduled on the application's device (FGVK_FG_INLINE=1).
+    // FI1: 1 when this context's generated frames are scheduled on the application's device (on by default,
+    // FGVK_FG_INLINE=0 turns it off).
     line << " fg_inline=" << (window.inlineAttached ? 1 : 0);
     // FI2: outputs of attached, eligible batches copied at the call (generated, real), and worker fallbacks.
     line << " inline_call_gen=" << window.inlineCallGenerated << " inline_call_real=" << window.inlineCallReal

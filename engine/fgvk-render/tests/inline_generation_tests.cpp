@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 
+// FI-default: the FGVK_FG_INLINE parse, where only the exact value "0" turns the attached path off.
 // FI1: pure helpers of the attached (same-device) generation path: the submit order of the source copy, the release
 // value of a batch scheduled after its copy, and where a failed schedule presents from.
 // FI2: the call-held lower budget (rule 2) and the hold check.
@@ -19,6 +20,19 @@ namespace {
     void require(const bool condition, const std::string& message) {
         if (!condition)
             throw std::runtime_error(message);
+    }
+
+    // FI-default: unset (null), empty and every value other than "0" attach. Only "0" exactly turns the switch off.
+    void testSwitchParse() {
+        using fgvk::layer::parseInlineGenerationSwitch;
+        static_assert(parseInlineGenerationSwitch(nullptr), "the switch parse must be usable in constant expressions");
+        static_assert(!parseInlineGenerationSwitch("0"), "the switch parse must be usable in constant expressions");
+        require(parseInlineGenerationSwitch(nullptr), "an unset FGVK_FG_INLINE must attach by default");
+        require(parseInlineGenerationSwitch(""), "an empty FGVK_FG_INLINE must attach");
+        require(parseInlineGenerationSwitch("1"), "FGVK_FG_INLINE=1 must attach");
+        require(!parseInlineGenerationSwitch("0"), "FGVK_FG_INLINE=0 must turn the attached path off");
+        require(parseInlineGenerationSwitch("00"), "only the exact value 0 turns the attached path off, not 00");
+        require(parseInlineGenerationSwitch("yes"), "an unrecognised FGVK_FG_INLINE value must attach");
     }
 
     void testSubmitOrder() {
@@ -88,6 +102,7 @@ namespace {
 
 int main() {
     try {
+        testSwitchParse();
         testSubmitOrder();
         testReleaseValue();
         testFailureRoutes();

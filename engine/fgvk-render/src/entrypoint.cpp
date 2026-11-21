@@ -830,9 +830,9 @@ namespace {
         try {
             VkDeviceCreateInfo newInfo = *info;
             privatePresentQueue.apply(newInfo);
-            // FI1 (FGVK_FG_INLINE=1): the attached backend runs on this device, so it needs the features its own
-            // device would enable. Each is requested only when the physical device supports it, and the application's
-            // own requests are kept.
+            // FI1 (on by default, FGVK_FG_INLINE=0 turns it off): the attached backend runs on this device, so it needs
+            // the features its own device would enable. Each is requested only when the physical device supports it, and
+            // the application's own requests are kept.
             const bool inlineRequested = inlineGenerationRequested() && frameGenerationInteropEnabled &&
                 instance_info->funcs.GetPhysicalDeviceFeatures2 != nullptr;
             VkPhysicalDeviceVulkan12Features inlineSupported12{

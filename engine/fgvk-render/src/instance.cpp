@@ -712,7 +712,8 @@ void Root::createSwapchainContext(const vk::Vulkan& vk,
         profile.frame_generation_enabled;
     const bool frameGenerationAvailableOnDevice =
         vk.frameGenerationInteropEnabled();
-    // FI1: with FGVK_FG_INLINE=1 the application's device hosts the backend, so no second device is created.
+    // FI1: on by default, FGVK_FG_INLINE=0 turns it off. The application's device hosts the backend, so no second
+    // device is created.
     backend::Instance* attachedBackend = frameGenerationAvailableOnDevice && inlineGenerationRequested()
         ? this->attachedBackendFor(vk) : nullptr;
     if (frameGenerationAvailableOnDevice &&

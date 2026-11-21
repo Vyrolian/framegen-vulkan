@@ -653,7 +653,8 @@ namespace fgvk::layer {
 
         // Frame planning, resource readiness, and generated-image admission.
         [[nodiscard]] bool recoverBackendIfReady(const vk::Vulkan& vk);
-        // FI1 (FGVK_FG_INLINE=1): helpers for a swapchain whose backend is attached to the application's device.
+        // FI1 (on by default, FGVK_FG_INLINE=0 turns it off): helpers for a swapchain whose backend is attached to the
+        // application's device.
         [[nodiscard]] bool attachedGeneration() const { return this->instance && this->instance->attached(); }
         [[nodiscard]] VkSemaphore submitPostCopyFallback(const PresentInvocation& invocation, uint64_t copyTimelineValue);
         void abandonInlineSourceFrame();
