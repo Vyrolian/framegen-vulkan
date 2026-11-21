@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
-// QH2 policy: the transfer family choice, the queue request that extends the device create info, and the
-// queue families a lower swapchain shares with the transfer family. No device is needed.
+// QH2 and QH3 policy: the transfer family choice and its fallback order, the queue request that extends the device
+// create info, and the queue families a lower swapchain shares with the transfer family. No device is needed.
 #include "swapchain/transfer_queue.hpp"
 
 #include <array>
@@ -212,6 +212,111 @@ namespace {
         const std::vector<uint32_t> single = transferSharingFamilies(VK_SHARING_MODE_EXCLUSIVE, {}, 3, 3);
         expect(single.size() == 1, "duplicate layer and transfer families were listed twice");
     }
+
+    // QH3: plain transfer families precede the video families, 64 timestamp bits precede fewer, and ties keep the lower
+    // index. Graphics, compute, optical flow and empty families never appear.
+    void testCandidateOrder() {
+        const std::array families{
+            family(transferOnly, 1, 0),                                                    // 0: plain, no timestamps
+            family(VK_QUEUE_VIDEO_DECODE_BIT_KHR | VK_QUEUE_TRANSFER_BIT, 1, 64),          // 1: video, 64 bits
+            family(transferOnly, 1, 36),                                                   // 2: plain, 36 bits
+            family(transferOnly, 1, 64),                                                   // 3: plain, 64 bits
+            family(VK_QUEUE_VIDEO_ENCODE_BIT_KHR | VK_QUEUE_TRANSFER_BIT, 1, 64),          // 4: video, 64 bits
+        };
+        expect((transferFamilyCandidates(families) == std::vector<uint32_t>{3, 2, 0, 1, 4}),
+            "the transfer candidates are not in preference order");
+
+        const std::array ties{family(transferOnly, 1, 64), family(transferOnly, 1, 64)};
+        expect((transferFamilyCandidates(ties) == std::vector<uint32_t>{0, 1}), "a tie did not keep the lower index");
+
+        const std::array excluded{
+            family(graphicsCompute, 16, 64),
+            family(VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT, 2, 64),
+            family(VK_QUEUE_OPTICAL_FLOW_BIT_NV | VK_QUEUE_TRANSFER_BIT, 1, 64),
+            family(transferOnly, 0, 64),
+        };
+        expect(transferFamilyCandidates(excluded).empty(), "an excluded family was a transfer candidate");
+    }
+
+    // QH3, the NVIDIA layout measured in QD1. Family 1 is the only plain transfer family, and VKD3D requests both
+    // of its queues, so the copy falls back to a video family. Family 5 (optical flow) is never a candidate.
+    std::array<VkQueueFamilyProperties, 6> nvidiaFamilies() {
+        return {
+            family(graphicsCompute, 16, 64),
+            family(transferOnly, 2, 64),
+            family(VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT, 8, 64),
+            family(VK_QUEUE_VIDEO_DECODE_BIT_KHR | VK_QUEUE_TRANSFER_BIT, 1, 32),
+            family(VK_QUEUE_VIDEO_ENCODE_BIT_KHR | VK_QUEUE_TRANSFER_BIT, 1, 32),
+            family(VK_QUEUE_OPTICAL_FLOW_BIT_NV | VK_QUEUE_TRANSFER_BIT, 1, 64),
+        };
+    }
+
+    void testNvidiaLayoutFallsBackToVideoFamily() {
+        const auto families = nvidiaFamilies();
+        const std::array<float, 2> both{1.0F, 0.5F};
+        const std::array<float, 1> one{1.0F};
+
+        // Family 1 requested at both of its queues: family 3 (video decode) is the first candidate that can take one.
+        const std::array fullFirst{request(1, 2, both.data())};
+        const VkDeviceCreateInfo full = createInfo(fullFirst);
+        TransferQueueRequest fallback(full, families);
+        expect(fallback.family == std::optional<uint32_t>{3}, "the video decode family was not the fallback");
+        expect(fallback.index == std::optional<uint32_t>{0}, "the fallback queue is not index zero");
+        expect(!fallback.timestamps, "a 32-bit video family was marked as timed");
+
+        VkDeviceCreateInfo applied = full;
+        fallback.apply(applied);
+        expect(applied.queueCreateInfoCount == 2, "the fallback entry is missing from the create info");
+        const auto& original = entriesOf(applied)[0];
+        expect(original.queueFamilyIndex == 1 && original.queueCount == 2 && original.pQueuePriorities == both.data(),
+            "the application's family 1 entry changed");
+        const auto& appended = entriesOf(applied)[1];
+        expect(appended.queueFamilyIndex == 3 && appended.queueCount == 1 && prioritiesOf(appended)[0] == 1.0F,
+            "the fallback entry is not one priority-1.0 queue on family 3");
+
+        // Family 1 free: the plain family is still chosen, and its 64-bit timestamps are used.
+        const std::array freeFirst{request(0, 1, one.data())};
+        TransferQueueRequest plain(createInfo(freeFirst), families);
+        expect(plain.family == std::optional<uint32_t>{1} && plain.index == std::optional<uint32_t>{0} &&
+                plain.timestamps, "a free plain transfer family was not chosen");
+
+        // Families 1, 3 and 4 full: no request. Family 1 is still reported, and optical flow family 5 is not used.
+        const std::array allFull{request(1, 2, both.data()), request(3, 1, one.data()), request(4, 1, one.data())};
+        const VkDeviceCreateInfo none = createInfo(allFull);
+        TransferQueueRequest refused(none, families);
+        expect(refused.family == std::optional<uint32_t>{1}, "a refused request did not report the first candidate");
+        expect(!refused.index, "a full set of transfer families was requested anyway");
+        VkDeviceCreateInfo unchanged = none;
+        refused.apply(unchanged);
+        expect(unchanged.pQueueCreateInfos == allFull.data() && unchanged.queueCreateInfoCount == 3,
+            "a refused transfer request changed the create info");
+    }
+
+    void testRefusedEntriesFallThrough() {
+        const auto families = nvidiaFamilies();
+        const std::array<float, 1> one{1.0F};
+
+        // A protected entry on family 1 is refused, so the request moves on to family 3.
+        const std::array flagged{request(1, 1, one.data(), VK_DEVICE_QUEUE_CREATE_PROTECTED_BIT)};
+        TransferQueueRequest protectedEntry(createInfo(flagged), families);
+        expect(protectedEntry.family == std::optional<uint32_t>{3} &&
+                protectedEntry.index == std::optional<uint32_t>{0},
+            "a protected family 1 entry did not fall through to the video family");
+
+        // Two entries for family 1 are refused too.
+        const std::array twice{request(1, 1, one.data()), request(1, 1, one.data())};
+        TransferQueueRequest duplicated(createInfo(twice), families);
+        expect(duplicated.family == std::optional<uint32_t>{3} && duplicated.index == std::optional<uint32_t>{0},
+            "two family 1 entries did not fall through to the video family");
+    }
+
+    void testOpticalFlowIsNeverTransfer() {
+        const std::array families{family(VK_QUEUE_OPTICAL_FLOW_BIT_NV | VK_QUEUE_TRANSFER_BIT, 1, 64)};
+        expect(!selectTransferFamily(families), "an optical flow family was chosen as the transfer family");
+        const VkDeviceCreateInfo info = createInfo({});
+        TransferQueueRequest transfer(info, families);
+        expect(!transfer.family && !transfer.index, "an optical flow family got a transfer queue");
+    }
 }
 
 int main() {
@@ -222,6 +327,10 @@ int main() {
     testFlaggedEntryIsNotExtended();
     testNoTransferFamilyNoRequest();
     testSharingFamilies();
+    testCandidateOrder();
+    testNvidiaLayoutFallsBackToVideoFamily();
+    testRefusedEntriesFallThrough();
+    testOpticalFlowIsNeverTransfer();
     std::cout << "framegen-vulkan transfer queue policy tests passed.\n";
     return 0;
 }
