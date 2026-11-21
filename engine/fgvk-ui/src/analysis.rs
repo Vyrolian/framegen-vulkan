@@ -11,6 +11,8 @@ const SECOND: u64 = 1000 * MS;
 const MONOTONIC: u64 = 1;
 const MARKER_TOLERANCE: u64 = 2 * MS;
 const LEGACY_APP_LIMIT: u64 = 250 * MS;
+// A window whose base FPS is outside this factor of its segment's FPS is a frame-rate change.
+const SEGMENT_FPS_RATIO: f64 = 1.3;
 
 type Source = (u64, u64, u64); // PID, swapchain context, source
 type Feedback = (u64, u64, u64); // PID, surface, feedback
@@ -350,6 +352,10 @@ struct Segment {
     timing: Timing,
 }
 
+fn base_fps(sources: u64, duration_ms: f64) -> f64 {
+    sources as f64 * 1000.0 / duration_ms
+}
+
 impl Segment {
     fn include(&mut self, window: Window) {
         self.last = window;
@@ -359,7 +365,8 @@ impl Segment {
         self.errors += window.errors;
     }
 
-    fn same_settings(&self, window: Window) -> bool {
+    /// `previous_end` is the end of the latest window seen, which may still be held.
+    fn same_settings(&self, window: Window, previous_end: u64) -> bool {
         self.first.stream == window.stream
             && self.first.multiplier == window.multiplier
             && self.first.cap == window.cap
@@ -367,14 +374,90 @@ impl Segment {
             && self.first.mode == window.mode
             && self.first.hold == window.hold
             && self.first.correction == window.correction
-            && window.end.saturating_sub(self.last.end)
+            && window.end.saturating_sub(previous_end)
                 <= (window.duration_ms * MS as f64) as u64 + 250 * MS
+    }
+
+    fn differs(&self, window: Window) -> bool {
+        let reference = base_fps(self.sources, self.duration_ms);
+        let fps = base_fps(window.sources, window.duration_ms);
+        fps < reference / SEGMENT_FPS_RATIO || fps > reference * SEGMENT_FPS_RATIO
     }
 
     fn start(&self) -> u64 {
         self.first
             .end
             .saturating_sub((self.first.duration_ms * MS as f64) as u64)
+    }
+}
+
+/// Groups windows into segments. A window with the same settings whose FPS differs from its
+/// segment is held. Only a second differing window with the same settings starts a new
+/// segment, so one stray window does not split a run. Held windows are recorded under the
+/// segment they finally land in.
+#[derive(Default)]
+struct Splitter {
+    segments: Vec<Segment>,
+    segment_windows: BTreeMap<(u64, u64), Vec<(u64, u64, usize)>>,
+    held: Option<(Window, u64)>, // Window and its begin time.
+}
+
+impl Splitter {
+    fn push(&mut self, window: Window, begin: u64) {
+        let Some(current) = self.segments.last() else {
+            self.start(window, begin);
+            return;
+        };
+        let previous_end = self.held.map_or(current.last.end, |(held, _)| held.end);
+        if !current.same_settings(window, previous_end) {
+            self.flush();
+            self.start(window, begin);
+        } else if !current.differs(window) {
+            self.flush();
+            self.add(window, begin);
+        } else {
+            match self.held.take() {
+                None => self.held = Some((window, begin)),
+                Some((held, held_begin)) => {
+                    self.start(held, held_begin);
+                    self.add(window, begin);
+                }
+            }
+        }
+    }
+
+    /// Adds a held window to the segment it was measured in.
+    fn flush(&mut self) {
+        if let Some((window, begin)) = self.held.take() {
+            self.add(window, begin);
+        }
+    }
+
+    fn start(&mut self, window: Window, begin: u64) {
+        self.segments.push(Segment {
+            first: window,
+            last: window,
+            sources: 0,
+            duration_ms: 0.0,
+            skips: 0,
+            errors: 0,
+            timing: Timing::default(),
+        });
+        self.add(window, begin);
+    }
+
+    fn add(&mut self, window: Window, begin: u64) {
+        let index = self.segments.len() - 1;
+        self.segments[index].include(window);
+        self.segment_windows
+            .entry(window.stream)
+            .or_default()
+            .push((begin, window.end, index));
+    }
+
+    fn finish(mut self) -> (Vec<Segment>, BTreeMap<(u64, u64), Vec<(u64, u64, usize)>>) {
+        self.flush();
+        (self.segments, self.segment_windows)
     }
 }
 
@@ -448,8 +531,7 @@ impl Capture {
                 origin.saturating_add((hi * SECOND as f64) as u64),
             )
         });
-        let mut segments: Vec<Segment> = Vec::new();
-        let mut segment_windows: BTreeMap<_, Vec<_>> = BTreeMap::new();
+        let mut splitter = Splitter::default();
         for &window in &self.windows {
             let begin = window
                 .end
@@ -457,24 +539,9 @@ impl Capture {
             if begin < lo || window.end > hi {
                 continue;
             }
-            if !segments.last().is_some_and(|s| s.same_settings(window)) {
-                segments.push(Segment {
-                    first: window,
-                    last: window,
-                    sources: 0,
-                    duration_ms: 0.0,
-                    skips: 0,
-                    errors: 0,
-                    timing: Timing::default(),
-                });
-            }
-            let index = segments.len() - 1;
-            segments[index].include(window);
-            segment_windows
-                .entry(window.stream)
-                .or_default()
-                .push((begin, window.end, index));
+            splitter.push(window, begin);
         }
+        let (mut segments, segment_windows) = splitter.finish();
 
         let simulations = self.simulation_by_app();
         let mut source_calls = HashMap::<_, (u64, u64)>::new();
@@ -645,7 +712,7 @@ impl Capture {
         }
         let mut sections = Vec::new();
         for segment in &mut segments {
-            let fps = segment.sources as f64 * 1000.0 / segment.duration_ms;
+            let fps = base_fps(segment.sources, segment.duration_ms);
             let mode = match segment.first.mode {
                 0 => "Immediate",
                 1 => "Mailbox",
@@ -871,5 +938,90 @@ mod tests {
             "{OPERATION}pacing-profile-capture-gap lost_records=2"
         ));
         assert!(capture.incomplete);
+    }
+
+    /// One second of FG off on the same stream, ending at `second + 1`.
+    fn fg_off_window(second: u64, sources: u64) -> Window {
+        Window {
+            stream: (1, 1),
+            end: (second + 1) * SECOND,
+            duration_ms: 1000.0,
+            sources,
+            skips: 0,
+            errors: 0,
+            multiplier: 1,
+            cap: 0,
+            configured_cap: 0,
+            mode: 0,
+            hold: false,
+            correction: false,
+        }
+    }
+
+    #[test]
+    fn sustained_frame_rate_change_splits_segments() {
+        let mut capture = Capture::default();
+        let sources = [230, 230, 230, 230, 230, 80, 80, 80, 80, 80];
+        capture.windows = sources
+            .iter()
+            .enumerate()
+            .map(|(second, &sources)| fg_off_window(second as u64, sources))
+            .collect();
+        let report = capture.report(None).unwrap();
+        assert_eq!(report.sections.len(), 2);
+        assert!(report.sections[0].heading.ends_with("230.0 base FPS"));
+        assert!(report.sections[1].heading.ends_with("80.0 base FPS"));
+    }
+
+    #[test]
+    fn one_stray_window_does_not_split_a_segment() {
+        let mut capture = Capture::default();
+        let sources = [80, 80, 230, 80, 80];
+        capture.windows = sources
+            .iter()
+            .enumerate()
+            .map(|(second, &sources)| fg_off_window(second as u64, sources))
+            .collect();
+        let report = capture.report(None).unwrap();
+        assert_eq!(report.sections.len(), 1);
+        assert!(report.sections[0].heading.ends_with("110.0 base FPS"));
+    }
+
+    #[test]
+    fn held_window_stays_with_the_segment_it_was_measured_in() {
+        let mut capture = Capture::default();
+        capture.windows = [230, 230, 230, 230, 230, 80]
+            .iter()
+            .enumerate()
+            .map(|(second, &sources)| fg_off_window(second as u64, sources))
+            .collect();
+        let mut settings_change = fg_off_window(6, 60);
+        settings_change.multiplier = 2;
+        capture.windows.push(settings_change);
+        let report = capture.report(None).unwrap();
+        assert_eq!(report.sections.len(), 2);
+        // Five 230 windows and the held 80 window: 1230 sources over 6 s.
+        assert!(report.sections[0].heading.ends_with("205.0 base FPS"));
+        assert!(report.sections[1].heading.contains("2×"));
+    }
+
+    #[test]
+    fn held_windows_are_recorded_under_the_segment_they_land_in() {
+        let mut splitter = Splitter::default();
+        for (second, sources) in [(0, 230), (1, 230), (2, 80), (3, 80)] {
+            let window = fg_off_window(second, sources);
+            splitter.push(window, window.end - SECOND);
+        }
+        let (segments, segment_windows) = splitter.finish();
+        assert_eq!(segments.len(), 2);
+        assert_eq!(
+            segment_windows[&(1, 1)],
+            [
+                (0, SECOND, 0),
+                (SECOND, 2 * SECOND, 0),
+                (2 * SECOND, 3 * SECOND, 1),
+                (3 * SECOND, 4 * SECOND, 1),
+            ]
+        );
     }
 }
