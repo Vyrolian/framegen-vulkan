@@ -3,6 +3,7 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -117,6 +118,42 @@ namespace fgvk::layer {
         return std::min(maxInternalImageCount, std::max(minImageCount, 3u) + 2u);
     }
 
+    /// FI2b: the release timeline a value belongs to. The private queue signals Private and the game
+    /// queue (at the present call) signals Call. Each timeline has one signalling queue, so its values
+    /// are signalled in submit order and no submit needs a cross-queue release wait.
+    enum class ReleaseTimeline : uint8_t { Private, Call };
+    inline constexpr size_t releaseTimelineCount = 2;
+
+    /// FI2b: a timeline value and the timeline it was signalled on.
+    struct ReleaseStamp {
+        uint64_t value{0};
+        ReleaseTimeline timeline{ReleaseTimeline::Private};
+        bool operator==(const ReleaseStamp&) const = default;
+    };
+
+    /// FI2b: the release signal of one submit. Its value is one past the last value submitted on the
+    /// same timeline. A pending value on the other timeline adds no wait and refuses nothing, so the
+    /// plan has no wait field.
+    struct ReleaseSignal {
+        ReleaseTimeline timeline{ReleaseTimeline::Private};
+        uint64_t value{0};
+    };
+
+    [[nodiscard]] constexpr ReleaseSignal planReleaseSignal(const bool privateQueue,
+            const uint64_t lastPrivate, const uint64_t lastCall) noexcept {
+        if (privateQueue)
+            return ReleaseSignal{.timeline = ReleaseTimeline::Private, .value = lastPrivate + 1};
+        return ReleaseSignal{.timeline = ReleaseTimeline::Call, .value = lastCall + 1};
+    }
+
+    /// FI2b: the timeline semaphore that a value of the given timeline is waited or signalled on.
+    /// Pure, so the mapping is unit-tested with plain handles.
+    template<class Handle>
+    [[nodiscard]] constexpr Handle timelineHandleOf(const std::array<Handle, releaseTimelineCount>& timelines,
+            const ReleaseTimeline timeline) noexcept {
+        return timelines[static_cast<size_t>(timeline)];
+    }
+
     /// F10: whether an emulated acquire may complete on the host, with no queue submit. Every
     /// condition must hold: the application semaphore is set and no fence is (a host signal cannot
     /// signal a fence), the tail timeline exists, both counter functions are loaded and the host path
@@ -149,7 +186,7 @@ namespace fgvk::layer {
 
         /// @throws std::invalid_argument when count is outside [2, 8].
         explicit InternalImageRing(const uint32_t count)
-            : states(checkedCount(count), State::Free), values(count, 0) {
+            : states(checkedCount(count), State::Free), values(count) {
             for (uint32_t index = 0; index < count; ++index)
                 freeOrder.push_back(index);
         }
@@ -196,14 +233,15 @@ namespace fgvk::layer {
             return true;
         }
 
-        /// Frees a presented index once its copy has been submitted. The
-        /// release value is the timeline value the next reuse must wait for.
-        [[nodiscard]] bool complete(const uint32_t index, const uint64_t releaseValue) {
+        /// Frees a presented index once its copy has been submitted. The release value
+        /// and its timeline are what the next reuse must wait for (FI2b).
+        [[nodiscard]] bool complete(const uint32_t index, const uint64_t releaseValue,
+                const ReleaseTimeline timeline) {
             const std::lock_guard lock(mutex);
             if (index >= states.size() || states[index] != State::Pending)
                 return false;
             states[index] = State::Free;
-            values[index] = releaseValue;
+            values[index] = ReleaseStamp{.value = releaseValue, .timeline = timeline};
             freeOrder.push_back(index);
             changed.notify_all();
             return true;
@@ -240,19 +278,19 @@ namespace fgvk::layer {
             return true;
         }
 
-        /// Timeline value of the last copy that read this index. Zero means
-        /// never used. The owner serialises access with the queue that signals it.
+        /// Timeline value and timeline of the last copy that read this index. Zero
+        /// means never used. The owner serialises access with the queue that signals it.
         /// @throws std::out_of_range for an index outside the ring.
-        [[nodiscard]] uint64_t& releaseValue(const uint32_t index) {
+        [[nodiscard]] ReleaseStamp& releaseValue(const uint32_t index) {
             return values.at(index);
         }
 
-        /// Timeline value of the last copy that read this index, read under the
-        /// ring mutex. On the production path only complete() writes it, and only
+        /// Timeline value and timeline of the last copy that read this index, read under
+        /// the ring mutex. On the production path only complete() writes it, and only
         /// for a Pending index, so a caller that holds the index Acquired reads a
         /// stable value.
         /// @throws std::out_of_range for an index outside the ring.
-        [[nodiscard]] uint64_t releaseValueOf(const uint32_t index) const {
+        [[nodiscard]] ReleaseStamp releaseValueOf(const uint32_t index) const {
             const std::lock_guard lock(mutex);
             return values.at(index);
         }
@@ -284,7 +322,7 @@ namespace fgvk::layer {
             for (size_t index = 0; index < states.size(); ++index) {
                 const char letter = states[index] == State::Free ? 'F'
                     : states[index] == State::Acquired ? 'A' : 'P';
-                described.emplace_back(letter, values[index]);
+                described.emplace_back(letter, values[index].value);
             }
             return described;
         }
@@ -315,7 +353,7 @@ namespace fgvk::layer {
         mutable std::mutex mutex;
         std::condition_variable changed;
         std::vector<State> states;
-        std::vector<uint64_t> values;
+        std::vector<ReleaseStamp> values;
         std::deque<uint32_t> freeOrder;
         // Set by abort() under mutex and never cleared. False for a ring never aborted.
         bool aborted{false};
@@ -402,8 +440,8 @@ namespace fgvk::layer {
         /// Image not handed off: an empty submit on the application queue signals a
         /// handoff semaphore after any source copy already submitted there. The private
         /// queue then waits it and signals the release timeline, freeing the image. The
-        /// swapchain becomes sticky OUT_OF_DATE. The release timeline is never signalled
-        /// on the application queue.
+        /// swapchain becomes sticky OUT_OF_DATE. The private release timeline is never
+        /// signalled on the application queue.
         void releaseNotHandedOff(VkQueue applicationQueue, uint32_t applicationIndex);
 
         /// Records the copies from one application image to every lower image.
@@ -425,10 +463,9 @@ namespace fgvk::layer {
 
         /// FI2: the copy of a real made at its present call on the game queue (callQueue, of family callFamily).
         /// Caller holds queue->mutex. It refuses, leaving the image for the worker, when the copy was recorded for
-        /// another family, when the release order needs a wait the call cannot make (rule 7), or when no lower image
-        /// is free. Otherwise it takes the lower image and submits the copy, waiting continuation, exactly as the worker
-        /// does. *consumed is set once the application image is taken. That is at the submit, which frees it on success
-        /// and on failure.
+        /// another family or when no lower image is free. Otherwise it takes the lower image and submits the copy,
+        /// waiting continuation, exactly as the worker does. The copy signals callRelease (FI2b). *consumed is set
+        /// once the application image is taken. That is at the submit, which frees it on success and on failure.
         [[nodiscard]] VkResult callPrepare(VkQueue callQueue, uint32_t callFamily,
             uint32_t applicationIndex, VkSemaphore continuation, uint32_t* lowerIndex,
             VkSemaphore* presentWait, bool* consumed);

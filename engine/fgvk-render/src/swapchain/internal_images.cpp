@@ -91,21 +91,23 @@ namespace fgvk::layer {
         // caller's create chain is not kept.
         std::vector<VkFormat> viewFormats;
 
+        // FI2b: one release timeline per queue. `release` is signalled only on the private queue, `callRelease`
+        // only on the game queue at the present call. Each has one signalling queue, so no cross-queue wait is needed.
         std::optional<vk::TimelineSemaphore> release;
-        // Serialised by queue->mutex: the release value and everything the copy and
+        std::optional<vk::TimelineSemaphore> callRelease;
+        // Serialised by queue->mutex: the last value of each timeline and everything the copy and
         // release paths write. The emulated acquire never touches these. It reads only
         // the ring (its own mutex) and the release and tail counters, and it takes
         // queue->mutex only for the queued submit (F10).
         uint64_t lastReleaseValue{0};
-        // FI2 rule 7: the queue of the last release signal that was submitted. Set with lastReleaseValue, under the same lock.
-        VkQueue lastReleaseQueue{VK_NULL_HANDLE};
+        uint64_t lastCallReleaseValue{0};
         // FI2: the family of the command pool the copies are recorded from (vk.cmdpool(), created for the application's
         // queue family). A call-side copy needs the game queue to be of this family (rule 5). Set in initialize().
         uint32_t copyFamily{UINT32_MAX};
         std::vector<vk::Semaphore> copied;
         // R1: one binary semaphore per application image. releaseNotHandedOff signals it on
-        // the application queue and the private release waits it, so the release timeline is
-        // only ever signalled on the private queue.
+        // the application queue and the private release waits it, so the private release
+        // timeline is only ever signalled on the private queue.
         std::vector<vk::Semaphore> handoff;
         std::vector<vk::Semaphore> lowerAcquire;
         std::vector<VkFence> lowerFences;
@@ -127,6 +129,9 @@ namespace fgvk::layer {
         std::vector<char> copyTimed, copyPending;
         // FI2: 1 for a pending copy submitted on the game queue, 0 for the private queue (the copy's `queue=` field).
         std::vector<char> copyPendingGame;
+        // FI2b rule 6: the release value a pending copy signals on its timeline (copyPendingGame picks it). Its
+        // timestamps are read only once that value is reached.
+        std::vector<uint64_t> copyPendingValue;
         std::vector<uint64_t> copyPendingSource;
         std::unique_ptr<std::atomic<uint64_t>[]> copySource;
         bool copyTimesTried{};
@@ -160,21 +165,23 @@ namespace fgvk::layer {
         VkCommandBuffer copyCommandFor(const vk::Vulkan& vk, uint32_t applicationIndex,
                 uint32_t lowerIndex);
         // Caller holds queue->mutex. Submits one release-timeline signal on
-        // submitQueue, after waits, and frees applicationIndex at that value. Every
-        // caller passes the private queue, which also signals the F9c tail. On
-        // failure the image is freed at the last submitted value and the error is sticky.
+        // submitQueue, after waits, and frees applicationIndex at that value. Callers
+        // pass the private queue, which also signals the F9c tail. On failure the image
+        // is freed at the last submitted value of that timeline and the error is sticky.
         VkResult releaseLocked(VkQueue submitQueue, uint32_t applicationIndex,
                 std::span<const VkSemaphore> waits);
-        // FI2 rule 7, caller holds queue->mutex: what a release signal submitted on submitQueue must do about the last
-        // release signal (see releaseSignalOrder). The timeline counter is read only when the last signal was submitted
-        // on another queue. A failed read counts as zero, which only ever adds a wait or a refusal.
-        [[nodiscard]] ReleaseSignalOrder releaseOrderFor(VkQueue submitQueue, bool mayWait) {
-            const bool crossed = lastReleaseQueue != VK_NULL_HANDLE && lastReleaseQueue != submitQueue &&
-                lastReleaseValue != 0;
-            const uint64_t counter = crossed && funcs.GetSemaphoreCounterValueKHR
-                ? timelineCounter(funcs, device, release->handle()) : 0;
-            return releaseSignalOrder(handleBits(lastReleaseQueue), handleBits(submitQueue), counter,
-                lastReleaseValue, mayWait);
+        // FI2b: the timeline semaphore of a value on the given timeline.
+        [[nodiscard]] VkSemaphore timelineHandle(const ReleaseTimeline timeline) const {
+            return timelineHandleOf(std::array{release->handle(), callRelease->handle()}, timeline);
+        }
+        // FI2b, caller holds queue->mutex: the last value submitted on a timeline.
+        [[nodiscard]] uint64_t& lastValueOf(const ReleaseTimeline timeline) noexcept {
+            return timeline == ReleaseTimeline::Private ? lastReleaseValue : lastCallReleaseValue;
+        }
+        // FI2b, caller holds queue->mutex: the release signal of a submit on submitQueue. The private queue
+        // signals `release`, any other queue (the game queue at the call) signals `callRelease`.
+        [[nodiscard]] ReleaseSignal releaseSignalOn(const VkQueue submitQueue) const {
+            return planReleaseSignal(submitQueue == queue->queue, lastReleaseValue, lastCallReleaseValue);
         }
         // D7, D7d (pacing profile only): stores one emulated acquire's release wait value, tail
         // value and time for the stall probe. The caller checks the profile first.
@@ -201,6 +208,7 @@ namespace fgvk::layer {
             return false;
 
         release.emplace(vk, 0);
+        callRelease.emplace(vk, 0);
         copied.reserve(lowerCount);
         for (size_t i = 0; i < lowerCount; ++i)
             copied.emplace_back(vk);
@@ -345,17 +353,12 @@ namespace fgvk::layer {
 
     VkResult InternalSwapchainImages::Impl::releaseLocked(const VkQueue submitQueue,
             const uint32_t applicationIndex, const std::span<const VkSemaphore> waits) {
-        const uint64_t value = lastReleaseValue + 1;
-        // FI2 rule 7: a signal on another queue than the last release signal first waits that signal's value. Without
-        // it, the lists are the caller's, as before.
-        std::vector<VkSemaphore> allWaits(waits.begin(), waits.end());
-        std::vector<uint64_t> waitValues(waits.size(), 0);
-        if (releaseOrderFor(submitQueue, true) == ReleaseSignalOrder::Wait) {
-            allWaits.push_back(release->handle());
-            waitValues.push_back(lastReleaseValue);
-        }
-        const std::vector<VkPipelineStageFlags> stages(allWaits.size(), VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
-        const VkSemaphore releaseHandle = release->handle();
+        // FI2b: the signal goes on the timeline of submitQueue, and no other wait is added.
+        const ReleaseSignal signal = releaseSignalOn(submitQueue);
+        const uint64_t value = signal.value;
+        const std::vector<VkPipelineStageFlags> stages(waits.size(), VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+        const std::vector<uint64_t> waitValues(waits.size(), 0);
+        const VkSemaphore releaseHandle = timelineHandle(signal.timeline);
         const VkTimelineSemaphoreSubmitInfo timeline{
             .sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
             .waitSemaphoreValueCount = static_cast<uint32_t>(waitValues.size()),
@@ -366,26 +369,25 @@ namespace fgvk::layer {
         const VkSubmitInfo submit{
             .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
             .pNext = &timeline,
-            .waitSemaphoreCount = static_cast<uint32_t>(allWaits.size()),
-            .pWaitSemaphores = allWaits.data(),
+            .waitSemaphoreCount = static_cast<uint32_t>(waits.size()),
+            .pWaitSemaphores = waits.data(),
             .pWaitDstStageMask = stages.data(),
             .commandBufferCount = 0,
             .pCommandBuffers = nullptr,
             .signalSemaphoreCount = 1,
             .pSignalSemaphores = &releaseHandle,
         };
-        // Every release now targets the private queue, so it also signals the F9c tail.
+        // The private queue also signals the F9c tail.
         const VkResult result = submitQueue == queue->queue
             ? submitPrivate(*queue, funcs.QueueSubmit, submit, VK_NULL_HANDLE,
                 SubmitTag{.kind = submitKindRelease, .applicationIndex = applicationIndex})
             : funcs.QueueSubmit(submitQueue, 1, &submit, VK_NULL_HANDLE);
         if (result == VK_SUCCESS) {
-            lastReleaseValue = value;
-            lastReleaseQueue = submitQueue;
-            static_cast<void>(ring.complete(applicationIndex, value));
+            lastValueOf(signal.timeline) = value;
+            static_cast<void>(ring.complete(applicationIndex, value, signal.timeline));
         } else {
             failSticky(result);
-            static_cast<void>(ring.complete(applicationIndex, lastReleaseValue));
+            static_cast<void>(ring.complete(applicationIndex, lastValueOf(signal.timeline), signal.timeline));
         }
         return result;
     }
@@ -406,14 +408,16 @@ namespace fgvk::layer {
 
     InternalSwapchainImages::Impl::~Impl() {
         // Wait for the last copy so no pending GPU work reads the images or
-        // signals the semaphores that are destroyed below.
-        if (release && lastReleaseValue != 0) {
-            const VkSemaphore handle = release->handle();
+        // signals the semaphores that are destroyed below. FI2b: a copy may have
+        // signalled either timeline, so both are waited, all of them at once.
+        if (release && callRelease && (lastReleaseValue != 0 || lastCallReleaseValue != 0)) {
+            const std::array handles{release->handle(), callRelease->handle()};
+            const std::array values{lastReleaseValue, lastCallReleaseValue};
             const VkSemaphoreWaitInfo waitInfo{
                 .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
-                .semaphoreCount = 1,
-                .pSemaphores = &handle,
-                .pValues = &lastReleaseValue,
+                .semaphoreCount = static_cast<uint32_t>(handles.size()),
+                .pSemaphores = handles.data(),
+                .pValues = values.data(),
             };
             if (funcs.WaitSemaphoresKHR(device, &waitInfo, destroyWaitTimeoutNs) == VK_TIMEOUT) {
                 std::cerr << "framegen-vulkan: internal swapchain images: destroy wait timed out\n";
@@ -425,6 +429,7 @@ namespace fgvk::layer {
         copied.clear();
         handoff.clear();
         release.reset();
+        callRelease.reset();
         for (const VkFence fence : lowerFences) {
             if (fence != VK_NULL_HANDLE)
                 funcs.DestroyFence(device, fence, nullptr);
@@ -617,7 +622,9 @@ namespace fgvk::layer {
         };
         std::ostringstream line;
         line << "framegen-vulkan: d7 stall stall_ms=" << stalledNanoseconds / 1'000'000
-             << " release_gpu=" << (impl->release ? counter(impl->release->handle()) : std::string{"none"});
+             << " release_gpu=" << (impl->release ? counter(impl->release->handle()) : std::string{"none"})
+             << " call_release_gpu="
+             << (impl->callRelease ? counter(impl->callRelease->handle()) : std::string{"none"});
 
         // D7b: up to 40 try-locks, 5 ms apart. Only when every attempt fails is the locked
         // group reported as busy.
@@ -634,6 +641,8 @@ namespace fgvk::layer {
         // Held only while try-locked: the worker's submits and fence resets need it, so the
         // fields read under it cannot change during the dump.
         line << " last_release=" << (locked ? std::to_string(impl->lastReleaseValue) : std::string{"busy"});
+        line << " last_call_release="
+             << (locked ? std::to_string(impl->lastCallReleaseValue) : std::string{"busy"});
         line << " acq_wait=" << impl->probeAcquireWait.load(std::memory_order_relaxed)
              << " acq_index=" << impl->probeAcquireIndex.load(std::memory_order_relaxed)
              << " acq_tail=" << impl->probeAcquireTail.load(std::memory_order_relaxed);
@@ -772,7 +781,8 @@ namespace fgvk::layer {
             return timeout == 0 ? VK_NOT_READY : VK_TIMEOUT;
         }
 
-        // The release timeline orders the acquired image after its last copy.
+        // The release timeline orders the acquired image after its last copy. FI2b: the stored
+        // stamp names the timeline that copy signalled (private or game queue), and the wait uses that one.
         // Safety of the wait value: an index returns to Free only through complete(),
         // which stores a value whose release-timeline signal submit already returned
         // VK_SUCCESS (submitCopyLocked and releaseLocked; after a failed submit, the last
@@ -780,7 +790,9 @@ namespace fgvk::layer {
         // already stored. So the release signal is submitted before this acquire. The
         // index is Acquired by this call, so complete() cannot change its value between
         // the read and the signal.
-        const uint64_t waitValue = impl->ring.releaseValueOf(*index);
+        const ReleaseStamp stamp = impl->ring.releaseValueOf(*index);
+        const uint64_t waitValue = stamp.value;
+        const VkSemaphore waitHandle = impl->timelineHandle(stamp.timeline);
 
         // F10, host path. Both waited values are checked on the host, and counter reads never
         // wait. Once the release value and the tail value are reached, the GPU would pass both
@@ -805,7 +817,7 @@ namespace fgvk::layer {
         const uint64_t tailValue = hostCandidate
             ? impl->queue->tailSubmitted.load(std::memory_order_acquire) : 0;
         const uint64_t releaseCounter = hostCandidate && waitValue != 0
-            ? timelineCounter(impl->funcs, impl->device, impl->release->handle()) : 0;
+            ? timelineCounter(impl->funcs, impl->device, waitHandle) : 0;
         const uint64_t tailCounter = hostCandidate && tailValue != 0
             ? timelineCounter(impl->funcs, impl->device, impl->queue->tail) : 0;
         // When this acquire read the tail counter, for the per-acquire record. No extra read.
@@ -839,10 +851,10 @@ namespace fgvk::layer {
 
         if (!signalledOnHost) {
             // F10, queued path: the acquire runs on the private queue under queue->mutex, as F8
-            // ran it. It waits only the release value. No tail wait is needed: this submit is on
-            // the queue that holds every earlier private batch, so queue order runs its signal
-            // after them. The release value's signal was submitted before (see above), so the
-            // wait satisfies VUID-vkQueueSubmit-pWaitSemaphores-03238.
+            // ran it. It waits only the release value, on its timeline. No tail wait is needed for a
+            // private value: this submit is on the queue that holds every earlier private batch, so
+            // queue order runs its signal after them. The release value's signal was submitted before
+            // (see above), so the wait satisfies VUID-vkQueueSubmit-pWaitSemaphores-03238.
             const auto lockRequested = measured ? present_diagnostics::Clock::now() : present_diagnostics::Clock::time_point{};
             const std::lock_guard lock(impl->queue->mutex);
             const auto lockAcquired = measured ? present_diagnostics::Clock::now() : present_diagnostics::Clock::time_point{};
@@ -851,7 +863,6 @@ namespace fgvk::layer {
             const bool waitRelease = waitValue != 0;
             const bool signalSemaphore = semaphore != VK_NULL_HANDLE;
             if (waitRelease || signalSemaphore || fence != VK_NULL_HANDLE) {
-                const VkSemaphore releaseHandle = impl->release->handle();
                 const uint32_t waitCount = waitRelease ? 1u : 0u;
                 const VkPipelineStageFlags stage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
                 const uint64_t zero = 0;
@@ -866,7 +877,7 @@ namespace fgvk::layer {
                     .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
                     .pNext = &timeline,
                     .waitSemaphoreCount = waitCount,
-                    .pWaitSemaphores = &releaseHandle,
+                    .pWaitSemaphores = &waitHandle,
                     .pWaitDstStageMask = &stage,
                     .commandBufferCount = 0,
                     .pCommandBuffers = nullptr,
@@ -936,7 +947,7 @@ namespace fgvk::layer {
 
     void InternalSwapchainImages::releaseNotHandedOff(const VkQueue applicationQueue,
             const uint32_t applicationIndex) {
-        // R1: the release timeline is signalled only on the private queue. The
+        // R1: the private release timeline is signalled only on the private queue. The
         // application's queue is the one this present call was made on, so the empty
         // submit here is ordered after any source copy already submitted there. It
         // signals the handoff semaphore, and the private release waits it. The
@@ -985,6 +996,8 @@ namespace fgvk::layer {
             const uint32_t applicationIndex, const uint32_t lowerIndex, const uint32_t slot,
             const std::span<const VkSemaphore> waits) {
         VkResult result = VK_ERROR_UNKNOWN;
+        // FI2b: the copy signals the release timeline of the queue it is submitted on.
+        const ReleaseSignal signal = impl->releaseSignalOn(queue);
         try {
             const auto& recorded = impl->copies.at(
                 static_cast<size_t>(applicationIndex) * impl->lowerImages.size() + lowerIndex);
@@ -992,18 +1005,12 @@ namespace fgvk::layer {
                 const VkCommandBuffer command = recorded->handle();
                 std::vector<VkSemaphore> allWaits(waits.begin(), waits.end());
                 allWaits.push_back(impl->lowerAcquire.at(slot).handle());
-                std::vector<uint64_t> waitValues(allWaits.size(), 0);
-                // FI2 rule 7: a copy signalling on another queue than the last release signal waits that value first.
-                if (impl->releaseOrderFor(queue, true) == ReleaseSignalOrder::Wait) {
-                    allWaits.push_back(impl->release->handle());
-                    waitValues.push_back(impl->lastReleaseValue);
-                }
+                const std::vector<uint64_t> waitValues(allWaits.size(), 0);
                 const std::vector<VkPipelineStageFlags> stages(allWaits.size(), VK_PIPELINE_STAGE_TRANSFER_BIT);
-                const uint64_t value = impl->lastReleaseValue + 1;
                 const std::array<VkSemaphore, 2> signals{
-                    impl->copied.at(lowerIndex).handle(), impl->release->handle(),
+                    impl->copied.at(lowerIndex).handle(), impl->timelineHandle(signal.timeline),
                 };
-                const std::array<uint64_t, 2> signalValues{0, value};
+                const std::array<uint64_t, 2> signalValues{0, signal.value};
                 const VkTimelineSemaphoreSubmitInfo timeline{
                     .sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
                     .waitSemaphoreValueCount = static_cast<uint32_t>(waitValues.size()),
@@ -1031,22 +1038,22 @@ namespace fgvk::layer {
                 if (result == VK_SUCCESS) {
                     if (impl->copyTimes && impl->copyTimed.at(pair)) {
                         impl->copyPending.at(pair) = 1;
+                        impl->copyPendingValue.at(pair) = signal.value;
                         impl->copyPendingSource.at(pair) = applicationIndex < impl->images.size()
                             ? impl->copySource[applicationIndex].load(std::memory_order_relaxed) : 0;
                         impl->copyPendingGame.at(pair) = queue != impl->queue->queue ? 1 : 0;
                     }
-                    impl->lastReleaseValue = value;
-                    impl->lastReleaseQueue = queue;
-                    static_cast<void>(impl->ring.complete(applicationIndex, value));
+                    impl->lastValueOf(signal.timeline) = signal.value;
+                    static_cast<void>(impl->ring.complete(applicationIndex, signal.value, signal.timeline));
                     return VK_SUCCESS;
                 }
             }
         } catch (const std::exception&) {
             result = VK_ERROR_UNKNOWN;
         }
-        // Nothing was submitted. Free the image at the last value that was, and keep the failure.
+        // Nothing was submitted. Free the image at the last value of this copy's timeline, and keep the failure.
         impl->failSticky(result);
-        static_cast<void>(impl->ring.complete(applicationIndex, impl->lastReleaseValue));
+        static_cast<void>(impl->ring.complete(applicationIndex, impl->lastValueOf(signal.timeline), signal.timeline));
         return result;
     }
 
@@ -1066,6 +1073,7 @@ namespace fgvk::layer {
             impl->copyTimed.assign(pairs, 0);
             impl->copyPending.assign(pairs, 0);
             impl->copyPendingGame.assign(pairs, 0);
+            impl->copyPendingValue.assign(pairs, 0);
             impl->copyPendingSource.assign(pairs, 0);
             impl->copySource = std::move(sources);
             impl->copyTimes = std::move(pool);
@@ -1092,18 +1100,37 @@ namespace fgvk::layer {
         for (size_t pair = 0; pair < impl->copyPending.size(); ++pair) {
             if (!impl->copyPending[pair])
                 continue;
+            // FI2b rule 6: a pair's queries keep the timestamps of its previous run until this copy runs
+            // (the copy's reset runs inside it), and those read back as available. Reading them early gave
+            // game-queue records 100+ ms before their call. So a pending copy is read only once its timeline
+            // has reached its value. A zero-timeout wait only polls, and VK_SUCCESS means the value was reached.
+            const VkSemaphore timelineSemaphore = impl->timelineHandle(impl->copyPendingGame[pair]
+                ? ReleaseTimeline::Call : ReleaseTimeline::Private);
+            const VkSemaphoreWaitInfo ranInfo{
+                .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
+                .semaphoreCount = 1,
+                .pSemaphores = &timelineSemaphore,
+                .pValues = &impl->copyPendingValue[pair],
+            };
+            const bool ran = impl->funcs.WaitSemaphoresKHR != nullptr &&
+                impl->funcs.WaitSemaphoresKHR(impl->device, &ranInfo, 0) == VK_SUCCESS;
             bool available = false;
             int64_t startNs{}, endNs{};
-            try {
-                if (const auto ticks = impl->copyTimes->tryTimestampsAt(static_cast<uint32_t>(pair * 2), 2);
-                        ticks && impl->copyClock->calibrated()) {
-                    startNs = impl->copyClock->monotonicNanoseconds(ticks->at(0));
-                    endNs = impl->copyClock->monotonicNanoseconds(ticks->at(1));
-                    available = startNs != 0 && endNs != 0;
-                } else if (!ticks && pair != resubmitted) {
-                    continue; // still running; read on a later submit
+            if (!ran) {
+                if (pair != resubmitted)
+                    continue; // still queued; read on a later submit
+            } else {
+                try {
+                    if (const auto ticks = impl->copyTimes->tryTimestampsAt(static_cast<uint32_t>(pair * 2), 2);
+                            ticks && impl->copyClock->calibrated()) {
+                        startNs = impl->copyClock->monotonicNanoseconds(ticks->at(0));
+                        endNs = impl->copyClock->monotonicNanoseconds(ticks->at(1));
+                        available = startNs != 0 && endNs != 0;
+                    } else if (!ticks && pair != resubmitted) {
+                        continue; // still running; read on a later submit
+                    }
+                } catch (const std::exception&) {
                 }
-            } catch (const std::exception&) {
             }
             impl->copyPending[pair] = 0;
             present_diagnostics::logPacingRealCopyGpu(impl->copyContext, impl->copyPendingSource[pair],
@@ -1198,11 +1225,9 @@ namespace fgvk::layer {
             const uint32_t applicationIndex, const VkSemaphore continuation,
             uint32_t* const lowerIndex, VkSemaphore* const presentWait, bool* const consumed) {
         *consumed = false;
-        // Both checks run before the lower acquire, so a refusal takes no lower image. The copy must be recorded for the
-        // game queue's family (rule 5). The call may not wait on another queue, so a pending release signal on another
-        // queue refuses it (rule 7a).
-        if (impl->copyFamily != callFamily ||
-                impl->releaseOrderFor(callQueue, false) == ReleaseSignalOrder::Refuse)
+        // The copy must be recorded for the game queue's family (rule 5). The check runs before the lower
+        // acquire, so a refusal takes no lower image.
+        if (impl->copyFamily != callFamily)
             return VK_NOT_READY;
         uint32_t index = 0;
         const VkResult acquired = tryAcquireLowerLocked(lowerOpAcquireCall, &index);

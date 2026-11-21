@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "swapchain/internal_images.hpp"
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
@@ -41,13 +42,13 @@ namespace {
         expect(ring.pendingCount() == 2 && ring.acquiredCount() == 1,
             "presented images were not counted as pending");
         // Completion joins the tail in call order. Acquires return the oldest first.
-        expect(ring.complete(1, 0) && ring.complete(0, 0),
+        expect(ring.complete(1, 0, ReleaseTimeline::Private) && ring.complete(0, 0, ReleaseTimeline::Private),
             "completing presented images failed");
         expect(ring.acquire() == 1u && ring.acquire() == 0u,
             "the FIFO did not return completed images in completion order");
         expect(!ring.acquire().has_value(), "a completed image was acquired twice");
 
-        expect(ring.present(2) && ring.complete(2, 0),
+        expect(ring.present(2) && ring.complete(2, 0, ReleaseTimeline::Private),
             "presenting and completing the last held image failed");
         expect(ring.acquire() == 2u, "the last completed image was not reused");
         expect(ring.acquiredCount() == 3, "steady-state acquired count drifted");
@@ -57,8 +58,9 @@ namespace {
         InternalImageRing ring(3);
         expect(ring.acquire() == 0u && ring.acquire() == 1u && ring.acquire() == 2u,
             "setup acquisitions failed");
-        expect(ring.present(2) && ring.complete(2, 0) && ring.present(1) && ring.complete(1, 0) &&
-                ring.present(0) && ring.complete(0, 0),
+        expect(ring.present(2) && ring.complete(2, 0, ReleaseTimeline::Private) &&
+                ring.present(1) && ring.complete(1, 0, ReleaseTimeline::Private) &&
+                ring.present(0) && ring.complete(0, 0, ReleaseTimeline::Private),
             "setup presents failed");
         // Release shares the tail with completion; it is never an unordered list.
         expect(ring.acquire() == 2u, "the first released index was not first");
@@ -71,9 +73,9 @@ namespace {
         InternalImageRing ring(3);
         expect(!ring.present(0), "presenting a free image succeeded");
         expect(!ring.release(0), "releasing a free image succeeded");
-        expect(!ring.complete(0, 1), "completing a free image succeeded");
+        expect(!ring.complete(0, 1, ReleaseTimeline::Private), "completing a free image succeeded");
         expect(!ring.present(3) && !ring.release(3) && !ring.present(UINT32_MAX) &&
-                !ring.complete(3, 1),
+                !ring.complete(3, 1, ReleaseTimeline::Private),
             "an out-of-range index was accepted");
         expect(ring.acquiredCount() == 0 && ring.pendingCount() == 0,
             "invalid operations changed the counts");
@@ -100,7 +102,7 @@ namespace {
         const std::vector<uint32_t> valid{2, 1};
         expect(ring.releaseAll(valid) && ring.acquiredCount() == 0,
             "a valid releaseAll did not release every listed image");
-        expect(ring.complete(0, 0), "completing the pending image failed");
+        expect(ring.complete(0, 0, ReleaseTimeline::Private), "completing the pending image failed");
         expect(ring.acquire() == 2u && ring.acquire() == 1u && ring.acquire() == 0u,
             "releaseAll and complete did not append in order");
     }
@@ -120,14 +122,14 @@ namespace {
     void testReleaseValuesPerIndex() {
         InternalImageRing ring(4);
         for (uint32_t index = 0; index < 4; ++index)
-            expect(ring.releaseValue(index) == 0, "a fresh index was already used");
-        ring.releaseValue(2) = 7;
-        expect(ring.releaseValue(2) == 7, "a stored release value was not kept");
-        expect(ring.releaseValue(1) == 0 && ring.releaseValue(3) == 0,
+            expect(ring.releaseValue(index).value == 0, "a fresh index was already used");
+        ring.releaseValue(2).value = 7;
+        expect(ring.releaseValue(2).value == 7, "a stored release value was not kept");
+        expect(ring.releaseValue(1).value == 0 && ring.releaseValue(3).value == 0,
             "a release value leaked into another index");
         bool outOfRange = false;
         try {
-            static_cast<void>(ring.releaseValue(4));
+            static_cast<void>(ring.releaseValue(4).value);
         } catch (const std::out_of_range&) {
             outOfRange = true;
         }
@@ -137,29 +139,53 @@ namespace {
     void testCompleteStoresReleaseValue() {
         InternalImageRing ring(2);
         expect(ring.acquire() == 0u && ring.present(0), "setup failed");
-        expect(ring.releaseValue(0) == 0, "a pending image already had a release value");
-        expect(ring.complete(0, 42) && ring.releaseValue(0) == 42,
+        expect(ring.releaseValue(0).value == 0, "a pending image already had a release value");
+        expect(ring.complete(0, 42, ReleaseTimeline::Private) && ring.releaseValue(0).value == 42,
             "complete did not record the release value");
     }
 
     void testReleaseValueOfReadsCompletedValue() {
         InternalImageRing ring(2);
         expect(ring.acquire() == 0u && ring.present(0), "setup failed");
-        expect(ring.releaseValueOf(0) == 0, "a pending image already had a release value");
-        expect(ring.complete(0, 42) && ring.releaseValueOf(0) == 42,
+        expect(ring.releaseValueOf(0).value == 0, "a pending image already had a release value");
+        expect(ring.complete(0, 42, ReleaseTimeline::Private) && ring.releaseValueOf(0).value == 42,
             "releaseValueOf did not return the value stored by complete");
         bool outOfRange = false;
         try {
-            static_cast<void>(ring.releaseValueOf(2));
+            static_cast<void>(ring.releaseValueOf(2).value);
         } catch (const std::out_of_range&) {
             outOfRange = true;
         }
         expect(outOfRange, "releaseValueOf accepted an index outside the ring");
     }
 
+    // FI2b: complete stores the timeline with the value, and the stamp is what the next reuse waits on.
+    void testCompleteStoresTimeline() {
+        InternalImageRing ring(3);
+        expect(ring.acquire() == 0u && ring.acquire() == 1u && ring.acquire() == 2u, "setup acquisitions failed");
+        expect(ring.present(0) && ring.complete(0, 42, ReleaseTimeline::Call),
+            "completing on the call timeline failed");
+        const ReleaseStamp onCall = ring.releaseValueOf(0);
+        expect(onCall.value == 42 && onCall.timeline == ReleaseTimeline::Call,
+            "a call-timeline completion did not store its value and timeline");
+        expect(ring.present(1) && ring.complete(1, 7, ReleaseTimeline::Private),
+            "completing on the private timeline failed");
+        const ReleaseStamp onPrivate = ring.releaseValueOf(1);
+        expect(onPrivate.value == 7 && onPrivate.timeline == ReleaseTimeline::Private,
+            "a private-timeline completion did not store its value and timeline");
+        expect(ring.releaseValue(0).timeline == ReleaseTimeline::Call && ring.releaseValue(1).value == 7,
+            "the releaseValue accessor did not return the stamp");
+        // A later completion on the other timeline replaces the stamp, and a never-used index stays Private with zero.
+        expect(ring.acquire() == 0u && ring.present(0) && ring.complete(0, 3, ReleaseTimeline::Private) &&
+                ring.releaseValueOf(0).timeline == ReleaseTimeline::Private,
+            "a reused index kept its old timeline");
+        expect(ring.releaseValueOf(2) == ReleaseStamp{}, "a never-used index did not read as the zero stamp");
+    }
+
     void testRingDescribeReportsStatesAndValues() {
         InternalImageRing ring(3);
-        expect(ring.acquire() == 0u && ring.present(0) && ring.complete(0, 7) && ring.acquire() == 1u,
+        expect(ring.acquire() == 0u && ring.present(0) && ring.complete(0, 7, ReleaseTimeline::Private) &&
+                ring.acquire() == 1u,
             "setup acquisitions and completion failed");
         const auto described = ring.tryDescribe();
         expect(described && described->size() == 3 &&
@@ -202,9 +228,9 @@ namespace {
         });
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
         expect(!returned.load(), "an unlimited acquire returned before any image was completed");
-        expect(ring.complete(0, 5), "completing the pending image failed");
+        expect(ring.complete(0, 5, ReleaseTimeline::Private), "completing the pending image failed");
         waiter.join();
-        expect(got && *got == 0u && ring.releaseValue(0) == 5,
+        expect(got && *got == 0u && ring.releaseValue(0).value == 5,
             "the blocked acquire did not receive the completed image");
     }
 
@@ -249,9 +275,9 @@ namespace {
         expect(std::chrono::steady_clock::now() - started < std::chrono::seconds(1),
             "an aborted ring with no free image waited");
         // A completed image is still handed out after abort.
-        expect(ring.complete(0, 9), "completing the pending image failed");
+        expect(ring.complete(0, 9, ReleaseTimeline::Private), "completing the pending image failed");
         const auto got = ring.acquireWait(1'000'000'000);
-        expect(got && *got == 0u && ring.releaseValue(0) == 9,
+        expect(got && *got == 0u && ring.releaseValue(0).value == 9,
             "a free image was not handed out after abort");
     }
 
@@ -299,7 +325,7 @@ namespace {
                     std::this_thread::yield();
                     continue;
                 }
-                expect(ring.present(*index) && ring.complete(*index, 0),
+                expect(ring.present(*index) && ring.complete(*index, 0, ReleaseTimeline::Private),
                     "a handed-off image was not held");
                 ++presented;
             }
@@ -478,6 +504,36 @@ namespace {
             "a failed tail read was treated as reached");
     }
 
+    // FI2b: each queue signals its own timeline and counts only that timeline's values. A pending
+    // value on the other timeline neither moves the value nor adds a wait (the plan has no wait field).
+    void testReleaseSignalPlan() {
+        const ReleaseSignal firstPrivate = planReleaseSignal(true, 0, 0);
+        expect(firstPrivate.timeline == ReleaseTimeline::Private && firstPrivate.value == 1,
+            "the first private release did not plan value 1 on the private timeline");
+        // A private release is pending at 5 and the game queue has signalled nothing yet.
+        const ReleaseSignal call = planReleaseSignal(false, 5, 0);
+        expect(call.timeline == ReleaseTimeline::Call && call.value == 1,
+            "a call release after a pending private release was not planned on its own timeline at 1");
+        const ReleaseSignal secondCall = planReleaseSignal(false, 5, 3);
+        expect(secondCall.timeline == ReleaseTimeline::Call && secondCall.value == 4,
+            "the call value did not count only the call timeline");
+        const ReleaseSignal secondPrivate = planReleaseSignal(true, 5, 3);
+        expect(secondPrivate.timeline == ReleaseTimeline::Private && secondPrivate.value == 6,
+            "the private value did not count only the private timeline");
+    }
+
+    // FI2b: the acquire waits and the release signals use the semaphore of the timeline a stamp names.
+    // Mutation check: returning the private semaphore for every stamp must fail this test.
+    void testTimelineHandleSelection() {
+        const auto privateHandle = handleOf<VkSemaphore>(0x30);
+        const auto callHandle = handleOf<VkSemaphore>(0x40);
+        const std::array timelines{privateHandle, callHandle};
+        expect(timelineHandleOf(timelines, ReleaseTimeline::Private) == privateHandle,
+            "a private-timeline value was not waited or signalled on the private semaphore");
+        expect(timelineHandleOf(timelines, ReleaseTimeline::Call) == callHandle,
+            "a call-timeline value was waited on the private semaphore");
+    }
+
     void testImageCountRule() {
         struct Case {
             uint32_t minImages;
@@ -510,6 +566,7 @@ int main() {
     testReleaseValuesPerIndex();
     testCompleteStoresReleaseValue();
     testReleaseValueOfReadsCompletedValue();
+    testCompleteStoresTimeline();
     testRingDescribeReportsStatesAndValues();
     testRingSizeBounds();
     testAcquireWaitsForComplete();
@@ -525,6 +582,8 @@ int main() {
     testMutableFormatNeedsFormatList();
     testImageCountRule();
     testHostAcquireEligibility();
+    testReleaseSignalPlan();
+    testTimelineHandleSelection();
     std::cout << "internal images tests passed\n";
     return 0;
 }

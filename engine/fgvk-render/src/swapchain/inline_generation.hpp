@@ -72,20 +72,4 @@ inline constexpr uint32_t inlineCallLowerImageCap = 4;
     return heldOutputs + 1 <= budget;
 }
 
-// FI2 rule 7: what a release-timeline signal submitted on one queue must do about the last release signal, which may
-// have been submitted on another queue and not yet executed. A timeline signal must have a value above the counter when
-// it executes, so a later signal may not run first. Queues are handle bits, and zero means none. `counter` is the
-// timeline's current value. `Wait` adds a wait for `lastValue` to the submit. `Refuse` is for a submit that cannot
-// wait, the call path, which then falls back to the worker. `None` covers the same queue, a counter already at the
-// last value, and no earlier signal.
-enum class ReleaseSignalOrder : uint8_t { None, Wait, Refuse };
-
-[[nodiscard]] constexpr ReleaseSignalOrder releaseSignalOrder(const uint64_t lastQueue,
-        const uint64_t submitQueue, const uint64_t counter, const uint64_t lastValue,
-        const bool mayWait) noexcept {
-    if (lastValue == 0 || lastQueue == 0 || lastQueue == submitQueue || counter >= lastValue)
-        return ReleaseSignalOrder::None;
-    return mayWait ? ReleaseSignalOrder::Wait : ReleaseSignalOrder::Refuse;
-}
-
 }  // namespace fgvk::layer
