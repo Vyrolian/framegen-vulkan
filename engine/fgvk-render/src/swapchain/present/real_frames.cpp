@@ -134,9 +134,11 @@ void Swapchain::submitSourceCopy(const PresentInvocation& invocation,
             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL
         ),
     };
+    // FI1: an attached source stays on the application's device, so both queue-family names are IGNORED.
+    const auto shared = vk::sharedImageOwnership(this->attachedGeneration(), invocation.vk.queueFamilyIndex());
     const std::array postBarriers{
-        vk::externalImageRelease(sourceImage.handle(), invocation.vk.queueFamilyIndex(),
-            VK_ACCESS_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL),
+        vk::externalImageRelease(sourceImage.handle(), shared.family,
+            VK_ACCESS_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, shared.foreign),
         barrierHelper(swapchainImage,
             VK_ACCESS_TRANSFER_READ_BIT,
             VK_ACCESS_MEMORY_READ_BIT,
@@ -230,9 +232,44 @@ void Swapchain::submitSourceCopy(const PresentInvocation& invocation,
         slot.splitSource = this->pacingProfile ? this->pacingProfile->sourceOrdinal() : 0;
         slot.splitPending = true;
     }
+    // An attached copy precedes its batch, so the caller commits the release value after scheduling.
+    if (!this->attachedGeneration())
+        this->commitInlineSourceRelease();
+}
+
+void Swapchain::commitInlineSourceRelease() {
     this->frameState.sourceReleaseTimelineValue =
         this->frameState.nextSourceReleaseTimelineValue;
     this->frameState.nextSourceReleaseTimelineValue = 0;
+}
+
+VkSemaphore Swapchain::submitPostCopyFallback(const PresentInvocation& invocation,
+        const uint64_t copyTimelineValue) {
+    auto& fallbackPass = this->currentRenderSlot().passes.front();
+    auto& fallbackSemaphore = this->postCopySemaphores.at(
+        this->presentationSlotFor(invocation.imageIndex)).first;
+
+    auto& fallbackCommandBuffer = fallbackPass.commandBuffer;
+    fallbackCommandBuffer.begin(invocation.vk);
+    fallbackCommandBuffer.end(invocation.vk);
+    fallbackCommandBuffer.submit(invocation.vk,
+        {}, this->syncSemaphore->handle(), copyTimelineValue,
+        std::array{fallbackSemaphore.handle()}, VK_NULL_HANDLE, 0,
+        this->currentRenderSlot().fence.handle()
+    );
+    this->currentRenderSlot().inFlight = true;
+    return fallbackSemaphore.handle();
+}
+
+void Swapchain::abandonInlineSourceFrame() {
+    try {
+        this->instance->abandonSourceFrame(this->ctx.get());
+    } catch (const std::exception& error) {
+        // A batch was partly submitted before the failure, so the context cannot consume the copy's value.
+        std::cerr << "framegen-vulkan: inline backend context is broken; native presentation retained: "
+                  << error.what() << '\n';
+        this->recoveryState.inlineBroken = true;
+    }
 }
 
 bool Swapchain::recordRenderSplitBegin(const vk::Vulkan& vk,
@@ -282,29 +319,20 @@ VkResult Swapchain::presentHistoryOnly(
     };
     const uint64_t sourceTimelineValue =
         this->frameState.backendTimelineIndex - 1;
-    auto& fallbackPass = this->currentRenderSlot().passes.front();
-    auto& fallbackSemaphore = this->postCopySemaphores.at(
-        this->presentationSlotFor(invocation.imageIndex)).first;
-
-    auto& fallbackCommandBuffer = fallbackPass.commandBuffer;
     const auto fallbackSubmitStarted = startPhaseTimer();
-    fallbackCommandBuffer.begin(invocation.vk);
-    fallbackCommandBuffer.end(invocation.vk);
-    fallbackCommandBuffer.submit(invocation.vk,
-        {}, this->syncSemaphore->handle(), sourceTimelineValue,
-        std::array{fallbackSemaphore.handle()}, VK_NULL_HANDLE, 0,
-        this->currentRenderSlot().fence.handle()
-    );
+    const VkSemaphore fallbackSemaphore = this->submitPostCopyFallback(invocation, sourceTimelineValue);
     phases.generatedSubmit = finishPhaseTimer(
         fallbackSubmitStarted
     );
-    this->currentRenderSlot().inFlight = true;
 
     const auto historyScheduleStarted = startPhaseTimer();
     try {
         this->instance->scheduleFrameHistory(this->ctx.get());
     } catch (const std::exception& error) {
         phases.schedule = finishPhaseTimer(historyScheduleStarted);
+        // FI1: the copy's value is consumed here, or the context is marked broken.
+        if (this->attachedGeneration())
+            this->abandonInlineSourceFrame();
         // The fallback copy is already queued and signals fallbackSemaphore.
         // Present the real image through it and quarantine generation instead
         // of returning an error to the application.
@@ -315,7 +343,7 @@ VkResult Swapchain::presentHistoryOnly(
         this->recoveryState.historyWarmupRemaining = 0;
 
         const auto fallbackResult = this->presentOriginalImage(
-            invocation, fallbackSemaphore.handle(), invocation.nextChain,
+            invocation, fallbackSemaphore, invocation.nextChain,
             &phases.originalPresent
         );
         if (fallbackResult != VK_SUCCESS &&
@@ -337,9 +365,11 @@ VkResult Swapchain::presentHistoryOnly(
     this->frameState.backendFrameIndex++;
     if (this->recoveryState.historyWarmupRemaining > 0)
         this->recoveryState.historyWarmupRemaining--;
+    if (this->attachedGeneration() && this->pacingProfile)
+        this->pacingProfile->inlineAttachedActive();
 
     const auto result = this->presentOriginalImage(
-        invocation, fallbackSemaphore.handle(), invocation.nextChain,
+        invocation, fallbackSemaphore, invocation.nextChain,
         &phases.originalPresent
     );
     if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR)

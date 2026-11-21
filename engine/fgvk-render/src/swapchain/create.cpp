@@ -94,6 +94,43 @@ bool layer::context_ModifySwapchainCreateInfo(const ls::GameConf& profile,
     );
 }
 
+void Swapchain::openInlineFrameGenerationContext(const vk::Vulkan& vk,
+        backend::Instance& backend, const VkExtent2D extent) {
+    // FI1: images and timeline on the application's device, without export. The attached context is opened in place
+    // of the descriptor exchange and is not leaked.
+    this->sourceImages.reserve(2);
+    for (size_t i = 0; i < 2; ++i) {
+        this->sourceImages.emplace_back(vk,
+            extent, this->colorPipeline.exchangeFormat,
+            backend::sourceExchangeImageUsage);
+    }
+    const size_t destinationCount = generatedFrameCapacityForProfile(this->profile);
+    this->destinationImages.reserve(destinationCount);
+    for (size_t i = 0; i < destinationCount; ++i) {
+        this->destinationImages.emplace_back(vk,
+            extent, this->colorPipeline.exchangeFormat,
+            backend::destinationExchangeImageUsage);
+    }
+    this->syncSemaphore.emplace(vk, 0);
+    std::vector<VkImage> destinations;
+    destinations.reserve(destinationCount);
+    for (const auto& image : this->destinationImages)
+        destinations.push_back(image.handle());
+    this->ctx = ls::owned_ptr<ls::R<backend::Context>>(
+        new ls::R<backend::Context>(backend.openContext(
+            std::pair{this->sourceImages[0].handle(), this->sourceImages[1].handle()},
+            destinations, this->syncSemaphore->handle(),
+            extent.width, extent.height, this->colorPipeline.encoding,
+            1.0F / ls::effectiveFlowScale(this->profile),
+            ls::effectivePerformanceMode(this->profile)
+        )),
+        [backend = &backend](ls::R<backend::Context>& ctx) {
+            backend->closeContext(ctx);
+        }
+    );
+    this->initializeGpuPacingProfile(backend, this->ctx.get(), this->profile.low_latency);
+}
+
 Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance* backend,
             ls::GameConf profile, SwapchainInfo info,
             const bool fp16Requested,
@@ -174,53 +211,59 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance* backend,
     }
     try {
         const VkExtent2D generationExtent = this->info.extent;
-        std::vector<int> sourceFds(2, -1);
-        ls::FileDescriptorScope sourceScope{sourceFds};
-        std::vector<int> destinationFds(generatedFrameCapacityForProfile(this->profile), -1);
-        ls::FileDescriptorScope destinationScope{destinationFds};
-        this->sourceImages.reserve(sourceFds.size());
-        for (int& fd : sourceFds)
-            this->sourceImages.emplace_back(vk,
-                generationExtent, this->colorPipeline.exchangeFormat,
-                backend::sourceExchangeImageUsage,
-                std::nullopt, &fd);
+        if (backend->attached()) {
+            // FI1: the attached backend shares this device's images and timeline; nothing is exported.
+            this->openInlineFrameGenerationContext(vk, *backend, generationExtent);
+        } else {
+            std::vector<int> sourceFds(2, -1);
+            ls::FileDescriptorScope sourceScope{sourceFds};
+            std::vector<int> destinationFds(generatedFrameCapacityForProfile(this->profile), -1);
+            ls::FileDescriptorScope destinationScope{destinationFds};
+            this->sourceImages.reserve(sourceFds.size());
+            for (int& fd : sourceFds)
+                this->sourceImages.emplace_back(vk,
+                    generationExtent, this->colorPipeline.exchangeFormat,
+                    backend::sourceExchangeImageUsage,
+                    std::nullopt, &fd);
 
-        this->destinationImages.reserve(destinationFds.size());
-        for (int& fd : destinationFds)
-            this->destinationImages.emplace_back(vk,
-                generationExtent, this->colorPipeline.exchangeFormat,
-                backend::destinationExchangeImageUsage,
-                std::nullopt, &fd);
+            this->destinationImages.reserve(destinationFds.size());
+            for (int& fd : destinationFds)
+                this->destinationImages.emplace_back(vk,
+                    generationExtent, this->colorPipeline.exchangeFormat,
+                    backend::destinationExchangeImageUsage,
+                    std::nullopt, &fd);
 
-        int syncFd{-1};
-        ls::FileDescriptorScope syncScope{{&syncFd, 1}};
-        this->syncSemaphore.emplace(vk, 0, std::nullopt, &syncFd);
+            int syncFd{-1};
+            ls::FileDescriptorScope syncScope{{&syncFd, 1}};
+            this->syncSemaphore.emplace(vk, 0, std::nullopt, &syncFd);
 
-        try {
-            this->ctx = ls::owned_ptr<ls::R<backend::Context>>(
-                new ls::R<backend::Context>(backend->openContext(
-                    (sourceScope.release(), std::pair{sourceFds[0], sourceFds[1]}),
-                    (destinationScope.release(), destinationFds),
-                    (syncScope.release(), syncFd),
-                    generationExtent.width, generationExtent.height,
-                    this->colorPipeline.encoding,
-                    1.0F / ls::effectiveFlowScale(this->profile),
-                    ls::effectivePerformanceMode(this->profile)
-                )),
-                [backend](ls::R<backend::Context>& ctx) {
-                    backend->closeContext(ctx);
-                }
-            );
+            try {
+                this->ctx = ls::owned_ptr<ls::R<backend::Context>>(
+                    new ls::R<backend::Context>(backend->openContext(
+                        (sourceScope.release(), std::pair{sourceFds[0], sourceFds[1]}),
+                        (destinationScope.release(), destinationFds),
+                        (syncScope.release(), syncFd),
+                        generationExtent.width, generationExtent.height,
+                        this->colorPipeline.encoding,
+                        1.0F / ls::effectiveFlowScale(this->profile),
+                        ls::effectivePerformanceMode(this->profile)
+                    )),
+                    [backend](ls::R<backend::Context>& ctx) {
+                        backend->closeContext(ctx);
+                    }
+                );
 
-            this->initializeGpuPacingProfile(*backend, this->ctx.get(), this->profile.low_latency);
+                this->initializeGpuPacingProfile(*backend, this->ctx.get(), this->profile.low_latency);
 
-            // The backend's private VkDevice must outlive this layer on loader
-            // combinations where destroying it during layer unload is unsafe.
-            // This is process-lifetime retention, not active GPU work; see the
-            // backend API contract before changing the teardown policy.
-            backend::makeLeaking();
-        } catch (const std::exception& e) {
-            throw ls::error("failed to create swapchain context", e);
+                // The backend's private VkDevice must outlive this layer on loader
+                // combinations where destroying it during layer unload is unsafe.
+                // This is process-lifetime retention, not active GPU work; see the
+                // backend API contract before changing the teardown policy.
+                backend::makeLeaking();
+            } catch (const std::exception& e) {
+                throw ls::error("failed to create swapchain context", e);
+            }
+
         }
 
         this->ensureFrameGenerationExecutionResources(vk);

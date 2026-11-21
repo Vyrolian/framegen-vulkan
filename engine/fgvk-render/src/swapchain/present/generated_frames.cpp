@@ -435,7 +435,8 @@ VkResult Swapchain::presentGeneratedFrames(
             outputTimer->write(commandBuffer.handle(), VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 0);
         }
         vk::acquireExternalImage(invocation.vk, commandBuffer.handle(), destinationImage.handle(),
-            VK_ACCESS_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+            VK_ACCESS_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+            vk::sharedImageOwnership(this->attachedGeneration(), invocation.vk.queueFamilyIndex()));
         const std::array preBarriers{
             barrierHelper(destinationImage.handle(),
                 VK_ACCESS_NONE,

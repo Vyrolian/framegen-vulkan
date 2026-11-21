@@ -15,6 +15,10 @@
 
 #include <vulkan/vulkan_core.h>
 
+namespace vk {
+    class Vulkan;
+}
+
 namespace fgvk::backend {
 
     // Dedicated OPAQUE_FD imports require the exporter and importer to create
@@ -138,6 +142,29 @@ namespace fgvk::backend {
         );
 
         ///
+        /// Create an attached instance: shaders and contexts live on the caller's device.
+        ///
+        /// The device is borrowed and must outlive this instance; nothing on it is created
+        /// or destroyed except the shader registry and each context's own objects. Every
+        /// call that schedules work submits to the device's queue, so it must run where
+        /// the caller holds that queue (inside the application's present call).
+        ///
+        /// @param device The application's Vulkan device, wrapped with its queue family.
+        /// @param shaderDllPath Path to the Lossless.dll file to load shaders from.
+        /// @param allowLowPrecision Request supported FP16 model shaders; false requires FP32.
+        ///
+        /// @throws backend::error on failure
+        ///
+        Instance(
+            const vk::Vulkan& device,
+            const std::filesystem::path& shaderDllPath,
+            bool allowLowPrecision
+        );
+
+        /// Whether this instance borrows the caller's device (see the attached constructor).
+        [[nodiscard]] bool attached() const;
+
+        ///
         /// Open a frame generation context.
         ///
         /// The VkFormat of the exchanged images is inferred from encoding:
@@ -184,6 +211,29 @@ namespace fgvk::backend {
             std::pair<int, int> sourceFds,
             const std::vector<int>& destFds,
             int syncFd,
+            uint32_t width, uint32_t height,
+            FrameEncoding encoding, float flow, bool perf
+        );
+
+        ///
+        /// Open a context on an attached instance: same-device images and timeline.
+        ///
+        /// The images and the timeline belong to the caller and must outlive the context.
+        /// Sources and outputs keep the layouts and timeline protocol of the descriptor
+        /// overload; ownership barriers use VK_QUEUE_FAMILY_IGNORED because no other device
+        /// is involved. Nothing is submitted here: the first scheduled batch initializes
+        /// the context's own images, after the caller's source copy for that frame.
+        ///
+        /// @param sources The two source images, alternated between, with the descriptor
+        ///                overload's usage and transport format.
+        /// @param destinations The generated output images, in output order.
+        /// @param timeline The timeline semaphore shared with the caller (value 1 first).
+        /// @throws backend::error on failure, or when this instance is not attached
+        ///
+        Context& openContext(
+            std::pair<VkImage, VkImage> sources,
+            std::span<const VkImage> destinations,
+            VkSemaphore timeline,
             uint32_t width, uint32_t height,
             FrameEncoding encoding, float flow, bool perf
         );
@@ -277,6 +327,18 @@ namespace fgvk::backend {
         /// @param context Context to advance.
         ///
         void scheduleFrameHistory(Context& context);
+
+        ///
+        /// Consume the timeline value of a source copy that will get no batch.
+        ///
+        /// An attached caller copies its source before scheduling, so a failed schedule
+        /// leaves that copy's timeline value signalled with no batch behind it. Call this
+        /// after such a failure, and only when the context is not broken. It advances the
+        /// timeline and source-slot counters without GPU work, so the next batch waits on
+        /// the value the caller's next copy signals.
+        /// @throws backend::error when the context is broken or not attached
+        ///
+        void abandonSourceFrame(Context& context);
 
         /// Check whether the context's previously submitted work has completed
         /// without blocking.

@@ -1000,27 +1000,67 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
         bypassGeneratedFrames = false;
     }
 
+    // FI1: an attached backend records on the application's queue, so its source copy is submitted first. The copy
+    // consumes the application's wait semaphores; a scheduling failure after it presents through the copy's
+    // post-copy semaphore and never waits on them again.
+    const bool inlineAttached = this->attachedGeneration();
+    const bool copyFirst = sourceCopyPrecedesSchedule(inlineAttached);
+    if (copyFirst) {
+        const auto sourceCopyStarted = startPhaseTimer();
+        this->submitSourceCopy(invocation, swapchainImage, sourceImage);
+        plan.submitSourceCopyDuration = finishPhaseTimer(
+            sourceCopyStarted
+        );
+    }
     if (!bypassGeneratedFrames) {
         const auto scheduleStarted = startPhaseTimer();
         try {
             this->instance->scheduleFrames(
                 this->ctx.get(), plan.scheduledGeneratedFrames.timestamps()
             );
-            // The source copy has not advanced the timeline yet, so S is the
-            // value it will signal. The backend's last generated frame signals
-            // S + G, after which the batch no longer reads the source image.
-            this->frameState.nextSourceReleaseTimelineValue =
-                this->frameState.backendTimelineIndex +
-                plan.scheduledGeneratedFrames.size();
+            // A detached copy has not advanced the timeline yet, so S is the value it
+            // will signal. An attached copy has advanced it past S, so the same release
+            // value is computed from the index after the copy.
+            this->frameState.nextSourceReleaseTimelineValue = inlineAttached
+                ? attachedSourceReleaseValue(this->frameState.backendTimelineIndex,
+                      plan.scheduledGeneratedFrames.size())
+                : this->frameState.backendTimelineIndex +
+                    plan.scheduledGeneratedFrames.size();
         } catch (const std::exception& error) {
             std::cerr << "framegen-vulkan: temporarily bypassing frame generation after "
                          "backend scheduling failure; native presentation retained: "
                       << error.what() << '\n';
             this->recoveryState.backendPending = true;
             this->recoveryState.historyWarmupRemaining = 0;
-            if (!preacquiredImagesRequireRetirement(
-                    plan.generatedImagesPreacquired,
-                    plan.admittedGeneratedFrameCount)) {
+            const bool preacquiredRetirement = preacquiredImagesRequireRetirement(
+                plan.generatedImagesPreacquired,
+                plan.admittedGeneratedFrameCount);
+            if (inlineAttached) {
+                // The copy's value is consumed without a batch; a broken context is marked and then stays native.
+                this->abandonInlineSourceFrame();
+                const VkSemaphore fallbackSemaphore = this->submitPostCopyFallback(
+                    invocation, this->frameState.backendTimelineIndex - 1);
+                if (scheduleFailureRoute(true, preacquiredRetirement) ==
+                        ScheduleFailureRoute::PostCopyOriginal) {
+                    const auto result = this->presentOriginalImage(
+                        invocation, fallbackSemaphore, invocation.nextChain);
+                    this->frameState.realFrameIndex++;
+                    return result;
+                }
+                if (invocation.originalPresentDeadline)
+                    invocation.waitForOutput(*invocation.originalPresentDeadline);
+                const std::array postCopyWaits{fallbackSemaphore};
+                return this->retireAcquiredImagesAndPresent(
+                    vk, queue, swapchain, lowerNextChain,
+                    imageIndex, postCopyWaits,
+                    std::span<const uint32_t>(
+                        plan.preacquiredGeneratedImages.data(),
+                        plan.admittedGeneratedFrameCount
+                    ),
+                    swapchainImage
+                );
+            }
+            if (!preacquiredRetirement) {
                 return this->presentNativeFrame(invocation);
             }
             if (invocation.originalPresentDeadline)
@@ -1036,17 +1076,22 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
             );
         }
         if (this->pacingProfile) this->pacingProfile->backendScheduled(this->frameState.backendFrameIndex);
+        if (inlineAttached && this->pacingProfile) this->pacingProfile->inlineAttachedActive();
         this->frameState.backendFrameIndex++;
         plan.scheduleFramesDuration = finishPhaseTimer(
             scheduleStarted
         );
     }
-
-    const auto sourceCopyStarted = startPhaseTimer();
-    this->submitSourceCopy(invocation, swapchainImage, sourceImage);
-    plan.submitSourceCopyDuration = finishPhaseTimer(
-        sourceCopyStarted
-    );
+    if (!copyFirst) {
+        const auto sourceCopyStarted = startPhaseTimer();
+        this->submitSourceCopy(invocation, swapchainImage, sourceImage);
+        plan.submitSourceCopyDuration = finishPhaseTimer(
+            sourceCopyStarted
+        );
+    } else {
+        // The copy has run before this point; the release value of this present's batch becomes current now.
+        this->commitInlineSourceRelease();
+    }
     if (sourceDeadlinePacing && !plan.historyWarmupActive &&
             plan.scheduledGeneratedFrames.size() ==
                 this->configuredFixedGeneratedFrames &&

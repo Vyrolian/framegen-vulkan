@@ -8,6 +8,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <stdexcept>
 
 #include <vulkan/vulkan_core.h>
 
@@ -82,6 +83,12 @@ namespace {
 TimelineSemaphore::TimelineSemaphore(const vk::Vulkan& vk, uint32_t initial,
         std::optional<int> importFd, std::optional<int*> exportFd)
     : semaphore(createTimelineSemaphore(vk, initial, importFd, exportFd)) {}
+
+TimelineSemaphore::TimelineSemaphore(const VkSemaphore borrowed)
+    : semaphore(borrowed == VK_NULL_HANDLE ? nullptr : new VkSemaphore(borrowed)) {
+    if (borrowed == VK_NULL_HANDLE)
+        throw std::invalid_argument("borrowed timeline semaphore handle is null");
+}
 
 void TimelineSemaphore::signal(const vk::Vulkan& vk, uint64_t value) const {
     const VkSemaphoreSignalInfo signalInfo{

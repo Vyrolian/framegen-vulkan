@@ -198,6 +198,8 @@ namespace vk {
         /// @param isGraphical whether the device is graphical (rather than compute)
         /// @param setLoaderData optional function to set loader data
         /// @param cachefile optional path to pipeline cache file
+        /// @param shaderFloat16Enabled whether the device enabled shaderFloat16
+        /// @param calibratedTimestamps the enabled calibrated-timestamps extension name (FI1), or null
         /// @throws ls::vulkan_error on failure
         Vulkan(VkInstance instance, VkDevice device,
             VkPhysicalDevice physdev,
@@ -208,7 +210,8 @@ namespace vk {
             bool isGraphical = true,
             std::optional<PFN_vkSetDeviceLoaderData> setLoaderData = std::nullopt,
             const std::optional<std::filesystem::path>& cachefile = std::nullopt,
-            bool shaderFloat16Enabled = false);
+            bool shaderFloat16Enabled = false,
+            const char* calibratedTimestamps = nullptr);
 
         /// find a memory type index
         /// @param validTypes bitset of valid memory types

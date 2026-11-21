@@ -25,6 +25,11 @@ namespace vk {
             std::optional<int> importFd = std::nullopt,
             std::optional<int*> exportFd = std::nullopt);
 
+        /// borrow an existing timeline semaphore on the same device. It is never destroyed here;
+        /// the caller keeps it alive for as long as this object is used.
+        /// @param semaphore an existing VK_SEMAPHORE_TYPE_TIMELINE semaphore
+        explicit TimelineSemaphore(VkSemaphore semaphore);
+
         /// signal the timeline semaphore
         /// @param vk the vulkan instance
         /// @param value the value to signal to

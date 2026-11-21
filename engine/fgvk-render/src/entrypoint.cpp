@@ -804,6 +804,8 @@ namespace {
 #endif
         bool presentRetirementEnabled = false;
         bool shaderFloat16Enabled = false;
+        // FI1: the calibrated-timestamps extension enabled on the application device, passed to its wrapper.
+        const char* appCalibratedTimestamps{};
         bool lowerDeviceCreated = false;
         const auto rollbackCreatedDevice = [&]() noexcept {
             if (!lowerDeviceCreated || !device || *device == VK_NULL_HANDLE)
@@ -828,6 +830,31 @@ namespace {
         try {
             VkDeviceCreateInfo newInfo = *info;
             privatePresentQueue.apply(newInfo);
+            // FI1 (FGVK_FG_INLINE=1): the attached backend runs on this device, so it needs the features its own
+            // device would enable. Each is requested only when the physical device supports it, and the application's
+            // own requests are kept.
+            const bool inlineRequested = inlineGenerationRequested() && frameGenerationInteropEnabled &&
+                instance_info->funcs.GetPhysicalDeviceFeatures2 != nullptr;
+            VkPhysicalDeviceVulkan12Features inlineSupported12{
+                .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
+            };
+            VkPhysicalDeviceFeatures2 inlineSupported{
+                .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+                .pNext = &inlineSupported12,
+            };
+            if (inlineRequested)
+                instance_info->funcs.GetPhysicalDeviceFeatures2(physdev, &inlineSupported);
+            vk::ShaderFloat16FeatureRequest inlineFp16(newInfo,
+                inlineRequested && layer_info->root.fp16RequestedAtStartup() &&
+                    inlineSupported12.shaderFloat16 == VK_TRUE);
+            VkPhysicalDeviceFeatures inlineFeatures{};
+            if (inlineRequested && inlineSupported.features.shaderStorageImageExtendedFormats == VK_TRUE &&
+                    !(newInfo.pEnabledFeatures && newInfo.pEnabledFeatures->shaderStorageImageExtendedFormats == VK_TRUE)) {
+                if (newInfo.pEnabledFeatures)
+                    inlineFeatures = *newInfo.pEnabledFeatures;
+                inlineFeatures.shaderStorageImageExtendedFormats = VK_TRUE;
+                newInfo.pEnabledFeatures = &inlineFeatures;
+            }
             if (transferCopyRequested) {
                 transferQueue.emplace(newInfo, privateFamilies);
                 transferQueue->apply(newInfo);
@@ -881,7 +908,7 @@ namespace {
             // calibration alias and known clock domains without adding any feature node.
             std::vector<const char*> copyCalibrationExtensions;
             if (frameGenerationInteropEnabled &&
-                    present_diagnostics::pacingGpuSplitProfileEnabled()) {
+                    (present_diagnostics::pacingGpuSplitProfileEnabled() || inlineRequested)) {
                 const auto supported = lowerDeviceExtensions(physdev);
                 const char* calibrationExtension{};
                 for (const auto* name : {VK_KHR_CALIBRATED_TIMESTAMPS_EXTENSION_NAME, VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME})
@@ -900,6 +927,7 @@ namespace {
                         std::ranges::find(available, VK_TIME_DOMAIN_CLOCK_MONOTONIC_KHR) != available.end();
                 }
                 if (copyCalibrationEnabled) {
+                    appCalibratedTimestamps = calibrationExtension;
                     for (uint32_t i = 0; i < newInfo.enabledExtensionCount; ++i)
                         copyCalibrationExtensions.push_back(newInfo.ppEnabledExtensionNames[i]);
                     if (!std::ranges::any_of(copyCalibrationExtensions, [calibrationExtension](const char* name) {
@@ -999,7 +1027,7 @@ namespace {
                         true, frameGenerationInteropEnabled),
                     *layerQueueFamily,
                     frameGenerationInteropEnabled,
-                    true, setLoaderData, std::nullopt, shaderFloat16Enabled
+                    true, setLoaderData, std::nullopt, shaderFloat16Enabled, appCalibratedTimestamps
                 )
             );
             if (!inserted)
@@ -1395,6 +1423,13 @@ namespace {
         collectRetiredSwapchains(device, 250'000'000);
         forceFinalizeRetiredSwapchains(device);
         drainDeferredDevice(device);
+        // FI1: the attached backend borrows this device. Its contexts were closed with their swapchains, so the device is
+        // idled before the backend's own objects are destroyed, both before the lower device.
+        if (layer_info->root.hasAttachedBackend(device)) {
+            if (const auto wrapper = instance_info->devices.find(device); wrapper != instance_info->devices.end())
+                wrapper->second.df().DeviceWaitIdle(device);
+            layer_info->root.destroyAttachedBackend(device);
+        }
         // F9c: the tail timeline goes with its queue. Device destruction requires the
         // queues to be idle, so no wait is needed before it is destroyed.
         if (const auto owned = instance_info->deferredPresentQueues.find(device);

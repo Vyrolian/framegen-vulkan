@@ -154,7 +154,8 @@ if(BUILD_TESTING)
 
     add_dependencies(fgvk-portable-policy-test-binaries
         fgvk-external-fd-tests fgvk-descriptor-pool-tests fgvk-shader-pipeline-tests
-        fgvk-command-buffer-submit-storage-tests fgvk-backend-queue-priority-tests)
+        fgvk-command-buffer-submit-storage-tests fgvk-backend-queue-priority-tests
+        fgvk-attached-image-tests fgvk-inline-generation-tests)
 
     add_library(fgvk-launch-preload-fixture SHARED
         "../scripts/test-launch-preload.cpp")
@@ -177,6 +178,12 @@ if(BUILD_TESTING)
     target_include_directories(fgvk-pacing-profile-tests PRIVATE "../fgvk-common/include")
     add_test(NAME pacing-profile COMMAND fgvk-pacing-profile-tests)
     fgvk_register_portable_policy_test(fgvk-pacing-profile-tests pacing-profile)
+
+    # FI1: the attached timeline accounting, submit order and failure routing as pure functions.
+    add_executable(fgvk-inline-generation-tests "tests/inline_generation_tests.cpp")
+    target_include_directories(fgvk-inline-generation-tests PRIVATE "src")
+    add_test(NAME inline-generation COMMAND fgvk-inline-generation-tests)
+    fgvk_register_portable_policy_test(fgvk-inline-generation-tests inline-generation)
 
     # The layer pin: the module starts a detached thread inside its own DSO, then the executable
     # unloads it. Without the pin the thread wakes into unmapped code and the test crashes.

@@ -276,6 +276,7 @@ namespace fgvk::layer::present_diagnostics {
             bool internalImages{};
             // QH2: the context's generated copies run on the transfer queue (persistent, like internalImages).
             bool transferCopy{};
+            bool inlineAttached{};
             size_t fifoCallerTimingSources{};
             std::array<OutputSample, outputTraceCapacity> outputTrace{};
             size_t outputTraceCount{}, outputTraceDropped{};
@@ -467,6 +468,8 @@ namespace fgvk::layer::present_diagnostics {
         void internalImagesActive() { internalImages = true; }
         // QH2: persistent for this swapchain: set once a generated copy is submitted on the transfer queue.
         void transferCopiesActive() { transferCopies = true; }
+        // FI1: persistent for this swapchain: set once a generated frame is scheduled on the attached backend.
+        void inlineAttachedActive() { inlineAttached = true; }
         std::optional<Window> finishSource(Clock::time_point now) {
             if (!sourceStarted || !windowStarted) return {};
             window.metrics[LayerPresent].add(now - *sourceStarted);
@@ -475,6 +478,7 @@ namespace fgvk::layer::present_diagnostics {
             window.elapsed = now - *windowStarted;
             window.internalImages = internalImages;
             window.transferCopy = transferCopies;
+            window.inlineAttached = inlineAttached;
             const auto completed = window;
             window = {};
             windowStarted = now;
@@ -491,6 +495,7 @@ namespace fgvk::layer::present_diagnostics {
         size_t batch{}, previousBatch{}, outputOrdinal{};
         bool internalImages{};
         bool transferCopies{};
+        bool inlineAttached{};
         std::optional<Clock::time_point> windowStarted, sourceStarted, sourceFinished, previousOutput;
         std::optional<Clock::time_point> previousTarget;
         OutputTiming previousTimingOwner{DriverTiming};

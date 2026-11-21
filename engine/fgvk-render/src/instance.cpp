@@ -712,8 +712,11 @@ void Root::createSwapchainContext(const vk::Vulkan& vk,
         profile.frame_generation_enabled;
     const bool frameGenerationAvailableOnDevice =
         vk.frameGenerationInteropEnabled();
+    // FI1: with FGVK_FG_INLINE=1 the application's device hosts the backend, so no second device is created.
+    backend::Instance* attachedBackend = frameGenerationAvailableOnDevice && inlineGenerationRequested()
+        ? this->attachedBackendFor(vk) : nullptr;
     if (frameGenerationAvailableOnDevice &&
-            !this->backend.has_value()) { // emplace backend late, due to loader bug
+            !this->backend.has_value() && !attachedBackend) { // emplace backend late, due to loader bug
         try {
             // The backend owns a separate Vulkan instance. Prevent framegen-vulkan
             // Renderer or a selected post-process layer from entering that
@@ -773,9 +776,10 @@ void Root::createSwapchainContext(const vk::Vulkan& vk,
         }
     }
 
-    backend::Instance* frameGenerationBackend =
-        frameGenerationAvailableOnDevice && this->backend.has_value()
-        ? &this->backend.mut() : nullptr;
+    backend::Instance* frameGenerationBackend = attachedBackend
+        ? attachedBackend
+        : (frameGenerationAvailableOnDevice && this->backend.has_value()
+            ? &this->backend.mut() : nullptr);
     if (frameGenerationRequested && !vk.frameGenerationInteropEnabled()) {
         std::cerr << "framegen-vulkan: frame generation was enabled after the "
                      "application device was created without external interop; "
@@ -791,6 +795,42 @@ void Root::createSwapchainContext(const vk::Vulkan& vk,
         Swapchain(vk, frameGenerationBackend, std::move(contextProfile), info,
             this->fp16AtStartup,
             swapchainMaintenance1Enabled));
+}
+
+backend::Instance* Root::attachedBackendFor(const vk::Vulkan& vk) {
+    const VkDevice device = vk.dev();
+    if (const auto found = this->attachedBackends.find(device); found != this->attachedBackends.end())
+        return found->second.get();
+    if (this->attachedUnavailable.contains(device))
+        return nullptr;
+    try {
+        const auto& global = this->config.get().global();
+        std::string dll{};
+        if (global.dll.has_value())
+            dll = *global.dll;
+        else
+            dll = ls::findShaderDll();
+        auto instance = std::make_unique<backend::Instance>(vk, dll, this->fp16AtStartup);
+        std::cerr << "framegen-vulkan: inline frame generation: device attached, queue_family="
+                  << vk.queueFamilyIndex() << '\n';
+        auto* result = instance.get();
+        this->attachedBackends.emplace(device, std::move(instance));
+        return result;
+    } catch (const std::exception& e) {
+        this->attachedUnavailable.insert(device);
+        std::string reason = e.what();
+        for (auto& character : reason) {
+            if (character == '\n')
+                character = ' ';
+        }
+        std::cerr << "framegen-vulkan: inline frame generation unavailable: " << reason << '\n';
+        return nullptr;
+    }
+}
+
+void Root::destroyAttachedBackend(const VkDevice device) {
+    this->attachedBackends.erase(device);
+    this->attachedUnavailable.erase(device);
 }
 
 void Root::removeSwapchainContext(VkSwapchainKHR swapchain) {

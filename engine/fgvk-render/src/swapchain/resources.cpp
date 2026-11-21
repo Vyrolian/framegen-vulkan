@@ -117,7 +117,8 @@ bool Swapchain::recordGeneratedCopies(const vk::Vulkan& vk, RenderSlot& slot, si
             const auto& command = *renderPass.stagingCopy;
             command.begin(vk, 0);
             vk::acquireExternalImage(vk, command.handle(), destinationImage.handle(),
-                VK_ACCESS_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+                VK_ACCESS_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                vk::sharedImageOwnership(this->attachedGeneration(), vk.queueFamilyIndex()));
             // The staged signal orders this reset before the worker copies' timestamps.
             if (outputTimer) {
                 outputTimer->reset(command.handle());
@@ -267,6 +268,42 @@ Swapchain::buildFrameGenerationResources(const vk::Vulkan& vk,
     std::vector<int> destinationFds(generatedFrameCapacityForProfile(resourceProfile), -1);
     ls::FileDescriptorScope destinationScope{destinationFds};
     FrameGenerationResources resources;
+    if (backendInstance.attached()) {
+        // FI1: images and timeline on the application's device, no export. The attached context needs no makeLeaking.
+        resources.sourceImages.reserve(2);
+        for (size_t i = 0; i < 2; ++i) {
+            resources.sourceImages.emplace_back(vk,
+                extent, pipeline.exchangeFormat,
+                backend::sourceExchangeImageUsage);
+        }
+        const size_t destinationCount = generatedFrameCapacityForProfile(resourceProfile);
+        resources.destinationImages.reserve(destinationCount);
+        for (size_t i = 0; i < destinationCount; ++i) {
+            resources.destinationImages.emplace_back(vk,
+                extent, pipeline.exchangeFormat,
+                backend::destinationExchangeImageUsage);
+        }
+        resources.syncSemaphore.emplace(vk, 0);
+        std::vector<VkImage> destinations;
+        destinations.reserve(destinationCount);
+        for (const auto& image : resources.destinationImages)
+            destinations.push_back(image.handle());
+        resources.context = ls::owned_ptr<ls::R<backend::Context>>(
+            new ls::R<backend::Context>(backendInstance.openContext(
+                std::pair{resources.sourceImages[0].handle(), resources.sourceImages[1].handle()},
+                destinations, resources.syncSemaphore->handle(),
+                extent.width, extent.height, pipeline.encoding,
+                1.0F / ls::effectiveFlowScale(resourceProfile),
+                ls::effectivePerformanceMode(resourceProfile)
+            )),
+            [backend = &backendInstance](ls::R<backend::Context>& context) {
+                backend->closeContext(context);
+            }
+        );
+        this->initializeGpuPacingProfile(backendInstance, resources.context.get(),
+            resourceProfile.low_latency);
+        return resources;
+    }
     resources.sourceImages.reserve(sourceFds.size());
     resources.destinationImages.reserve(destinationFds.size());
     for (int& fd : sourceFds) {

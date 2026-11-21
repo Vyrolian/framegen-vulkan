@@ -58,6 +58,9 @@ namespace {
 }
 
 bool Swapchain::recoverBackendIfReady(const vk::Vulkan& vk) {
+    // FI1: a broken attached context never resumes; this swapchain presents natively from here on.
+    if (this->recoveryState.inlineBroken)
+        return false;
     if (!this->recoveryState.backendPending)
         return true;
 

@@ -110,6 +110,11 @@ if(BUILD_TESTING)
     target_link_libraries(fgvk-backend-queue-priority-tests PRIVATE fgvk-common)
     add_test(NAME backend-queue-priority COMMAND fgvk-backend-queue-priority-tests)
     set_tests_properties(backend-queue-priority PROPERTIES LABELS "portable-policy")
+
+    add_executable(fgvk-attached-image-tests "tests/attached_image_tests.cpp")
+    target_link_libraries(fgvk-attached-image-tests PRIVATE fgvk-common)
+    add_test(NAME attached-image-ownership COMMAND fgvk-attached-image-tests)
+    set_tests_properties(attached-image-ownership PROPERTIES LABELS "portable-policy")
 endif()
 
 if(FGVK_INSTALL_DEVELOP)

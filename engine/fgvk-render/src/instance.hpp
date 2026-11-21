@@ -15,10 +15,12 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 
 #include <vulkan/vulkan_core.h>
 
@@ -107,6 +109,11 @@ namespace fgvk::layer {
         /// @param swapchain swapchain handle
         /// @param info swapchain info
         /// @throws ls::error on failure
+        // FI1: the attached backend of an application device; nullptr when it cannot be created (reported once).
+        backend::Instance* attachedBackendFor(const vk::Vulkan& vk);
+        [[nodiscard]] bool hasAttachedBackend(VkDevice device) const { return this->attachedBackends.contains(device); }
+        // Destroys the attached backend. Its contexts must already be closed and the device idle.
+        void destroyAttachedBackend(VkDevice device);
         void createSwapchainContext(const vk::Vulkan& vk, VkSwapchainKHR swapchain,
             const SwapchainInfo& info,
             bool swapchainMaintenance1Enabled);
@@ -143,6 +150,9 @@ namespace fgvk::layer {
         bool swapchainImageCountCompatibilityConfiguredAtStartup{false};
 
         ls::lazy<backend::Instance> backend;
+        // FI1: one attached backend per application device, created at its first frame-generation swapchain.
+        std::unordered_map<VkDevice, std::unique_ptr<backend::Instance>> attachedBackends;
+        std::unordered_set<VkDevice> attachedUnavailable;
         std::optional<ls::GlobalConf> backendGlobal;
         std::optional<ls::GameConf> backendProfile;
         std::unordered_map<VkSwapchainKHR, Swapchain> swapchains;

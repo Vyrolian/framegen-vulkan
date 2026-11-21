@@ -22,6 +22,7 @@
 #include "runtime_transition.hpp"
 #include "present_timing.hpp"
 #include "swapchain/deferred_present.hpp"
+#include "swapchain/inline_generation.hpp"
 #include "swapchain/internal_images.hpp"
 #include "swapchain/low_latency.hpp"
 #include "swapchain/onscreen_watch.hpp"
@@ -371,6 +372,8 @@ namespace fgvk::layer {
             OrderedAcquireRecovery orderedAcquireRecovery;
             ReplacementBackendStabilization replacementBackendStabilization;
             bool backendPending{false};
+            // FI1: an attached context that cannot continue; this swapchain then stays on native presentation.
+            bool inlineBroken{false};
             size_t historyWarmupRemaining{0};
         };
 
@@ -642,6 +645,12 @@ namespace fgvk::layer {
 
         // Frame planning, resource readiness, and generated-image admission.
         [[nodiscard]] bool recoverBackendIfReady(const vk::Vulkan& vk);
+        // FI1 (FGVK_FG_INLINE=1): helpers for a swapchain whose backend is attached to the application's device.
+        [[nodiscard]] bool attachedGeneration() const { return this->instance && this->instance->attached(); }
+        [[nodiscard]] VkSemaphore submitPostCopyFallback(const PresentInvocation& invocation, uint64_t copyTimelineValue);
+        void abandonInlineSourceFrame();
+        void commitInlineSourceRelease();
+        void openInlineFrameGenerationContext(const vk::Vulkan& vk, backend::Instance& backend, VkExtent2D extent);
         void ensureHistoryWarmup(bool restart = false);
         [[nodiscard]] PresentationFramePlan prepareFramePlan(
             std::chrono::steady_clock::time_point presentNow,

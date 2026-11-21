@@ -47,6 +47,13 @@ namespace vk {
             VkFormat format = VK_FORMAT_R8G8B8A8_UNORM,
             VkImageUsageFlags usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
 
+        /// borrow an existing image on the same device: only the view is created and owned.
+        /// The image and its memory belong to the caller and must outlive this object.
+        /// @param image the existing image, created with `usage` and not exported or imported
+        /// @throws ls::vulkan_error on failure
+        Image(const vk::Vulkan& vk, VkImage image, VkExtent2D extent,
+            VkFormat format, VkImageUsageFlags usage);
+
         /// get the image handle
         /// @return the image handle
         [[nodiscard]] const auto& handle() const { return this->image.get(); }

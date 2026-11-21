@@ -213,3 +213,18 @@ Image::Image(const vk::Vulkan& vk,
             const VkImageUsageFlags usage)
     : Image(vk, extent, format, usage,
         std::nullopt, std::nullopt, std::move(internalPool)) {}
+
+Image::Image(const vk::Vulkan& vk, const VkImage image, const VkExtent2D extent,
+            const VkFormat format, const VkImageUsageFlags usage)
+        : extent(extent) {
+    if (image == VK_NULL_HANDLE)
+        throw std::invalid_argument("borrowed Vulkan image handle is null");
+    // The non-owning handle is never destroyed: the deleter stays empty.
+    this->image = ls::owned_ptr<VkImage>(new VkImage(image));
+    constexpr VkImageUsageFlags transferUsage =
+        VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    if ((usage & ~transferUsage) != 0)
+        this->view = createImageView(vk, image, format);
+    else
+        this->view = ls::owned_ptr<VkImageView>(new VkImageView(VK_NULL_HANDLE));
+}

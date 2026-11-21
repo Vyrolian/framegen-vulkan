@@ -49,6 +49,7 @@
 #include <functional>
 #include <iostream>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <span>
 #include <stdexcept>
@@ -184,10 +185,24 @@ namespace fgvk::backend {
         InstanceImpl(vk::PhysicalDeviceSelector selectPhysicalDevice,
             const std::filesystem::path& shaderDllPath,
             bool allowLowPrecision);
+        /// borrow the application's device (attached mode); it is never destroyed here
+        InstanceImpl(const vk::Vulkan& device,
+            const std::filesystem::path& shaderDllPath,
+            bool allowLowPrecision);
 
-        /// get the Vulkan instance
+        /// get the Vulkan instance: the owned one, or the borrowed application device
         /// @return the Vulkan instance
-        [[nodiscard]] const auto& getVulkan() const { return this->vk; }
+        [[nodiscard]] const vk::Vulkan& getVulkan() const {
+            return this->borrowed ? *this->borrowed : *this->owned;
+        }
+        /// whether this instance borrows the application's device
+        [[nodiscard]] bool attached() const { return this->borrowed != nullptr; }
+        /// the attached instance's own command pool, on the application's queue family (VK_NULL_HANDLE when detached)
+        [[nodiscard]] VkCommandPool commandPool() const {
+            return this->borrowed ? *this->attachedPool : VK_NULL_HANDLE;
+        }
+        /// guards every allocation from and free into commandPool(): command pools are externally synchronized
+        [[nodiscard]] std::mutex& commandPoolLock() const { return this->attachedPoolMutex; }
         /// get the shader registry
         /// @return the shader registry
         [[nodiscard]] const auto& getShaderRegistry() const { return this->shaders; }
@@ -203,12 +218,28 @@ namespace fgvk::backend {
         InstanceImpl& operator=(InstanceImpl&&) = default;
         ~InstanceImpl();
     private:
-        vk::Vulkan vk;
+        std::optional<vk::Vulkan> owned; // created here unless attached
+        const vk::Vulkan* borrowed{};    // the application's device when attached
+        ls::owned_ptr<VkCommandPool> attachedPool; // attached only: this instance's pool, never the layer's
+        mutable std::mutex attachedPoolMutex;
         ShaderRegistry shaders;
 
 #ifdef FGVK_TESTING_RENDERDOC
         std::optional<RENDERDOC_API_1_6_0> renderdoc;
 #endif
+    };
+
+    /// Where a context's exchanged images and timeline come from. A detached context imports the
+    /// descriptors it is given, which it consumes on entry. An attached context borrows handles
+    /// that already exist on the application's device, which the caller keeps alive.
+    struct ContextExchange {
+        bool attached{};
+        ls::FileDescriptorScope* sourceFds{};
+        ls::FileDescriptorScope* destFds{};
+        ls::FileDescriptorScope* syncFd{};
+        std::pair<VkImage, VkImage> sources{VK_NULL_HANDLE, VK_NULL_HANDLE};
+        std::span<const VkImage> destinations{};
+        VkSemaphore timeline{VK_NULL_HANDLE};
     };
 
     /// context class
@@ -219,6 +250,9 @@ namespace fgvk::backend {
         ContextImpl(const InstanceImpl& instance,
             ls::FileDescriptorScope& sourceFds, ls::FileDescriptorScope& destFds,
             ls::FileDescriptorScope& syncFd, VkExtent2D extent, FrameEncoding encoding, float flow, bool perf);
+        /// create a context from either exchange kind (see ContextExchange)
+        ContextImpl(const InstanceImpl& instance, const ContextExchange& exchange,
+            VkExtent2D extent, FrameEncoding encoding, float flow, bool perf);
 
         // Borrowed scratch and cached descriptors require stable context owners.
         ContextImpl(const ContextImpl&) = delete;
@@ -252,9 +286,37 @@ namespace fgvk::backend {
         /// (see fgvk documentation)
         void scheduleFrameHistory();
 
+        /// consume the timeline value of a source copy that got no batch (attached only)
+        void abandonSourceFrame();
+        /// after a failed schedule: an attached context whose batch was partly submitted cannot continue
+        void markScheduleFailure();
+
         /// wait for all of this context's in-flight work
         [[nodiscard]] bool waitForIdle(uint64_t timeoutNs) const;
     private:
+        // Attached (same device): no descriptors, nothing exported, and the first batch initializes.
+        bool attached{};
+        // Attached contexts initialize their own images on the first scheduled batch, not in the constructor.
+        bool imagesInitialized{};
+        // Set by a batch that was submitted before its schedule failed; the context then refuses work.
+        bool batchSubmitted{};
+        bool broken{};
+        // Attached contexts record from the instance's pool; detached contexts keep the owned wrapper's pool.
+        VkCommandPool commandPool{VK_NULL_HANDLE};
+        std::mutex* commandPoolLock{};
+        /// a command buffer for this context's recordings, from the pool this context was given
+        [[nodiscard]] vk::CommandBuffer newCommandBuffer() const {
+            if (this->commandPool == VK_NULL_HANDLE)
+                return vk::CommandBuffer(this->ctx.vk);
+            const std::lock_guard lock(*this->commandPoolLock);
+            return vk::CommandBuffer(this->ctx.vk, this->commandPool);
+        }
+        void initializeImages();
+        /// queue-family names for this context's ownership barriers (IGNORED when attached)
+        [[nodiscard]] vk::SharedImageOwnership sharedOwnership() const {
+            return vk::sharedImageOwnership(this->attached, this->ctx.vk.get().queueFamilyIndex());
+        }
+
         std::pair<vk::Image, vk::Image> sourceImages;
         std::vector<vk::Image> destImages;
         vk::Image blackImage;
@@ -502,7 +564,7 @@ namespace {
         }
     }
     /// build a shader registry
-    ShaderRegistry createShaderRegistry(vk::Vulkan& vk,
+    ShaderRegistry createShaderRegistry(const vk::Vulkan& vk,
             const std::filesystem::path& shaderDllPath,
             bool allowLowPrecision) {
         std::shared_ptr<const backend::DllResourceArchive> archive;
@@ -557,16 +619,47 @@ namespace {
 InstanceImpl::InstanceImpl(vk::PhysicalDeviceSelector selectPhysicalDevice,
             const std::filesystem::path& shaderDllPath,
             bool allowLowPrecision)
-        : vk(createVulkanInstance(selectPhysicalDevice)),
-        shaders(createShaderRegistry(this->vk, shaderDllPath,
-            allowLowPrecision && vk.supportsFP16())) {
+        : owned(std::in_place, createVulkanInstance(selectPhysicalDevice)),
+        shaders(createShaderRegistry(*this->owned, shaderDllPath,
+            allowLowPrecision && owned->supportsFP16())) {
 #ifdef FGVK_TESTING_RENDERDOC
     this->renderdoc = loadRenderDocIntegration();
 #endif
     std::clog << "framegen-vulkan: robustImageAccess2 "
-        << (vk.supportsRobustImageAccess2() ? "enabled" : "unavailable")
+        << (owned->supportsRobustImageAccess2() ? "enabled" : "unavailable")
         << '\n';
-    vk.persistPipelineCache(); // will silently fail
+    owned->persistPipelineCache(); // will silently fail
+}
+
+namespace {
+    /// a command pool on the device's queue family, owned by the attached instance
+    ls::owned_ptr<VkCommandPool> createAttachedCommandPool(const vk::Vulkan& vk) {
+        const VkCommandPoolCreateInfo info{
+            .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+            .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+            .queueFamilyIndex = vk.queueFamilyIndex(),
+        };
+        VkCommandPool pool{};
+        const auto res = vk.df().CreateCommandPool(vk.dev(), &info, VK_NULL_HANDLE, &pool);
+        if (res != VK_SUCCESS)
+            throw ls::vulkan_error(res, "vkCreateCommandPool() failed for the attached backend");
+        return ls::owned_ptr<VkCommandPool>(new VkCommandPool(pool),
+            [device = vk.dev(), destroy = vk.df().DestroyCommandPool](VkCommandPool& handle) {
+                destroy(device, handle, VK_NULL_HANDLE);
+            });
+    }
+}
+
+InstanceImpl::InstanceImpl(const vk::Vulkan& device,
+            const std::filesystem::path& shaderDllPath,
+            bool allowLowPrecision)
+        : borrowed(&device),
+        attachedPool(createAttachedCommandPool(device)),
+        shaders(createShaderRegistry(device, shaderDllPath,
+            allowLowPrecision && device.supportsFP16())) {
+#ifdef FGVK_TESTING_RENDERDOC
+    this->renderdoc = loadRenderDocIntegration();
+#endif
 }
 
 Context& Instance::openContext(std::pair<int, int> sourceFds, const std::vector<int>& destFds,
@@ -579,6 +672,8 @@ Context& Instance::openContext(std::pair<int, int> sourceFds, const std::vector<
     ls::FileDescriptorScope sourceScope{sourceDescriptors};
     ls::FileDescriptorScope destinationScope{destFds};
     ls::FileDescriptorScope syncScope{{&syncFd, 1}};
+    if (this->m_impl->attached())
+        throw backend::error("descriptor openContext needs a detached instance; use the same-device overload");
     this->collectRetiredContexts();
     if (this->m_retiredContexts.size() >= maximumRetiredContextCount) {
         throw backend::error(
@@ -597,6 +692,50 @@ Context& Instance::openContext(std::pair<int, int> sourceFds, const std::vector<
     }
     auto* result = this->m_contexts.emplace_back(std::move(context)).get();
     return *result;
+}
+
+Instance::Instance(const vk::Vulkan& device,
+        const std::filesystem::path& shaderDllPath,
+        bool allowLowPrecision)
+    : m_impl(std::make_unique<InstanceImpl>(device, shaderDllPath, allowLowPrecision)) {}
+
+bool Instance::attached() const {
+    return this->m_impl->attached();
+}
+
+Context& Instance::openContext(std::pair<VkImage, VkImage> sources,
+        std::span<const VkImage> destinations, VkSemaphore timeline,
+        uint32_t width, uint32_t height,
+        const FrameEncoding encoding, float flow, bool perf) {
+    if (!this->m_impl->attached())
+        throw backend::error("same-device openContext needs an attached instance");
+    if (sources.first == VK_NULL_HANDLE || sources.second == VK_NULL_HANDLE ||
+            timeline == VK_NULL_HANDLE ||
+            std::ranges::find(destinations, VK_NULL_HANDLE) != destinations.end())
+        throw backend::error("same-device exchange has a null image or timeline");
+    this->collectRetiredContexts();
+    if (this->m_retiredContexts.size() >= maximumRetiredContextCount) {
+        throw backend::error(
+            "Too many frame-generation contexts are still retiring"
+        );
+    }
+    const VkExtent2D extent{ width, height };
+    const ContextExchange exchange{
+        .attached = true,
+        .sources = sources,
+        .destinations = destinations,
+        .timeline = timeline,
+    };
+    auto context = std::make_unique<ContextImpl>(*this->m_impl, exchange,
+        extent, encoding, flow, perf
+    );
+    if (usesHdrModel(encoding)) {
+        std::clog << "framegen-vulkan: HDR generation: encoding="
+            << (requiresPqConversion(encoding) ? "hdr10-pq" : "scrgb-linear")
+            << " pq_conversion=" << requiresPqConversion(encoding) << '\n';
+    }
+    auto* attachedResult = this->m_contexts.emplace_back(std::move(context)).get();
+    return *attachedResult;
 }
 
 namespace {
@@ -658,6 +797,49 @@ namespace {
         } catch (const std::exception& e) {
             throw backend::error("Unable to create prepass semaphore", e);
         }
+    }
+    /// the source images: imported from descriptors, or borrowed from the application's device
+    std::pair<vk::Image, vk::Image> exchangeSourceImages(const vk::Vulkan& vk,
+            const ContextExchange& exchange, VkExtent2D extent, VkFormat format) {
+        if (!exchange.attached)
+            return importSourceImages(vk, *exchange.sourceFds, extent, format);
+        try {
+            return {
+                vk::Image(vk, exchange.sources.first, extent, format, sourceExchangeImageUsage),
+                vk::Image(vk, exchange.sources.second, extent, format, sourceExchangeImageUsage)
+            };
+        } catch (const std::exception& e) {
+            throw backend::error("Unable to borrow source images", e);
+        }
+    }
+    /// the output images: imported from descriptors, or borrowed from the application's device
+    std::vector<vk::Image> exchangeDestinationImages(const vk::Vulkan& vk,
+            const ContextExchange& exchange, VkExtent2D extent, VkFormat format) {
+        if (!exchange.attached)
+            return importDestinationImages(vk, *exchange.destFds, extent, format);
+        try {
+            std::vector<vk::Image> destImages;
+            destImages.reserve(exchange.destinations.size());
+            for (const VkImage image : exchange.destinations)
+                destImages.emplace_back(vk, image, extent, format, destinationExchangeImageUsage);
+            return destImages;
+        } catch (const std::exception& e) {
+            throw backend::error("Unable to borrow destination images", e);
+        }
+    }
+    /// the timeline: imported from a descriptor, or borrowed from the application's device
+    vk::TimelineSemaphore exchangeTimelineSemaphore(const vk::Vulkan& vk, const ContextExchange& exchange) {
+        if (!exchange.attached)
+            return importTimelineSemaphore(vk, exchange.syncFd->take());
+        try {
+            return vk::TimelineSemaphore(exchange.timeline);
+        } catch (const std::exception& e) {
+            throw backend::error("Unable to borrow timeline semaphore", e);
+        }
+    }
+    /// output count of an exchange (the descriptors' count is unchanged by importing them)
+    size_t exchangeDestinationCount(const ContextExchange& exchange) {
+        return exchange.attached ? exchange.destinations.size() : exchange.destFds->size();
     }
     /// create one fence per in-flight batch slot
     std::vector<vk::Fence> createCmdbufFences(const vk::Vulkan& vulkan, const size_t count) {
@@ -788,16 +970,24 @@ namespace {
 ContextImpl::ContextImpl(const InstanceImpl& instance,
             ls::FileDescriptorScope& sourceFds, ls::FileDescriptorScope& destFds,
             ls::FileDescriptorScope& syncFd, VkExtent2D extent, const FrameEncoding encoding, float flow, bool perf) :
-        sourceImages(importSourceImages(instance.getVulkan(), sourceFds,
+        ContextImpl(instance, ContextExchange{.sourceFds = &sourceFds, .destFds = &destFds, .syncFd = &syncFd},
+            extent, encoding, flow, perf) {}
+
+ContextImpl::ContextImpl(const InstanceImpl& instance, const ContextExchange& exchange,
+            VkExtent2D extent, const FrameEncoding encoding, float flow, bool perf) :
+        attached(exchange.attached),
+        commandPool(instance.commandPool()),
+        commandPoolLock(&instance.commandPoolLock()),
+        sourceImages(exchangeSourceImages(instance.getVulkan(), exchange,
             extent, transportFormat(encoding))),
-        destImages(importDestinationImages(instance.getVulkan(), destFds,
+        destImages(exchangeDestinationImages(instance.getVulkan(), exchange,
             extent, transportFormat(encoding))),
         blackImage(createBlackImage(instance.getVulkan())),
-        syncSemaphore(importTimelineSemaphore(instance.getVulkan(), syncFd.take())),
+        syncSemaphore(exchangeTimelineSemaphore(instance.getVulkan(), exchange)),
         prepassSemaphore(createPrepassSemaphore(instance.getVulkan())),
-        cmdbufs(destFds.size() + 1),
+        cmdbufs(exchangeDestinationCount(exchange) + 1),
         cmdbufFences(createCmdbufFences(instance.getVulkan(), inFlightDepth)),
-        ctx(createCtx(instance, extent, encoding, flow, perf, destFds.size())),
+        ctx(createCtx(instance, extent, encoding, flow, perf, exchangeDestinationCount(exchange))),
         workingSourceImages(createWorkingSourceImages(ctx, extent, encoding)),
         workingDestImages(createWorkingDestImages(
             ctx, extent, encoding, destImages.size()
@@ -926,10 +1116,28 @@ ContextImpl::ContextImpl(const InstanceImpl& instance,
         );
     }
 
+    if (!this->attached)
+        this->initializeImages();
+
+    this->constantBufferTimestamps.reserve(this->ctx.constantBuffers.size());
+    for (size_t i = 0; i < this->ctx.constantBuffers.size(); ++i) {
+        this->constantBufferTimestamps.push_back(
+            backend::getDefaultConstantBuffer(
+                i, this->ctx.constantBuffers.size(),
+                this->ctx.hdr, this->ctx.flow
+            ).timestamp
+        );
+    }
+}
+
+void ContextImpl::initializeImages() {
     // initialize all images
     std::vector<VkImage> images{};
-    images.push_back(this->sourceImages.first.handle());
-    images.push_back(this->sourceImages.second.handle());
+    // An attached source holds the caller's copy for the first batch: an UNDEFINED transition here would discard it.
+    if (!this->attached) {
+        images.push_back(this->sourceImages.first.handle());
+        images.push_back(this->sourceImages.second.handle());
+    }
     for (const auto& image : this->destImages)
         images.push_back(image.handle());
     if (this->workingSourceImages) {
@@ -978,27 +1186,20 @@ ContextImpl::ContextImpl(const InstanceImpl& instance,
         });
     }
 
-    const vk::CommandBuffer cmdbuf{ctx.vk};
+    const vk::CommandBuffer cmdbuf = this->newCommandBuffer();
     cmdbuf.begin(ctx.vk);
     cmdbuf.insertBarriers(ctx.vk, barriers);
     backend::initializeBlackImage(ctx.vk.get().df(), cmdbuf.handle(), this->blackImage.handle());
     // The exporter may overwrite either source before the first scheduled
     // frame. Leave both aliases in the documented external GENERAL state.
-    for (const auto image : {this->sourceImages.first.handle(), this->sourceImages.second.handle()})
-        vk::releaseExternalImage(ctx.vk, cmdbuf.handle(), image, 0,
-            VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+    if (!this->attached) {
+        for (const auto image : {this->sourceImages.first.handle(), this->sourceImages.second.handle()})
+            vk::releaseExternalImage(ctx.vk, cmdbuf.handle(), image, 0,
+                VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+    }
     cmdbuf.end(ctx.vk);
     cmdbuf.submit(ctx.vk); // wait for completion
-
-    this->constantBufferTimestamps.reserve(this->ctx.constantBuffers.size());
-    for (size_t i = 0; i < this->ctx.constantBuffers.size(); ++i) {
-        this->constantBufferTimestamps.push_back(
-            backend::getDefaultConstantBuffer(
-                i, this->ctx.constantBuffers.size(),
-                this->ctx.hdr, this->ctx.flow
-            ).timestamp
-        );
-    }
+    this->imagesInitialized = true;
 }
 
 void Instance::scheduleFrames(Context& context) { // NOLINT (static)
@@ -1013,6 +1214,7 @@ void Instance::scheduleFrames(Context& context) { // NOLINT (static)
     try {
         context.scheduleFrames();
     } catch (const std::exception& e) {
+        context.markScheduleFailure();
         throw backend::error("Unable to schedule frames", e);
     }
 #ifdef FGVK_TESTING_RENDERDOC
@@ -1289,6 +1491,7 @@ void Instance::scheduleFrames(Context& context, std::span<const float> timestamp
     try {
         context.scheduleFrames(timestamps);
     } catch (const std::exception& e) {
+        context.markScheduleFailure();
         throw backend::error("Unable to schedule frames", e);
     }
 #ifdef FGVK_TESTING_RENDERDOC
@@ -1302,7 +1505,16 @@ void Instance::scheduleFrames(Context& context, std::span<const float> timestamp
 }
 
 void Instance::scheduleFrameHistory(Context& context) { // NOLINT (static)
-    context.scheduleFrameHistory();
+    try {
+        context.scheduleFrameHistory();
+    } catch (const std::exception&) {
+        context.markScheduleFailure();
+        throw;
+    }
+}
+
+void Instance::abandonSourceFrame(Context& context) { // NOLINT (static)
+    context.abandonSourceFrame();
 }
 
 bool Instance::contextReady(const Context& context) const {
@@ -1310,6 +1522,12 @@ bool Instance::contextReady(const Context& context) const {
 }
 
 void Context::prepareWork(const bool drainAll) {
+    // A new scheduling attempt starts with no batch submitted.
+    this->batchSubmitted = false;
+    if (this->broken)
+        throw backend::error("inline frame-generation context is broken; close it and open another");
+    if (!this->imagesInitialized)
+        this->initializeImages();
     const auto start = this->profiling ? ProfileClock::now() : ProfileClock::time_point{};
     // Profiling drains every batch so that its readback sees completed queries.
     const bool waitAll = drainAll || this->profiling != nullptr;
@@ -1357,7 +1575,7 @@ void Context::prepareWork(const bool drainAll) {
 const vk::CommandBuffer& Context::recordPrepass() {
     auto& recorded = this->cmdbufs.at(0).at(this->fidx % commandPhaseCount);
     if (!recorded) {
-        vk::CommandBuffer cmdbuf(ctx.vk);
+        vk::CommandBuffer cmdbuf = this->newCommandBuffer();
         cmdbuf.begin(ctx.vk, 0);
 
         // A pipeline barrier's first scope includes every earlier submission on
@@ -1395,9 +1613,10 @@ const vk::CommandBuffer& Context::recordPrepass() {
             marks.start();
         }
 
+        const auto shared = this->sharedOwnership();
         const std::array sourceAcquires{
-            vk::externalImageAcquire(this->sourceImages.first.handle(), ctx.vk.get().queueFamilyIndex(), VK_ACCESS_SHADER_READ_BIT),
-            vk::externalImageAcquire(this->sourceImages.second.handle(), ctx.vk.get().queueFamilyIndex(), VK_ACCESS_SHADER_READ_BIT),
+            vk::externalImageAcquire(this->sourceImages.first.handle(), shared.family, VK_ACCESS_SHADER_READ_BIT, shared.foreign),
+            vk::externalImageAcquire(this->sourceImages.second.handle(), shared.family, VK_ACCESS_SHADER_READ_BIT, shared.foreign),
         };
         ctx.vk.get().df().CmdPipelineBarrier(cmdbuf.handle(),
             VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
@@ -1458,16 +1677,19 @@ const vk::CommandBuffer& Context::recordPrepass() {
 const vk::CommandBuffer& Context::recordSourceRelease() {
     auto& recorded = this->sourceRelease.at(this->fidx % commandPhaseCount);
     if (!recorded) {
-        vk::CommandBuffer command(ctx.vk);
+        vk::CommandBuffer command = this->newCommandBuffer();
         command.begin(ctx.vk, 0);
         // This command follows the last generated output in the same submission, so a
         // bottom-of-pipe boundary here marks that output's completion for any output count.
         if (this->split)
             this->split->pools.at(this->fidx % commandPhaseCount).value().write(
                 command.handle(), VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 2);
+        const auto shared = this->sharedOwnership();
         const std::array releases{
-            vk::externalImageRelease(this->sourceImages.first.handle(), ctx.vk.get().queueFamilyIndex(), VK_ACCESS_SHADER_READ_BIT),
-            vk::externalImageRelease(this->sourceImages.second.handle(), ctx.vk.get().queueFamilyIndex(), VK_ACCESS_SHADER_READ_BIT),
+            vk::externalImageRelease(this->sourceImages.first.handle(), shared.family, VK_ACCESS_SHADER_READ_BIT,
+                VK_IMAGE_LAYOUT_GENERAL, shared.foreign),
+            vk::externalImageRelease(this->sourceImages.second.handle(), shared.family, VK_ACCESS_SHADER_READ_BIT,
+                VK_IMAGE_LAYOUT_GENERAL, shared.foreign),
         };
         ctx.vk.get().df().CmdPipelineBarrier(command.handle(),
             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
@@ -1499,6 +1721,7 @@ void Context::schedulePrepass(const VkFence completionFence) {
         {}, this->prepassSemaphore.handle(), this->idx,
         completionFence
     );
+    this->batchSubmitted = true;
     if (this->profiling)
         this->profiling->timings.cpuPrepassSubmitUs = profileMicroseconds(start);
 
@@ -1573,7 +1796,7 @@ void Context::scheduleFrames(std::span<const float> timestamps) {
     for (size_t i = 0; i < generatedFrameCount; i++) {
         auto& recorded = this->cmdbufs.at(i + 1).at(this->fidx % commandPhaseCount);
         if (!recorded) {
-            vk::CommandBuffer cmdbuf(ctx.vk);
+            vk::CommandBuffer cmdbuf = this->newCommandBuffer();
             cmdbuf.begin(ctx.vk, 0);
 
             if (this->profiling)
@@ -1657,7 +1880,8 @@ void Context::scheduleFrames(std::span<const float> timestamps) {
                 this->destColorConversion->render(ctx.vk, cmdbuf, i);
 
             vk::releaseExternalImage(ctx.vk, cmdbuf.handle(), this->destImages.at(i).handle(),
-                VK_ACCESS_SHADER_WRITE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+                VK_ACCESS_SHADER_WRITE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                VK_IMAGE_LAYOUT_GENERAL, this->sharedOwnership());
 
             if (this->profiling)
                 this->profiling->queries.write(cmdbuf.handle(), VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, static_cast<uint32_t>(6 + i * 3));
@@ -1673,7 +1897,7 @@ void Context::scheduleFrames(std::span<const float> timestamps) {
         if (!recordedDependency) {
             // Keep this dependency separate from the phase recordings so the
             // multiple-output path retains its existing barriers and overlap.
-            vk::CommandBuffer dependency(ctx.vk);
+            vk::CommandBuffer dependency = this->newCommandBuffer();
             dependency.begin(ctx.vk, 0);
             const VkMemoryBarrier barrier{
                 .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
@@ -1698,6 +1922,7 @@ void Context::scheduleFrames(std::span<const float> timestamps) {
         vk::CommandBuffer::submitCommands(this->ctx.vk, commands,
             {}, this->syncSemaphore.handle(), this->idx,
             {}, this->syncSemaphore.handle(), this->idx + 1, this->currentFence());
+        this->batchSubmitted = true;
         if (this->profiling) {
             this->profiling->timings.cpuPrepassSubmitUs = 0.0;
             this->profiling->timings.cpuGenerationSubmitUs = profileMicroseconds(start);
@@ -1714,12 +1939,30 @@ void Context::scheduleFrames(std::span<const float> timestamps) {
                 {}, this->prepassSemaphore.handle(), this->idx - 1,
                 {}, this->syncSemaphore.handle(), this->idx + i,
                 i == generatedFrameCount - 1 ? this->currentFence() : VK_NULL_HANDLE);
+            this->batchSubmitted = true;
         }
         if (this->profiling)
             this->profiling->timings.cpuGenerationSubmitUs = profileMicroseconds(start);
         this->idx += generatedFrameCount;
     }
     this->fidx++;
+}
+
+void Context::abandonSourceFrame() {
+    if (!this->attached)
+        throw backend::error("abandonSourceFrame needs an attached context");
+    if (this->broken)
+        throw backend::error("inline frame-generation context is broken; it cannot skip a frame");
+    // The caller's copy consumed one timeline value and one source slot with no batch. Advance
+    // both counters, so the next batch waits on the value the caller's next copy signals and
+    // reads the source slot that copy wrote.
+    ++this->idx;
+    ++this->fidx;
+}
+
+void Context::markScheduleFailure() {
+    if (this->attached && this->batchSubmitted)
+        this->broken = true;
 }
 
 void Context::scheduleFrameHistory() {
@@ -1783,6 +2026,32 @@ void Instance::closeContext(const Context& context) {
         throw backend::error("attempted to close unknown context",
             std::runtime_error("no such context"));
 
+    if (this->m_impl->attached()) {
+        // The caller destroys the images this context borrows right after closing it, so a busy
+        // context is waited for here instead of deferred.
+        bool reported{false};
+        for (;;) {
+            try {
+                if ((*it)->waitForIdle(previousWorkFenceTimeoutNs))
+                    break;
+            } catch (const std::exception& e) {
+                std::cerr << "framegen-vulkan: unable to wait for an inline backend context: "
+                          << e.what() << '\n';
+                break;
+            }
+            if (!reported) {
+                std::cerr << "framegen-vulkan: inline backend context still busy; waiting for it to retire\n";
+                reported = true;
+            }
+        }
+        {
+            // The erased context frees its command buffers into the attached pool.
+            const std::lock_guard poolLock(this->m_impl->commandPoolLock());
+            this->m_contexts.erase(it);
+        }
+        return;
+    }
+
     try {
         if ((*it)->waitForIdle(previousWorkFenceTimeoutNs)) {
             this->m_contexts.erase(it);
@@ -1812,10 +2081,11 @@ namespace {
 }
 
 InstanceImpl::~InstanceImpl() {
-    if (!leaking) return;
+    // A borrowed device belongs to the application: it is neither leaked nor destroyed here.
+    if (!leaking || !this->owned) return;
 
     try {
-        new vk::Vulkan(std::move(this->vk));
+        new vk::Vulkan(std::move(*this->owned));
     } catch (...) {
         std::cerr << "framegen-vulkan: failed to leak Vulkan instance\n";
     }
