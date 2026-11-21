@@ -177,6 +177,13 @@ void timingQueryIsDueEverySixteenthCall() {
         expect(cursor.due() == (call == 16 || call == 32), "the timing query was not due on every 16th sleep");
 }
 
+// RT1: the queue drain reads on every fourth sleep: calls 1 to 3 are not due, 4 is, 5 to 7 are not, and 8 is.
+void timingQueryIsDueEveryFourthCallForTheDrain() {
+    ReflexTimingCursor cursor;
+    for (uint32_t call = 1; call <= 8; ++call)
+        expect(cursor.due(4) == (call == 4 || call == 8), "the timing query was not due on every fourth sleep");
+}
+
 // A report is fresh once; an equal or older present ID is not fresh, and a newer one is.
 void timingReportsAreFreshOnlyWhenNewer() {
     ReflexTimingCursor cursor;
@@ -198,6 +205,7 @@ int main() {
     attributedPresentWithoutAMarkerIsPlain();
     attributedPresentEndsWhenPresentThrows();
     timingQueryIsDueEverySixteenthCall();
+    timingQueryIsDueEveryFourthCallForTheDrain();
     timingReportsAreFreshOnlyWhenNewer();
     std::cout << "reflex present attribution tests passed\n";
 }

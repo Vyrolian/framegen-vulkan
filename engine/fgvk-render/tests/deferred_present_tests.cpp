@@ -4802,6 +4802,90 @@ void realPresentLeadMovesRealEarlier() {
         "the real output went before the generated output's start plus a quarter interval");
 }
 
+// RF1: while the real present lead is in effect, the marker correction gets no samples and holds at zero. The lead and
+// the marker correction would integrate the same error. Screen samples keep driving the correction with or without the
+// lead, and then the lead's markers do not change its offsets.
+namespace {
+std::vector<PresentMarkerSample> holdMarkers;
+size_t holdMarkerRead(void*, uint64_t* const cursor, PresentMarkerSample* const out, const size_t max) noexcept {
+    size_t count = 0;
+    while (*cursor < holdMarkers.size() && count < max) out[count++] = holdMarkers[(*cursor)++];
+    return count;
+}
+PresentMarkerSample holdMarker(const uint64_t source, const bool generated, const std::chrono::nanoseconds at) {
+    return PresentMarkerSample{.context = 0, .source = source, .gpuNs = at.count(), .generated = generated};
+}
+struct HoldOutcome {
+    std::array<std::chrono::nanoseconds, OutputOffsetController::maxPositions> offsets{};
+    uint64_t accepted{};
+    std::vector<std::chrono::nanoseconds> generatedOffsets;
+};
+// Six batches (sources 1 to 6) of one generated and one real output. On the GPU clock the reals are 20 ms apart and each
+// generated marker is 12 ms after the previous real, 2 ms after the ideal midpoint. The same times are the screen samples.
+HoldOutcome holdOutcome(const bool lead, const bool screen) {
+    holdMarkers.clear();
+    auto ring = std::make_shared<ScreenSampleRing>();
+    auto queue = std::make_shared<DeferredPresentQueue>();
+    queue->queue = handle<VkQueue>(7);
+    queue->marker = std::make_shared<int>(0);
+    queue->readMarkerSamples = holdMarkerRead;
+    DeferredPresent worker(queue, timedPresent);
+    if (screen) worker.setScreenSamples(ring);
+    setRealOffsetAutoConfigured(true);
+    setRealPresentLeadConfigured(lead);
+    const auto swapchain = handle<VkSwapchainKHR>(11);
+    const auto wait = handle<VkSemaphore>(12);
+    const uint32_t image = 0;
+    const VkPresentInfoKHR info{.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, .pNext = nullptr,
+        .waitSemaphoreCount = 1, .pWaitSemaphores = &wait,
+        .swapchainCount = 1, .pSwapchains = &swapchain, .pImageIndices = &image, .pResults = nullptr};
+    HoldOutcome outcome;
+    holdMarkers.push_back(holdMarker(0, false, 0ms));
+    ring->push(ScreenSample{0, 0, false, 0});
+    for (uint64_t source = 1; source <= 6; ++source) {
+        const auto previous = 20ms * static_cast<int64_t>(source - 1);
+        const auto generatedAt = previous + 12ms;
+        const auto realAt = previous + 20ms;
+        holdMarkers.push_back(holdMarker(source, true, generatedAt));
+        holdMarkers.push_back(holdMarker(source, false, realAt));
+        ring->push(ScreenSample{0, source, true, std::chrono::nanoseconds{generatedAt}.count()});
+        ring->push(ScreenSample{0, source, false, std::chrono::nanoseconds{realAt}.count()});
+        const auto at = DeferredPresent::Clock::now() + 2ms;
+        expect(worker.beginBatch(2, {.outputInterval = 10ms, .source = source}), "a marker-hold batch was rejected");
+        expect(worker.enqueue(info, at, true) && worker.enqueue(info, at + 10ms),
+            "a marker-hold batch output was rejected");
+        worker.closeBatch();
+        const auto done = worker.finish(UINT64_MAX);
+        expect(done && done->count == 2 && done->result == VK_SUCCESS, "a marker-hold batch failed");
+        outcome.generatedOffsets.push_back(done->calls[0].offset);
+    }
+    setRealPresentLeadConfigured(false);
+    setRealOffsetAutoConfigured(false);
+    outcome.offsets = DeferredPresentTestAccess::offsetController(worker).offset;
+    outcome.accepted = DeferredPresentTestAccess::acceptedOffsetSamples(worker);
+    return outcome;
+}
+}
+
+static void realLeadHoldsMarkerCorrection() {
+    const auto markersOff = holdOutcome(false, false);
+    expect(markersOff.accepted > 0 && markersOff.offsets[0] != 0ns,
+        "the marker correction did not move without the lead, so the fixture does not drive it");
+    const auto markersOn = holdOutcome(true, false);
+    expect(markersOn.accepted == 0, "the marker correction took samples with the real present lead on");
+    for (const auto offset : markersOn.offsets)
+        expect(offset == 0ns, "the marker correction's offset was not held at zero with the real present lead on");
+    for (const auto offset : markersOn.generatedOffsets)
+        expect(offset == 0ns, "a generated output took a marker offset with the real present lead on");
+
+    const auto screenOff = holdOutcome(false, true);
+    const auto screenOn = holdOutcome(true, true);
+    expect(screenOff.accepted > 0 && screenOff.offsets[0] != 0ns,
+        "the screen correction did not move in the fixture");
+    expect(screenOn.accepted == screenOff.accepted && screenOn.offsets == screenOff.offsets,
+        "the screen-mode correction changed with the real present lead on");
+}
+
 int main([[maybe_unused]] int argc, [[maybe_unused]] char** argv) {
     generatedPreparedOrderAndBudget(); generatedCopyCanPrecedeHostReadiness(); generatedPreparationFallbackAndGates();
     generatedChainOutputOffsetsMoveEachOutput();
@@ -4852,4 +4936,5 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char** argv) {
     reflexMarkersEncloseEachWorkerPresent();
     gamescopeTickLockRemovesSameTickPairs(); nonGamescopeGatesScheduleAsToday(); zeroSnapIsIdentical();
     realPresentLeadMovesRealEarlier();
+    realLeadHoldsMarkerCorrection();
 }

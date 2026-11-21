@@ -11,6 +11,7 @@
 #include "swapchain/output_margin.hpp"
 #include "swapchain/release_gate.hpp"
 #include "swapchain/real_present_lead.hpp"
+#include "swapchain/reflex_queue_drain.hpp"
 #include "swapchain/reflex_out_of_band.hpp"
 #include "swapchain/tick_lock.hpp"
 
@@ -825,6 +826,9 @@ void formatPacingWindowBody(const PacingWindowPayload& payload, const PacingProf
     // RP1: real_lead=1 while the real present lead is in effect, and its current lead in microseconds.
     line << " real_lead=" << (fgvk::layer::realPresentLeadOn.load(std::memory_order_relaxed) ? 1 : 0)
          << " real_lead_us=" << fgvk::layer::realPresentLeadNs.load(std::memory_order_relaxed) / 1000;
+    // RT1: reflex_drain=1 while the Reflex queue drain is in effect at the latest sleep, and its extra wait in microseconds.
+    line << " reflex_drain=" << (fgvk::layer::reflexQueueDrainActive.load(std::memory_order_relaxed) ? 1 : 0)
+         << " reflex_drain_us=" << fgvk::layer::reflexQueueDrainNs.load(std::memory_order_relaxed) / 1000;
     line << '\n';
     for (size_t i = 0; i < window.outputTraceCount; ++i) {
         const auto& sample = window.outputTrace[i];

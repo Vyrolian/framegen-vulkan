@@ -28,7 +28,8 @@ void ConfigFile::createDefaultConfigFile(const std::filesystem::path& path) {
 # dll = '/media/games/Lossless Scaling/Lossless.dll' # if you don't have LS in the default location
 allow_fp16 = true # request FP16 model arithmetic; false selects FP32
 pacing_correction = true # centre generated frames from measured GPU present times
-real_present_lead = false # experimental: present real frames earlier by their measured GPU wait
+real_present_lead = true # present real frames earlier by their measured GPU wait
+reflex_queue_drain = true # after Reflex sleep, wait until the game's GPU queue is empty
 
 [[profile]]
 name = "4x FG / 85% [Performance]"
@@ -64,7 +65,9 @@ multiplier = 2
 ConfigFile::ConfigFile() {
     this->globalConf = {
         .allow_fp16 = true,
-        .pacing_correction = true
+        .pacing_correction = true,
+        .real_present_lead = true,
+        .reflex_queue_drain = true
     };
     this->profileConfs.emplace_back(GameConf {
         .name = "4x FG / 85% [Performance]",
@@ -169,7 +172,8 @@ namespace {
             .dll = tbl["dll"].value<std::string>(),
             .allow_fp16 = tbl["allow_fp16"].value_or(true),
             .pacing_correction = tbl["pacing_correction"].value_or(true),
-            .real_present_lead = tbl["real_present_lead"].value_or(false),
+            .real_present_lead = tbl["real_present_lead"].value_or(true),
+            .reflex_queue_drain = tbl["reflex_queue_drain"].value_or(true),
             .default_profile = tbl["default_profile"].value<std::string>()
         };
 
@@ -257,7 +261,9 @@ namespace {
         GlobalConf conf{
             .dll = std::nullopt,
             .allow_fp16 = true,
-            .pacing_correction = true
+            .pacing_correction = true,
+            .real_present_lead = true,
+            .reflex_queue_drain = true
         };
 
         const char* dll = std::getenv("FGVK_DLL_PATH");
@@ -367,6 +373,7 @@ void ConfigFile::write(const std::filesystem::path& path) const {
     global.insert("allow_fp16", this->globalConf.allow_fp16);
     global.insert("pacing_correction", this->globalConf.pacing_correction);
     global.insert("real_present_lead", this->globalConf.real_present_lead);
+    global.insert("reflex_queue_drain", this->globalConf.reflex_queue_drain);
     if (this->globalConf.default_profile)
         global.insert("default_profile", *this->globalConf.default_profile);
     table.insert("global", global);

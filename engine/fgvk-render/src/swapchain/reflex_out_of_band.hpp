@@ -8,19 +8,22 @@
 
 namespace fgvk::layer {
 
-// RL2: the out-of-band queue type fgvk marks on its private present queue. FGVK_REFLEX_OUT_OF_BAND=present or
-// render, read once; any other value, or unset, marks nothing. entrypoint.cpp applies it only to a device whose
+// RL2: the out-of-band queue type fgvk marks on its private present queue. RF1 made it the default: unset, or any
+// value other than the three below, marks the queue as the Reflex out-of-band present queue. `off` marks nothing,
+// `render` marks the render queue, and `present` is the same as unset. entrypoint.cpp applies it only to a device whose
 // application enabled VK_NV_low_latency2, and never to the application's own queues.
 enum class ReflexOutOfBandType : uint32_t { None = 0, Present = 1, Render = 2 };
 
+// RF1: the type for an FGVK_REFLEX_OUT_OF_BAND value (nullptr when unset). Pure, so the rule can be tested.
+[[nodiscard]] inline ReflexOutOfBandType parseReflexOutOfBandRequest(const char* text) noexcept {
+    if (!text || std::strcmp(text, "present") == 0) return ReflexOutOfBandType::Present;
+    if (std::strcmp(text, "render") == 0) return ReflexOutOfBandType::Render;
+    if (std::strcmp(text, "off") == 0) return ReflexOutOfBandType::None;
+    return ReflexOutOfBandType::Present;
+}
+
 [[nodiscard]] inline ReflexOutOfBandType reflexOutOfBandRequest() noexcept {
-    static const ReflexOutOfBandType requested = [] {
-        const char* text = std::getenv("FGVK_REFLEX_OUT_OF_BAND");
-        if (!text) return ReflexOutOfBandType::None;
-        if (std::strcmp(text, "present") == 0) return ReflexOutOfBandType::Present;
-        if (std::strcmp(text, "render") == 0) return ReflexOutOfBandType::Render;
-        return ReflexOutOfBandType::None;
-    }();
+    static const ReflexOutOfBandType requested = parseReflexOutOfBandRequest(std::getenv("FGVK_REFLEX_OUT_OF_BAND"));
     return requested;
 }
 

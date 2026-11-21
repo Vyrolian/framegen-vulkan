@@ -11,14 +11,15 @@
 
 namespace fgvk::layer {
 
-// Which driver Reflex timing queries run and which reported frames are new. Every 16th sleep is due for a query;
-// a report is fresh only when its present ID is above every ID returned before.
+// Which driver Reflex timing queries run and which reported frames are new. Every `every`th sleep is due for a query
+// (16 for the pacing profile, 4 with the Reflex queue drain, RF1); a report is fresh only when its present ID is above
+// every ID returned before.
 class ReflexTimingCursor {
 public:
-    [[nodiscard]] bool due() {
+    [[nodiscard]] bool due(const uint32_t every = 16) {
         const std::lock_guard lock(this->mutex);
         ++this->calls;
-        return this->calls % 16 == 0;
+        return this->calls % every == 0;
     }
 
     [[nodiscard]] bool fresh(const uint64_t presentId) {

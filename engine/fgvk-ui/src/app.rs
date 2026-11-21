@@ -234,6 +234,7 @@ impl App {
             allow_fp16,
             pacing_correction,
             real_present_lead,
+            reflex_queue_drain,
         } = settings;
         if !self.restored {
             self.select(initial_index(&profiles, self.remembered.as_deref()));
@@ -272,6 +273,7 @@ impl App {
             allow_fp16,
             pacing_correction,
             real_present_lead,
+            reflex_queue_drain,
         );
     }
 
@@ -653,6 +655,7 @@ impl App {
         allow_fp16: bool,
         pacing_correction: bool,
         real_present_lead: bool,
+        reflex_queue_drain: bool,
     ) {
         let mut fp16 = allow_fp16;
         if ui.checkbox(&mut fp16, "FP16 (faster)").changed() {
@@ -675,13 +678,23 @@ impl App {
         );
 
         let mut lead = real_present_lead;
-        if ui.checkbox(&mut lead, "Real present lead (experimental)").changed() {
+        if ui.checkbox(&mut lead, "Real present lead").changed() {
             let result = self.config.set_global_real_present_lead(lead);
             self.report(result);
         }
         hint(
             ui,
-            "Presents real frames earlier by their measured GPU wait. Experimental. Applies while the game is running.",
+            "Presents real frames earlier by their measured GPU wait. Applies while the game is running.",
+        );
+
+        let mut drain = reflex_queue_drain;
+        if ui.checkbox(&mut drain, "Reflex queue drain").changed() {
+            let result = self.config.set_global_reflex_queue_drain(drain);
+            self.report(result);
+        }
+        hint(
+            ui,
+            "Waits after each Reflex sleep for the game's GPU queue to drain. Applies while the game is running.",
         );
 
         ui.label("Lossless.dll");

@@ -36,7 +36,8 @@ const DEFAULT_MULTIPLIER: i64 = 2;
 const DEFAULT_FLOW_SCALE: f64 = 0.8;
 const DEFAULT_ALLOW_FP16: bool = true;
 const DEFAULT_PACING_CORRECTION: bool = true;
-const DEFAULT_REAL_PRESENT_LEAD: bool = false;
+const DEFAULT_REAL_PRESENT_LEAD: bool = true;
+const DEFAULT_REFLEX_QUEUE_DRAIN: bool = true;
 const DEFAULT_PERFORMANCE_MODE: bool = false;
 const DEFAULT_LOW_LATENCY: bool = true;
 const DEFAULT_BATCH_HOLD: bool = true;
@@ -138,6 +139,7 @@ pub struct Settings {
     pub allow_fp16: bool,
     pub pacing_correction: bool,
     pub real_present_lead: bool,
+    pub reflex_queue_drain: bool,
 }
 
 /// What the window should show for the file right now.
@@ -227,6 +229,11 @@ impl Config {
                     doc,
                     "real_present_lead",
                     DEFAULT_REAL_PRESENT_LEAD,
+                ),
+                reflex_queue_drain: read_global_bool(
+                    doc,
+                    "reflex_queue_drain",
+                    DEFAULT_REFLEX_QUEUE_DRAIN,
                 ),
             }),
         }
@@ -384,6 +391,16 @@ impl Config {
         self.edit(|doc| {
             if let Some(global) = global_mut(doc) {
                 set_value(global, "real_present_lead", Value::from(value));
+            }
+            Ok(())
+        })
+    }
+
+    /// Writes `[global] reflex_queue_drain`. The `[global]` table is created when the file has none.
+    pub fn set_global_reflex_queue_drain(&mut self, value: bool) -> Result<(), String> {
+        self.edit(|doc| {
+            if let Some(global) = global_mut(doc) {
+                set_value(global, "reflex_queue_drain", Value::from(value));
             }
             Ok(())
         })
@@ -1194,9 +1211,9 @@ mod tests {
     }
 
     #[test]
-    fn real_present_lead_defaults_off_and_round_trips() {
+    fn real_present_lead_defaults_on_and_round_trips() {
         let doc = parse("version = 2\n\n[[profile]]\nname = \"Bare\"\n");
-        assert!(!read_global_bool(
+        assert!(read_global_bool(
             &doc,
             "real_present_lead",
             DEFAULT_REAL_PRESENT_LEAD
@@ -1204,24 +1221,25 @@ mod tests {
 
         let dir = temp_dir("real-present-lead");
         let path = dir.join(FILE_NAME);
-        let text = "version = 2\n\n[global]\npacing_correction = false\n\n[[profile]]\nname = \"Alpha\"\n";
+        let text =
+            "version = 2\n\n[global]\npacing_correction = false\n\n[[profile]]\nname = \"Alpha\"\n";
         fs::write(&path, text).expect("write fixture");
         let mut config = Config::open(Ok(path.clone()));
-        assert!(!ready(&config).real_present_lead, "missing key reads as off");
-
-        config
-            .set_global_real_present_lead(true)
-            .expect("real present lead on saves");
-        let settings = ready(&config);
-        assert!(settings.real_present_lead);
-        assert!(!settings.pacing_correction, "other global keys are kept");
-        let out = fs::read_to_string(&path).expect("read back");
-        assert!(out.contains("real_present_lead = true"), "{out}");
+        assert!(ready(&config).real_present_lead, "missing key reads as on");
 
         config
             .set_global_real_present_lead(false)
             .expect("real present lead off saves");
-        assert!(!ready(&config).real_present_lead);
+        let settings = ready(&config);
+        assert!(!settings.real_present_lead);
+        assert!(!settings.pacing_correction, "other global keys are kept");
+        let out = fs::read_to_string(&path).expect("read back");
+        assert!(out.contains("real_present_lead = false"), "{out}");
+
+        config
+            .set_global_real_present_lead(true)
+            .expect("real present lead on saves");
+        assert!(ready(&config).real_present_lead);
 
         let bare = dir.join("bare.toml");
         fs::write(&bare, "version = 2\n\n[[profile]]\nname = \"Alpha\"\n").expect("write fixture");
@@ -1232,6 +1250,51 @@ mod tests {
         let saved = fs::read_to_string(&bare).expect("read back");
         assert!(
             saved.contains("[global]\nreal_present_lead = true"),
+            "{saved}"
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn reflex_queue_drain_defaults_on_and_round_trips() {
+        let doc = parse("version = 2\n\n[[profile]]\nname = \"Bare\"\n");
+        assert!(read_global_bool(
+            &doc,
+            "reflex_queue_drain",
+            DEFAULT_REFLEX_QUEUE_DRAIN
+        ));
+
+        let dir = temp_dir("reflex-queue-drain");
+        let path = dir.join(FILE_NAME);
+        let text =
+            "version = 2\n\n[global]\nreal_present_lead = false\n\n[[profile]]\nname = \"Alpha\"\n";
+        fs::write(&path, text).expect("write fixture");
+        let mut config = Config::open(Ok(path.clone()));
+        assert!(ready(&config).reflex_queue_drain, "missing key reads as on");
+
+        config
+            .set_global_reflex_queue_drain(false)
+            .expect("reflex queue drain off saves");
+        let settings = ready(&config);
+        assert!(!settings.reflex_queue_drain);
+        assert!(!settings.real_present_lead, "other global keys are kept");
+        let out = fs::read_to_string(&path).expect("read back");
+        assert!(out.contains("reflex_queue_drain = false"), "{out}");
+
+        config
+            .set_global_reflex_queue_drain(true)
+            .expect("reflex queue drain on saves");
+        assert!(ready(&config).reflex_queue_drain);
+
+        let bare = dir.join("bare.toml");
+        fs::write(&bare, "version = 2\n\n[[profile]]\nname = \"Alpha\"\n").expect("write fixture");
+        let mut config = Config::open(Ok(bare.clone()));
+        config
+            .set_global_reflex_queue_drain(false)
+            .expect("creates [global]");
+        let saved = fs::read_to_string(&bare).expect("read back");
+        assert!(
+            saved.contains("[global]\nreflex_queue_drain = false"),
             "{saved}"
         );
         fs::remove_dir_all(&dir).ok();

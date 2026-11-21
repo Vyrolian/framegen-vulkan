@@ -362,6 +362,13 @@ if(BUILD_TESTING)
     add_test(NAME real-present-lead COMMAND fgvk-real-present-lead-tests)
     fgvk_register_portable_policy_test(fgvk-real-present-lead-tests real-present-lead)
 
+    # RT1: the Reflex queue drain policy, the relay's semaphore protocol with fake driver functions, and the RL2 switch rule.
+    add_executable(fgvk-reflex-queue-drain-tests "tests/reflex_queue_drain_tests.cpp")
+    target_include_directories(fgvk-reflex-queue-drain-tests PRIVATE "src")
+    target_link_libraries(fgvk-reflex-queue-drain-tests PRIVATE Threads::Threads)
+    add_test(NAME reflex-queue-drain COMMAND fgvk-reflex-queue-drain-tests)
+    fgvk_register_portable_policy_test(fgvk-reflex-queue-drain-tests reflex-queue-drain)
+
     add_executable(fgvk-render-slot-ring-tests "tests/render_slot_ring_tests.cpp")
     target_include_directories(fgvk-render-slot-ring-tests PRIVATE "src")
     add_test(NAME render-slot-ring COMMAND fgvk-render-slot-ring-tests)

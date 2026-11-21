@@ -9,6 +9,7 @@
 #include "swapchain/create_policy.hpp"
 #include "swapchain/output_margin.hpp"
 #include "swapchain/real_present_lead.hpp"
+#include "swapchain/reflex_queue_drain.hpp"
 #include "swapchain/swapchain.hpp"
 
 #include "fgvk-common/configuration/detection.hpp"
@@ -221,6 +222,7 @@ Root::Root() {
     this->fp16AtStartup = this->config.get().global().allow_fp16;
     fgvk::layer::setRealOffsetAutoConfigured(this->config.get().global().pacing_correction);
     fgvk::layer::setRealPresentLeadConfigured(this->config.get().global().real_present_lead);
+    fgvk::layer::setReflexQueueDrainConfigured(this->config.get().global().reflex_queue_drain);
     std::cerr << fgvkBuildIdentity << '\n';
 
     // H3: read for every process, before the gamescope and profile gates. A Wine
@@ -346,6 +348,11 @@ ConfigurationUpdateResult Root::update(const bool forceConfigurationPoll) {
     if (previousLead != fgvk::layer::realPresentLeadState())
         std::clog << "framegen-vulkan: real present lead reloaded: "
                   << ((fgvk::layer::realPresentLeadState() & 1) != 0 ? "on" : "off") << '\n';
+    const auto previousDrain = fgvk::layer::reflexQueueDrainState();
+    fgvk::layer::setReflexQueueDrainConfigured(currentGlobal.reflex_queue_drain);
+    if (previousDrain != fgvk::layer::reflexQueueDrainState())
+        std::clog << "framegen-vulkan: reflex queue drain reloaded: "
+                  << (fgvk::layer::reflexQueueDrainOn() ? "on" : "off") << '\n';
     result.globalChangeDeferred = backendGlobalChangePending(
         this->backendGlobal, currentGlobal
     ) || currentGlobal.allow_fp16 != this->fp16AtStartup;

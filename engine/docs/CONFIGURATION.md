@@ -51,7 +51,8 @@ The window has these controls:
 | Performance mode | `performance_mode` for the selected profile. |
 | FP16 (faster) | `[global] allow_fp16`. Restart the game to apply. |
 | Pacing correction | `[global] pacing_correction`. Applies while the game is running. |
-| Real present lead (experimental) | `[global] real_present_lead`. Applies while the game is running. |
+| Real present lead | `[global] real_present_lead`. Applies while the game is running. |
+| Reflex queue drain | `[global] reflex_queue_drain`. Applies while the game is running. |
 | Lossless.dll | The `dll` path for Frame Generation. Leave it empty to remove the setting. |
 
 Typed values apply when you press Enter or leave the field. Sliders apply when you release them, and buttons apply at once. Live settings change a running game; restart-only settings apply the next time the game starts. See [Applying changes](#applying-changes).
@@ -94,7 +95,8 @@ Older files can still contain `adaptive`, `adaptive_max_multiplier`, `adaptive_a
 | `performance_mode = true` | Uses the lighter Frame Generation model, which reduces GPU work with potentially more artifacts. |
 | `allow_fp16` (restart, `[global]`) | FP16 for supported Frame Generation models; `false` uses FP32. |
 | `pacing_correction` (live, `[global]`) | On by default. Measures when each output gets the GPU after its present and moves each generated frame onto its own ideal point between its two reals, at every multiplier. Real frames are never moved. `FGVK_REAL_OFFSET_US=auto` turns it on; any other value turns it off. `false` keeps the uncorrected timing. |
-| `real_present_lead` (live, `[global]`) | Off by default and experimental. A real output that follows a generated output presents earlier by the GPU wait its markers measured, at most 2.5 ms, so the GPU spacing stays even. `FGVK_REAL_PRESENT_LEAD=1` or `0` overrides it. |
+| `real_present_lead` (live, `[global]`) | On by default. A real output that follows a generated output presents earlier by the GPU wait its markers measured, at most 2.5 ms, so the GPU spacing stays even. `FGVK_REAL_PRESENT_LEAD=1` or `0` overrides it. |
+| `reflex_queue_drain` (live, `[global]`) | On by default. With Reflex and frame generation active on a capped or uncapped game, each Reflex sleep waits a measured extra time, at most 4 ms, until the game's GPU queue is nearly empty. `FGVK_REFLEX_QUEUE_DRAIN=1` or `0` overrides it. |
 | `dll` (restart) | Lossless.dll path override; leave unset for automatic detection. |
 | `gpu` (restart) | Optional GPU name, vendor/device ID, or PCI bus ID. Multi-GPU Frame Generation is unsupported. |
 
@@ -117,7 +119,7 @@ HDR10/PQ swapchains (A2B10G10R10 or A2R10G10B10) and linear scRGB swapchains (R1
 | Timing | Common settings |
 | --- | --- |
 | Restart | Enabling `frame_generation_provisioned`; `dll`; `allow_fp16`; `gpu`; `ultra_performance`; `swapchain_image_count_compatibility`; launcher compatibility settings |
-| Live | `pacing_correction`; `real_present_lead`; `frame_generation_enabled`; most Frame Generation timing and cap settings; `flow_scale`; `performance_mode`; `low_latency` |
+| Live | `pacing_correction`; `real_present_lead`; `reflex_queue_drain`; `frame_generation_enabled`; most Frame Generation timing and cap settings; `flow_scale`; `performance_mode`; `low_latency` |
 | May wait for resolution change or restart | Changes needing more Frame Generation capacity |
 
 Some live changes rebuild resources and may briefly hitch. See [Runtime transitions](RUNTIME-TRANSITIONS.md) for details.

@@ -1176,6 +1176,17 @@ private:
         }
         realLeadOn = requested && realOffsetMayEnable();
         realPresentLeadOn.store(realLeadOn, std::memory_order_relaxed);
+        // RF1: with the lead in effect, marker correction (no screen samples) holds at zero from the batch's first output.
+        if (realLeadOn && correctionEnabled() && !screenMode.screen()) holdMarkerCorrectionAtZero();
+    }
+    // RF1, worker thread only: the marker correction's offsets and holds go to zero and its pending markers are dropped.
+    // The lead and the marker correction would integrate the same error, so while the lead is in effect the correction
+    // gets no marker samples (observeOutputOffsetLocked). Screen-mode correction is not held.
+    void holdMarkerCorrectionAtZero() noexcept {
+        outputOffsetController.offset = {};
+        outputOffsetController.limited = {};
+        outputOffsetController.forget();
+        realOffsetAutoNs.store(0, std::memory_order_relaxed);
     }
     // RP1, caller holds queue->mutex, right after a worker present was marked: the lead's call record of that present.
     // The marker of the present is read later, by observeOutputOffsetLocked. Nothing is recorded with the lead off.
@@ -1188,11 +1199,14 @@ private:
     }
     // Caller holds queue->mutex, right after a worker present was marked. One drain reads the marker samples. OS1: the
     // screen samples of this context are read first; while they drive the correction, the marker samples are ignored
-    // by it. RP1: the real present lead takes every marker of this context, screen mode or not.
+    // by it. RP1: the real present lead takes every marker of this context, screen mode or not. RF1: with the lead in
+    // effect and no screen samples, the marker correction gets no samples and holds at zero.
     void observeOutputOffsetLocked(const uint64_t context) noexcept {
         const bool correction = correctionEnabled();
         if (!correction && !realLeadOn) return;
         const bool screen = correction && screenRing && observeScreenSamplesLocked(context);
+        const bool markerHeld = correction && realLeadOn && !screen;
+        if (markerHeld) holdMarkerCorrectionAtZero();
         std::array<PresentMarkerSample, 16> samples;
         for (;;) {
             const auto count = queue->readMarkerSamplesLocked(&markerCursor, samples.data(), samples.size());
@@ -1201,7 +1215,7 @@ private:
                 if (sample.context != context) continue;
                 if (realLeadOn && realPresentLead.observe(sample))
                     realPresentLeadNs.store(realPresentLead.lead.count(), std::memory_order_relaxed);
-                if (!correction || screen || sample.source < correctionFirstSource) continue;
+                if (!correction || screen || markerHeld || sample.source < correctionFirstSource) continue;
                 const auto heldBefore = outputOffsetController.held;
                 if (outputOffsetController.observe(sample.generated, sample.source,
                         std::chrono::nanoseconds{sample.gpuNs})) {

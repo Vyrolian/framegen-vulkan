@@ -12,6 +12,7 @@
 #include <optional>
 #include <unordered_map>
 #include <utility>
+#include <vector>
 
 #include <vulkan/vulkan_core.h>
 
@@ -108,6 +109,19 @@ public:
         return this->request && this->request->lowLatencyMode;
     }
 
+    // The G2 condition: low latency mode is requested and frame generation is active on this swapchain (RF1 uses it to
+    // decide when the queue drain runs). Read per sleep under the same lock as the requests.
+    [[nodiscard]] bool lowLatencyFrameGeneration() const {
+        const std::lock_guard lock(this->mutex);
+        return this->request && this->request->lowLatencyMode && this->frameGeneration;
+    }
+
+    // The minimum interval the driver last accepted for this swapchain, 0 when none.
+    [[nodiscard]] uint32_t acceptedIntervalUs() const {
+        const std::lock_guard lock(this->mutex);
+        return this->forwardedIntervalUs;
+    }
+
 private:
     template<typename Send>
     VkResult forwardLocked(const VkSwapchainKHR swapchain, Forward forward, Send& send) {
@@ -161,6 +175,15 @@ public:
         auto& self = instance();
         const std::lock_guard lock(self.mutex);
         self.entries.erase(swapchain);
+    }
+    // Every entry at this moment, for an action over the whole registry (RF1 stops the relays of a destroyed device).
+    [[nodiscard]] static std::vector<std::pair<VkSwapchainKHR, std::shared_ptr<T>>> snapshot() {
+        auto& self = instance();
+        const std::lock_guard lock(self.mutex);
+        std::vector<std::pair<VkSwapchainKHR, std::shared_ptr<T>>> all;
+        all.reserve(self.entries.size());
+        for (const auto& [swapchain, entry] : self.entries) all.emplace_back(swapchain, entry);
+        return all;
     }
 
 private:
