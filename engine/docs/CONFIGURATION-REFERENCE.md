@@ -130,6 +130,8 @@ Set `FGVK_ENV=1` to build one profile from environment variables instead of TOML
 
 `FGVK_PACING_PROFILE_WAYLAND=1` implies CPU capture and adds native Wayland `wp_presentation` feedback on the application's borrowed surface. It records compositor-reported presentation timestamps/discards separately from lower-call timing, without GPU queries, socket reads, commits, target-time changes or an event-reader worker. It uses a private event queue serviced by the application's existing display reader. The [capture guide](COLLECT_DIAGNOSTICS.md#lightweight-minecraft-pacing-capture) describes clock domains, bounded storage, protocol/callback gaps and ambiguous commit association. This process-start observer adds protocol and dispatch overhead; remove it after the capture.
 
+`FGVK_BACKEND_QUEUE_PRIORITY=<value>` sets the priority of fgvk-backend's own device queue, from 0 to 1 (default 1), for an A/B against the game's queue. A value that is not a finite number in [0, 1] logs one line and uses 1; an accepted value is logged at device creation.
+
 ## Experimental early generated copy
 
 `FGVK_EARLY_GENERATED_COPY=1` lets the worker try a lower image and submit the generated frame's final copy before its host readiness wait. It applies to overlapping internal-image 2× batches on native Wayland FIFO and IMMEDIATE. The copy still waits for the staging and image-acquire semaphores. The worker keeps its existing present deadline calculation. If the lower image is unavailable, it retries on the normal path. With `FGVK_PACING_PROFILE=1`, `copy_submit_ns` records when the worker called the final-copy submit on both paths. Compare it with `ready_ns` and with `copy_start_ns` and `copy_end_ns` from the GPU split profile.

@@ -154,7 +154,7 @@ if(BUILD_TESTING)
 
     add_dependencies(fgvk-portable-policy-test-binaries
         fgvk-external-fd-tests fgvk-descriptor-pool-tests fgvk-shader-pipeline-tests
-        fgvk-command-buffer-submit-storage-tests)
+        fgvk-command-buffer-submit-storage-tests fgvk-backend-queue-priority-tests)
 
     add_library(fgvk-launch-preload-fixture SHARED
         "../scripts/test-launch-preload.cpp")

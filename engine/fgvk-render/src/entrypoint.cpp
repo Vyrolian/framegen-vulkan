@@ -22,6 +22,7 @@
 #include "pnext_chain.hpp"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstring>
@@ -1541,6 +1542,39 @@ namespace {
         return result;
     }
 
+    // Driver Reflex frame reports of a managed swapchain, read with the pacing profile on. Every 16th sleep makes two
+    // vkGetLatencyTimingsNV calls (the count, then up to 64 reports); each report with a new present ID is recorded.
+    // Nothing here changes the sleep's result, and no other path calls it.
+    void recordReflexTimings(const VkDevice device, const VkSwapchainKHR swapchain) {
+        if (!present_diagnostics::pacingProfileEnabled()) return;
+        const auto attribution = ReflexPresentAttributionRegistry::find(swapchain);
+        if (!attribution || !attribution->timing().due()) return;
+        static thread_local CachedLower<PFN_vkGetLatencyTimingsNV, VkDevice> lower;
+        const auto query = lower.get(device, [&] {
+            return instance_info->funcs.GetDeviceProcAddr(device, "vkGetLatencyTimingsNV"); });
+        if (!query) return;
+        constexpr uint32_t capacity = 64;
+        const auto started = present_diagnostics::Clock::now();
+        VkGetLatencyMarkerInfoNV info{
+            .sType = VK_STRUCTURE_TYPE_GET_LATENCY_MARKER_INFO_NV, .pNext = nullptr,
+            .timingCount = 0, .pTimings = nullptr,
+        };
+        query(device, swapchain, &info);
+        std::array<VkLatencyTimingsFrameReportNV, capacity> reports{};
+        for (auto& report : reports) report.sType = VK_STRUCTURE_TYPE_LATENCY_TIMINGS_FRAME_REPORT_NV;
+        info.timingCount = std::min(info.timingCount, capacity);
+        info.pTimings = reports.data();
+        query(device, swapchain, &info);
+        const auto queryNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            present_diagnostics::Clock::now() - started).count();
+        const auto returned = std::min(info.timingCount, capacity);
+        for (uint32_t index = 0; index < returned; ++index) {
+            const auto& report = reports[index];
+            if (report.presentID != 0 && attribution->timing().fresh(report.presentID))
+                present_diagnostics::recordReflexTiming(report, queryNs);
+        }
+    }
+
     VkResult VKAPI_CALL myvkLatencySleepNV(VkDevice device, VkSwapchainKHR swapchain,
             const VkLatencySleepInfoNV* info) {
         static thread_local CachedLower<PFN_vkLatencySleepNV, VkDevice> lower;
@@ -1550,6 +1584,7 @@ namespace {
         const auto entered = present_diagnostics::Clock::now();
         const auto result = next(device, swapchain, info);
         present_diagnostics::recordReflexSleep(entered, present_diagnostics::Clock::now(), result);
+        recordReflexTimings(device, swapchain);
         return result;
     }
 

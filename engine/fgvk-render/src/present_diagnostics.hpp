@@ -580,6 +580,8 @@ namespace fgvk::layer::present_diagnostics {
     /// A marker fgvk sent, stamped now (ReflexMarkerSink::record).
     void recordLayerReflexMarker(uint64_t presentId, VkLatencyMarkerNV marker) noexcept;
     void recordReflexSleep(Clock::time_point entered, Clock::time_point exited, VkResult result) noexcept;
+    /// One driver Reflex frame report, with the nanoseconds the query that returned it took.
+    void recordReflexTiming(const VkLatencyTimingsFrameReportNV& report, int64_t queryNs) noexcept;
     void recordReflexMode(VkBool32 lowLatency, VkBool32 boost, uint32_t minimumIntervalUs, VkResult result) noexcept;
 
     /// Bounded CPU observations at the application's present entrypoints. These

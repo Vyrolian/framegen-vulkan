@@ -2,6 +2,7 @@
 
 #include "fgvk-common/vulkan/vulkan.hpp"
 #include "fgvk-common/vulkan/device_features.hpp"
+#include "fgvk-common/vulkan/queue_priority.hpp"
 #include "fgvk-common/helpers/errors.hpp"
 #include "fgvk-common/helpers/pointers.hpp"
 
@@ -10,6 +11,7 @@
 #include <bitset>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <exception>
 #include <filesystem>
 #include <fstream>
@@ -265,7 +267,13 @@ namespace {
     ls::owned_ptr<VkDevice> createLogicalDevice(const VulkanInstanceFuncs& fi,
             VkPhysicalDevice physdev, uint32_t cfi, bool fp16,
             const OptionalDeviceFeatures optionalFeatures) {
-        const float queuePriority{1.0F}; // highest priority
+        // FGVK_BACKEND_QUEUE_PRIORITY is an A/B switch for the backend queue's priority. Unset or rejected means 1.
+        const auto backendQueue = parseBackendQueuePriority(std::getenv("FGVK_BACKEND_QUEUE_PRIORITY"));
+        if (backendQueue.accepted)
+            std::cerr << "framegen-vulkan: backend queue priority " << backendQueue.priority << '\n';
+        else if (backendQueue.set)
+            std::cerr << "framegen-vulkan: backend queue priority invalid FGVK_BACKEND_QUEUE_PRIORITY, using 1\n";
+        const float queuePriority{backendQueue.priority};
         const auto supportedFeatures = queryFeatures(fi, physdev);
         const VkPhysicalDeviceFeatures requestedFeatures{
             .shaderStorageImageExtendedFormats =

@@ -11,6 +11,29 @@
 
 namespace fgvk::layer {
 
+// Which driver Reflex timing queries run and which reported frames are new. Every 16th sleep is due for a query;
+// a report is fresh only when its present ID is above every ID returned before.
+class ReflexTimingCursor {
+public:
+    [[nodiscard]] bool due() {
+        const std::lock_guard lock(this->mutex);
+        ++this->calls;
+        return this->calls % 16 == 0;
+    }
+
+    [[nodiscard]] bool fresh(const uint64_t presentId) {
+        const std::lock_guard lock(this->mutex);
+        if (presentId <= this->maximum) return false;
+        this->maximum = presentId;
+        return true;
+    }
+
+private:
+    std::mutex mutex;
+    uint64_t calls{};
+    uint64_t maximum{};
+};
+
 // Reflex frame attribution of a managed swapchain's lower presents (VK_NV_low_latency2, wsi.adoc "Frame
 // Attribution"). The driver attributes each vkQueuePresentKHR to an open out-of-band present pair, else to the
 // most recent PRESENT_START not yet mapped to a present, else to no frame. fgvk owns the out-of-band pair of
@@ -47,6 +70,9 @@ public:
         return 0;
     }
 
+    // The driver timing query schedule and the frames it has reported (pacing profile only).
+    ReflexTimingCursor& timing() { return this->timingCursor; }
+
 private:
     std::mutex mutex;
     // The open out-of-band present ID, or 0 when none is open.
@@ -54,6 +80,7 @@ private:
     // The most recent PRESENT_START ID, and whether a present has taken it.
     uint64_t presentStartId{};
     bool presentStartMapped{true};
+    ReflexTimingCursor timingCursor;
 };
 
 using ReflexPresentAttributionRegistry = ReflexSwapchainRegistry<ReflexPresentAttribution>;

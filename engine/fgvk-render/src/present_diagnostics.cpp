@@ -770,6 +770,19 @@ void recordReflexSleep(const Clock::time_point entered, const Clock::time_point 
         trace_recorder::currentThreadId(), entered, exited, result});
 }
 
+void recordReflexTiming(const VkLatencyTimingsFrameReportNV& report, const int64_t queryNs) noexcept {
+    if (!pacingProfileEnabled()) return;
+    present_records::enqueue(trace_recorder::RecordKind::ReflexTiming, present_records::ReflexTimingPayload{
+        .thread = trace_recorder::currentThreadId(), .queryNs = queryNs,
+        .nowNs = trace_recorder::nanoseconds(Clock::now()), .presentId = report.presentID,
+        .inputUs = report.inputSampleTimeUs, .simStartUs = report.simStartTimeUs, .simEndUs = report.simEndTimeUs,
+        .submitStartUs = report.renderSubmitStartTimeUs, .submitEndUs = report.renderSubmitEndTimeUs,
+        .presentStartUs = report.presentStartTimeUs, .presentEndUs = report.presentEndTimeUs,
+        .driverStartUs = report.driverStartTimeUs, .driverEndUs = report.driverEndTimeUs,
+        .osQueueStartUs = report.osRenderQueueStartTimeUs, .osQueueEndUs = report.osRenderQueueEndTimeUs,
+        .gpuStartUs = report.gpuRenderStartTimeUs, .gpuEndUs = report.gpuRenderEndTimeUs});
+}
+
 void recordReflexMode(const VkBool32 lowLatency, const VkBool32 boost,
         const uint32_t minimumIntervalUs, const VkResult result) noexcept {
     if (!pacingProfileEnabled()) return;

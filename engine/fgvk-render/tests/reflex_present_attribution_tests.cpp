@@ -169,6 +169,22 @@ void attributedPresentEndsWhenPresentThrows() {
     };
     expect(events == expected, "the out-of-band end was not sent after a throwing present");
 }
+
+// The timing query is due on every 16th sleep: calls 1 to 15 are not, 16 is, 17 to 31 are not, and 32 is.
+void timingQueryIsDueEverySixteenthCall() {
+    ReflexTimingCursor cursor;
+    for (uint32_t call = 1; call <= 32; ++call)
+        expect(cursor.due() == (call == 16 || call == 32), "the timing query was not due on every 16th sleep");
+}
+
+// A report is fresh once; an equal or older present ID is not fresh, and a newer one is.
+void timingReportsAreFreshOnlyWhenNewer() {
+    ReflexTimingCursor cursor;
+    expect(cursor.fresh(5), "the first report was not fresh");
+    expect(!cursor.fresh(5), "a repeated report was fresh");
+    expect(!cursor.fresh(3), "an older report was fresh");
+    expect(cursor.fresh(6), "a newer report was not fresh");
+}
 }
 
 int main() {
@@ -181,5 +197,7 @@ int main() {
     attributedPresentBracketsThePresent();
     attributedPresentWithoutAMarkerIsPlain();
     attributedPresentEndsWhenPresentThrows();
+    timingQueryIsDueEverySixteenthCall();
+    timingReportsAreFreshOnlyWhenNewer();
     std::cout << "reflex present attribution tests passed\n";
 }

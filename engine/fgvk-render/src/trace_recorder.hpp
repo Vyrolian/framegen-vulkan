@@ -50,6 +50,7 @@ enum class RecordKind : uint16_t {
     ReflexMarker,
     ReflexSleep,
     ReflexMode,
+    ReflexTiming,
     WaylandSample,
     WaylandGap,
     Count

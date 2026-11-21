@@ -264,6 +264,28 @@ struct ReflexModePayload {
     VkResult result{};
 };
 
+// One driver Reflex frame report. The 14 report times are the driver's microsecond clock; nowNs is the steady clock at
+// record time, the same base as the marker records' ns.
+struct ReflexTimingPayload {
+    uint32_t thread{};
+    int64_t queryNs{};
+    int64_t nowNs{};
+    uint64_t presentId{};
+    uint64_t inputUs{};
+    uint64_t simStartUs{};
+    uint64_t simEndUs{};
+    uint64_t submitStartUs{};
+    uint64_t submitEndUs{};
+    uint64_t presentStartUs{};
+    uint64_t presentEndUs{};
+    uint64_t driverStartUs{};
+    uint64_t driverEndUs{};
+    uint64_t osQueueStartUs{};
+    uint64_t osQueueEndUs{};
+    uint64_t gpuStartUs{};
+    uint64_t gpuEndUs{};
+};
+
 struct WaylandSamplePayload {
     uint64_t token{};
     present_diagnostics::WaylandSample sample{};

@@ -104,6 +104,12 @@ if(BUILD_TESTING)
         "tests/timestamp_query_pool_tests.cpp")
     target_link_libraries(fgvk-timestamp-query-pool-tests PRIVATE fgvk-common)
     add_test(NAME timestamp-elapsed-microseconds COMMAND fgvk-timestamp-query-pool-tests)
+
+    add_executable(fgvk-backend-queue-priority-tests
+        "tests/backend_queue_priority_tests.cpp")
+    target_link_libraries(fgvk-backend-queue-priority-tests PRIVATE fgvk-common)
+    add_test(NAME backend-queue-priority COMMAND fgvk-backend-queue-priority-tests)
+    set_tests_properties(backend-queue-priority PROPERTIES LABELS "portable-policy")
 endif()
 
 if(FGVK_INSTALL_DEVELOP)

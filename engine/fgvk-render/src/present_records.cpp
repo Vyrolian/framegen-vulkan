@@ -617,6 +617,20 @@ void formatReflexMode(const ReflexModePayload& payload, std::ostream& line) {
          << " min_interval_us=" << payload.minimumIntervalUs << " result=" << payload.result << '\n';
 }
 
+void formatReflexTiming(const ReflexTimingPayload& payload, std::ostream& line) {
+    line << "framegen-vulkan: present diagnostics: operation=pacing-profile-reflex-timing version=1"
+         << " pid=" << getpid() << " tid=" << payload.thread
+         << " query_ns=" << payload.queryNs << " now_ns=" << payload.nowNs
+         << " present_id=" << payload.presentId
+         << " input_us=" << payload.inputUs << " sim_start_us=" << payload.simStartUs
+         << " sim_end_us=" << payload.simEndUs << " submit_start_us=" << payload.submitStartUs
+         << " submit_end_us=" << payload.submitEndUs << " present_start_us=" << payload.presentStartUs
+         << " present_end_us=" << payload.presentEndUs << " driver_start_us=" << payload.driverStartUs
+         << " driver_end_us=" << payload.driverEndUs << " os_queue_start_us=" << payload.osQueueStartUs
+         << " os_queue_end_us=" << payload.osQueueEndUs << " gpu_start_us=" << payload.gpuStartUs
+         << " gpu_end_us=" << payload.gpuEndUs << '\n';
+}
+
 void formatWaylandSample(const WaylandSamplePayload& payload, std::ostream& out) {
     constexpr std::array<const char*, 6> names{"request", "call", "presented", "discarded", "unavailable", "abandoned"};
     const auto& s = payload.sample;
@@ -1068,6 +1082,13 @@ void handleRecord(Recorder& s, const trace_recorder::TraceRecord& record, const 
         ReflexModePayload payload{};
         load(payload);
         emit([&](std::ostream& line) { formatReflexMode(payload, line); });
+        break;
+    }
+    case RecordKind::ReflexTiming: {
+        ReflexTimingPayload payload{};
+        load(payload);
+        noteThread(s, payload.thread);
+        emit([&](std::ostream& line) { formatReflexTiming(payload, line); });
         break;
     }
     case RecordKind::WaylandSample: {
