@@ -106,6 +106,8 @@ struct PacingOutputGpuPayload {
     int64_t copyEndNs{};
     int64_t stagingStartNs{};
     int64_t stagingEndNs{};
+    // FI2: the real-copy record's queue: true when the copy was submitted on the game queue at the call.
+    bool gameQueue{};
 };
 
 struct PacingPresentMarkerPayload {

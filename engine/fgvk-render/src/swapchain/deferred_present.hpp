@@ -13,6 +13,7 @@
 #include "swapchain/tick_lock.hpp"
 #include "swapchain/transfer_queue.hpp"
 #include "swapchain/create_policy.hpp"
+#include "swapchain/inline_generation.hpp"
 #include "swapchain/retirement.hpp"
 #include "present_diagnostics.hpp"
 
@@ -72,6 +73,7 @@ struct SubmitRecord {
 // D7d: the lower-image call a LowerRecord or an in-flight call describes. None (0) is no call.
 // Acquires are the lower acquire of a real, of a generated output, and of a synchronous output
 // (which runs without queue->mutex). Presents are the lower present of each of the three.
+// FI2: an acquire of a real made at its present call on the game queue (see InternalRealCopy::callPrepare).
 inline constexpr uint8_t lowerOpNone = 0;
 inline constexpr uint8_t lowerOpAcquireReal = 1;
 inline constexpr uint8_t lowerOpAcquireGenerated = 2;
@@ -79,6 +81,7 @@ inline constexpr uint8_t lowerOpAcquireSync = 3;
 inline constexpr uint8_t lowerOpPresentReal = 4;
 inline constexpr uint8_t lowerOpPresentGenerated = 5;
 inline constexpr uint8_t lowerOpPresentSync = 6;
+inline constexpr uint8_t lowerOpAcquireCall = 7;
 // D7d: one finished lower acquire or present, with the private queue's tail value at its record.
 // A zero startNs marks an entry that was never written. Times are steady-clock nanoseconds.
 struct LowerRecord {
@@ -330,6 +333,8 @@ public:
         Clock::time_point arrival{};
         // Diagnostics only (F9b): the real was lower-prepared before its deadline.
         bool internalPrepared{};
+        // FI2: the real was copied at its present call on the game queue. Such a real is not a worker copy.
+        bool callPrepared{};
         bool generatedPrepared{};
         // Diagnostics only (D6, pacing profile): the longest worker call made under
         // queue->mutex for this output, by kind. Zero without the profile.
@@ -509,6 +514,14 @@ public:
     //   submit: copies the application image into the lower image, waiting
     //     continuation, and returns the semaphore the presentation waits.
     //   abandon: frees the application image without presenting, after continuation.
+    // FI2: callPrepare copies the image on the game queue (callQueue, of family callFamily) inside the present call. It is
+    // tried once, while admission holds the job back, and only when callBudget leaves room for one more call-held
+    // output (inlineCallHoldFits). It runs with queue->mutex held by a try-lock, so it never waits for the worker. It
+    // returns VK_SUCCESS with the lower index and presentWait when the copy was submitted. *consumed is set when the
+    // application image is taken, which is also a submit error that freed it. Any other result leaves the image for the
+    // worker, and admission then queues the job as usual. A consumed job is queued in every case, so the image is never
+    // handed to the worker and to the call. The outputs prepared, preparedLower, preparedWait and preparedError are set
+    // by admission. A preparedError below zero settles the job as an Error skip, and nothing is presented.
     struct InternalRealCopy {
         std::shared_ptr<void> owner;
         VkResult (*tryAcquire)(void* owner, uint32_t* lowerIndex) = nullptr;
@@ -517,6 +530,15 @@ public:
         VkResult (*abandon)(void* owner, VkQueue queue, uint32_t applicationIndex,
             VkSemaphore continuation) = nullptr;
         uint32_t applicationIndex{};
+        VkResult (*callPrepare)(void* owner, VkQueue callQueue, uint32_t callFamily, uint32_t applicationIndex,
+            VkSemaphore continuation, uint32_t* lowerIndex, VkSemaphore* presentWait, bool* consumed) = nullptr;
+        VkQueue callQueue{};
+        uint32_t callFamily{};
+        uint32_t callBudget{};
+        bool prepared{};
+        uint32_t preparedLower{};
+        VkSemaphore preparedWait{};
+        VkResult preparedError{VK_SUCCESS};
     };
 
     // Keep absolute slots through ordinary wake lateness; rephase a start
@@ -729,16 +751,33 @@ public:
         }
         return true;
     }
+    // FI2, caller holds mutex: the pending outputs that hold a lower image taken at the present call, a direct generated
+    // output or a call-prepared real. Each counts from its admission until the worker has presented or settled it.
+    [[nodiscard]] size_t callHeldLocked() const {
+        size_t held = 0;
+        for (size_t i = 0; i < count; ++i) {
+            const auto& batch = batches[slotAt(i)];
+            for (size_t j = batch.consumed; j < batch.produced; ++j)
+                held += batch.jobs[j].directGenerated || batch.jobs[j].internal.prepared ? 1 : 0;
+        }
+        return held;
+    }
+    [[nodiscard]] size_t callHeldOutputs() const {
+        const std::lock_guard lock(mutex);
+        return callHeldLocked();
+    }
     // The real output of an internal application image. Admission matches
     // enqueue. The worker acquires a lower image, copies the application image
     // into it and presents it: the copy is prepared as soon as the worker takes
     // the job when a lower image is free (see prepareInternalReal), otherwise at
     // the deadline (see presentInternalReal). info.pWaitSemaphores[0] is the
     // continuation that copy waits.
+    // FI2: callPrepared, when given, is set to whether the copy was made at the call (see InternalRealCopy::callPrepare).
     bool enqueueInternalReal(const VkPresentInfoKHR& info, Clock::time_point deadline,
-            const InternalRealCopy& copy, OutputIdentity identity = {}, uint64_t reflexPresentId = 0) {
+            const InternalRealCopy& copy, OutputIdentity identity = {}, uint64_t reflexPresentId = 0,
+            bool* callPrepared = nullptr) {
         return copy.tryAcquire && copy.submit && copy.abandon && copy.owner &&
-            admit(info, deadline, false, &copy, identity, false, reflexPresentId);
+            admit(info, deadline, false, &copy, identity, false, reflexPresentId, callPrepared);
     }
     // A generated output whose lower acquire/copy belongs to the worker. Only
     // the newest open batch admits it, so the real output follows in that batch.
@@ -1052,7 +1091,8 @@ private:
     // present-ID registration and batch rules are the same for both.
     bool admit(const VkPresentInfoKHR& info, Clock::time_point deadline, bool generated,
             const InternalRealCopy* internal, OutputIdentity identity = {}, bool directGenerated = false,
-            uint64_t reflexPresentId = 0) {
+            uint64_t reflexPresentId = 0, bool* callPrepared = nullptr) {
+        if (callPrepared) *callPrepared = false;
         if (info.swapchainCount != 1 || info.waitSemaphoreCount != 1 || info.pResults ||
                 !info.pSwapchains || !info.pImageIndices || !info.pWaitSemaphores)
             return false;
@@ -1086,6 +1126,28 @@ private:
             job.phase = identity.phase;
             job.directGenerated = directGenerated;
             job.reflexPresentId = reflexPresentId;
+            // FI2: the copy at the present call. Every admission check above has passed, so the job is queued below
+            // whatever the copy returns, and a consumed image is never left for the worker. The try-lock never waits:
+            // a busy queue leaves the job to the worker, as before.
+            if (internal && internal->callPrepare && internal->callQueue && internal->owner &&
+                    inlineCallHoldFits(callHeldLocked(), internal->callBudget)) {
+                std::unique_lock queueLock(queue->mutex, std::try_to_lock);
+                if (queueLock.owns_lock()) {
+                    uint32_t lowerIndex{};
+                    VkSemaphore presentWait{};
+                    bool consumed{};
+                    const VkResult result = internal->callPrepare(internal->owner.get(), internal->callQueue,
+                        internal->callFamily, internal->applicationIndex, info.pWaitSemaphores[0],
+                        &lowerIndex, &presentWait, &consumed);
+                    if (consumed) {
+                        job.internal.prepared = true;
+                        job.internal.preparedLower = lowerIndex;
+                        job.internal.preparedWait = presentWait;
+                        job.internal.preparedError = result;
+                    }
+                    if (callPrepared) *callPrepared = consumed;
+                }
+            }
             batch.jobs[batch.produced++] = std::move(job);
         }
         changed.notify_all();
@@ -1507,6 +1569,8 @@ private:
     // latency is added: the present still happens at its deadline.
     InternalPreparation prepareInternalReal(const Job& job, const bool profile) {
         const InternalRealCopy& copy = job.internal;
+        // FI2: a call-prepared real is never acquired or submitted again (see run()).
+        assert(!copy.prepared);
         void* const owner = copy.owner.get();
         InternalPreparation prep;
         const std::lock_guard queueLock(queue->mutex);
@@ -1646,6 +1710,8 @@ private:
     void presentInternalReal(Job& job, const Readiness& ready, const void* chain, Completion& result,
             uint64_t* const onScreenId, const Clock::time_point unmoved) {
         const InternalRealCopy& copy = job.internal;
+        // FI2: a call-prepared real is presented from its preparation, never from a worker copy (see run()).
+        assert(!copy.prepared);
         void* const owner = copy.owner.get();
         result.workerCopy = true;
         uint32_t lowerIndex{};
@@ -1828,8 +1894,20 @@ private:
             lock.unlock();
             // A preparation holds at most one lower image for the current output.
             InternalPreparation prep{};
+            // FI2: a real copied at its present call was prepared at admission. Its preparation is the call's outcome:
+            // a lower image and wait to present, or a settled error. The worker never acquires or submits for it, and it
+            // does not count toward heldLowerImages.
+            if (current.internalActive && current.internal.prepared) {
+                prep.settled = current.internal.preparedError < 0;
+                prep.prepared = !prep.settled;
+                prep.error = current.internal.preparedError;
+                prep.lowerIndex = current.internal.preparedLower;
+                prep.presentWait = current.internal.preparedWait;
+            }
             const bool earlyGenerated = current.copyActive && current.copy.internalImages && ready.overlap;
             const auto prepare = [&] {
+                // FI2: a call-prepared real already holds its preparation and never counts as a worker hold.
+                if (current.internalActive && current.internal.prepared) return;
                 {
                     const std::lock_guard stopLock(mutex);
                     if (stopping) return;
@@ -2066,6 +2144,7 @@ private:
             result.backendFrame = current.backendFrame;
             result.phase = current.phase;
             result.workerCopy = job.copyActive || job.directGenerated;
+            result.callPrepared = job.internalActive && job.internal.prepared;
             result.generatedPrepared = job.directGenerated;
             result.outputQueue = queue->queue;
             result.lateReadiness = first && lateReadiness;
@@ -2074,8 +2153,9 @@ private:
             // never sleeps under queue->mutex, and every path below signals the
             // continuation and the render-slot fence.
             if (job.internalActive && prep.settled) {
-                // F9b: the preparation ended the job. Nothing was waited or presented.
-                result.workerCopy = true;
+                // F9b: the preparation ended the job. Nothing was waited or presented. FI2: a call-prepared
+                // real's copy was made at its present call, so it is not a worker copy.
+                result.workerCopy = !result.callPrepared;
                 result.imageIndex = prep.lowerIndex;
                 result.skipped = true;
                 result.skipReason = SkipReason::Error;
@@ -2084,8 +2164,9 @@ private:
                 result.lockAcquireNs = prep.acquireNs;
                 result.lockSubmitNs = prep.submitNs;
             } else if (job.internalActive && prep.prepared) {
-                // The lower image was acquired and copied before the deadline: only the present remains.
-                result.workerCopy = true;
+                // The lower image was acquired and copied before the deadline: only the present remains. FI2: a
+                // call-prepared real was copied at its present call, so it is not a worker copy.
+                result.workerCopy = !result.callPrepared;
                 result.internalPrepared = true;
                 result.lockAcquireNs = prep.acquireNs;
                 result.lockSubmitNs = prep.submitNs;

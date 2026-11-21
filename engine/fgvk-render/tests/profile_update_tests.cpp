@@ -30,9 +30,29 @@ namespace {
             .pacing = ls::Pacing::None,
         };
     }
+
+    // FI2 rule 3: with the inline switch the floor adds the four call-side images, still capped at the maximum.
+    void inlineCallImageFloor() {
+        expect(lowerImageCountWithLayerFloor(3, 4, 0) == 6,
+            "the layer floor must be the surface minimum plus the two worker holds");
+        expect(lowerImageCountWithLayerFloor(3, 4, 0, false) == 6,
+            "the switch-off floor must not add the call images");
+        expect(lowerImageCountWithLayerFloor(3, 4, 0, true) == 10,
+            "the inline floor must add the four call images");
+        expect(lowerImageCountWithLayerFloor(12, 4, 0, true) == 12,
+            "the inline floor must never shrink the application-derived count");
+        expect(lowerImageCountWithLayerFloor(3, 4, 8, true) == 8,
+            "the inline floor must still be capped at the maximum image count");
+        expect(lowerImageCountWithLayerFloor(3, 4, 16, true) == 10,
+            "a maximum above the inline floor must not raise it");
+        expect(lowerImageCountWithLayerFloor(5, 0, 0, true) == 5,
+            "an unknown surface minimum must leave the count unchanged");
+        expect(fgvk::layer::inlineCallLowerImageCap == 4, "the inline floor must add four images");
+    }
 }
 
 int main() {
+    inlineCallImageFloor();
     auto cappedFixedPacing = fixedProfile();
     cappedFixedPacing.frame_generation_provisioned = true;
     for (const int multiplier : {2, 3, 4, 5}) {

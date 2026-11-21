@@ -5,6 +5,7 @@
 #include "swapchain/present/internal.hpp"
 #include "swapchain/retirement.hpp"
 #include "swapchain/create_policy.hpp"
+#include "swapchain/inline_generation.hpp"
 #include "fgvk-common/helpers/errors.hpp"
 #include "fgvk-common/vulkan/command_buffer.hpp"
 #include "fgvk-common/vulkan/image.hpp"
@@ -257,15 +258,27 @@ bool Swapchain::enqueueInternalRealPresent(const vk::Vulkan& vk,
     this->noteInternalCopyProfile(vk, image);
     if (image.owner->ensureCopies(vk, image.applicationIndex) != VK_SUCCESS)
         return false;
-    const DeferredPresent::InternalRealCopy copy{
+    DeferredPresent::InternalRealCopy copy{
         .owner = image.keepAlive,
         .tryAcquire = &internalRealTryAcquire,
         .submit = &internalRealSubmit,
         .abandon = &internalRealAbandon,
         .applicationIndex = image.applicationIndex,
     };
-    if (!this->deferredPresent->enqueueInternalReal(presentInfo, deadline, copy, {}, this->reflexPresentId))
+    // FI2: the copy at this call, only for a real whose batch's generated output went to the game queue at the call.
+    // Admission decides whether it runs (lock, budget, release order, family); a refusal leaves the worker copy.
+    if (this->inlineRealCall.eligible) {
+        copy.callPrepare = &internalRealCallPrepare;
+        copy.callQueue = vk.queue();
+        copy.callFamily = vk.queueFamilyIndex();
+        copy.callBudget = inlineCallLowerBudget(this->info.images.size(), this->info.surfaceMinImageCount,
+            layerHeldLowerImages);
+    }
+    bool callPrepared = false;
+    if (!this->deferredPresent->enqueueInternalReal(presentInfo, deadline, copy, {}, this->reflexPresentId,
+            &callPrepared))
         return false;
+    this->inlineRealCall.prepared = callPrepared;
     image.handedOff = true;
     return true;
 }

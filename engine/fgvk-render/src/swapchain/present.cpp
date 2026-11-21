@@ -183,6 +183,8 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
     this->internalPresent = internal;
     // X3: no application chain has reached a lower present yet in this call.
     this->applicationChainHandedOff = false;
+    // FI2: no real output is eligible for a copy at the call until presentGeneratedFrames sets it.
+    this->inlineRealCall = {};
     // RA1: this application present's Reflex ID, taken once. The lower marker sink is filled at the first present.
     if (!this->reflexAttribution) {
         this->reflexAttribution = ReflexPresentAttributionRegistry::get(swapchain);

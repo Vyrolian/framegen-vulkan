@@ -595,6 +595,14 @@ namespace fgvk::layer {
         // X3: set when the present's application image reaches a lower present or the deferred worker.
         // present() clears it on entry.
         bool applicationChainHandedOff{false};
+        // FI2: set only around the final real present of presentGeneratedFrames, when that batch's generated output went
+        // to the game queue at the call. enqueueInternalRealPresent reads eligible and sets prepared when the real was
+        // copied at the call. present() clears both on entry.
+        struct InlineRealCall {
+            bool eligible{false};
+            bool prepared{false};
+        };
+        InlineRealCall inlineRealCall{};
 
         SwapchainColorPipeline colorPipeline;
         bool fp16Requested{true};

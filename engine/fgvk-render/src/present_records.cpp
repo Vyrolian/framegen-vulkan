@@ -447,7 +447,8 @@ void formatPacingOutputGpu(const PacingOutputGpuPayload& payload, std::ostream& 
 
 void formatPacingRealCopyGpu(const PacingOutputGpuPayload& payload, std::ostream& line) {
     formatTimedCopy("pacing-profile-real-copy-gpu", payload, line);
-    line << '\n';
+    // FI2: game when the copy was submitted on the application's queue at the present call, private on the worker.
+    line << " queue=" << (payload.gameQueue ? "game" : "private") << '\n';
 }
 
 void formatPacingPresentMarkerGpu(const PacingPresentMarkerPayload& payload, std::ostream& line) {
@@ -851,6 +852,9 @@ void formatPacingWindowBody(const PacingWindowPayload& payload, const PacingProf
          << (vk::parseBackendOverlap(std::getenv("FGVK_BACKEND_OVERLAP")) ? 1 : 0);
     // FI1: 1 when this context's generated frames are scheduled on the application's device (FGVK_FG_INLINE=1).
     line << " fg_inline=" << (window.inlineAttached ? 1 : 0);
+    // FI2: outputs of attached, eligible batches copied at the call (generated, real), and worker fallbacks.
+    line << " inline_call_gen=" << window.inlineCallGenerated << " inline_call_real=" << window.inlineCallReal
+         << " inline_call_fallback=" << window.inlineCallFallback;
     line << '\n';
     for (size_t i = 0; i < window.outputTraceCount; ++i) {
         const auto& sample = window.outputTrace[i];

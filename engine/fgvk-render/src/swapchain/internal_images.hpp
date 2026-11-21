@@ -423,6 +423,16 @@ namespace fgvk::layer {
         [[nodiscard]] VkResult workerAbandon(VkQueue queue, uint32_t applicationIndex,
             VkSemaphore continuation);
 
+        /// FI2: the copy of a real made at its present call on the game queue (callQueue, of family callFamily).
+        /// Caller holds queue->mutex. It refuses, leaving the image for the worker, when the copy was recorded for
+        /// another family, when the release order needs a wait the call cannot make (rule 7), or when no lower image
+        /// is free. Otherwise it takes the lower image and submits the copy, waiting continuation, exactly as the worker
+        /// does. *consumed is set once the application image is taken. That is at the submit, which frees it on success
+        /// and on failure.
+        [[nodiscard]] VkResult callPrepare(VkQueue callQueue, uint32_t callFamily,
+            uint32_t applicationIndex, VkSemaphore continuation, uint32_t* lowerIndex,
+            VkSemaphore* presentWait, bool* consumed);
+
         /// T3b, diagnostics only (pacing profile with GPU split): time each copy on the GPU.
         /// Game thread, before ensureCopies; idempotent. Copies recorded earlier stay untimed.
         void enableCopyTimestamps(const vk::Vulkan& vk, PFN_vkGetCalibratedTimestampsKHR calibrate,
@@ -440,6 +450,9 @@ namespace fgvk::layer {
     private:
         struct Impl;
         explicit InternalSwapchainImages(std::unique_ptr<Impl> state);
+        // FI2: the lower acquire of workerTryAcquire, noted under `op` (lowerOpAcquireReal, or lowerOpAcquireCall for the
+        // call path). Caller holds queue->mutex.
+        [[nodiscard]] VkResult tryAcquireLowerLocked(uint8_t op, uint32_t* lowerIndex);
         // Caller holds queue->mutex. Copies application image p into lower image
         // lower after the waits and the lower-acquire slot. On success it signals
         // copied[lower] and the release timeline and frees p. On failure it records
@@ -468,6 +481,9 @@ namespace fgvk::layer {
         VkSemaphore* presentWait);
     [[nodiscard]] VkResult internalRealAbandon(void* owner, VkQueue queue,
         uint32_t applicationIndex, VkSemaphore continuation);
+    [[nodiscard]] VkResult internalRealCallPrepare(void* owner, VkQueue callQueue, uint32_t callFamily,
+        uint32_t applicationIndex, VkSemaphore continuation, uint32_t* lowerIndex,
+        VkSemaphore* presentWait, bool* consumed);
 
     /// Device support queries for the private image format, usage, create flags and
     /// view formats. The flags and list must match what the private images are created with.

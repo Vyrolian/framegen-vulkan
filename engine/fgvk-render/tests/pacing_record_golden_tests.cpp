@@ -103,7 +103,7 @@ void profileScenario() {
     logPacingOutputGpu(17, 1, true, 10003000, 10004500, 10001000, 10002000);
     logPacingOutputGpu(17, 2, false, 10005000, 10006000, 10003000, 10004000);
     // T3b: the real copy's timestamps share the format under their own operation.
-    logPacingRealCopyGpu(17, 3, true, 10007000, 10007100);
+    logPacingRealCopyGpu(17, 3, true, 10007000, 10007100, false);
     // T4: the private queue marker after a lower present; unavailable keeps no times.
     logPacingPresentMarkerGpu(17, 4, 9, true, true, 10008000, 10008050);
     logPacingPresentMarkerGpu(17, 5, 10, false, false, 10009000, 10009050);

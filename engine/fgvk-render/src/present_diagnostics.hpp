@@ -277,6 +277,9 @@ namespace fgvk::layer::present_diagnostics {
             // QH2: the context's generated copies run on the transfer queue (persistent, like internalImages).
             bool transferCopy{};
             bool inlineAttached{};
+            // FI2: outputs of attached, eligible batches copied at the call (generated, real), and outputs of those batches
+            // that fell back to the worker copy.
+            size_t inlineCallGenerated{}, inlineCallReal{}, inlineCallFallback{};
             size_t fifoCallerTimingSources{};
             std::array<OutputSample, outputTraceCapacity> outputTrace{};
             size_t outputTraceCount{}, outputTraceDropped{};
@@ -464,6 +467,10 @@ namespace fgvk::layer::present_diagnostics {
             if (prepared) ++window.generatedPrepared;
             else ++window.generatedAtDeadline;
         }
+        // FI2: one output of an attached, eligible batch: copied at the call (generated or real), or a worker fallback.
+        void inlineCallGeneratedActive() { ++window.inlineCallGenerated; }
+        void inlineCallRealActive() { ++window.inlineCallReal; }
+        void inlineCallFallbackActive() { ++window.inlineCallFallback; }
         // Persistent for this swapchain: set once a present uses F5 internal images.
         void internalImagesActive() { internalImages = true; }
         // QH2: persistent for this swapchain: set once a generated copy is submitted on the transfer queue.
@@ -538,7 +545,7 @@ namespace fgvk::layer::present_diagnostics {
     /// T3b: the same split for the private -> lower copy of a real output (internal images),
     /// FG on or off. With FG off its start follows the game's present waits.
     void logPacingRealCopyGpu(uint64_t context, uint64_t source, bool available,
-        int64_t copyStartNs, int64_t copyEndNs) noexcept;
+        int64_t copyStartNs, int64_t copyEndNs, bool gameQueue) noexcept;
     /// T4: the private queue's GPU marker submitted right after a lower present, joined by its
     /// feedback id. Unavailable markers keep no times.
     void logPacingPresentMarkerGpu(uint64_t context, uint64_t source, uint64_t feedback, bool generated,

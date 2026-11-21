@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 
 #include "swapchain/swapchain.hpp"
+#include "swapchain/inline_generation.hpp"
 #include "swapchain/present/internal.hpp"
 #include "swapchain/retirement.hpp"
 #include "fgvk-common/helpers/errors.hpp"
@@ -108,9 +109,20 @@ VkResult Swapchain::presentGeneratedFrames(
     const bool nativeImmediate2x = workerCopies && this->internalPresent &&
         plan.scheduledGeneratedFrames.size() == 1 && this->info.surfaceOrigin == SurfaceOrigin::Wayland &&
         this->currentPresentMode == VK_PRESENT_MODE_IMMEDIATE_KHR;
-    const bool tryDirect = directCopies && !transferCopies && nativeImmediate2x && this->info.surfaceMinImageCount &&
+    // FI2 rule 1: an attached backend takes the direct copy without FGVK_DIRECT_GENERATED_COPY. Rule 2: its call-held
+    // budget replaces canPreacquireGenerated(), and is checked per output below.
+    const bool inlineCalls = this->attachedGeneration();
+    const uint32_t callBudget = inlineCalls
+        ? inlineCallLowerBudget(this->info.images.size(), this->info.surfaceMinImageCount, layerHeldLowerImages)
+        : 0;
+    const bool tryDirect = (directCopies || inlineCalls) && !transferCopies && nativeImmediate2x &&
+        this->info.surfaceMinImageCount &&
         this->info.images.size() >= static_cast<size_t>(this->info.surfaceMinImageCount) + layerHeldLowerImages &&
-        this->deferredPresent->canPreacquireGenerated();
+        (inlineCalls || this->deferredPresent->canPreacquireGenerated());
+    // FI2: an eligible attached batch. Each of its outputs is counted as copied at the call or as a fallback, and its real
+    // is eligible for the call only when every output went direct (rule 5).
+    const bool inlineBatch = tryDirect && inlineCalls;
+    bool inlineAllDirect = inlineBatch;
     const bool privateStaging = sameQueueCopies && !transferCopies && nativeImmediate2x &&
         this->info.deferredPresentQueue->tail != VK_NULL_HANDLE &&
         // Earlier outputs still need the private queue ahead of this backend wait.
@@ -124,7 +136,8 @@ VkResult Swapchain::presentGeneratedFrames(
         auto& pass = this->currentRenderSlot().passes.at(i);
         uint32_t acquiredImageIndex{};
         VkResult result{};
-        const bool direct = tryDirect && ([&] {
+        const bool direct = tryDirect &&
+            (!inlineCalls || inlineCallHoldFits(this->deferredPresent->callHeldOutputs(), callBudget)) && ([&] {
             result = this->deferredPresent->pollAcquire([&] {
                 return invocation.vk.df().AcquireNextImageKHR(
                     invocation.vk.dev(), invocation.swapchain, 0,
@@ -132,6 +145,13 @@ VkResult Swapchain::presentGeneratedFrames(
             });
             return result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR;
         })();
+        if (inlineBatch) {
+            if (!direct) inlineAllDirect = false;
+            if (this->pacingProfile) {
+                if (direct) this->pacingProfile->inlineCallGeneratedActive();
+                else this->pacingProfile->inlineCallFallbackActive();
+            }
+        }
 
         // Any refusal keeps the path below.
         if (workerCopies && deferredTail && !direct) {
@@ -556,6 +576,8 @@ VkResult Swapchain::presentGeneratedFrames(
             // image through the normal lower present path before propagating
             // OUT_OF_DATE, otherwise a game can block while tearing down an
             // acquired image that never reached the presentation engine.
+            // FI2: the real goes through the worker copy here, not the call, so an eligible batch counts it as a fallback.
+            if (inlineBatch && this->pacingProfile) this->pacingProfile->inlineCallFallbackActive();
             const auto originalResult = this->presentOriginalImage(
                 invocation, continuationSemaphore,
                 invocation.nextChain,
@@ -580,11 +602,20 @@ VkResult Swapchain::presentGeneratedFrames(
         this->frameState.backendTimelineIndex++;
     }
 
+    // FI2 rule 5: the real may be copied at this call only when the batch is eligible and every output went direct. The
+    // flag is read by enqueueInternalRealPresent and cleared here, so no other present sees it.
+    this->inlineRealCall = {.eligible = inlineBatch && inlineAllDirect};
     const auto result = this->presentOriginalImage(
         invocation, this->postCopySemaphores.at(this->presentationSlotFor(invocation.imageIndex)).first.handle(),
         invocation.nextChain,
         &originalPresentDuration
     );
+    const bool inlineRealPrepared = this->inlineRealCall.prepared;
+    this->inlineRealCall = {};
+    if (inlineBatch && this->pacingProfile) {
+        if (inlineRealPrepared) this->pacingProfile->inlineCallRealActive();
+        else this->pacingProfile->inlineCallFallbackActive();
+    }
     const bool originalPresentRequestedRecreation =
         result == VK_ERROR_OUT_OF_DATE_KHR;
     if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR &&

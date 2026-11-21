@@ -2,6 +2,7 @@
 
 // FI1: pure helpers of the attached (same-device) generation path: the submit order of the source copy, the release
 // value of a batch scheduled after its copy, and where a failed schedule presents from.
+// FI2: the call-held lower budget (rule 2), the hold check, and the cross-queue release order (rule 7).
 
 #include "swapchain/inline_generation.hpp"
 
@@ -13,6 +14,7 @@
 #include <string>
 
 namespace {
+    using fgvk::layer::ReleaseSignalOrder;
     using fgvk::layer::ScheduleFailureRoute;
 
     void require(const bool condition, const std::string& message) {
@@ -56,6 +58,60 @@ namespace {
                 "an attached failure must never re-wait the application's wait semaphores");
         }
     }
+
+    // FI2 rule 2: the budget is the lower images above the surface minimum and the worker's own holds, capped at four.
+    void testCallBudget() {
+        using fgvk::layer::inlineCallLowerBudget;
+        require(fgvk::layer::inlineCallLowerImageCap == 4, "the call-held budget cap must be four");
+        require(inlineCallLowerBudget(8, 4, 2) == 2, "two spare images must give a budget of two");
+        require(inlineCallLowerBudget(10, 4, 2) == 4, "four spare images must give the full budget of four");
+        require(inlineCallLowerBudget(12, 4, 2) == 4, "more spare images than the cap must still give four");
+        require(inlineCallLowerBudget(9, 4, 0) == 4, "a spare count above the cap must be capped with no worker holds");
+        require(inlineCallLowerBudget(7, 4, 0) == 3, "the budget must count the images above the surface minimum");
+        require(inlineCallLowerBudget(6, 4, 2) == 0, "no spare image must give a budget of zero");
+        require(inlineCallLowerBudget(5, 4, 2) == 0, "a negative spare count must give a budget of zero");
+        require(inlineCallLowerBudget(0, 0, 0) == 0, "an empty swapchain must give a budget of zero");
+        require(inlineCallLowerBudget(10, UINT32_MAX, 0) == 0,
+            "a surface minimum above the image count must give a budget of zero");
+    }
+
+    // FI2 rule 2: one more output may be held when the outputs already held, plus this one, stay within the budget.
+    void testCallHoldFits() {
+        require(fgvk::layer::inlineCallHoldFits(0, 1), "one output must fit a budget of one");
+        require(!fgvk::layer::inlineCallHoldFits(1, 1), "a second output must not fit a budget of one");
+        require(fgvk::layer::inlineCallHoldFits(1, 2), "a second output must fit a budget of two");
+        require(!fgvk::layer::inlineCallHoldFits(2, 2), "a third output must not fit a budget of two");
+        require(fgvk::layer::inlineCallHoldFits(3, 4), "a fourth output must fit a budget of four");
+        require(!fgvk::layer::inlineCallHoldFits(4, 4), "a fifth output must not fit a budget of four");
+        require(!fgvk::layer::inlineCallHoldFits(0, 0), "no output may be held with a zero budget");
+    }
+
+    // FI2 rule 7: a release signal on another queue than the last one waits for that value while the counter is below it.
+    // A call that cannot wait refuses instead. The same queue, a zero last value, and a counter at or past the last value
+    // need nothing.
+    void testReleaseSignalOrder() {
+        using fgvk::layer::releaseSignalOrder;
+        constexpr uint64_t gameQueue = 0x1000;
+        constexpr uint64_t privateQueue = 0x2000;
+        require(releaseSignalOrder(0, privateQueue, 0, 0, true) == ReleaseSignalOrder::None,
+            "no earlier release must need no order");
+        require(releaseSignalOrder(gameQueue, privateQueue, 3, 0, true) == ReleaseSignalOrder::None,
+            "a zero last value must need no order");
+        require(releaseSignalOrder(0, privateQueue, 3, 4, true) == ReleaseSignalOrder::None,
+            "a missing last queue must need no order");
+        require(releaseSignalOrder(gameQueue, gameQueue, 3, 4, true) == ReleaseSignalOrder::None,
+            "the same queue must keep its submission order without a wait");
+        require(releaseSignalOrder(gameQueue, privateQueue, 4, 4, true) == ReleaseSignalOrder::None,
+            "a counter at the last value must need no wait");
+        require(releaseSignalOrder(gameQueue, privateQueue, 5, 4, false) == ReleaseSignalOrder::None,
+            "a counter above the last value must need no wait or refusal");
+        require(releaseSignalOrder(gameQueue, privateQueue, 3, 4, true) == ReleaseSignalOrder::Wait,
+            "another queue below the last value must wait for it");
+        require(releaseSignalOrder(privateQueue, gameQueue, 3, 4, true) == ReleaseSignalOrder::Wait,
+            "the private queue must wait for a game-queue release below the last value");
+        require(releaseSignalOrder(gameQueue, privateQueue, 3, 4, false) == ReleaseSignalOrder::Refuse,
+            "a call that cannot wait must refuse a cross-queue release below the last value");
+    }
 }
 
 int main() {
@@ -63,6 +119,9 @@ int main() {
         testSubmitOrder();
         testReleaseValue();
         testFailureRoutes();
+        testCallBudget();
+        testCallHoldFits();
+        testReleaseSignalOrder();
     } catch (const std::exception& error) {
         std::cerr << "Inline generation test failed: " << error.what() << '\n';
         return 1;

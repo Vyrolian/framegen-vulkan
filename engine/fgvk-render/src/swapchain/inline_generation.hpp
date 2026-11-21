@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #pragma once
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -48,6 +49,43 @@ enum class ScheduleFailureRoute : uint8_t {
                                      : ScheduleFailureRoute::PostCopyOriginal;
     return preacquiredRetirement ? ScheduleFailureRoute::NativeWithRetirement
                                  : ScheduleFailureRoute::NativeOnly;
+}
+
+// FI2: most lower images that copies made at the present call may hold, on top of the worker's own holds.
+inline constexpr uint32_t inlineCallLowerImageCap = 4;
+
+// FI2: lower images an attached batch may hold at its present call. These are the images above the surface minimum
+// that the worker's own holds leave, capped at inlineCallLowerImageCap. Zero when there are none.
+[[nodiscard]] constexpr uint32_t inlineCallLowerBudget(const size_t lowerImages, const uint32_t surfaceMinImages,
+        const uint32_t workerHeldImages) noexcept {
+    const int64_t spare = static_cast<int64_t>(lowerImages) - static_cast<int64_t>(surfaceMinImages) -
+        static_cast<int64_t>(workerHeldImages);
+    if (spare <= 0)
+        return 0;
+    return static_cast<uint32_t>(std::min<int64_t>(spare, inlineCallLowerImageCap));
+}
+
+// FI2: one more output may be held at the call when the outputs already held, plus this one, stay within the budget.
+// A batch's generated output is checked against the held count before it. Its real output is checked against the
+// count after the generated output, so the real needs held + 2 <= budget with the held count from before the batch.
+[[nodiscard]] constexpr bool inlineCallHoldFits(const size_t heldOutputs, const uint32_t budget) noexcept {
+    return heldOutputs + 1 <= budget;
+}
+
+// FI2 rule 7: what a release-timeline signal submitted on one queue must do about the last release signal, which may
+// have been submitted on another queue and not yet executed. A timeline signal must have a value above the counter when
+// it executes, so a later signal may not run first. Queues are handle bits, and zero means none. `counter` is the
+// timeline's current value. `Wait` adds a wait for `lastValue` to the submit. `Refuse` is for a submit that cannot
+// wait, the call path, which then falls back to the worker. `None` covers the same queue, a counter already at the
+// last value, and no earlier signal.
+enum class ReleaseSignalOrder : uint8_t { None, Wait, Refuse };
+
+[[nodiscard]] constexpr ReleaseSignalOrder releaseSignalOrder(const uint64_t lastQueue,
+        const uint64_t submitQueue, const uint64_t counter, const uint64_t lastValue,
+        const bool mayWait) noexcept {
+    if (lastValue == 0 || lastQueue == 0 || lastQueue == submitQueue || counter >= lastValue)
+        return ReleaseSignalOrder::None;
+    return mayWait ? ReleaseSignalOrder::Wait : ReleaseSignalOrder::Refuse;
 }
 
 }  // namespace fgvk::layer

@@ -2,6 +2,7 @@
 
 #include "swapchain/swapchain.hpp"
 #include "swapchain/create_policy.hpp"
+#include "swapchain/inline_generation.hpp"
 #include "swapchain/retirement.hpp"
 #include "layer_role.hpp"
 #include "present_diagnostics.hpp"
@@ -90,7 +91,9 @@ bool layer::context_ModifySwapchainCreateInfo(const ls::GameConf& profile,
         orderedFrameGenerationTransport,
         profile.swapchain_image_count_compatibility,
         surfaceMinImages,
-        orderedSdrCandidate && group.unthrottled && group.fifo
+        orderedSdrCandidate && group.unthrottled && group.fifo,
+        // FI2: the lower images for copies at the present call exist only with the inline switch.
+        inlineGenerationRequested()
     );
 }
 
