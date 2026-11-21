@@ -558,7 +558,113 @@ namespace {
     }
 }
 
+// FP2: the parked pool keeps the oldest image first, marks a slot busy from its park until released, and never holds more
+// than the target. parked and call-held outputs together stay within the budget.
+void testLowerParkingPoolBudgetAndOrder() {
+    LowerParkingPool pool;
+    pool.reserveSlots(4);
+    pool.setPolicy(2, 2, true);
+    expect(pool.target() == 2, "a same-family policy did not keep its target of two");
+    expect(pool.canPark(0), "an empty pool did not park within a budget of two");
+    expect(pool.push(ParkedLower{.lowerIndex = 3, .slot = 1}), "parking the first image failed");
+    expect(pool.isBusy(1) && !pool.isBusy(0), "a parked slot was not busy, or a free slot was");
+    expect(pool.canPark(0), "one parked image and no call-held output did not fit a budget of two");
+    expect(!pool.canPark(1), "a parked image and a call-held output fit a budget of two");
+    expect(pool.push(ParkedLower{.lowerIndex = 5, .slot = 2}), "parking the second image failed");
+    expect(!pool.canPark(0), "a full pool parked a third image");
+    expect(!pool.push(ParkedLower{.lowerIndex = 6, .slot = 0}), "a third image was pushed past the target");
+    expect(!pool.push(ParkedLower{.lowerIndex = 6, .slot = 9}), "an out-of-range slot was pushed");
+    const auto first = pool.take();
+    expect(first && first->lowerIndex == 3 && first->slot == 1, "the oldest parked image was not taken first");
+    expect(pool.isBusy(1), "a taken slot was free before its copy returned");
+    pool.release(1);
+    expect(!pool.isBusy(1), "a released slot stayed busy");
+    expect(pool.size() == 1 && pool.canPark(0), "the take did not leave one parked image within the budget");
+    expect(pool.isBusy(9), "an out-of-range slot did not read as busy");
+}
+
+// FP2 rule 6: a drain takes every parked image once and leaves none. Each returned slot is released after its submit.
+void testLowerParkingDrainLeavesNone() {
+    LowerParkingPool pool;
+    pool.reserveSlots(4);
+    pool.setPolicy(2, 2, true);
+    expect(pool.push(ParkedLower{.lowerIndex = 0, .slot = 0}) && pool.push(ParkedLower{.lowerIndex = 2, .slot = 3}),
+        "setting up two parked images failed");
+    size_t drains = 0;
+    while (const auto entry = pool.take()) {
+        ++drains;
+        pool.release(entry->slot);
+    }
+    expect(drains == 2 && pool.size() == 0, "a drain did not submit once per parked image, or left one");
+    expect(!pool.isBusy(0) && !pool.isBusy(3), "a drained slot stayed busy after its submit");
+    expect(!pool.take().has_value(), "a drained pool still held an image");
+}
+
+// FP2 rule 3 and FP2.4: a target applies only to copies of the call's family, and never exceeds the parked capacity.
+void testLowerParkingPolicy() {
+    LowerParkingPool pool;
+    pool.reserveSlots(4);
+    pool.setPolicy(2, 4, false);
+    expect(pool.target() == 0 && !pool.canPark(0), "a policy for another family still parked");
+    pool.setPolicy(5, 4, true);
+    expect(pool.target() == 2, "a target above the capacity was not capped at two");
+    pool.setPolicy(0, 4, true);
+    expect(pool.target() == 0 && !pool.canPark(0), "a zero target still parked");
+}
+
+// FP2 rule 6 (fixed): with the park target at zero, nothing is drained and nothing is parked, so the parked images wait for
+// the next acquire. The model drives the owner's decisions (parkAfterPresentAction, acquireTakesParkedFirst) and the pool
+// through repeated park, target-zero and acquire cycles. The lower images the application has not got back (acquired and
+// not presented) always equal the parked images, and stay within the capacity, so no acquire is starved.
+void testParkedImagesSurviveTargetZero() {
+    LowerParkingPool pool;
+    pool.reserveSlots(4);
+    const auto firstFreeSlot = [&pool]() -> uint32_t {
+        for (uint32_t slot = 0; slot < 4; ++slot)
+            if (!pool.isBusy(slot))
+                return slot;
+        return 4;
+    };
+    size_t acquired = 0;
+    size_t presented = 0;
+    for (int cycle = 0; cycle < 60; ++cycle) {
+        // Two lower presents of the worker with a live target. Every third cycle has none, so the pool can run empty.
+        pool.setPolicy(2, 2, true);
+        const int parkingPresents = cycle % 3 == 2 ? 0 : 2;
+        for (int present = 0; present < parkingPresents; ++present) {
+            const uint32_t slot = firstFreeSlot();
+            if (parkAfterPresentAction(false, pool.size(), 0, pool.target(), pool.budgetOutputs(),
+                    pool.isBusy(slot)) == ParkAction::Park) {
+                ++acquired;
+                expect(pool.push(ParkedLower{.lowerIndex = slot, .slot = slot}), "a parked image was not pushed");
+            }
+        }
+        // Live FG off: the target drops to zero. A lower present now neither drains nor parks.
+        pool.setPolicy(0, 2, true);
+        const size_t parkedBefore = pool.size();
+        expect(parkAfterPresentAction(false, pool.size(), 0, pool.target(), pool.budgetOutputs(), false) ==
+            ParkAction::Nothing, "a park target of zero drained or parked an image");
+        expect(pool.size() == parkedBefore, "a park target of zero changed the parked images");
+        // A synchronous or worker acquire takes the oldest parked image before any fresh acquire, and presents it.
+        if (acquireTakesParkedFirst(false, pool.size())) {
+            const auto entry = pool.take();
+            expect(entry.has_value(), "an acquire found no parked image to take");
+            pool.release(entry->slot);
+        } else {
+            expect(pool.size() == 0 && firstFreeSlot() < 4, "a fresh acquire ran while an image was parked");
+            ++acquired;
+        }
+        ++presented;
+        expect(acquired - presented == pool.size(), "an acquired lower image was neither parked nor presented");
+        expect(pool.size() <= LowerParkingPool::capacity, "the parked images exceeded the capacity");
+    }
+}
+
 int main() {
+    testParkedImagesSurviveTargetZero();
+    testLowerParkingPoolBudgetAndOrder();
+    testLowerParkingDrainLeavesNone();
+    testLowerParkingPolicy();
     testRingFifoOrder();
     testReleaseJoinsTailWithComplete();
     testInvalidOperationsChangeNothing();

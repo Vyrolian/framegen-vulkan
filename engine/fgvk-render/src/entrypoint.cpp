@@ -151,6 +151,12 @@ namespace {
                 )) {
             return false;
         }
+        // FP2 rule 6: the parked lower images are drained before the lower swapchain is destroyed. A drain still running
+        // is retried on the next call.
+        if (retired->second.internalImages &&
+                retired->second.internalImages->retireParked(remainingTimeoutNs) == VK_TIMEOUT) {
+            return false;
+        }
 
         auto node = instance_info->retiredSwapchains.extract(retired);
         auto& state = node.mapped();
@@ -293,6 +299,9 @@ namespace {
             // GP1: the on-screen watcher is joined before the lower swapchain is destroyed.
             if (state.context) state.context->stopOnScreenProfile();
             state.context.reset();
+            // FP2 rule 6: the parked lower images are drained before the lower swapchain is destroyed.
+            if (state.internalImages)
+                static_cast<void>(state.internalImages->retireParked(2'000'000'000ULL));
             state.vk.get().df().DestroySwapchainKHR(
                 state.device, swapchain, VK_NULL_HANDLE
             );
@@ -2988,6 +2997,9 @@ namespace {
                         // GP1: the on-screen watcher is joined before the lower swapchain is destroyed.
                         if (context) context->stopOnScreenProfile();
                         context.reset();
+                        // FP2 rule 6: the parked lower images are drained before the lower swapchain is destroyed.
+                        if (internalImages)
+                            static_cast<void>(internalImages->retireParked(2'000'000'000ULL));
                         it->second.df().DestroySwapchainKHR(device, swapchain, alloc);
                         return;
                     }
@@ -3040,6 +3052,9 @@ namespace {
         // GP1: the on-screen watcher is joined before the lower swapchain is destroyed.
         if (context) context->stopOnScreenProfile();
         context.reset();
+        // FP2 rule 6: the parked lower images are drained before the lower swapchain is destroyed.
+        if (internalImages)
+            static_cast<void>(internalImages->retireParked(2'000'000'000ULL));
         it->second.df().DestroySwapchainKHR(device, swapchain, alloc);
     }
 }

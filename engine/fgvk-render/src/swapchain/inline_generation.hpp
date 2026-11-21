@@ -75,4 +75,82 @@ inline constexpr uint32_t inlineCallLowerImageCap = 4;
     return heldOutputs + 1 <= budget;
 }
 
+// FP1: where one output of an attached, eligible batch ended at its present call. Call and Parked are served by the
+// game queue (Parked from an image the worker parked). The other values are fallbacks to the worker copy, each with one
+// reason, so the five reasons sum to the fallback count. None is no attempt: the output was not routed to the call.
+enum class InlineCallOutcome : uint8_t { None, Call, Parked, Budget, Lock, Acquire, Cascade, Other };
+
+[[nodiscard]] constexpr bool inlineCallServed(const InlineCallOutcome outcome) noexcept {
+    return outcome == InlineCallOutcome::Call || outcome == InlineCallOutcome::Parked;
+}
+
+// FP1: the reason an unserved output counts under. An output that was never attempted counts as other.
+[[nodiscard]] constexpr InlineCallOutcome inlineCallFallbackReason(const InlineCallOutcome outcome) noexcept {
+    return outcome == InlineCallOutcome::None || inlineCallServed(outcome) ? InlineCallOutcome::Other : outcome;
+}
+
+// FP1 rule 2, a generated output that was not parked. budgetFits is the budget check, lockMissed a failed queue try-lock,
+// acquired a successful lower acquire, and notReady its NOT_READY or TIMEOUT. A budget refusal wins over the lock, and an
+// error that is not a not-ready result is other.
+[[nodiscard]] constexpr InlineCallOutcome classifyGeneratedAttempt(const bool budgetFits, const bool lockMissed,
+        const bool acquired, const bool notReady) noexcept {
+    if (!budgetFits) return InlineCallOutcome::Budget;
+    if (lockMissed) return InlineCallOutcome::Lock;
+    if (acquired) return InlineCallOutcome::Call;
+    if (notReady) return InlineCallOutcome::Acquire;
+    return InlineCallOutcome::Other;
+}
+
+// FP1: the result of one call-side copy attempt. NotReady leaves the image for the worker and is an acquire fallback;
+// Error (a refusal, a missing owner, an acquire or submit error) is other.
+enum class CallCopyStatus : uint8_t { Done, NotReady, Error };
+
+// FP1 rule 2, a real output. A real whose generated output fell back is a cascade and is never attempted.
+[[nodiscard]] constexpr InlineCallOutcome classifyRealAttempt(const bool eligible, const bool budgetFits,
+        const bool lockMissed, const CallCopyStatus status) noexcept {
+    if (!eligible) return InlineCallOutcome::Cascade;
+    if (!budgetFits) return InlineCallOutcome::Budget;
+    if (lockMissed) return InlineCallOutcome::Lock;
+    switch (status) {
+    case CallCopyStatus::Done: return InlineCallOutcome::Call;
+    case CallCopyStatus::NotReady: return InlineCallOutcome::Acquire;
+    case CallCopyStatus::Error: break;
+    }
+    return InlineCallOutcome::Other;
+}
+
+// FP2: the lower images an attached batch's outputs hold at the call: the call-held outputs (direct generated outputs and
+// call-prepared reals of the worker's batches) plus the parked images. The budget bounds this sum.
+[[nodiscard]] constexpr size_t inlineCallOutputsHeld(const size_t callHeld, const size_t parked) noexcept {
+    return callHeld + parked;
+}
+
+// FP2 rule 2: the worker may park one more lower image after a lower present when fewer than target images are parked
+// and the call-held outputs plus the parked images, with this one, stay within the budget.
+[[nodiscard]] constexpr bool inlineParkFits(const size_t parked, const size_t callHeld, const uint32_t target,
+        const uint32_t budget) noexcept {
+    return parked < target && inlineCallHoldFits(inlineCallOutputsHeld(callHeld, parked), budget);
+}
+
+// FP2 rule 6: what parkAfterPresent does after a lower present of the worker. A sticky owner drains its parked images, on
+// the error path only. Otherwise one image is parked when the target and budget allow it and its slot is free. A target of
+// zero parks nothing and drains nothing, so the parked images stay in the pool for the next acquire to take.
+enum class ParkAction : uint8_t { Nothing, Park, Drain };
+
+[[nodiscard]] constexpr ParkAction parkAfterPresentAction(const bool sticky, const size_t parked, const size_t callHeld,
+        const uint32_t target, const uint32_t budget, const bool slotBusy) noexcept {
+    if (sticky) return ParkAction::Drain;
+    if (slotBusy || !inlineParkFits(parked, callHeld, target, budget)) return ParkAction::Nothing;
+    return ParkAction::Park;
+}
+
+// FP2 rules 4 and 5: an acquire (the worker's, or a synchronous materialize) takes the oldest parked image before it
+// acquires a fresh one, whatever the park target is. A sticky owner takes none: its parked images are drained instead.
+[[nodiscard]] constexpr bool acquireTakesParkedFirst(const bool sticky, const size_t parked) noexcept {
+    return !sticky && parked > 0;
+}
+
+// FP2: parked images per swapchain while the attached batch is eligible (one generated output and one real).
+inline constexpr uint32_t inlineParkTarget = 2;
+
 }  // namespace fgvk::layer

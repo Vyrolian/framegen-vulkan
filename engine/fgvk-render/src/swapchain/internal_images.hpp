@@ -20,6 +20,8 @@
 #include <utility>
 #include <vector>
 
+#include "swapchain/inline_generation.hpp"
+
 #include <vulkan/vulkan_core.h>
 
 namespace vk {
@@ -359,6 +361,81 @@ namespace fgvk::layer {
         bool aborted{false};
     };
 
+    /// FP2: a lower image the worker acquired and parked for a later present call. slot is the lowerAcquire and
+    /// lowerFences ring slot that the acquire committed (InternalSwapchainImages::commitLowerAcquire).
+    struct ParkedLower {
+        uint32_t lowerIndex{};
+        uint32_t slot{};
+    };
+
+    /// FP2: a parked image taken for one copy, with the acquire semaphore that the copy waits.
+    struct ParkedLowerTake {
+        uint32_t lowerIndex{};
+        uint32_t slot{};
+        VkSemaphore semaphore{VK_NULL_HANDLE};
+    };
+
+    /// FP2: the parked lower images of one swapchain, the parking policy, and the busy flag of every lower-acquire slot.
+    /// Plain data with no lock of its own: the owner (InternalSwapchainImages) guards every call with its leaf mutex.
+    /// A slot is busy from its park until the submit that consumes it has returned (a copy or a drain). The worker never
+    /// acquires into a busy slot, so the slot's fence is not read or reset while the call owns it.
+    class LowerParkingPool {
+    public:
+        static constexpr size_t capacity = 2;
+
+        /// Sizes the busy flags for the owner's lower-acquire slots. Clears the pool.
+        void reserveSlots(const size_t slotCount) {
+            busy.assign(slotCount, 0);
+            count = 0;
+        }
+        /// Sets the target and budget. A target applies only when the copies were recorded for the call's family.
+        void setPolicy(const uint32_t target, const uint32_t budgetOutputs, const bool sameFamily) noexcept {
+            targetCount = sameFamily ? std::min<uint32_t>(target, static_cast<uint32_t>(capacity)) : 0;
+            budget = budgetOutputs;
+        }
+        [[nodiscard]] uint32_t target() const noexcept { return targetCount; }
+        [[nodiscard]] uint32_t budgetOutputs() const noexcept { return budget; }
+        [[nodiscard]] size_t size() const noexcept { return count; }
+        /// True when the worker may park one more image while callHeld outputs are held at the call.
+        [[nodiscard]] bool canPark(const size_t callHeld) const noexcept {
+            return inlineParkFits(count, callHeld, targetCount, budget);
+        }
+        /// Adds a parked image and marks its slot busy. False when full or the slot is out of range.
+        [[nodiscard]] bool push(const ParkedLower image) {
+            if (count >= capacity || image.slot >= busy.size())
+                return false;
+            entries[count++] = image;
+            busy[image.slot] = 1;
+            return true;
+        }
+        /// Removes the oldest parked image (FIFO). Its slot stays busy until release.
+        [[nodiscard]] std::optional<ParkedLower> take() {
+            if (count == 0)
+                return std::nullopt;
+            const ParkedLower oldest = entries[0];
+            for (size_t i = 1; i < count; ++i)
+                entries[i - 1] = entries[i];
+            --count;
+            return oldest;
+        }
+        /// Clears a slot's busy flag after the submit that consumed it has returned.
+        void release(const uint32_t slot) noexcept {
+            if (slot < busy.size())
+                busy[slot] = 0;
+        }
+        /// True when a slot may not be acquired into or read. An out-of-range slot reads as busy.
+        [[nodiscard]] bool isBusy(const uint32_t slot) const noexcept {
+            return slot >= busy.size() || busy[slot] != 0;
+        }
+
+    private:
+        std::array<ParkedLower, capacity> entries{};
+        size_t count{};
+        std::vector<char> busy;
+        uint32_t targetCount{};
+        uint32_t budget{};
+    };
+
     /// Device support for the private image format. Filled by the Vulkan
     /// side and copied into InternalImageGateInput.
     struct InternalImageDeviceSupport {
@@ -470,6 +547,48 @@ namespace fgvk::layer {
             uint32_t applicationIndex, VkSemaphore continuation, uint32_t* lowerIndex,
             VkSemaphore* presentWait, bool* consumed);
 
+        /// FP2 rule 3: the call copy of a real from a parked image. Takes no queue lock: it takes the oldest parked image
+        /// under the leaf mutex and submits the copy on the game queue, waiting the image's slot semaphore and signalling
+        /// its slot fence. Returns VK_NOT_READY with consumed false when no image is parked. Otherwise consumed is set
+        /// and the result is the submit's, as callPrepare.
+        [[nodiscard]] VkResult callPrepareParked(VkQueue callQueue, uint32_t callFamily,
+            uint32_t applicationIndex, VkSemaphore continuation, uint32_t* lowerIndex,
+            VkSemaphore* presentWait, bool* consumed);
+
+        /// FP2: the lower swapchain this owner acquires from. A direct generated output takes a parked image only when its
+        /// acquire is on this same handle.
+        [[nodiscard]] VkSwapchainKHR lowerSwapchainHandle() const noexcept;
+        /// FP2 rule 2: after a lower present of the worker, parks at most one lower image (see parkAfterPresentAction: a
+        /// target of zero drains nothing). Caller holds queue->mutex and the deferred worker's mutex, so callHeld (the outputs
+        /// call-held after that present) is read consistently with the admissions, which hold the worker's mutex too.
+        void parkAfterPresent(size_t callHeld);
+        /// FP2: sets the parking target (0 turns parking off) and the call budget for the attached batch being presented.
+        /// callFamily is the family of the call's queue: a target applies only when it matches the copies' family.
+        void setParkPolicy(uint32_t target, uint32_t budget, uint32_t callFamily);
+        /// FP2: the parked images now (leaf mutex).
+        [[nodiscard]] size_t parkedCount() const;
+        /// FP2: the lower images held outside the worker's job list: the parked images and the direct generated outputs
+        /// between their take or acquire and their present (see beginCallOutput). The call budget counts them.
+        [[nodiscard]] size_t outstandingCallOutputs() const;
+        /// FP2: a direct generated output took a lower image by a fresh acquire (called under queue->mutex, right after the
+        /// acquire succeeds). Its count ends with endCallOutput, after its present call has returned.
+        void beginCallOutput();
+        void endCallOutput() noexcept;
+        /// FP2 rule 4: takes the oldest parked image for a direct generated output. Empty when none is parked or the owner is
+        /// sticky. The slot stays busy until finishParkedCopy or failParkedTake. The output counts as in flight from here
+        /// until endCallOutput.
+        [[nodiscard]] std::optional<ParkedLowerTake> takeParked();
+        /// FP2 rule 4: after the game-queue copy that waited a taken slot, submits an empty submit on gameQueue that signals
+        /// the slot fence, then frees the slot. The caller holds no lock: the game thread owns the slot until this returns.
+        [[nodiscard]] VkResult finishParkedCopy(VkQueue gameQueue, uint32_t slot);
+        /// FP2: the copy of a taken slot could not be recorded or submitted. The slot's fence is never signalled, so the slot
+        /// stays busy, and the owner turns sticky.
+        void failParkedTake(uint32_t slot) noexcept;
+        /// FP2 rule 6: drains every parked image and waits for the last drain to finish, up to timeoutNs. Called before the
+        /// lower swapchain is destroyed, so no parked acquire is still pending. VK_TIMEOUT means the drain is still running:
+        /// call again.
+        [[nodiscard]] VkResult retireParked(uint64_t timeoutNs);
+
         /// T3b, diagnostics only (pacing profile with GPU split): time each copy on the GPU.
         /// Game thread, before ensureCopies; idempotent. Copies recorded earlier stay untimed.
         void enableCopyTimestamps(const vk::Vulkan& vk, PFN_vkGetCalibratedTimestampsKHR calibrate,
@@ -490,13 +609,16 @@ namespace fgvk::layer {
         // FI2: the lower acquire of workerTryAcquire, noted under `op` (lowerOpAcquireReal, or lowerOpAcquireCall for the
         // call path). Caller holds queue->mutex.
         [[nodiscard]] VkResult tryAcquireLowerLocked(uint8_t op, uint32_t* lowerIndex);
-        // Caller holds queue->mutex. Copies application image p into lower image
-        // lower after the waits and the lower-acquire slot. On success it signals
-        // copied[lower] and the release timeline and frees p. On failure it records
-        // the sticky error and frees p at the last submitted release value.
+        // Copies application image p into lower image lower after the waits and the lower-acquire slot. On success it
+        // signals copied[lower] and the release timeline of queue and frees p. On failure it records the sticky error
+        // and frees p at the last submitted release value. queue is the private queue (the caller holds queue->mutex) or
+        // the game queue (FP2: the caller holds no lock; the leaf mutex guards the state). Either way the slot is released.
         [[nodiscard]] VkResult submitCopyLocked(VkQueue queue, uint32_t applicationIndex,
             uint32_t lowerIndex, uint32_t slot, std::span<const VkSemaphore> waits);
-        // T3b: caller holds queue->mutex. Emits every timed copy whose timestamps are
+        // FP2 rule 6: submits one drain per parked image on the private queue. Caller holds queue->mutex. Called only on
+        // the destroy paths and the sticky error, never on a park target change (see its definition).
+        VkResult drainParkedLocked();
+        // T3b: caller holds the leaf mutex (FP2). Emits every timed copy whose timestamps are
         // available; a pending copy of pair `resubmitted` is emitted unavailable.
         void collectCopyTimestampsLocked(size_t resubmitted) noexcept;
         // D7 stall probe, pacing profile only. create registers each owner and the
@@ -513,6 +635,13 @@ namespace fgvk::layer {
     /// Worker callbacks for DeferredPresent's internal real output. They cast owner
     /// back to InternalSwapchainImages and forward to the members above.
     [[nodiscard]] VkResult internalRealTryAcquire(void* owner, uint32_t* lowerIndex);
+    [[nodiscard]] VkResult internalRealCallPrepareParked(void* owner, VkQueue callQueue, uint32_t callFamily,
+        uint32_t applicationIndex, VkSemaphore continuation, uint32_t* lowerIndex,
+        VkSemaphore* presentWait, bool* consumed);
+    [[nodiscard]] size_t internalRealParkedCount(void* owner);
+    /// FP2: parks at most one lower image after a lower present of the worker, called with queue->mutex held.
+    /// callHeld is the outputs call-held after that present.
+    void internalRealParkAfterPresent(void* owner, size_t callHeld);
     [[nodiscard]] VkResult internalRealSubmit(void* owner, VkQueue queue,
         uint32_t applicationIndex, uint32_t lowerIndex, VkSemaphore continuation,
         VkSemaphore* presentWait);

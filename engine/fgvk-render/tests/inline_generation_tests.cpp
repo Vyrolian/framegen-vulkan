@@ -100,6 +100,101 @@ namespace {
     }
 }
 
+// FP1: each generated attempt has one reason, in the order budget, lock, acquire.
+void testGeneratedClassification() {
+    using namespace fgvk::layer;
+    require(classifyGeneratedAttempt(true, false, true, false) == InlineCallOutcome::Call,
+        "an acquired generated output was not served at the call");
+    require(classifyGeneratedAttempt(false, false, false, true) == InlineCallOutcome::Budget,
+        "a budget refusal was not classified as budget");
+    require(classifyGeneratedAttempt(false, true, false, false) == InlineCallOutcome::Budget,
+        "a budget refusal must win over a busy queue");
+    require(classifyGeneratedAttempt(true, true, false, false) == InlineCallOutcome::Lock,
+        "a busy queue was not classified as lock");
+    require(classifyGeneratedAttempt(true, false, false, true) == InlineCallOutcome::Acquire,
+        "a not-ready lower acquire was not classified as acquire");
+    require(classifyGeneratedAttempt(true, false, false, false) == InlineCallOutcome::Other,
+        "a driver error was not classified as other");
+}
+
+// FP1: each real attempt has one reason. A cascade is an output that was never attempted, and an error (a refusal, a
+// consumed copy that failed) is other.
+void testRealClassification() {
+    using namespace fgvk::layer;
+    require(classifyRealAttempt(false, true, false, CallCopyStatus::Done) == InlineCallOutcome::Cascade,
+        "a real whose generated output fell back was not a cascade");
+    require(classifyRealAttempt(true, false, false, CallCopyStatus::NotReady) == InlineCallOutcome::Budget,
+        "an over-budget real was not classified as budget");
+    require(classifyRealAttempt(true, true, true, CallCopyStatus::NotReady) == InlineCallOutcome::Lock,
+        "a busy queue for a real was not classified as lock");
+    require(classifyRealAttempt(true, true, false, CallCopyStatus::NotReady) == InlineCallOutcome::Acquire,
+        "a not-ready lower image for a real was not classified as acquire");
+    require(classifyRealAttempt(true, true, false, CallCopyStatus::Done) == InlineCallOutcome::Call,
+        "a copied real was not served at the call");
+    require(classifyRealAttempt(true, true, false, CallCopyStatus::Error) == InlineCallOutcome::Other,
+        "a call copy error was not classified as other");
+}
+
+// FP1: a fallback counts under its reason, and an output that was never attempted counts as other.
+void testFallbackReason() {
+    using namespace fgvk::layer;
+    require(inlineCallFallbackReason(InlineCallOutcome::None) == InlineCallOutcome::Other,
+        "an output never attempted must count as other");
+    require(inlineCallFallbackReason(InlineCallOutcome::Lock) == InlineCallOutcome::Lock,
+        "a lock fallback changed its reason");
+    require(inlineCallServed(InlineCallOutcome::Call) && inlineCallServed(InlineCallOutcome::Parked) &&
+            !inlineCallServed(InlineCallOutcome::Budget) && !inlineCallServed(InlineCallOutcome::None),
+        "only call and parked outputs are served");
+}
+
+// FP2 rule 2: parked images count with the call-held outputs against the budget, so the sum never exceeds it.
+void testParkBudget() {
+    using namespace fgvk::layer;
+    require(inlineCallOutputsHeld(1, 2) == 3, "parked images must count with the call-held outputs");
+    require(inlineParkFits(0, 0, 2, 2), "an empty pool must park one image within a budget of two");
+    require(inlineParkFits(1, 0, 2, 2), "a second image must park within a budget of two");
+    require(!inlineParkFits(2, 0, 2, 2), "a third image must not park with a target of two");
+    require(!inlineParkFits(1, 1, 2, 2), "a parked image and a call-held output fill a budget of two");
+    require(inlineParkFits(0, 1, 2, 2), "one call-held output and one parked image fill a budget of two");
+    require(!inlineParkFits(0, 2, 2, 2), "parking must not exceed the budget");
+    require(!inlineParkFits(0, 0, 0, 4), "a zero target parks nothing");
+    require(!inlineParkFits(0, 0, 2, 0), "a zero budget parks nothing");
+}
+
+// FP2 rule 6 (fixed): a sticky owner drains. A live owner parks only when the target, budget and slot allow it. A park
+// target of zero neither parks nor drains, so the parked images stay in the pool for the next acquire.
+void testParkAfterPresentAction() {
+    using namespace fgvk::layer;
+    require(parkAfterPresentAction(false, 2, 0, 0, 2, false) == ParkAction::Nothing,
+        "a park target of zero drained with images still parked");
+    require(parkAfterPresentAction(false, 0, 0, 0, 2, false) == ParkAction::Nothing,
+        "a park target of zero parked an image");
+    require(parkAfterPresentAction(false, 0, 0, 2, 2, false) == ParkAction::Park,
+        "an empty pool did not park within a target of two and a budget of two");
+    require(parkAfterPresentAction(false, 1, 0, 2, 2, false) == ParkAction::Park,
+        "a second image did not park within a target of two and a budget of two");
+    require(parkAfterPresentAction(false, 2, 0, 2, 2, false) == ParkAction::Nothing,
+        "a full pool parked a third image");
+    require(parkAfterPresentAction(false, 1, 1, 2, 2, false) == ParkAction::Nothing,
+        "a parked image and a call-held output fill a budget of two, but the image was parked");
+    require(parkAfterPresentAction(false, 0, 0, 2, 2, true) == ParkAction::Nothing,
+        "a busy lower slot was parked into");
+    require(parkAfterPresentAction(true, 2, 0, 2, 2, false) == ParkAction::Drain,
+        "a sticky owner did not drain its parked images");
+    require(parkAfterPresentAction(true, 2, 0, 0, 2, false) == ParkAction::Drain,
+        "a sticky owner with a target of zero did not drain its parked images");
+}
+
+// FP2 rules 4 and 5 (fixed): an acquire takes the oldest parked image before a fresh acquire, whatever the park target.
+// A sticky owner takes none, because its parked images are drained on the error path.
+void testAcquireTakesParkedFirst() {
+    using namespace fgvk::layer;
+    require(acquireTakesParkedFirst(false, 1) && acquireTakesParkedFirst(false, 2),
+        "a parked image was not taken before a fresh acquire");
+    require(!acquireTakesParkedFirst(false, 0), "an acquire took a parked image from an empty pool");
+    require(!acquireTakesParkedFirst(true, 2), "a sticky owner took a parked image");
+}
+
 int main() {
     try {
         testSwitchParse();
@@ -108,6 +203,12 @@ int main() {
         testFailureRoutes();
         testCallBudget();
         testCallHoldFits();
+        testGeneratedClassification();
+        testRealClassification();
+        testFallbackReason();
+        testParkBudget();
+        testParkAfterPresentAction();
+        testAcquireTakesParkedFirst();
     } catch (const std::exception& error) {
         std::cerr << "Inline generation test failed: " << error.what() << '\n';
         return 1;

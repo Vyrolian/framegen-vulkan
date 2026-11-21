@@ -2262,6 +2262,16 @@ struct InternalFake {
     VkSemaphore callWait{};
     VkQueue callQueue{};
     VkSemaphore callContinuation{};
+    // FP2: parked images. parkedReported is what the owner's count returns, parkedAvailable is how many the parked take
+    // can consume, and parkedLower and parkedWait are the image it returns.
+    int parkedCalls{};
+    size_t parkedReported{};
+    size_t parkedAvailable{};
+    uint32_t parkedLower{4};
+    VkSemaphore parkedWait{};
+    // FP2: the park hook. Each call records the outputs call-held when it ran.
+    int parks{};
+    size_t parkHeld{};
 };
 VkResult fakeTryAcquire(void* owner, uint32_t* lowerIndex) {
     auto& state = *static_cast<InternalFake*>(owner);
@@ -2320,6 +2330,43 @@ VkResult fakeCallPrepare(void* owner, VkQueue callQueue, [[maybe_unused]] uint32
     *lowerIndex = state.callLower;
     *presentWait = state.callWait;
     return state.callResult;
+}
+// FP2: the parked take. It consumes one parked image when one is available and reports NOT_READY otherwise. It never takes
+// a queue lock, so the test can hold queue->mutex across it.
+VkResult fakeCallPrepareParked(void* owner, VkQueue callQueue, [[maybe_unused]] uint32_t callFamily,
+        [[maybe_unused]] uint32_t applicationIndex, VkSemaphore continuation, uint32_t* lowerIndex,
+        VkSemaphore* presentWait, bool* consumed) {
+    auto& state = *static_cast<InternalFake*>(owner);
+    ++state.parkedCalls;
+    state.callQueue = callQueue;
+    state.callContinuation = continuation;
+    *consumed = state.parkedAvailable > 0;
+    if (!*consumed) return VK_NOT_READY;
+    --state.parkedAvailable;
+    --state.parkedReported;
+    *lowerIndex = state.parkedLower;
+    *presentWait = state.parkedWait;
+    return VK_SUCCESS;
+}
+size_t fakeParkedCount(void* owner) {
+    return static_cast<InternalFake*>(owner)->parkedReported;
+}
+void recordPark(void* owner, size_t callHeld) {
+    auto& state = *static_cast<InternalFake*>(owner);
+    ++state.parks;
+    state.parkHeld = callHeld;
+}
+DeferredPresent::InternalRealCopy internalParkedCallCopy(const std::shared_ptr<InternalFake>& fake,
+        uint32_t applicationIndex, uint32_t callBudget) {
+    auto copy = DeferredPresent::InternalRealCopy{
+        .owner = fake, .tryAcquire = fakeTryAcquire, .submit = fakeSubmit,
+        .abandon = fakeAbandon, .applicationIndex = applicationIndex,
+        .callPrepare = fakeCallPrepare, .callQueue = handle<VkQueue>(9), .callFamily = 0,
+        .callBudget = callBudget,
+    };
+    copy.callPrepareParked = fakeCallPrepareParked;
+    copy.parkedCount = fakeParkedCount;
+    return copy;
 }
 DeferredPresent::InternalRealCopy internalCallCopy(const std::shared_ptr<InternalFake>& fake, uint32_t applicationIndex,
         uint32_t callBudget) {
@@ -4935,10 +4982,10 @@ void internalRealCallPreparedAtCall() {
     fake->callLower = 5;
     fake->callWait = handle<VkSemaphore>(96);
     expect(worker.beginBatch(1), "call-prepared batch rejected");
-    bool callPrepared = false;
+    InlineCallOutcome outcome{};
     expect(worker.enqueueInternalReal(info, DeferredPresent::Clock::now() + 5ms, internalCallCopy(fake, 1, 4),
-            {}, 0, &callPrepared), "call-prepared internal real rejected");
-    expect(callPrepared && fake->callCalls == 1, "the copy was not made at the present call");
+            {}, 0, &outcome), "call-prepared internal real rejected");
+    expect(outcome == InlineCallOutcome::Call && fake->callCalls == 1, "the copy was not made at the present call");
     expect(fake->callQueue == handle<VkQueue>(9) && fake->callContinuation == continuation,
         "the call copy used the wrong queue or continuation");
     expect(worker.callHeldOutputs() == 1, "a call-prepared real was not counted as call-held before its present");
@@ -4974,9 +5021,9 @@ void internalRealCallPreparedWhileStopping() {
     fake->callWait = handle<VkSemaphore>(96);
     DeferredPresent worker(queue, recordingPresent);
     expect(worker.beginBatch(1), "stopping call-prepared batch rejected");
-    bool callPrepared = false;
+    InlineCallOutcome outcome{};
     expect(worker.enqueueInternalReal(info, DeferredPresent::Clock::now() + 300ms, internalCallCopy(fake, 1, 4),
-            {}, 0, &callPrepared) && callPrepared, "stopping call-prepared internal real rejected");
+            {}, 0, &outcome) && outcome == InlineCallOutcome::Call, "stopping call-prepared internal real rejected");
     worker.closeBatch();
     std::this_thread::sleep_for(50ms);
     DeferredPresentTestAccess::requestStop(worker);
@@ -5008,12 +5055,14 @@ void internalRealCallRefusedFallsBack() {
         fake->lowerIndex = 6;
         fake->presentWait = handle<VkSemaphore>(95);
         expect(worker.beginBatch(1), "refused call-copy batch rejected");
-        bool callPrepared = true;
+        InlineCallOutcome outcome = InlineCallOutcome::Call;
         expect(worker.enqueueInternalReal(info, DeferredPresent::Clock::now() + 5ms,
-                internalCallCopy(fake, 1, zeroBudget ? 0 : 4), {}, 0, &callPrepared),
+                internalCallCopy(fake, 1, zeroBudget ? 0 : 4), {}, 0, &outcome),
             "refused call copy rejected the internal real");
-        expect(!callPrepared && worker.callHeldOutputs() == 0,
-            "a refused call copy was counted as call-held");
+        // FP1: a zero budget refuses before the copy (budget); a not-ready lower image is an acquire fallback.
+        expect(!inlineCallServed(outcome) && outcome == (zeroBudget ? InlineCallOutcome::Budget : InlineCallOutcome::Acquire),
+            "a refused call copy was not classified by its reason");
+        expect(worker.callHeldOutputs() == 0, "a refused call copy was counted as call-held");
         expect(fake->callCalls == (zeroBudget ? 0 : 1),
             "a zero call budget asked for the copy, or a budget that allows it did not");
         worker.closeBatch();
@@ -5045,10 +5094,11 @@ void internalRealCallSubmitErrorSettles() {
     auto fake = std::make_shared<InternalFake>();
     fake->callResult = VK_ERROR_DEVICE_LOST;
     expect(worker.beginBatch(1), "failed call-copy batch rejected");
-    bool callPrepared = false;
+    InlineCallOutcome outcome{};
     expect(worker.enqueueInternalReal(info, DeferredPresent::Clock::now() + 5ms, internalCallCopy(fake, 1, 4),
-            {}, 0, &callPrepared), "failed call copy rejected the internal real");
-    expect(callPrepared && fake->callCalls == 1, "the consumed call copy was not admitted as prepared");
+            {}, 0, &outcome), "failed call copy rejected the internal real");
+    expect(outcome == InlineCallOutcome::Other && fake->callCalls == 1,
+        "the consumed call copy was not admitted as prepared, or its error was not classified as other");
     worker.closeBatch();
     const auto completion = worker.finish(UINT64_MAX);
     expect(completion && completion->count == 1 && completion->calls[0].skipped &&
@@ -5079,12 +5129,13 @@ void internalRealCallBudgetLimitsSecondReal() {
     fake->lowerIndex = 6;
     fake->presentWait = handle<VkSemaphore>(95);
     expect(worker.beginBatch(2), "two-output call batch rejected");
-    bool first = false, second = true;
+    InlineCallOutcome first{}, second{};
     expect(worker.enqueueInternalReal(info, DeferredPresent::Clock::now() + 2ms, internalCallCopy(fake, 1, 1),
             {}, 0, &first), "first call real rejected");
     expect(worker.enqueueInternalReal(info, DeferredPresent::Clock::now() + 4ms, internalCallCopy(fake, 2, 1),
             {}, 0, &second), "second call real rejected");
-    expect(first && !second && fake->callCalls == 1, "a call budget of one did not hold exactly one call copy");
+    expect(first == InlineCallOutcome::Call && second == InlineCallOutcome::Budget && fake->callCalls == 1,
+        "a call budget of one did not hold exactly one call copy, or the second real was not budget-refused");
     expect(worker.callHeldOutputs() == 1, "the held call copy was not the only call-held output");
     worker.closeBatch();
     const auto completion = worker.finish(UINT64_MAX);
@@ -5099,6 +5150,135 @@ void internalRealCallBudgetLimitsSecondReal() {
     expect(copyPresents.size() == 2 && copyPresents[0] == std::pair{5u, handle<VkSemaphore>(96)} &&
         copyPresents[1] == std::pair{6u, handle<VkSemaphore>(95)},
         "the budget-limited batch was not presented once per real with its own lower image");
+}
+
+// FP2 rule 3: a parked image serves the real at the call without queue->mutex. The test holds the mutex across the
+// admission, so a try-lock would have failed. The parked image is presented with its own index and wait.
+void internalRealParkedTakeIsLockFree() {
+    auto queue = std::make_shared<DeferredPresentQueue>();
+    queue->queue = handle<VkQueue>(7);
+    DeferredPresent worker(queue, recordingPresent);
+    copyPresents.clear();
+    const auto swapchain = handle<VkSwapchainKHR>(11);
+    const auto continuation = handle<VkSemaphore>(12);
+    uint32_t applicationImage = 1;
+    const VkPresentInfoKHR info{.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+        .waitSemaphoreCount = 1, .pWaitSemaphores = &continuation,
+        .swapchainCount = 1, .pSwapchains = &swapchain, .pImageIndices = &applicationImage};
+    auto fake = std::make_shared<InternalFake>();
+    fake->parkedReported = fake->parkedAvailable = 1;
+    fake->parkedLower = 4;
+    fake->parkedWait = handle<VkSemaphore>(97);
+    expect(worker.beginBatch(1), "parked batch rejected");
+    InlineCallOutcome outcome{};
+    {
+        const std::lock_guard held(queue->mutex);
+        expect(worker.enqueueInternalReal(info, DeferredPresent::Clock::now() + 5ms,
+                internalParkedCallCopy(fake, 1, 4), {}, 0, &outcome), "parked real rejected");
+    }
+    expect(outcome == InlineCallOutcome::Parked && fake->parkedCalls == 1 && fake->callCalls == 0,
+        "a parked real was not served from the parked image without the queue lock");
+    expect(fake->parkedReported == 0, "the parked image was not consumed by the call");
+    expect(worker.callHeldOutputs() == 1, "a parked real was not call-held from admission");
+    worker.closeBatch();
+    const auto completion = worker.finish(UINT64_MAX);
+    expect(completion && completion->count == 1 && completion->result == VK_SUCCESS &&
+        !completion->calls[0].skipped && completion->calls[0].callPrepared &&
+        completion->calls[0].imageIndex == 4, "a parked real did not present from its parked image");
+    expect(fake->tryCalls == 0 && fake->submits == 0, "a parked real called the worker's acquire or submit");
+    expect(copyPresents.size() == 1 && copyPresents[0] == std::pair{4u, handle<VkSemaphore>(97)},
+        "a parked real was not presented once with its parked index and wait");
+}
+
+// FP1: with no parked image and the queue held by the worker, the call falls back as lock, and never calls the copy.
+void internalRealCallLockMissFallsBack() {
+    auto queue = std::make_shared<DeferredPresentQueue>();
+    queue->queue = handle<VkQueue>(7);
+    DeferredPresent worker(queue, recordingPresent);
+    copyPresents.clear();
+    const auto swapchain = handle<VkSwapchainKHR>(11);
+    const auto continuation = handle<VkSemaphore>(12);
+    uint32_t applicationImage = 1;
+    const VkPresentInfoKHR info{.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+        .waitSemaphoreCount = 1, .pWaitSemaphores = &continuation,
+        .swapchainCount = 1, .pSwapchains = &swapchain, .pImageIndices = &applicationImage};
+    auto fake = std::make_shared<InternalFake>();
+    fake->lowerIndex = 6;
+    fake->presentWait = handle<VkSemaphore>(95);
+    expect(worker.beginBatch(1), "lock-miss batch rejected");
+    InlineCallOutcome outcome{};
+    {
+        const std::lock_guard held(queue->mutex);
+        expect(worker.enqueueInternalReal(info, DeferredPresent::Clock::now() + 5ms,
+                internalParkedCallCopy(fake, 1, 4), {}, 0, &outcome), "lock-miss real rejected");
+    }
+    expect(outcome == InlineCallOutcome::Lock && fake->callCalls == 0 && fake->parkedCalls == 0,
+        "a call with no parked image and a busy queue was not classified as lock");
+    worker.closeBatch();
+    const auto completion = worker.finish(UINT64_MAX);
+    expect(completion && completion->count == 1 && !completion->calls[0].skipped &&
+        !completion->calls[0].callPrepared && completion->calls[0].workerCopy,
+        "a lock-miss real did not fall back to the worker copy");
+    expect(copyPresents.size() == 1 && copyPresents[0] == std::pair{6u, handle<VkSemaphore>(95)},
+        "a lock-miss real was not presented once by the worker");
+}
+
+// FP2 rule 2, the mutation check: parked images count toward the budget. One parked image fills a budget of one, so a
+// fresh copy at the call is refused as budget and never asked for. Dropping the parked count admits it.
+void internalRealParkedCountsTowardBudget() {
+    auto queue = std::make_shared<DeferredPresentQueue>();
+    queue->queue = handle<VkQueue>(7);
+    DeferredPresent worker(queue, recordingPresent);
+    copyPresents.clear();
+    const auto swapchain = handle<VkSwapchainKHR>(11);
+    const auto continuation = handle<VkSemaphore>(12);
+    uint32_t applicationImage = 1;
+    const VkPresentInfoKHR info{.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+        .waitSemaphoreCount = 1, .pWaitSemaphores = &continuation,
+        .swapchainCount = 1, .pSwapchains = &swapchain, .pImageIndices = &applicationImage};
+    auto fake = std::make_shared<InternalFake>();
+    fake->parkedReported = 1;   // one parked image, none available to the take
+    fake->parkedAvailable = 0;
+    fake->lowerIndex = 6;
+    fake->presentWait = handle<VkSemaphore>(95);
+    expect(worker.beginBatch(1), "budget batch rejected");
+    InlineCallOutcome outcome{};
+    expect(worker.enqueueInternalReal(info, DeferredPresent::Clock::now() + 5ms,
+            internalParkedCallCopy(fake, 1, 1), {}, 0, &outcome), "budget real rejected");
+    expect(outcome == InlineCallOutcome::Budget && fake->callCalls == 0,
+        "a parked image did not count toward the call budget");
+    worker.closeBatch();
+    const auto completion = worker.finish(UINT64_MAX);
+    expect(completion && completion->count == 1 && !completion->calls[0].skipped && completion->calls[0].workerCopy,
+        "a budget-refused real did not fall back to the worker copy");
+}
+
+// FP2 rule 2: the park hook runs after a lower present with queue->mutex held, and reports the outputs call-held after
+// that present. The output just presented is not counted: a call-prepared one leaves the count.
+void parkHookReceivesHeldOutputs() {
+    auto queue = std::make_shared<DeferredPresentQueue>();
+    queue->queue = handle<VkQueue>(7);
+    DeferredPresent worker(queue, recordingPresent);
+    copyPresents.clear();
+    const auto swapchain = handle<VkSwapchainKHR>(11);
+    const auto continuation = handle<VkSemaphore>(12);
+    uint32_t applicationImage = 1;
+    const VkPresentInfoKHR info{.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+        .waitSemaphoreCount = 1, .pWaitSemaphores = &continuation,
+        .swapchainCount = 1, .pSwapchains = &swapchain, .pImageIndices = &applicationImage};
+    auto fake = std::make_shared<InternalFake>();
+    fake->callLower = 5;
+    fake->callWait = handle<VkSemaphore>(96);
+    worker.setParkHook(fake, &recordPark);
+    expect(worker.beginBatch(1), "park hook batch rejected");
+    InlineCallOutcome outcome{};
+    expect(worker.enqueueInternalReal(info, DeferredPresent::Clock::now() + 5ms, internalCallCopy(fake, 1, 4),
+            {}, 0, &outcome) && outcome == InlineCallOutcome::Call, "park hook call real rejected");
+    worker.closeBatch();
+    const auto completion = worker.finish(UINT64_MAX);
+    expect(completion && completion->count == 1 && !completion->calls[0].skipped, "park hook real was skipped");
+    expect(fake->parks == 1 && fake->parkHeld == 0,
+        "the park hook did not run once after the call-prepared present, with that output excluded");
 }
 
 int main([[maybe_unused]] int argc, [[maybe_unused]] char** argv) {
@@ -5144,6 +5324,8 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char** argv) {
     internalRealPreparationSubmitErrorSkipsWithoutAbandon(); internalRealLockSplitIsProfileOnly();
     internalRealCallPreparedAtCall(); internalRealCallPreparedWhileStopping(); internalRealCallRefusedFallsBack();
     internalRealCallSubmitErrorSettles(); internalRealCallBudgetLimitsSecondReal();
+    internalRealParkedTakeIsLockFree(); internalRealCallLockMissFallsBack();
+    internalRealParkedCountsTowardBudget(); parkHookReceivesHeldOutputs();
     lowerRecordsFollowHistory(); inFlightCallFollowsHistory(); synchronousPresentIsNoted();
     presentsAreNotedWithHistory();
     // X3 last: presentedJobsKeepTheirFenceForTheLowerPresent uses the shared `present` fake, which

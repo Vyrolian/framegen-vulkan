@@ -20,6 +20,7 @@
 #include <array>
 #include <atomic>
 #include <bitset>
+#include <cassert>
 #include <cstdio>
 #include <cstdlib>
 #include <exception>
@@ -99,8 +100,23 @@ namespace fgvk::layer {
         // release paths write. The emulated acquire never touches these. It reads only
         // the ring (its own mutex) and the release and tail counters, and it takes
         // queue->mutex only for the queued submit (F10).
+        // Private values: queue->mutex only. lastCallReleaseValue is written by the game-queue submit and read by the
+        // worker, so it is guarded by the leaf mutex below (FP2).
         uint64_t lastReleaseValue{0};
         uint64_t lastCallReleaseValue{0};
+        // FP2: the release value of the last drain submit (queue->mutex). retireParked waits it on the release timeline.
+        uint64_t lastDrainValue{0};
+        // FP2 (leaf mutex): the direct generated outputs whose lower image is taken and not yet presented. Each one is counted
+        // by the budget (see beginCallOutput).
+        size_t callInFlight{0};
+        // FP2: the leaf mutex. It is taken alone or nested inside queue->mutex, never around a present, a private-queue
+        // submit or a blocking wait (a zero-timeout query is allowed). It guards every field a game-queue submit writes
+        // or reads: parking (the pool, the policy and the busy flags), callInFlight, lastCallReleaseValue, copyClock,
+        // copyClockAt, copyContext, copyPending, copyPendingGame, copyPendingValue and copyPendingSource. copyTimed is written only while
+        // a copy is recorded, before any submit of that pair. lastReleaseValue, lastDrainValue and the ring's states are
+        // not guarded by it.
+        std::mutex leaf;
+        LowerParkingPool parking;
         // FI2: the family of the command pool the copies are recorded from (vk.cmdpool(), created for the application's
         // queue family). A call-side copy needs the game queue to be of this family (rule 5). Set in initialize().
         uint32_t copyFamily{UINT32_MAX};
@@ -180,8 +196,12 @@ namespace fgvk::layer {
         }
         // FI2b, caller holds queue->mutex: the release signal of a submit on submitQueue. The private queue
         // signals `release`, any other queue (the game queue at the call) signals `callRelease`.
-        [[nodiscard]] ReleaseSignal releaseSignalOn(const VkQueue submitQueue) const {
-            return planReleaseSignal(submitQueue == queue->queue, lastReleaseValue, lastCallReleaseValue);
+        [[nodiscard]] ReleaseSignal releaseSignalOn(const VkQueue submitQueue) {
+            if (submitQueue == queue->queue)
+                return planReleaseSignal(true, lastReleaseValue, 0);
+            // FP2: the game queue's last value is read under the leaf mutex, the lock its submits write it under.
+            const std::lock_guard leafLock(leaf);
+            return planReleaseSignal(false, 0, lastCallReleaseValue);
         }
         // D7, D7d (pacing profile only): stores one emulated acquire's release wait value, tail
         // value and time for the stall probe. The caller checks the profile first.
@@ -233,6 +253,7 @@ namespace fgvk::layer {
                 return false;
             lowerFences.push_back(fence);
         }
+        parking.reserveSlots(slotCount);
         copies.resize(static_cast<size_t>(imageCount) * lowerCount);
         return true;
     }
@@ -481,6 +502,12 @@ namespace fgvk::layer {
         // Removed before impl is destroyed, so the stall watchdog never dumps a destroyed owner.
         if (present_diagnostics::pacingProfileEnabled())
             unregisterStallProbe(this);
+        // FP2 rule 6: a parked image is drained before the timelines are waited, so its drain is one of the waited values.
+        // The parking worker holds the owner alive, so no other thread reads the pool here.
+        if (impl && impl->parking.size() > 0) {
+            const std::lock_guard queueLock(impl->queue->mutex);
+            static_cast<void>(drainParkedLocked());
+        }
     }
 
     // D7 stall probe. The registry, its mutex and the watchdog flag are leaked on purpose:
@@ -517,6 +544,7 @@ namespace fgvk::layer {
             case lowerOpPresentGenerated: return "pres_gen";
             case lowerOpPresentSync: return "pres_sync";
             case lowerOpAcquireCall: return "acq_call";
+            case lowerOpAcquirePark: return "acq_park";
             default: return "unknown";
             }
         }
@@ -641,8 +669,12 @@ namespace fgvk::layer {
         // Held only while try-locked: the worker's submits and fence resets need it, so the
         // fields read under it cannot change during the dump.
         line << " last_release=" << (locked ? std::to_string(impl->lastReleaseValue) : std::string{"busy"});
-        line << " last_call_release="
-             << (locked ? std::to_string(impl->lastCallReleaseValue) : std::string{"busy"});
+        std::string lastCallText{"busy"};
+        if (locked) {
+            const std::lock_guard leafLock(impl->leaf);
+            lastCallText = std::to_string(impl->lastCallReleaseValue);
+        }
+        line << " last_call_release=" << lastCallText;
         line << " acq_wait=" << impl->probeAcquireWait.load(std::memory_order_relaxed)
              << " acq_index=" << impl->probeAcquireIndex.load(std::memory_order_relaxed)
              << " acq_tail=" << impl->probeAcquireTail.load(std::memory_order_relaxed);
@@ -996,7 +1028,8 @@ namespace fgvk::layer {
             const uint32_t applicationIndex, const uint32_t lowerIndex, const uint32_t slot,
             const std::span<const VkSemaphore> waits) {
         VkResult result = VK_ERROR_UNKNOWN;
-        // FI2b: the copy signals the release timeline of the queue it is submitted on.
+        // FI2b: the copy signals the release timeline of the queue it is submitted on. FP2: a game-queue submit may run
+        // without queue->mutex. The leaf mutex guards the state it reads and writes, and no leaf section waits or submits.
         const ReleaseSignal signal = impl->releaseSignalOn(queue);
         try {
             const auto& recorded = impl->copies.at(
@@ -1030,20 +1063,28 @@ namespace fgvk::layer {
                     .pSignalSemaphores = signals.data(),
                 };
                 const size_t pair = static_cast<size_t>(applicationIndex) * impl->lowerImages.size() + lowerIndex;
-                if (impl->copyTimes) collectCopyTimestampsLocked(pair);
+                if (impl->copyTimes) {
+                    const std::lock_guard leafLock(impl->leaf);
+                    collectCopyTimestampsLocked(pair);
+                }
                 result = queue == impl->queue->queue
                     ? submitPrivate(*impl->queue, impl->funcs.QueueSubmit, submit, impl->lowerFences.at(slot),
                         SubmitTag{.kind = submitKindCopy, .applicationIndex = applicationIndex, .lowerIndex = lowerIndex})
                     : impl->funcs.QueueSubmit(queue, 1, &submit, impl->lowerFences.at(slot));
                 if (result == VK_SUCCESS) {
-                    if (impl->copyTimes && impl->copyTimed.at(pair)) {
-                        impl->copyPending.at(pair) = 1;
-                        impl->copyPendingValue.at(pair) = signal.value;
-                        impl->copyPendingSource.at(pair) = applicationIndex < impl->images.size()
-                            ? impl->copySource[applicationIndex].load(std::memory_order_relaxed) : 0;
-                        impl->copyPendingGame.at(pair) = queue != impl->queue->queue ? 1 : 0;
+                    {
+                        const std::lock_guard leafLock(impl->leaf);
+                        if (impl->copyTimes && impl->copyTimed.at(pair)) {
+                            impl->copyPending.at(pair) = 1;
+                            impl->copyPendingValue.at(pair) = signal.value;
+                            impl->copyPendingSource.at(pair) = applicationIndex < impl->images.size()
+                                ? impl->copySource[applicationIndex].load(std::memory_order_relaxed) : 0;
+                            impl->copyPendingGame.at(pair) = queue != impl->queue->queue ? 1 : 0;
+                        }
+                        impl->lastValueOf(signal.timeline) = signal.value;
+                        // The consumed slot is free for acquire again once its fence signals (the worker checks it).
+                        impl->parking.release(slot);
                     }
-                    impl->lastValueOf(signal.timeline) = signal.value;
                     static_cast<void>(impl->ring.complete(applicationIndex, signal.value, signal.timeline));
                     return VK_SUCCESS;
                 }
@@ -1053,7 +1094,11 @@ namespace fgvk::layer {
         }
         // Nothing was submitted. Free the image at the last value of this copy's timeline, and keep the failure.
         impl->failSticky(result);
-        static_cast<void>(impl->ring.complete(applicationIndex, impl->lastValueOf(signal.timeline), signal.timeline));
+        {
+            const std::lock_guard leafLock(impl->leaf);
+            impl->parking.release(slot);
+            static_cast<void>(impl->ring.complete(applicationIndex, impl->lastValueOf(signal.timeline), signal.timeline));
+        }
         return result;
     }
 
@@ -1067,6 +1112,7 @@ namespace fgvk::layer {
             auto pool = std::make_unique<vk::TimestampQueryPool>(vk, static_cast<uint32_t>(pairs * 2));
             auto sources = std::make_unique<std::atomic<uint64_t>[]>(impl->images.size());
             const std::lock_guard lock(impl->queue->mutex);
+            const std::lock_guard leafLock(impl->leaf);
             impl->copyClock.emplace(impl->device, calibrate, pool->timestampValidBits(),
                 pool->timestampPeriodNanoseconds());
             impl->copyContext = context;
@@ -1149,6 +1195,31 @@ namespace fgvk::layer {
 
         // Synchronous paths reach here only after every older deferred batch was
         // joined, so no worker callback is using the lower-acquire slots.
+        // FP2 (fixed): a parked image is consumed before any fresh acquire, whatever the park target. The copy waits the
+        // parked slot's acquire semaphore and signals its fence, and submitCopyLocked frees the slot. So no fresh acquire
+        // runs while an image is parked, and none targets a busy slot. A sticky owner drains its parked images instead.
+        {
+            const std::lock_guard queueLock(impl->queue->mutex);
+            const bool sticky = impl->sticky.load() != VK_SUCCESS;
+            std::optional<ParkedLower> entry;
+            {
+                const std::lock_guard leafLock(impl->leaf);
+                if (acquireTakesParkedFirst(sticky, impl->parking.size()))
+                    entry = impl->parking.take();
+            }
+            if (entry) {
+                const VkResult taken = submitCopyLocked(impl->queue->queue, image.applicationIndex,
+                    entry->lowerIndex, entry->slot, waits);
+                if (taken == VK_SUCCESS) {
+                    *lowerIndex = entry->lowerIndex;
+                    if (copied)
+                        *copied = impl->copied.at(entry->lowerIndex).handle();
+                }
+                return taken;
+            }
+            if (sticky)
+                static_cast<void>(drainParkedLocked());
+        }
         const uint32_t slot = impl->lowerHead;
         uint32_t index = 0;
         // D7d: this acquire runs without queue->mutex, so its clock reads are the only addition,
@@ -1186,12 +1257,36 @@ namespace fgvk::layer {
     }
 
     VkResult InternalSwapchainImages::workerTryAcquire(uint32_t* const lowerIndex) {
+        // FP2 rule 5: a parked image is taken before the worker acquires, so parking never starves the worker. Its slot
+        // stays busy until the worker's submit releases it, and the worker's own slot is the parked one.
+        {
+            const std::lock_guard leafLock(impl->leaf);
+            // Taken whatever the park target is: a target of zero keeps the parked images for this acquire (FP2 rule 6).
+            if (acquireTakesParkedFirst(impl->sticky.load() != VK_SUCCESS, impl->parking.size())) {
+                if (const auto entry = impl->parking.take()) {
+                    *lowerIndex = entry->lowerIndex;
+                    impl->workerSlot = entry->slot;
+                    return VK_SUCCESS;
+                }
+            }
+        }
         return tryAcquireLowerLocked(lowerOpAcquireReal, lowerIndex);
     }
 
     VkResult InternalSwapchainImages::tryAcquireLowerLocked(const uint8_t op, uint32_t* const lowerIndex) {
-        if (const auto sticky = impl->sticky.load(); sticky < 0)
+        if (const auto sticky = impl->sticky.load(); sticky < 0) {
+            // FP2 rule 6: a sticky owner parks nothing, so its parked images are drained here, under the queue lock.
+            static_cast<void>(drainParkedLocked());
             return sticky;
+        }
+        // FP2: the next slot is busy while its image is parked or a call owns it. Its fence is not read then.
+        bool slotBusy{};
+        {
+            const std::lock_guard leafLock(impl->leaf);
+            slotBusy = impl->parking.isBusy(impl->lowerHead);
+        }
+        if (slotBusy)
+            return VK_NOT_READY;
         // Poll only: this runs under the queue lock and must never sleep.
         const VkFence fence = impl->lowerFences.at(impl->lowerHead);
         const VkResult ready = impl->funcs.GetFenceStatus(impl->device, fence);
@@ -1226,9 +1321,9 @@ namespace fgvk::layer {
             uint32_t* const lowerIndex, VkSemaphore* const presentWait, bool* const consumed) {
         *consumed = false;
         // The copy must be recorded for the game queue's family (rule 5). The check runs before the lower
-        // acquire, so a refusal takes no lower image.
+        // acquire, so a refusal takes no lower image. FP1: a refusal is an error, which counts as other, not not-ready.
         if (impl->copyFamily != callFamily)
-            return VK_NOT_READY;
+            return VK_ERROR_FEATURE_NOT_PRESENT;
         uint32_t index = 0;
         const VkResult acquired = tryAcquireLowerLocked(lowerOpAcquireCall, &index);
         if (acquired != VK_SUCCESS)
@@ -1241,6 +1336,198 @@ namespace fgvk::layer {
         if (submitted == VK_SUCCESS)
             *presentWait = impl->copied.at(index).handle();
         return submitted;
+    }
+
+    VkResult InternalSwapchainImages::callPrepareParked(const VkQueue callQueue, const uint32_t callFamily,
+            const uint32_t applicationIndex, const VkSemaphore continuation,
+            uint32_t* const lowerIndex, VkSemaphore* const presentWait, bool* const consumed) {
+        *consumed = false;
+        if (impl->copyFamily != callFamily)
+            return VK_ERROR_FEATURE_NOT_PRESENT;
+        std::optional<ParkedLower> entry;
+        {
+            // The slot stays busy after the take. submitCopyLocked releases it once the copy is submitted or has failed.
+            const std::lock_guard leafLock(impl->leaf);
+            if (const VkResult sticky = impl->sticky.load(); sticky != VK_SUCCESS)
+                return sticky;
+            entry = impl->parking.take();
+        }
+        if (!entry)
+            return VK_NOT_READY;
+        *lowerIndex = entry->lowerIndex;
+        // From here the application image is taken: submitCopyLocked frees it on success and on failure.
+        *consumed = true;
+        const std::array waits{continuation};
+        const VkResult submitted = submitCopyLocked(callQueue, applicationIndex, entry->lowerIndex, entry->slot, waits);
+        if (submitted == VK_SUCCESS)
+            *presentWait = impl->copied.at(entry->lowerIndex).handle();
+        return submitted;
+    }
+
+    VkSwapchainKHR InternalSwapchainImages::lowerSwapchainHandle() const noexcept {
+        return impl->lowerSwapchain;
+    }
+
+    void InternalSwapchainImages::setParkPolicy(const uint32_t target, const uint32_t budget,
+            const uint32_t callFamily) {
+        const std::lock_guard leafLock(impl->leaf);
+        impl->parking.setPolicy(target, budget, impl->copyFamily == callFamily);
+    }
+
+    size_t InternalSwapchainImages::parkedCount() const {
+        const std::lock_guard leafLock(impl->leaf);
+        return impl->parking.size();
+    }
+
+    size_t InternalSwapchainImages::outstandingCallOutputs() const {
+        const std::lock_guard leafLock(impl->leaf);
+        return impl->parking.size() + impl->callInFlight;
+    }
+
+    void InternalSwapchainImages::beginCallOutput() {
+        const std::lock_guard leafLock(impl->leaf);
+        ++impl->callInFlight;
+    }
+
+    void InternalSwapchainImages::endCallOutput() noexcept {
+        const std::lock_guard leafLock(impl->leaf);
+        if (impl->callInFlight > 0)
+            --impl->callInFlight;
+    }
+
+    std::optional<ParkedLowerTake> InternalSwapchainImages::takeParked() {
+        const std::lock_guard leafLock(impl->leaf);
+        if (impl->sticky.load() != VK_SUCCESS)
+            return std::nullopt;
+        const auto entry = impl->parking.take();
+        if (!entry)
+            return std::nullopt;
+        ++impl->callInFlight;
+        return ParkedLowerTake{
+            .lowerIndex = entry->lowerIndex,
+            .slot = entry->slot,
+            .semaphore = impl->lowerAcquire.at(entry->slot).handle(),
+        };
+    }
+
+    VkResult InternalSwapchainImages::finishParkedCopy(const VkQueue gameQueue, const uint32_t slot) {
+        // The copy that waited this slot was submitted on gameQueue just before, so this empty submit runs after it.
+        // The fence signals when that copy has completed, which is when the slot may be acquired again.
+        const VkResult signalled = impl->funcs.QueueSubmit(gameQueue, 0, nullptr, impl->lowerFences.at(slot));
+        if (signalled != VK_SUCCESS) {
+            impl->failSticky(signalled);
+            return signalled;
+        }
+        const std::lock_guard leafLock(impl->leaf);
+        impl->parking.release(slot);
+        return VK_SUCCESS;
+    }
+
+    void InternalSwapchainImages::failParkedTake(const uint32_t slot) noexcept {
+        // The slot stays busy: its fence is never submitted, so nothing may acquire into it.
+        static_cast<void>(slot);
+        impl->failSticky(VK_ERROR_UNKNOWN);
+    }
+
+    VkResult InternalSwapchainImages::drainParkedLocked() {
+        // FP2 rule 6, caller holds queue->mutex. Each parked image gets one submit on the private queue: it waits the
+        // image's acquire semaphore, signals the slot fence, and signals the release timeline, so the destructor and
+        // retireParked wait it. The slot is freed after the submit returns.
+        // Callers are retireParked, the destructor, and the sticky error paths (tryAcquireLowerLocked, parkAfterPresent,
+        // materialize) only. Never on a park target change: a drained image stays acquired until the lower swapchain is
+        // destroyed, so draining on a target change would leave the application one lower image short for the rest of the
+        // swapchain's life. Repeated park, target-zero and acquire cycles would then starve the acquire.
+        VkResult result = VK_SUCCESS;
+        for (;;) {
+            std::optional<ParkedLower> entry;
+            {
+                const std::lock_guard leafLock(impl->leaf);
+                entry = impl->parking.take();
+            }
+            if (!entry)
+                break;
+            const VkSemaphore wait = impl->lowerAcquire.at(entry->slot).handle();
+            const VkPipelineStageFlags stage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+            const uint64_t value = impl->lastReleaseValue + 1;
+            const VkSemaphore releaseHandle = impl->release->handle();
+            const VkTimelineSemaphoreSubmitInfo timeline{
+                .sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
+                .signalSemaphoreValueCount = 1,
+                .pSignalSemaphoreValues = &value,
+            };
+            const VkSubmitInfo submit{
+                .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                .pNext = &timeline,
+                .waitSemaphoreCount = 1,
+                .pWaitSemaphores = &wait,
+                .pWaitDstStageMask = &stage,
+                .commandBufferCount = 0,
+                .pCommandBuffers = nullptr,
+                .signalSemaphoreCount = 1,
+                .pSignalSemaphores = &releaseHandle,
+            };
+            const VkResult submitted = submitPrivate(*impl->queue, impl->funcs.QueueSubmit, submit,
+                impl->lowerFences.at(entry->slot), SubmitTag{.kind = submitKindRelease});
+            if (submitted == VK_SUCCESS) {
+                impl->lastReleaseValue = value;
+                impl->lastDrainValue = value;
+            } else {
+                impl->failSticky(submitted);
+                result = submitted;
+            }
+            const std::lock_guard leafLock(impl->leaf);
+            impl->parking.release(entry->slot);
+        }
+        return result;
+    }
+
+    void InternalSwapchainImages::parkAfterPresent(const size_t callHeld) {
+        // FP2 rule 2, caller holds queue->mutex right after a lower present of the worker. The decision is
+        // parkAfterPresentAction: a sticky owner drains its parked images (the error path). A park target of zero drains
+        // nothing and parks nothing, so the parked images stay in the pool for the next acquire (FP2 rule 6, fixed).
+        const bool sticky = impl->sticky.load() != VK_SUCCESS;
+        ParkAction action = ParkAction::Nothing;
+        {
+            const std::lock_guard leafLock(impl->leaf);
+            // The in-flight direct outputs hold lower images too, so the budget counts them (FP2 rule 2).
+            action = parkAfterPresentAction(sticky, impl->parking.size(), callHeld + impl->callInFlight,
+                impl->parking.target(), impl->parking.budgetOutputs(), impl->parking.isBusy(impl->lowerHead));
+        }
+        if (action == ParkAction::Drain) {
+            static_cast<void>(drainParkedLocked());
+            return;
+        }
+        if (action != ParkAction::Park)
+            return;
+        uint32_t index{};
+        // The acquire commits workerSlot. It is zero-timeout, so the worker never sleeps here.
+        if (tryAcquireLowerLocked(lowerOpAcquirePark, &index) != VK_SUCCESS)
+            return;
+        const std::lock_guard leafLock(impl->leaf);
+        const bool parked = impl->parking.push(ParkedLower{.lowerIndex = index, .slot = impl->workerSlot});
+        assert(parked && "FP2: parking outside the budget");
+        static_cast<void>(parked);
+    }
+
+    VkResult InternalSwapchainImages::retireParked(const uint64_t timeoutNs) {
+        uint64_t drained = 0;
+        {
+            const std::lock_guard queueLock(impl->queue->mutex);
+            if (impl->parking.size() > 0)
+                static_cast<void>(drainParkedLocked());
+            drained = impl->lastDrainValue;
+        }
+        if (drained == 0)
+            return VK_SUCCESS;
+        // Waits the last drain's value only. The drains run in queue order, so this covers each of them.
+        const VkSemaphore handle = impl->release->handle();
+        const VkSemaphoreWaitInfo waitInfo{
+            .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
+            .semaphoreCount = 1,
+            .pSemaphores = &handle,
+            .pValues = &drained,
+        };
+        return impl->funcs.WaitSemaphoresKHR(impl->device, &waitInfo, timeoutNs);
     }
 
     VkResult InternalSwapchainImages::workerSubmit(const VkQueue queue,
@@ -1275,6 +1562,21 @@ namespace fgvk::layer {
             const uint32_t applicationIndex, const VkSemaphore continuation) {
         return static_cast<InternalSwapchainImages*>(owner)->workerAbandon(
             queue, applicationIndex, continuation);
+    }
+
+    VkResult internalRealCallPrepareParked(void* const owner, const VkQueue callQueue, const uint32_t callFamily,
+            const uint32_t applicationIndex, const VkSemaphore continuation, uint32_t* const lowerIndex,
+            VkSemaphore* const presentWait, bool* const consumed) {
+        return static_cast<InternalSwapchainImages*>(owner)->callPrepareParked(callQueue, callFamily,
+            applicationIndex, continuation, lowerIndex, presentWait, consumed);
+    }
+
+    size_t internalRealParkedCount(void* const owner) {
+        return static_cast<const InternalSwapchainImages*>(owner)->outstandingCallOutputs();
+    }
+
+    void internalRealParkAfterPresent(void* const owner, const size_t callHeld) {
+        static_cast<InternalSwapchainImages*>(owner)->parkAfterPresent(callHeld);
     }
 
     VkResult internalRealCallPrepare(void* const owner, const VkQueue callQueue, const uint32_t callFamily,

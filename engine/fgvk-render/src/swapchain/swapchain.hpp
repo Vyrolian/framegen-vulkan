@@ -596,11 +596,12 @@ namespace fgvk::layer {
         // present() clears it on entry.
         bool applicationChainHandedOff{false};
         // FI2: set only around the final real present of presentGeneratedFrames, when that batch's generated output went
-        // to the game queue at the call. enqueueInternalRealPresent reads eligible and sets prepared when the real was
-        // copied at the call. present() clears both on entry.
+        // to the game queue at the call. enqueueInternalRealPresent reads eligible and sets outcome where the real's copy
+        // was attempted at the call. FP1: batch marks an attached batch, whose real is counted. present() clears all on entry.
         struct InlineRealCall {
             bool eligible{false};
-            bool prepared{false};
+            bool batch{false};
+            InlineCallOutcome outcome{InlineCallOutcome::None};
         };
         InlineRealCall inlineRealCall{};
 

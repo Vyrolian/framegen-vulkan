@@ -267,18 +267,26 @@ bool Swapchain::enqueueInternalRealPresent(const vk::Vulkan& vk,
     };
     // FI2: the copy at this call, only for a real whose batch's generated output went to the game queue at the call.
     // Admission decides whether it runs (lock, budget, release order, family); a refusal leaves the worker copy.
+    // FP2 rule 3: a parked image is taken first, through the same owner (see admit).
     if (this->inlineRealCall.eligible) {
         copy.callPrepare = &internalRealCallPrepare;
+        copy.callPrepareParked = &internalRealCallPrepareParked;
+        copy.parkedCount = &internalRealParkedCount;
         copy.callQueue = vk.queue();
         copy.callFamily = vk.queueFamilyIndex();
         copy.callBudget = inlineCallLowerBudget(this->info.images.size(), this->info.surfaceMinImageCount,
             layerHeldLowerImages);
     }
-    bool callPrepared = false;
+    // FP2: the worker parks lower images for this owner after its lower presents, for an attached swapchain only.
+    if (this->attachedGeneration())
+        this->deferredPresent->setParkHook(image.keepAlive, &internalRealParkAfterPresent);
+    InlineCallOutcome outcome = InlineCallOutcome::None;
     if (!this->deferredPresent->enqueueInternalReal(presentInfo, deadline, copy, {}, this->reflexPresentId,
-            &callPrepared))
+            &outcome))
         return false;
-    this->inlineRealCall.prepared = callPrepared;
+    // FP1: an attempted copy sets the outcome. A real that was not eligible keeps the cascade set by its batch.
+    if (this->inlineRealCall.eligible && outcome != InlineCallOutcome::None)
+        this->inlineRealCall.outcome = outcome;
     image.handedOff = true;
     return true;
 }

@@ -3,6 +3,7 @@
 #pragma once
 
 #include "bridge_present_timing.hpp"
+#include "swapchain/inline_generation.hpp"
 #include "swapchain/low_latency.hpp"
 #include "swapchain/submit_tag_tracker.hpp"
 
@@ -280,6 +281,9 @@ namespace fgvk::layer::present_diagnostics {
             // FI2: outputs of attached, eligible batches copied at the call (generated, real), and outputs of those batches
             // that fell back to the worker copy.
             size_t inlineCallGenerated{}, inlineCallReal{}, inlineCallFallback{};
+            // FP1: the fallbacks by reason (the five sum to inlineCallFallback), and the outputs served from a parked image.
+            size_t inlineCallFallbackLock{}, inlineCallFallbackAcquire{}, inlineCallFallbackBudget{};
+            size_t inlineCallFallbackCascade{}, inlineCallFallbackOther{}, inlineCallParked{};
             size_t fifoCallerTimingSources{};
             std::array<OutputSample, outputTraceCapacity> outputTrace{};
             size_t outputTraceCount{}, outputTraceDropped{};
@@ -470,7 +474,19 @@ namespace fgvk::layer::present_diagnostics {
         // FI2: one output of an attached, eligible batch: copied at the call (generated or real), or a worker fallback.
         void inlineCallGeneratedActive() { ++window.inlineCallGenerated; }
         void inlineCallRealActive() { ++window.inlineCallReal; }
-        void inlineCallFallbackActive() { ++window.inlineCallFallback; }
+        // FP1: one worker fallback, counted under its reason. Every fallback has exactly one reason.
+        void inlineCallFallbackActive(const fgvk::layer::InlineCallOutcome reason) {
+            ++window.inlineCallFallback;
+            switch (reason) {
+            case fgvk::layer::InlineCallOutcome::Lock: ++window.inlineCallFallbackLock; break;
+            case fgvk::layer::InlineCallOutcome::Acquire: ++window.inlineCallFallbackAcquire; break;
+            case fgvk::layer::InlineCallOutcome::Budget: ++window.inlineCallFallbackBudget; break;
+            case fgvk::layer::InlineCallOutcome::Cascade: ++window.inlineCallFallbackCascade; break;
+            default: ++window.inlineCallFallbackOther; break;
+            }
+        }
+        // FP1: one output served from an image the worker parked.
+        void inlineCallParkedActive() { ++window.inlineCallParked; }
         // Persistent for this swapchain: set once a present uses F5 internal images.
         void internalImagesActive() { internalImages = true; }
         // QH2: persistent for this swapchain: set once a generated copy is submitted on the transfer queue.

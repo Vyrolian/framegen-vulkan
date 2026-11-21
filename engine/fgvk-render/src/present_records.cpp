@@ -856,6 +856,13 @@ void formatPacingWindowBody(const PacingWindowPayload& payload, const PacingProf
     // FI2: outputs of attached, eligible batches copied at the call (generated, real), and worker fallbacks.
     line << " inline_call_gen=" << window.inlineCallGenerated << " inline_call_real=" << window.inlineCallReal
          << " inline_call_fallback=" << window.inlineCallFallback;
+    // FP1: the fallbacks by reason (they sum to inline_call_fallback), and the outputs served from a parked image.
+    line << " inline_call_fallback_lock=" << window.inlineCallFallbackLock
+         << " inline_call_fallback_acquire=" << window.inlineCallFallbackAcquire
+         << " inline_call_fallback_budget=" << window.inlineCallFallbackBudget
+         << " inline_call_fallback_cascade=" << window.inlineCallFallbackCascade
+         << " inline_call_fallback_other=" << window.inlineCallFallbackOther
+         << " inline_call_parked=" << window.inlineCallParked;
     line << '\n';
     for (size_t i = 0; i < window.outputTraceCount; ++i) {
         const auto& sample = window.outputTrace[i];

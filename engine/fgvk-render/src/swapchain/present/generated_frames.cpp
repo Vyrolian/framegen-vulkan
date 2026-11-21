@@ -2,6 +2,7 @@
 
 #include "swapchain/swapchain.hpp"
 #include "swapchain/inline_generation.hpp"
+#include "swapchain/internal_images.hpp"
 #include "swapchain/present/internal.hpp"
 #include "swapchain/retirement.hpp"
 #include "fgvk-common/helpers/errors.hpp"
@@ -123,6 +124,19 @@ VkResult Swapchain::presentGeneratedFrames(
     // is eligible for the call only when every output went direct (rule 5).
     const bool inlineBatch = tryDirect && inlineCalls;
     bool inlineAllDirect = inlineBatch;
+    // FP2: the owner of this present's internal images parks lower images for an attached batch: target 2 for an eligible
+    // batch (one generated output and one real), 0 otherwise. A direct generated output takes a parked image only when its
+    // acquire is on the owner's lower swapchain (FP2.4: invocation.swapchain is the handle the lower swapchain was created
+    // under, so this holds for every present of the swapchain).
+    InternalSwapchainImages* const parkOwner = inlineCalls && this->internalPresent ? this->internalPresent->owner : nullptr;
+    const bool parkSameSwapchain = parkOwner && parkOwner->lowerSwapchainHandle() == invocation.swapchain;
+    if (parkOwner) {
+        parkOwner->setParkPolicy(inlineBatch ? inlineParkTarget : 0, callBudget, invocation.vk.queueFamilyIndex());
+        if (this->deferredPresent)
+            this->deferredPresent->setParkHook(this->internalPresent->keepAlive, &internalRealParkAfterPresent);
+    }
+    // The parked images of the owner count toward the budget. Zero when no owner parks.
+    const auto parkedNow = [parkOwner]() -> size_t { return parkOwner ? parkOwner->parkedCount() : 0; };
     const bool privateStaging = sameQueueCopies && !transferCopies && nativeImmediate2x &&
         this->info.deferredPresentQueue->tail != VK_NULL_HANDLE &&
         // Earlier outputs still need the private queue ahead of this backend wait.
@@ -136,20 +150,68 @@ VkResult Swapchain::presentGeneratedFrames(
         auto& pass = this->currentRenderSlot().passes.at(i);
         uint32_t acquiredImageIndex{};
         VkResult result{};
-        const bool direct = tryDirect &&
-            (!inlineCalls || inlineCallHoldFits(this->deferredPresent->callHeldOutputs(), callBudget)) && ([&] {
-            result = this->deferredPresent->pollAcquire([&] {
-                return invocation.vk.df().AcquireNextImageKHR(
-                    invocation.vk.dev(), invocation.swapchain, 0,
-                    pass.acquireSemaphore.handle(), VK_NULL_HANDLE, &acquiredImageIndex);
-            });
-            return result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR;
-        })();
+        // FP1: where this output's call copy ended (counted for an attached batch only, below).
+        InlineCallOutcome callOutcome = InlineCallOutcome::None;
+        // FP2 rule 4: a parked image taken for this direct generated output. Its slot's semaphore is waited by the copy.
+        std::optional<ParkedLowerTake> parked;
+        bool direct = false;
+        if (tryDirect) {
+            if (inlineCalls && parkSameSwapchain)
+                parked = parkOwner->takeParked();
+            if (parked) {
+                // FP2 rule 4: the parked image is counted by the budget already, so taking it needs no budget check and no
+                // queue lock. The total of call-held and parked outputs does not change.
+                direct = true;
+                acquiredImageIndex = parked->lowerIndex;
+                result = VK_SUCCESS;
+                callOutcome = InlineCallOutcome::Parked;
+            } else {
+                bool budgetFits = !inlineCalls || inlineCallHoldFits(
+                    inlineCallOutputsHeld(this->deferredPresent->callHeldOutputs(), parkedNow()), callBudget);
+                bool lockMissed = false;
+                bool acquired = false;
+                if (budgetFits) {
+                    result = this->deferredPresent->pollAcquire([&] {
+                        // FP2 rule 2: the decisive budget check runs under queue->mutex, where the worker parks.
+                        if (inlineCalls && !inlineCallHoldFits(
+                                inlineCallOutputsHeld(this->deferredPresent->callHeldOutputs(), parkedNow()), callBudget)) {
+                            budgetFits = false;
+                            return VK_NOT_READY;
+                        }
+                        const VkResult acquired = invocation.vk.df().AcquireNextImageKHR(
+                            invocation.vk.dev(), invocation.swapchain, 0,
+                            pass.acquireSemaphore.handle(), VK_NULL_HANDLE, &acquiredImageIndex);
+                        // FP2: the acquired image is in flight from this acquire, counted under queue->mutex so that the
+                        // worker's park check cannot miss it. The count ends when this output's iteration ends.
+                        if (parkOwner && (acquired == VK_SUCCESS || acquired == VK_SUBOPTIMAL_KHR))
+                            parkOwner->beginCallOutput();
+                        return acquired;
+                    }, &lockMissed);
+                    acquired = result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR;
+                }
+                direct = acquired;
+                callOutcome = classifyGeneratedAttempt(budgetFits, lockMissed, acquired,
+                    result == VK_NOT_READY || result == VK_TIMEOUT);
+            }
+        }
+        // FP2: a served output is in flight from its take or acquire until this iteration ends, on every exit (the copy's
+        // enqueue or synchronous present, a failure, or OUT_OF_DATE). The worker counts it in callHeldLocked from its
+        // admission, so the overlap is brief and only over-counts, never under-counts, the held outputs.
+        struct CallOutputScope {
+            InternalSwapchainImages* owner;
+            ~CallOutputScope() {
+                if (owner) owner->endCallOutput();
+            }
+        } const callOutputScope{direct ? parkOwner : nullptr};
         if (inlineBatch) {
-            if (!direct) inlineAllDirect = false;
+            if (!inlineCallServed(callOutcome)) inlineAllDirect = false;
             if (this->pacingProfile) {
-                if (direct) this->pacingProfile->inlineCallGeneratedActive();
-                else this->pacingProfile->inlineCallFallbackActive();
+                if (inlineCallServed(callOutcome)) {
+                    this->pacingProfile->inlineCallGeneratedActive();
+                    if (callOutcome == InlineCallOutcome::Parked) this->pacingProfile->inlineCallParkedActive();
+                } else {
+                    this->pacingProfile->inlineCallFallbackActive(inlineCallFallbackReason(callOutcome));
+                }
             }
         }
 
@@ -488,8 +550,9 @@ VkResult Swapchain::presentGeneratedFrames(
         if (outputTimer)
             outputTimer->write(commandBuffer.handle(), VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 1);
 
+        // FP2 rule 4: a parked image's copy waits the slot's semaphore, which its acquire signalled, not this pass's.
         std::array<VkSemaphore, 2> waitSemaphores{
-            pass.acquireSemaphore.handle(), VK_NULL_HANDLE
+            parked ? parked->semaphore : pass.acquireSemaphore.handle(), VK_NULL_HANDLE
         };
         size_t waitSemaphoreCount = 1;
         if (i) {
@@ -511,22 +574,34 @@ VkResult Swapchain::presentGeneratedFrames(
         const auto generatedSubmitStarted = startPhaseTimer();
         const auto copyFence = i == plan.scheduledGeneratedFrames.size() - 1
             ? this->currentRenderSlot().fence.handle() : VK_NULL_HANDLE;
-        present_diagnostics::observeCopySubmission({
-            .context = this->diagnosticsState.contextId,
-            .source = this->pacingProfile ? this->pacingProfile->sourceOrdinal() : 0,
-            .swapchain = invocation.swapchain, .generated = true,
-            .imageIndex = acquiredImageIndex, .pass = static_cast<uint32_t>(i),
-            .device = invocation.vk.dev(), .queue = invocation.vk.queue(), .command = commandBuffer.handle(),
-            .waits = std::span{waitSemaphores}.first(waitSemaphoreCount), .signals = signalSemaphores,
-            .timelineWait = this->syncSemaphore->handle(), .waitValue = this->frameState.backendTimelineIndex,
-            .fence = copyFence,
-        }, [&] {
-            commandBuffer.submit(invocation.vk,
-                std::span{waitSemaphores}.first(waitSemaphoreCount),
-                this->syncSemaphore->handle(), this->frameState.backendTimelineIndex,
-                signalSemaphores, VK_NULL_HANDLE, 0, copyFence
-            );
-        });
+        try {
+            present_diagnostics::observeCopySubmission({
+                .context = this->diagnosticsState.contextId,
+                .source = this->pacingProfile ? this->pacingProfile->sourceOrdinal() : 0,
+                .swapchain = invocation.swapchain, .generated = true,
+                .imageIndex = acquiredImageIndex, .pass = static_cast<uint32_t>(i),
+                .device = invocation.vk.dev(), .queue = invocation.vk.queue(), .command = commandBuffer.handle(),
+                .waits = std::span{waitSemaphores}.first(waitSemaphoreCount), .signals = signalSemaphores,
+                .timelineWait = this->syncSemaphore->handle(), .waitValue = this->frameState.backendTimelineIndex,
+                .fence = copyFence,
+            }, [&] {
+                commandBuffer.submit(invocation.vk,
+                    std::span{waitSemaphores}.first(waitSemaphoreCount),
+                    this->syncSemaphore->handle(), this->frameState.backendTimelineIndex,
+                    signalSemaphores, VK_NULL_HANDLE, 0, copyFence
+                );
+            });
+            if (parked) {
+                // FP2 rule 4: an empty submit after the copy signals the slot's fence, so the slot may be acquired again
+                // once the copy has completed. The game thread owns the slot until this returns.
+                const VkResult signalled = parkOwner->finishParkedCopy(invocation.vk.queue(), parked->slot);
+                if (signalled != VK_SUCCESS)
+                    throw ls::vulkan_error(signalled, "vkQueueSubmit() failed");
+            }
+        } catch (...) {
+            if (parked) parkOwner->failParkedTake(parked->slot);
+            throw;
+        }
         if (i == plan.scheduledGeneratedFrames.size() - 1)
             slot.inFlight = true;
         if (outputTimer && this->pacingProfile) {
@@ -577,7 +652,7 @@ VkResult Swapchain::presentGeneratedFrames(
             // OUT_OF_DATE, otherwise a game can block while tearing down an
             // acquired image that never reached the presentation engine.
             // FI2: the real goes through the worker copy here, not the call, so an eligible batch counts it as a fallback.
-            if (inlineBatch && this->pacingProfile) this->pacingProfile->inlineCallFallbackActive();
+            if (inlineBatch && this->pacingProfile) this->pacingProfile->inlineCallFallbackActive(InlineCallOutcome::Other);
             const auto originalResult = this->presentOriginalImage(
                 invocation, continuationSemaphore,
                 invocation.nextChain,
@@ -604,17 +679,26 @@ VkResult Swapchain::presentGeneratedFrames(
 
     // FI2 rule 5: the real may be copied at this call only when the batch is eligible and every output went direct. The
     // flag is read by enqueueInternalRealPresent and cleared here, so no other present sees it.
-    this->inlineRealCall = {.eligible = inlineBatch && inlineAllDirect};
+    // FP1: a real of a batch with a fallback is a cascade, and is not attempted at the call.
+    this->inlineRealCall = {
+        .eligible = inlineBatch && inlineAllDirect,
+        .batch = inlineBatch,
+        .outcome = inlineBatch && !inlineAllDirect ? InlineCallOutcome::Cascade : InlineCallOutcome::None,
+    };
     const auto result = this->presentOriginalImage(
         invocation, this->postCopySemaphores.at(this->presentationSlotFor(invocation.imageIndex)).first.handle(),
         invocation.nextChain,
         &originalPresentDuration
     );
-    const bool inlineRealPrepared = this->inlineRealCall.prepared;
+    const InlineCallOutcome realOutcome = this->inlineRealCall.outcome;
     this->inlineRealCall = {};
     if (inlineBatch && this->pacingProfile) {
-        if (inlineRealPrepared) this->pacingProfile->inlineCallRealActive();
-        else this->pacingProfile->inlineCallFallbackActive();
+        if (inlineCallServed(realOutcome)) {
+            this->pacingProfile->inlineCallRealActive();
+            if (realOutcome == InlineCallOutcome::Parked) this->pacingProfile->inlineCallParkedActive();
+        } else {
+            this->pacingProfile->inlineCallFallbackActive(inlineCallFallbackReason(realOutcome));
+        }
     }
     const bool originalPresentRequestedRecreation =
         result == VK_ERROR_OUT_OF_DATE_KHR;

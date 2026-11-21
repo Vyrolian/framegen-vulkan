@@ -1190,8 +1190,12 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
             }
         }
     }
-    if (bypassGeneratedFrames)
+    if (bypassGeneratedFrames) {
+        // FP2: a history-only present takes no call copy, so an attached owner parks nothing for it.
+        if (this->internalPresent && this->internalPresent->owner && this->attachedGeneration())
+            this->internalPresent->owner->setParkPolicy(0, 0, invocation.vk.queueFamilyIndex());
         return this->presentHistoryOnly(invocation, plan);
+    }
     this->bridgeOutputBatchSize = plan.scheduledGeneratedFrames.size() + 1;
     return this->presentGeneratedFrames(
         invocation, plan

@@ -82,6 +82,8 @@ inline constexpr uint8_t lowerOpPresentReal = 4;
 inline constexpr uint8_t lowerOpPresentGenerated = 5;
 inline constexpr uint8_t lowerOpPresentSync = 6;
 inline constexpr uint8_t lowerOpAcquireCall = 7;
+// FP2: an acquire the worker makes after a lower present, to park one image for a later call (see parkAfterPresent).
+inline constexpr uint8_t lowerOpAcquirePark = 8;
 // D7d: one finished lower acquire or present, with the private queue's tail value at its record.
 // A zero startNs marks an entry that was never written. Times are steady-clock nanoseconds.
 struct LowerRecord {
@@ -535,6 +537,12 @@ public:
         VkQueue callQueue{};
         uint32_t callFamily{};
         uint32_t callBudget{};
+        // FP2 rule 3: takes a parked lower image for the call copy without queue->mutex (see
+        // InternalSwapchainImages::callPrepareParked). Null when the owner does not park.
+        VkResult (*callPrepareParked)(void* owner, VkQueue callQueue, uint32_t callFamily, uint32_t applicationIndex,
+            VkSemaphore continuation, uint32_t* lowerIndex, VkSemaphore* presentWait, bool* consumed) = nullptr;
+        // FP2: the owner's parked images, counted by the call budget (see admit and the direct generated output).
+        size_t (*parkedCount)(void* owner) = nullptr;
         bool prepared{};
         uint32_t preparedLower{};
         VkSemaphore preparedWait{};
@@ -766,18 +774,29 @@ public:
         const std::lock_guard lock(mutex);
         return callHeldLocked();
     }
+    // FP2: the owner that parks lower images after this worker's lower presents (see parkAfterPresentLocked). The swapchain
+    // sets it before its first internal present. One swapchain has one owner, so the first one set is kept.
+    struct ParkHook {
+        std::shared_ptr<void> owner;
+        void (*park)(void* owner, size_t callHeld) = nullptr;
+    };
+    void setParkHook(std::shared_ptr<void> owner, void (*park)(void* owner, size_t callHeld)) {
+        if (!owner || !park) return;
+        const std::lock_guard lock(mutex);
+        if (!parkHook.owner) parkHook = ParkHook{std::move(owner), park};
+    }
     // The real output of an internal application image. Admission matches
     // enqueue. The worker acquires a lower image, copies the application image
     // into it and presents it: the copy is prepared as soon as the worker takes
     // the job when a lower image is free (see prepareInternalReal), otherwise at
     // the deadline (see presentInternalReal). info.pWaitSemaphores[0] is the
     // continuation that copy waits.
-    // FI2: callPrepared, when given, is set to whether the copy was made at the call (see InternalRealCopy::callPrepare).
+    // FP1: outcome, when given, is set where the call copy was attempted (see admit). It is left unchanged otherwise.
     bool enqueueInternalReal(const VkPresentInfoKHR& info, Clock::time_point deadline,
             const InternalRealCopy& copy, OutputIdentity identity = {}, uint64_t reflexPresentId = 0,
-            bool* callPrepared = nullptr) {
+            InlineCallOutcome* outcome = nullptr) {
         return copy.tryAcquire && copy.submit && copy.abandon && copy.owner &&
-            admit(info, deadline, false, &copy, identity, false, reflexPresentId, callPrepared);
+            admit(info, deadline, false, &copy, identity, false, reflexPresentId, outcome);
     }
     // A generated output whose lower acquire/copy belongs to the worker. Only
     // the newest open batch admits it, so the real output follows in that batch.
@@ -871,9 +890,12 @@ public:
     // lock: waiting for an image while holding it could prevent the worker
     // from returning the retained image. Contention takes the ordinary join
     // path, without blocking a timeout-zero caller on the queue mutex.
+    // FP1: missed, when given, is set to whether the try-lock failed, which is the only way this returns NOT_READY
+    // without a driver call.
     template<typename Acquire>
-    VkResult pollAcquire(Acquire&& acquire) {
+    VkResult pollAcquire(Acquire&& acquire, bool* const missed = nullptr) {
         const std::unique_lock lock(queue->mutex, std::try_to_lock);
+        if (missed) *missed = !lock.owns_lock();
         return lock.owns_lock() ? acquire() : VK_NOT_READY;
     }
 
@@ -1091,8 +1113,8 @@ private:
     // present-ID registration and batch rules are the same for both.
     bool admit(const VkPresentInfoKHR& info, Clock::time_point deadline, bool generated,
             const InternalRealCopy* internal, OutputIdentity identity = {}, bool directGenerated = false,
-            uint64_t reflexPresentId = 0, bool* callPrepared = nullptr) {
-        if (callPrepared) *callPrepared = false;
+            uint64_t reflexPresentId = 0, InlineCallOutcome* outcome = nullptr) {
+        if (outcome) *outcome = InlineCallOutcome::None;
         if (info.swapchainCount != 1 || info.waitSemaphoreCount != 1 || info.pResults ||
                 !info.pSwapchains || !info.pImageIndices || !info.pWaitSemaphores)
             return false;
@@ -1126,27 +1148,57 @@ private:
             job.phase = identity.phase;
             job.directGenerated = directGenerated;
             job.reflexPresentId = reflexPresentId;
-            // FI2: the copy at the present call. Every admission check above has passed, so the job is queued below
-            // whatever the copy returns, and a consumed image is never left for the worker. The try-lock never waits:
-            // a busy queue leaves the job to the worker, as before.
-            if (internal && internal->callPrepare && internal->callQueue && internal->owner &&
-                    inlineCallHoldFits(callHeldLocked(), internal->callBudget)) {
-                std::unique_lock queueLock(queue->mutex, std::try_to_lock);
-                if (queueLock.owns_lock()) {
-                    uint32_t lowerIndex{};
-                    VkSemaphore presentWait{};
-                    bool consumed{};
-                    const VkResult result = internal->callPrepare(internal->owner.get(), internal->callQueue,
+            // FI2/FP2: the copy at the present call. Every admission check above has passed, so the job is queued below
+            // whatever the copy returns, and a consumed image is never left for the worker. FP2 rule 3: a parked image is
+            // taken first, without queue->mutex. It is already counted by the budget, so it needs no budget check. Without one,
+            // the fresh copy needs room for one more output, with the parked images counted. The queue try-lock never waits:
+            // a busy queue leaves the job to the worker, as before. The budget is checked again under the lock, because the
+            // worker parks only with that lock, so the parked count cannot grow once it is held.
+            if (internal && internal->callPrepare && internal->callQueue && internal->owner) {
+                uint32_t lowerIndex{};
+                VkSemaphore presentWait{};
+                bool consumed{};
+                VkResult result = VK_NOT_READY;
+                InlineCallOutcome callOutcome = InlineCallOutcome::None;
+                const size_t parked = internal->parkedCount ? internal->parkedCount(internal->owner.get()) : 0;
+                if (parked > 0 && internal->callPrepareParked) {
+                    result = internal->callPrepareParked(internal->owner.get(), internal->callQueue,
                         internal->callFamily, internal->applicationIndex, info.pWaitSemaphores[0],
                         &lowerIndex, &presentWait, &consumed);
-                    if (consumed) {
-                        job.internal.prepared = true;
-                        job.internal.preparedLower = lowerIndex;
-                        job.internal.preparedWait = presentWait;
-                        job.internal.preparedError = result;
-                    }
-                    if (callPrepared) *callPrepared = consumed;
+                    if (consumed)
+                        callOutcome = result == VK_SUCCESS ? InlineCallOutcome::Parked : InlineCallOutcome::Other;
                 }
+                if (!consumed) {
+                    bool budgetFits = inlineCallHoldFits(inlineCallOutputsHeld(callHeldLocked(), parked), internal->callBudget);
+                    bool lockMissed = false;
+                    CallCopyStatus status = CallCopyStatus::Error;
+                    if (budgetFits) {
+                        std::unique_lock queueLock(queue->mutex, std::try_to_lock);
+                        lockMissed = !queueLock.owns_lock();
+                        if (!lockMissed) {
+                            const size_t parkedNow = internal->parkedCount ? internal->parkedCount(internal->owner.get()) : 0;
+                            budgetFits = inlineCallHoldFits(inlineCallOutputsHeld(callHeldLocked(), parkedNow),
+                                internal->callBudget);
+                            if (budgetFits) {
+                                result = internal->callPrepare(internal->owner.get(), internal->callQueue,
+                                    internal->callFamily, internal->applicationIndex, info.pWaitSemaphores[0],
+                                    &lowerIndex, &presentWait, &consumed);
+                                if (consumed)
+                                    status = result == VK_SUCCESS ? CallCopyStatus::Done : CallCopyStatus::Error;
+                                else
+                                    status = result == VK_NOT_READY ? CallCopyStatus::NotReady : CallCopyStatus::Error;
+                            }
+                        }
+                    }
+                    callOutcome = classifyRealAttempt(true, budgetFits, lockMissed, status);
+                }
+                if (consumed) {
+                    job.internal.prepared = true;
+                    job.internal.preparedLower = lowerIndex;
+                    job.internal.preparedWait = presentWait;
+                    job.internal.preparedError = result;
+                }
+                if (outcome) *outcome = callOutcome;
             }
             batch.jobs[batch.produced++] = std::move(job);
         }
@@ -1170,6 +1222,8 @@ private:
     // retiring batch finds a free entry.
     std::array<std::optional<Completion>, 4> completedQueue{};
     std::shared_ptr<DeferredPresentQueue> queue;
+    // FP2: the owner that parks lower images (see setParkHook). Read under mutex.
+    ParkHook parkHook;
     PFN_vkQueuePresentKHR present;
     // RA1: the lower markers of this worker's presents, set once by setReflexMarkers.
     ReflexMarkerSink reflexMarkers;
@@ -1253,6 +1307,18 @@ private:
         outputOffsetController.limited = {};
         outputOffsetController.forget();
         realOffsetAutoNs.store(0, std::memory_order_relaxed);
+    }
+    // FP2, caller holds queue->mutex, right after a lower present of this worker. Hands the owner the outputs call-held after
+    // this present. The presented output is not counted when it was call-held: its lower image is out of the layer's hands
+    // once presented. Nothing is parked while stopping.
+    void parkAfterPresentLocked(const bool presentedCallHeld) {
+        // The mutex is held across the park, so the owner's parked and in-flight counts are read in step with the
+        // admissions, which hold this mutex too (lock order: queue->mutex, this mutex, then the owner's leaf mutex).
+        const std::lock_guard lock(mutex);
+        if (stopping || !parkHook.owner || !parkHook.park) return;
+        size_t held = callHeldLocked();
+        if (presentedCallHeld && held > 0) --held;
+        parkHook.park(parkHook.owner.get(), held);
     }
     // RP1, caller holds queue->mutex, right after a worker present was marked: the lead's call record of that present.
     // The marker of the present is read later, by observeOutputOffsetLocked. Nothing is recorded with the lead off.
@@ -1700,6 +1766,8 @@ private:
             result.copyStatus = ready.copyStatus(ready.device, ready.copyFence);
             result.copySampledAt = Clock::now();
         }
+        // FP2: the lower present is done and queue->mutex is still held, so the owner may park one lower image.
+        parkAfterPresentLocked(job.internalActive && job.internal.prepared);
     }
 
     // The real output of an internal application image, produced by this worker
@@ -2333,6 +2401,8 @@ private:
                             result.copyStatus = ready.copyStatus(ready.device, ready.copyFence);
                             result.copySampledAt = Clock::now();
                         }
+                        // FP2: the generated lower present is done and queue->mutex is still held: the owner may park one image.
+                        parkAfterPresentLocked(job.directGenerated);
                     } else {
                         result.skipped = true;
                         // An acquire, copy or signal error outranks the skip decision.
