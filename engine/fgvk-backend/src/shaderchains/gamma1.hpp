@@ -44,6 +44,9 @@ namespace fgvk::backend {
         /// @param cmd command buffer
         void render(const vk::Vulkan& vk, const vk::CommandBuffer& cmd) const;
 
+        /// The dispatches render() records, in order, for grouped recording.
+        [[nodiscard]] std::vector<ManagedDispatch> dispatches() const;
+
         /// get the generated image
         /// @return image
         [[nodiscard]] const auto& getImage() const { return *this->image; }

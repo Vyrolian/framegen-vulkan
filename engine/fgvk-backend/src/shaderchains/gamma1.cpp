@@ -87,6 +87,19 @@ void Gamma1::prepare(std::vector<VkImage>& images) const {
 }
 
 void Gamma1::render(const vk::Vulkan& vk, const vk::CommandBuffer& cmd) const {
+    if (!backendOverlapEnabled()) {
+        for (const auto& set : this->sets)
+            set.dispatch(vk, cmd, dispatchExtent);
+        return;
+    }
+    const auto batch = this->dispatches();
+    ManagedShader::dispatchGroups(vk, cmd, batch);
+}
+
+std::vector<ManagedDispatch> Gamma1::dispatches() const {
+    std::vector<ManagedDispatch> batch;
+    batch.reserve(this->sets.size());
     for (const auto& set : this->sets)
-        set.dispatch(vk, cmd, dispatchExtent);
+        batch.push_back({std::cref(set), this->dispatchExtent});
+    return batch;
 }

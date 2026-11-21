@@ -8,6 +8,7 @@
 #include "fgvk-common/vulkan/image.hpp"
 #include "fgvk-common/vulkan/vulkan.hpp"
 
+#include <functional>
 #include <memory>
 #include <vector>
 
@@ -39,6 +40,11 @@ namespace fgvk::backend {
         /// @param cmd command buffer
         /// @param idx frame index
         void render(const vk::Vulkan& vk, const vk::CommandBuffer& cmd, size_t idx) const;
+
+        /// The dispatch render(idx) records, for grouped recording.
+        [[nodiscard]] std::vector<ManagedDispatch> dispatches(size_t idx) const {
+            return {ManagedDispatch{std::cref(this->sets.at(idx % this->sets.size())), this->dispatchExtent}};
+        }
 
         /// get the generated images
         /// @return vector of images

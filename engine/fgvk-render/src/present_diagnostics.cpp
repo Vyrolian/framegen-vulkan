@@ -258,6 +258,14 @@ bool pacingGpuSplitProfileEnabled() {
     return value;
 }
 
+bool pacingGpuPassProfileEnabled() {
+    static const bool value = [] {
+        const char* passes = std::getenv("FGVK_PACING_PROFILE_GPU_PASSES");
+        return pacingGpuSplitProfileEnabled() && passes && std::string_view(passes) == "1";
+    }();
+    return value;
+}
+
 bool pacingWaylandProfileEnabled() {
     static const bool value = [] {
         const char* environment = std::getenv("FGVK_PACING_PROFILE_WAYLAND");
@@ -494,6 +502,18 @@ void logPacingGpuSplitFrame(const uint64_t context, const uint64_t source, const
     present_records::enqueue(trace_recorder::RecordKind::PacingGpuSplit,
         present_records::PacingGpuSplitPayload{context, source, backendFrame, gameDoneNs,
             sourceCopyEndNs, fgStartNs, prepassEndNs, generatedEndNs, batchEndNs});
+}
+
+void logPacingGpuPass(const uint64_t context, const uint32_t step, const std::string_view name,
+        const bool overlap, const uint64_t batches, const int64_t p50Ns, const int64_t p95Ns) noexcept {
+    if (!pacingProfileEnabled()) return;
+    try {
+        present_records::PacingGpuPassPayload payload{.context = context, .batches = batches,
+            .p50Ns = p50Ns, .p95Ns = p95Ns, .step = step, .overlap = overlap};
+        const auto length = std::min(name.size(), payload.name.size() - 1);
+        std::memcpy(payload.name.data(), name.data(), length);
+        present_records::enqueue(trace_recorder::RecordKind::PacingGpuPass, payload);
+    } catch (...) {}
 }
 
 void logPacingOutputGpu(const uint64_t context, const uint64_t source, const bool available,

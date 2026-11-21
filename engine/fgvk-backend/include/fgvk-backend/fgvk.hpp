@@ -72,6 +72,17 @@ namespace fgvk::backend {
         int64_t batchEndNs{};         // Source-release end, CLOCK_MONOTONIC nanoseconds.
     };
 
+    /// One serial GPU step (GP1), aggregated over a window of generated batches. The step is the
+    /// duration from the previous step's end to this step's end, in nanoseconds.
+    struct PassStepSummary {
+        std::string name;     // Prepass steps, then generated steps of the first output; "+" joins runs that share a barrier.
+        uint32_t step{};      // Index of this step within its window, so windows concatenate unambiguously.
+        uint64_t batches{};   // Generated batches in the window.
+        int64_t p50Ns{};      // Nearest-rank median of the window.
+        int64_t p95Ns{};      // Nearest-rank 95th percentile of the window.
+        bool overlap{};       // Whether FGVK_BACKEND_OVERLAP=1 grouped the recording.
+    };
+
     ///
     /// Primitive exception class that deliveres a detailed error message
     ///
@@ -231,6 +242,16 @@ namespace fgvk::backend {
         /// observes only the slot it reuses, three batches back). Waits for nothing.
         /// @throws ls::vulkan_error when a status query fails
         void pollSplitProfiles(Context& context);
+
+        /// Enable per-step GPU timestamps (GP1) on a fresh context that already enabled
+        /// split profiling. Without split profiling it does nothing. Adds no wait: each
+        /// batch's steps are read after its existing fence has signalled.
+        /// @throws backend::error when the context was already scheduled or profiled
+        void enablePassStepProfile(Context& context);
+
+        /// Consume the completed step summaries, one per step per window of generated batches.
+        /// Performs no Vulkan operation.
+        [[nodiscard]] std::vector<PassStepSummary> takePassStepSummaries(Context& context);
 
         ///
         /// Schedule generated frames at explicit interpolation timestamps.

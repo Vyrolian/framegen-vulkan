@@ -5,6 +5,7 @@
 #include <array>
 #include <cstddef>
 #include <span>
+#include <vector>
 #include <vulkan/vulkan_core.h>
 
 namespace fgvk::backend {
@@ -30,6 +31,24 @@ namespace fgvk::backend {
             }
         }
         return true;
+    }
+
+    /// Exclusive end index of each maximal in-order run of mutually independent
+    /// dispatches. A run ends where the next dispatch is not independent of every
+    /// member so far, so a dependence only splits runs and never reorders them.
+    inline std::vector<size_t> independentRunEnds(
+            std::span<const std::span<const VkImageMemoryBarrier>> accesses) {
+        std::vector<size_t> ends;
+        size_t begin = 0;
+        for (size_t i = 1; i < accesses.size(); ++i) {
+            if (!independentComputeDispatches(accesses.subspan(begin, i + 1 - begin))) {
+                ends.push_back(i);
+                begin = i;
+            }
+        }
+        if (!accesses.empty())
+            ends.push_back(accesses.size());
+        return ends;
     }
 
     /// The owner supplies dead, same-format prepass images. Odd pyramid sizes

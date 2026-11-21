@@ -288,6 +288,12 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
                 split.fgStartNs, split.prepassEndNs, split.generatedEndNs, split.batchEndNs);
             return true;
         });
+        // GP1: one record per step per window of generated batches. Each summary carries its own step index.
+        if (present_diagnostics::pacingGpuPassProfileEnabled()) {
+            for (const auto& pass : this->instance->takePassStepSummaries(this->ctx.get()))
+                present_diagnostics::logPacingGpuPass(this->diagnosticsState.contextId, pass.step,
+                    pass.name, pass.overlap, pass.batches, pass.p50Ns, pass.p95Ns);
+        }
     }
     const DiagnosticsContextScope diagnosticsContext(
         this->diagnosticsState.contextId, this->pacingProfile.get()

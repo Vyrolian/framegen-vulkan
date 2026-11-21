@@ -38,6 +38,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <atomic>
@@ -100,6 +101,74 @@ namespace fgvk::backend {
         // The newest completed batch, whatever its kind; the pacing predictor reads it.
         std::optional<CompletedBatchEnd> latest;
     };
+
+    /// GP1 diagnostics: one BOTTOM_OF_PIPE timestamp after each serial step of a batch, read only after
+    /// the batch fence signalled. Window statistics cover generated batches, so every step has a sample there.
+    struct PassStepProfilingState {
+        // The prepass has 10 steps and the first generated output at most 33 with overlap, plus the batch start.
+        static constexpr uint32_t queryCount = 64;
+        std::array<std::optional<vk::TimestampQueryPool>, commandPhaseCount> pools;
+        // Names recorded with each phase's commands. Query k ends step k - 1: the prepass steps come
+        // first, then the generated steps of the first output.
+        struct PhaseNames {
+            std::vector<std::string> prepass;
+            std::vector<std::string> generated;
+        };
+        std::array<PhaseNames, commandPhaseCount> names;
+        bool overlap{};
+        // Set after a failed read; recorded commands remain valid but are no longer sampled.
+        bool failed{};
+        std::vector<std::string> stepNames;
+        std::vector<std::vector<int64_t>> samples;
+        size_t batches{};
+        std::vector<PassStepSummary> completed;
+    };
+
+    /// Writes one timestamp per recorded step into a phase's pool. Default-constructed marks write nothing,
+    /// so the unprofiled recording is unchanged.
+    class PassStepMarks {
+    public:
+        PassStepMarks() = default;
+        PassStepMarks(const vk::TimestampQueryPool& queries, VkCommandBuffer cmd,
+                uint32_t first, std::vector<std::string>& nameList)
+            : pool(&queries), commandBuffer(cmd), next(first), names(&nameList) {}
+
+        explicit operator bool() const { return this->pool != nullptr; }
+
+        /// Batch start: query zero, before the first step.
+        void start() const {
+            if (this->pool)
+                this->pool->write(this->commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 0);
+        }
+        /// Ends a step after the commands recorded since the previous mark.
+        void mark(std::string_view name) {
+            if (!this->pool)
+                return;
+            if (this->next >= PassStepProfilingState::queryCount)
+                throw std::logic_error("GP1 pass-step timestamps exceed the query pool");
+            this->pool->write(this->commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, this->next++);
+            this->names->emplace_back(name);
+        }
+    private:
+        const vk::TimestampQueryPool* pool{};
+        VkCommandBuffer commandBuffer{};
+        uint32_t next{};
+        std::vector<std::string>* names{};
+    };
+
+    /// Names one recorded run from its member labels: each label once, in order, joined with '+'.
+    template<typename Label>
+    std::string passRunName(std::span<const Label> labels, size_t begin, size_t end) {
+        std::string name;
+        for (size_t i = begin; i < end; ++i) {
+            if (i > begin && labels[i] == labels[i - 1])
+                continue;
+            if (!name.empty())
+                name += '+';
+            name += labels[i];
+        }
+        return name;
+    }
 
     error::error(const std::string& msg, const std::exception& inner)
         : std::runtime_error(msg + "\n- " + inner.what()) {}
@@ -168,6 +237,8 @@ namespace fgvk::backend {
         void enableSplitProfile(bool retainCompleted);
         [[nodiscard]] std::vector<SplitFrameProfile> takeCompletedSplitProfiles();
         [[nodiscard]] bool splitProfileEnabled() const { return this->split && !this->split->failed; }
+        void enablePassStepProfile();
+        [[nodiscard]] std::vector<PassStepSummary> takePassStepSummaries();
         [[nodiscard]] std::optional<CompletedBatchEnd> latestBatchEnd() const {
             return this->split && !this->split->failed ? this->split->latest : std::nullopt;
         }
@@ -214,6 +285,9 @@ namespace fgvk::backend {
         std::array<SplitBatch, inFlightDepth> splitBatches{};
         void recordSplitBatch(bool generated);
         void collectSplitProfiles(const std::array<bool, inFlightDepth>& signalled);
+        // GP1 pass-step timestamps; needs split boundaries and shares their batch bookkeeping.
+        std::unique_ptr<PassStepProfilingState> passSteps;
+        void collectPassSteps(size_t phase);
         using RecordedCommands = std::array<std::optional<vk::CommandBuffer>, commandPhaseCount>;
         std::vector<RecordedCommands> cmdbufs;
         RecordedCommands prepassDependency;
@@ -317,6 +391,15 @@ Instance::Instance(
 }
 
 namespace {
+    constexpr std::array<std::string_view, 3> alpha0Steps{"alpha0.s0", "alpha0.s1", "alpha0.s2"};
+    constexpr std::array<std::string_view, 4> beta1Steps{"beta1.0", "beta1.1", "beta1.2", "beta1.3"};
+    constexpr std::array<std::string_view, 7> gamma0Steps{
+        "gamma0.0", "gamma0.1", "gamma0.2", "gamma0.3", "gamma0.4", "gamma0.5", "gamma0.6"};
+    constexpr std::array<std::string_view, 7> gamma1Steps{
+        "gamma1.0", "gamma1.1", "gamma1.2", "gamma1.3", "gamma1.4", "gamma1.5", "gamma1.6"};
+    constexpr std::array<std::string_view, 3> delta0Steps{"delta0.0", "delta0.1", "delta0.2"};
+    constexpr std::array<std::string_view, 3> delta1Steps{"delta1.0", "delta1.1", "delta1.2"};
+
     constexpr auto previousWorkFenceTimeout = std::chrono::milliseconds(250);
     constexpr uint64_t previousWorkFenceTimeoutNs = static_cast<uint64_t>(
         std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -370,6 +453,26 @@ namespace {
         if (!detail.empty())
             std::cerr << "; " << detail;
         std::cerr << '\n';
+    }
+
+    /// Diagnostic only: one line per process, for the first pass-step read that failed.
+    void reportPassStepUnavailable(const std::string_view detail) {
+        static std::atomic<bool> reported{false};
+        if (reported.exchange(true))
+            return;
+        std::cerr << "framegen-vulkan: GPU pass-step profile unavailable; reason=queries; " << detail << '\n';
+    }
+
+    // Generated batches per pass-step summary; the render layer consumes each summary once.
+    constexpr size_t passWindowBatches = 240;
+    constexpr size_t passSummaryCapacity = 512;
+
+    /// Nearest-rank percentile of an ascending sample list, in nanoseconds.
+    int64_t nearestRankNs(const std::vector<int64_t>& sorted, const size_t percent) {
+        if (sorted.empty())
+            return 0;
+        const size_t rank = (percent * sorted.size() + 99) / 100;
+        return sorted.at(std::clamp<size_t>(rank, 1, sorted.size()) - 1);
     }
 
     /// find the cache file path
@@ -942,6 +1045,14 @@ std::vector<SplitFrameProfile> Instance::takeCompletedSplitProfiles(Context& con
     return context.takeCompletedSplitProfiles();
 }
 
+void Instance::enablePassStepProfile(Context& context) { // NOLINT (static)
+    context.enablePassStepProfile();
+}
+
+std::vector<PassStepSummary> Instance::takePassStepSummaries(Context& context) { // NOLINT (static)
+    return context.takePassStepSummaries();
+}
+
 bool Instance::splitProfileEnabled(const Context& context) const { // NOLINT (static)
     return context.splitProfileEnabled();
 }
@@ -994,6 +1105,80 @@ std::vector<SplitFrameProfile> Context::takeCompletedSplitProfiles() {
     return profiles;
 }
 
+void Context::enablePassStepProfile() {
+    if (this->fidx != 0 || this->hasScheduledWork() || this->passSteps)
+        throw backend::error("Pass-step profiling requires a fresh unscheduled context");
+    // Without split boundaries there is no fence-ordered reader; the split path has reported why.
+    if (!this->split || this->split->failed)
+        return;
+    const auto& vulkan = this->ctx.vk.get();
+    auto state = std::make_unique<PassStepProfilingState>();
+    state->overlap = backendOverlapEnabled();
+    for (auto& pool : state->pools)
+        pool.emplace(vulkan, PassStepProfilingState::queryCount);
+    this->passSteps = std::move(state);
+}
+
+std::vector<PassStepSummary> Context::takePassStepSummaries() {
+    if (!this->passSteps)
+        return {};
+    auto summaries = std::move(this->passSteps->completed);
+    this->passSteps->completed.clear();
+    return summaries;
+}
+
+void Context::collectPassSteps(const size_t phase) {
+    auto& state = *this->passSteps;
+    if (state.failed)
+        return;
+    const auto& names = state.names.at(phase);
+    const size_t stepCount = names.prepass.size() + names.generated.size();
+    if (stepCount == 0)
+        return;
+    const auto& pool = *state.pools.at(phase);
+    std::array<uint64_t, PassStepProfilingState::queryCount> ticks{};
+    try {
+        // The batch fence has signalled, so every query it wrote is available. A query that is not ready is no sample.
+        if (!pool.tryReadTimestamps(std::span{ticks}.first(stepCount + 1)))
+            return;
+        if (state.stepNames.empty()) {
+            state.stepNames = names.prepass;
+            state.stepNames.insert(state.stepNames.end(), names.generated.begin(), names.generated.end());
+            state.samples.assign(stepCount, {});
+            for (auto& samples : state.samples)
+                samples.reserve(passWindowBatches);
+        } else if (state.stepNames.size() != stepCount) {
+            return;
+        }
+        for (size_t step = 0; step < stepCount; ++step) {
+            const double microseconds = pool.elapsedMicroseconds(ticks.at(step), ticks.at(step + 1));
+            state.samples.at(step).push_back(static_cast<int64_t>(std::llround(microseconds * 1000.0)));
+        }
+        if (++state.batches < passWindowBatches)
+            return;
+        for (size_t step = 0; step < state.samples.size(); ++step) {
+            auto& samples = state.samples.at(step);
+            std::ranges::sort(samples);
+            state.completed.push_back(PassStepSummary{
+                .name = state.stepNames.at(step),
+                .step = static_cast<uint32_t>(step),
+                .batches = samples.size(),
+                .p50Ns = nearestRankNs(samples, 50),
+                .p95Ns = nearestRankNs(samples, 95),
+                .overlap = state.overlap,
+            });
+            samples.clear();
+        }
+        state.batches = 0;
+        if (state.completed.size() > passSummaryCapacity)
+            state.completed.erase(state.completed.begin(),
+                state.completed.begin() + static_cast<std::ptrdiff_t>(state.completed.size() - passSummaryCapacity));
+    } catch (const std::exception& error) {
+        state.failed = true;
+        reportPassStepUnavailable(error.what());
+    }
+}
+
 void Context::recordSplitBatch(const bool generated) {
     if (!this->split)
         return;
@@ -1022,6 +1207,8 @@ void Context::collectSplitProfiles(const std::array<bool, inFlightDepth>& signal
         if (!signalled.at(slot) || !batch.valid)
             continue;
         batch.valid = false;
+        if (this->passSteps && batch.generated)
+            this->collectPassSteps(batch.phase);
         try {
             std::array<uint64_t, 4> ticks{};
             if (!state.pools.at(batch.phase)->tryReadTimestamps(ticks))
@@ -1196,6 +1383,17 @@ const vk::CommandBuffer& Context::recordPrepass() {
             this->profiling->queries.reset(cmdbuf.handle());
             this->profiling->queries.write(cmdbuf.handle(), VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 0);
         }
+        // GP1: reset this phase's step pool before its first write, then mark the batch start.
+        PassStepMarks marks;
+        if (this->passSteps) {
+            const auto phase = this->fidx % commandPhaseCount;
+            auto& names = this->passSteps->names.at(phase);
+            names.prepass.clear();
+            const auto& pool = *this->passSteps->pools.at(phase);
+            pool.reset(cmdbuf.handle());
+            marks = PassStepMarks(pool, cmdbuf.handle(), 1, names.prepass);
+            marks.start();
+        }
 
         const std::array sourceAcquires{
             vk::externalImageAcquire(this->sourceImages.first.handle(), ctx.vk.get().queueFamilyIndex(), VK_ACCESS_SHADER_READ_BIT),
@@ -1211,6 +1409,7 @@ const vk::CommandBuffer& Context::recordPrepass() {
         if (this->profiling)
             this->profiling->queries.write(cmdbuf.handle(), VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 1);
         this->mipmaps.render(ctx.vk, cmdbuf, this->fidx);
+        marks.mark("mipmaps");
         // Pyramid levels share no writable images. Record one dependency per
         // stage, allowing the seven levels to fill the GPU together.
         std::vector<ManagedDispatch> batch;
@@ -1220,13 +1419,29 @@ const vk::CommandBuffer& Context::recordPrepass() {
             for (size_t i = 0; i < 7; ++i)
                 batch.push_back(this->alpha0.at(6 - i).getDispatch(stage));
             ManagedShader::dispatchIndependent(ctx.vk, cmdbuf, batch);
+            marks.mark(alpha0Steps.at(stage));
         }
         batch.clear();
         for (size_t i = 0; i < 7; ++i)
             batch.push_back(this->alpha1.at(6 - i).getDispatch(this->fidx));
         ManagedShader::dispatchIndependent(ctx.vk, cmdbuf, batch);
+        marks.mark("alpha1");
         this->beta0.render(ctx.vk, cmdbuf, this->fidx);
-        this->beta1.render(ctx.vk, cmdbuf);
+        marks.mark("beta0");
+        if (!marks) {
+            this->beta1.render(ctx.vk, cmdbuf);
+        } else if (backendOverlapEnabled()) {
+            const auto steps = this->beta1.dispatches();
+            ManagedShader::dispatchGroups(ctx.vk, cmdbuf, steps, [&](size_t begin, size_t end) {
+                marks.mark(passRunName<std::string_view>(beta1Steps, begin, end));
+            });
+        } else {
+            const auto steps = this->beta1.dispatches();
+            for (size_t set = 0; set < steps.size(); ++set) {
+                steps.at(set).shader.get().dispatch(ctx.vk, cmdbuf, steps.at(set).extent);
+                marks.mark(beta1Steps.at(set));
+            }
+        }
 
         if (this->profiling)
             this->profiling->queries.write(cmdbuf.handle(), VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 2);
@@ -1352,6 +1567,9 @@ void Context::scheduleFrames(std::span<const float> timestamps) {
     // Finish fallible allocation/recording before submitting any work. A cold
     // cache failure must not leave a prepass without its completion fence.
     const auto& sourceReleaseCommand = this->recordSourceRelease();
+    // GP1 names the generated steps after this phase's prepass, so record the prepass first.
+    if (this->passSteps)
+        static_cast<void>(this->recordPrepass());
     for (size_t i = 0; i < generatedFrameCount; i++) {
         auto& recorded = this->cmdbufs.at(i + 1).at(this->fidx % commandPhaseCount);
         if (!recorded) {
@@ -1377,16 +1595,62 @@ void Context::scheduleFrames(std::span<const float> timestamps) {
                 VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                 0, 0, nullptr, 0, nullptr, 1, &discard);
 
+            // GP1 times the first output only; later outputs record unmarked.
+            PassStepMarks marks;
+            if (this->passSteps && i == 0) {
+                const auto phase = this->fidx % commandPhaseCount;
+                auto& names = this->passSteps->names.at(phase);
+                names.generated.clear();
+                const auto& pool = *this->passSteps->pools.at(phase);
+                marks = PassStepMarks(pool, cmdbuf.handle(), 1 + static_cast<uint32_t>(names.prepass.size()),
+                    names.generated);
+            }
             const auto& pass = this->passes.at(i);
+            // GP2 (FGVK_BACKEND_OVERLAP=1): Gamma0(j+1) joins the Delta work of level j when the
+            // independence helper accepts it; otherwise the order is today's. Order never changes.
+            const bool overlap = backendOverlapEnabled();
+            std::array<bool, 7> gamma0Recorded{};
             for (size_t j = 0; j < 7; j++) {
-                pass.gamma0.at(j).render(ctx.vk, cmdbuf, this->fidx);
+                if (!gamma0Recorded.at(j)) {
+                    pass.gamma0.at(j).render(ctx.vk, cmdbuf, this->fidx);
+                    marks.mark(gamma0Steps.at(j));
+                }
                 pass.gamma1.at(j).render(ctx.vk, cmdbuf);
+                marks.mark(gamma1Steps.at(j));
 
                 if (j < 4) continue;
-                pass.delta0.at(j - 4).render(ctx.vk, cmdbuf, this->fidx);
-                pass.delta1.at(j - 4).render(ctx.vk, cmdbuf);
+                if (overlap && j < 6) {
+                    auto batch = pass.delta0.at(j - 4).dispatches(this->fidx);
+                    const auto delta1 = pass.delta1.at(j - 4).dispatches();
+                    const auto gamma0 = pass.gamma0.at(j + 1).dispatches(this->fidx);
+                    batch.insert(batch.end(), delta1.begin(), delta1.end());
+                    batch.insert(batch.end(), gamma0.begin(), gamma0.end());
+                    if (marks) {
+                        // Labels follow the batch order: two Delta0, the Delta1 dispatches, then Gamma0(j+1).
+                        std::vector<std::string> labels;
+                        labels.reserve(batch.size());
+                        for (size_t k = 0; k < 2; ++k)
+                            labels.push_back("delta0." + std::to_string(j - 4));
+                        for (size_t k = 0; k < delta1.size(); ++k)
+                            labels.push_back("delta1." + std::to_string(j - 4));
+                        labels.push_back("gamma0." + std::to_string(j + 1));
+                        ManagedShader::dispatchGroups(ctx.vk, cmdbuf, batch,
+                            [&](size_t begin, size_t end) {
+                                marks.mark(passRunName<std::string>(labels, begin, end));
+                            });
+                    } else {
+                        ManagedShader::dispatchGroups(ctx.vk, cmdbuf, batch);
+                    }
+                    gamma0Recorded.at(j + 1) = true;
+                } else {
+                    pass.delta0.at(j - 4).render(ctx.vk, cmdbuf, this->fidx);
+                    marks.mark(delta0Steps.at(j - 4));
+                    pass.delta1.at(j - 4).render(ctx.vk, cmdbuf);
+                    marks.mark(delta1Steps.at(j - 4));
+                }
             }
             pass.generate->render(ctx.vk, cmdbuf, this->fidx);
+            marks.mark("generate");
             if (this->profiling)
                 this->profiling->queries.write(cmdbuf.handle(), VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, static_cast<uint32_t>(5 + i * 3));
             if (this->destColorConversion)

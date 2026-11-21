@@ -88,6 +88,16 @@ struct PacingGpuSplitPayload {
     int64_t batchEndNs{};
 };
 
+struct PacingGpuPassPayload {
+    uint64_t context{};
+    uint64_t batches{};
+    int64_t p50Ns{};
+    int64_t p95Ns{};
+    uint32_t step{};
+    bool overlap{};
+    std::array<char, 64> name{};
+};
+
 struct PacingOutputGpuPayload {
     uint64_t context{};
     uint64_t source{};

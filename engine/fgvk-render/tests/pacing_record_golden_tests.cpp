@@ -96,6 +96,9 @@ void profileScenario() {
     const std::array generated{125.0, 8.5};
     logPacingGpuFrame(17, 1, 1, 0, 1.5, 2.25, 3.0, 125.0, 250.0, 1.75, generated);
     logPacingGpuSplitFrame(17, 1, 0, 1000, 2000, 3000, 4000, 5000, 6000);
+    // GP1: one serial step per record; a run that shares a barrier names every step it covers.
+    logPacingGpuPass(17, 0, "mipmaps", false, 240, 1500, 2500);
+    logPacingGpuPass(17, 1, "delta1.0+gamma0.5", true, 240, 3000, 4000);
     // The output copy's timestamps; an unavailable output keeps no times even when given some.
     logPacingOutputGpu(17, 1, true, 10003000, 10004500, 10001000, 10002000);
     logPacingOutputGpu(17, 2, false, 10005000, 10006000, 10003000, 10004000);
@@ -199,8 +202,8 @@ std::string runScenario(const std::filesystem::path& root, const char* name, boo
     expect(child >= 0, "cannot fork golden scenario");
     if (child == 0) {
         for (const char* gate : {"FGVK_PACING_PROFILE", "FGVK_PACING_PROFILE_GPU", "FGVK_PACING_PROFILE_TRACE",
-                "FGVK_PACING_PROFILE_WAYLAND",
-                "FGVK_PACING_PROFILE_GPU_SPLIT"})
+                "FGVK_PACING_PROFILE_WAYLAND", "FGVK_PACING_PROFILE_GPU_SPLIT",
+                "FGVK_PACING_PROFILE_GPU_PASSES", "FGVK_BACKEND_OVERLAP"})
             unsetenv(gate);
         setenv("FGVK_PACING_PROFILE", profile ? "1" : "0", 1);
         if (!profile) setenv("FGVK_PACING_PROFILE_TRACE", "1", 1);

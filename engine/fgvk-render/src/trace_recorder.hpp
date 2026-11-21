@@ -54,6 +54,7 @@ enum class RecordKind : uint16_t {
     WaylandSample,
     WaylandGap,
     SubmitTag,
+    PacingGpuPass,
     Count
 };
 

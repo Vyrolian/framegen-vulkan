@@ -10,6 +10,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <stdexcept>
 #include <vector>
 
@@ -77,8 +78,22 @@ void Beta1::prepare(std::vector<VkImage>& images) const {
 }
 
 void Beta1::render(const vk::Vulkan& vk, const vk::CommandBuffer& cmd) const {
+    if (backendOverlapEnabled()) {
+        const auto batch = this->dispatches();
+        ManagedShader::dispatchGroups(vk, cmd, batch);
+        return;
+    }
     this->sets.at(0).dispatch(vk, cmd, this->dispatchExtent0);
     this->sets.at(1).dispatch(vk, cmd, this->dispatchExtent0);
     this->sets.at(2).dispatch(vk, cmd, this->dispatchExtent0);
     this->sets.at(3).dispatch(vk, cmd, this->dispatchExtent1);
+}
+
+std::vector<ManagedDispatch> Beta1::dispatches() const {
+    return {
+        ManagedDispatch{std::cref(this->sets.at(0)), this->dispatchExtent0},
+        ManagedDispatch{std::cref(this->sets.at(1)), this->dispatchExtent0},
+        ManagedDispatch{std::cref(this->sets.at(2)), this->dispatchExtent0},
+        ManagedDispatch{std::cref(this->sets.at(3)), this->dispatchExtent1},
+    };
 }

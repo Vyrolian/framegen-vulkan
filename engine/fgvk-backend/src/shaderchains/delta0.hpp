@@ -8,6 +8,7 @@
 #include "fgvk-common/vulkan/image.hpp"
 #include "fgvk-common/vulkan/vulkan.hpp"
 
+#include <functional>
 #include <vector>
 
 #include <vulkan/vulkan_core.h>
@@ -38,6 +39,14 @@ namespace fgvk::backend {
         /// @param cmd command buffer
         /// @param idx frame index
         void render(const vk::Vulkan& vk, const vk::CommandBuffer& cmd, size_t idx) const;
+
+        /// The dispatches render(idx) records, in order, for grouped recording.
+        [[nodiscard]] std::vector<ManagedDispatch> dispatches(size_t idx) const {
+            return {
+                ManagedDispatch{std::cref(this->sets0.at(idx % this->sets0.size())), this->dispatchExtent},
+                ManagedDispatch{std::cref(this->sets1.at(idx % this->sets1.size())), this->dispatchExtent},
+            };
+        }
 
     private:
         std::vector<ManagedShader> sets0;

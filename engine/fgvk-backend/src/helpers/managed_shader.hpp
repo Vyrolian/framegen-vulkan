@@ -9,12 +9,17 @@
 #include "fgvk-common/vulkan/shader.hpp"
 
 #include <cstddef>
+#include <functional>
 #include <span>
 #include <vector>
 
 #include <vulkan/vulkan_core.h>
 
 namespace fgvk::backend {
+
+    /// GP2 switch: FGVK_BACKEND_OVERLAP=1, read once per process. When off, every chain
+    /// records its serial dispatches exactly as before.
+    [[nodiscard]] bool backendOverlapEnabled();
 
     class ManagedShader;
     struct ManagedDispatch {
@@ -37,7 +42,18 @@ namespace fgvk::backend {
         /// Group only dispatches with no shared read/write or write/write images.
         static void dispatchIndependent(const vk::Vulkan& vk,
             const vk::CommandBuffer& cmd, std::span<const ManagedDispatch> dispatches);
+        /// Record dispatches in their given order. Each maximal in-order run of
+        /// independent dispatches shares one barrier; a dependence only starts a new
+        /// run, so the recorded order and every input stay exactly as listed.
+        /// @param afterRun called after each recorded run with its [begin, end) range
+        static void dispatchGroups(const vk::Vulkan& vk,
+            const vk::CommandBuffer& cmd, std::span<const ManagedDispatch> dispatches,
+            const std::function<void(size_t, size_t)>& afterRun = {});
     private:
+        // Records one run whose members the caller has proven independent.
+        static void recordIndependentRun(const vk::Vulkan& vk,
+            const vk::CommandBuffer& cmd, std::span<const ManagedDispatch> dispatches);
+
         ls::R<const vk::Shader> shader;
 
         std::vector<vk::Barrier> barriers;

@@ -7,6 +7,7 @@
 #include "present_records.hpp"
 
 #include "library_pin.hpp"
+#include "fgvk-common/vulkan/backend_overlap.hpp"
 #include "fgvk-common/vulkan/queue_priority.hpp"
 #include "swapchain/output_margin.hpp"
 #include "swapchain/release_gate.hpp"
@@ -424,6 +425,14 @@ void formatPacingGpuSplit(const PacingGpuSplitPayload& payload, std::ostream& li
          << " batch_end_ns=" << payload.batchEndNs << '\n';
 }
 
+void formatPacingGpuPass(const PacingGpuPassPayload& payload, std::ostream& line) {
+    const std::string_view name(payload.name.data());
+    line << "framegen-vulkan: present diagnostics: operation=pacing-profile-gpu-pass version=1"
+         << " pid=" << getpid() << " context=" << payload.context << " overlap=" << (payload.overlap ? 1 : 0)
+         << " step=" << payload.step << " name=" << name << " batches=" << payload.batches
+         << " p50_ns=" << payload.p50Ns << " p95_ns=" << payload.p95Ns << '\n';
+}
+
 static void formatTimedCopy(const char* operation, const PacingOutputGpuPayload& payload, std::ostream& line) {
     line << "framegen-vulkan: present diagnostics: operation=" << operation << " version=1"
          << " pid=" << getpid() << " context=" << payload.context << " source=" << payload.source
@@ -837,6 +846,9 @@ void formatPacingWindowBody(const PacingWindowPayload& payload, const PacingProf
     // QH2: 1 when this context's generated copies ran on the transfer queue, and the device created one.
     line << " transfer_copy="
          << (window.transferCopy && fgvk::layer::transferCopyApplied.load(std::memory_order_relaxed) ? 1 : 0);
+    // GP2: 1 when FGVK_BACKEND_OVERLAP=1 grouped the backend recording, so a capture names its arm.
+    line << " backend_overlap="
+         << (vk::parseBackendOverlap(std::getenv("FGVK_BACKEND_OVERLAP")) ? 1 : 0);
     line << '\n';
     for (size_t i = 0; i < window.outputTraceCount; ++i) {
         const auto& sample = window.outputTrace[i];
@@ -994,6 +1006,12 @@ void handleRecord(Recorder& s, const trace_recorder::TraceRecord& record, const 
         PacingGpuSplitPayload payload{};
         load(payload);
         emit([&](std::ostream& line) { formatPacingGpuSplit(payload, line); });
+        break;
+    }
+    case RecordKind::PacingGpuPass: {
+        PacingGpuPassPayload payload{};
+        load(payload);
+        emit([&](std::ostream& line) { formatPacingGpuPass(payload, line); });
         break;
     }
     case RecordKind::PacingOutputGpu: {

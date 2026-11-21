@@ -2,6 +2,7 @@
 
 #include "managed_shader.hpp"
 #include "independent_dispatch.hpp"
+#include "fgvk-common/vulkan/backend_overlap.hpp"
 #include "fgvk-common/vulkan/buffer.hpp"
 #include "fgvk-common/vulkan/command_buffer.hpp"
 #include "fgvk-common/vulkan/descriptor_pool.hpp"
@@ -11,6 +12,7 @@
 #include "fgvk-common/vulkan/vulkan.hpp"
 
 #include <cstddef>
+#include <cstdlib>
 #include <functional>
 #include <span>
 #include <stdexcept>
@@ -140,6 +142,27 @@ void ManagedShader::dispatch(const vk::Vulkan& vk, const vk::CommandBuffer& cmd,
     );
 }
 
+bool fgvk::backend::backendOverlapEnabled() {
+    static const bool value = vk::parseBackendOverlap(std::getenv("FGVK_BACKEND_OVERLAP"));
+    return value;
+}
+
+void ManagedShader::recordIndependentRun(const vk::Vulkan& vk,
+        const vk::CommandBuffer& cmd, std::span<const ManagedDispatch> dispatches) {
+    std::vector<vk::Barrier> barriers;
+    for (const auto& dispatch : dispatches) {
+        const auto& access = dispatch.shader.get().barriers;
+        barriers.insert(barriers.end(), access.begin(), access.end());
+    }
+    if (dispatches.empty()) return;
+    cmd.insertComputeBarriers(vk, barriers);
+    for (const auto& dispatch : dispatches) {
+        const auto& shader = dispatch.shader.get();
+        cmd.dispatchAfterBarrier(vk, shader.shader, shader.descriptorSet,
+            dispatch.extent.width, dispatch.extent.height, 1);
+    }
+}
+
 void ManagedShader::dispatchIndependent(const vk::Vulkan& vk,
         const vk::CommandBuffer& cmd, std::span<const ManagedDispatch> dispatches) {
     std::vector<std::span<const vk::Barrier>> accesses;
@@ -149,14 +172,26 @@ void ManagedShader::dispatchIndependent(const vk::Vulkan& vk,
     if (!independentComputeDispatches(accesses))
         throw std::logic_error("Dependent shaders in an independent dispatch group");
 
-    std::vector<vk::Barrier> barriers;
-    for (const auto access : accesses)
-        barriers.insert(barriers.end(), access.begin(), access.end());
-    if (dispatches.empty()) return;
-    cmd.insertComputeBarriers(vk, barriers);
-    for (const auto& dispatch : dispatches) {
-        const auto& shader = dispatch.shader.get();
-        cmd.dispatchAfterBarrier(vk, shader.shader, shader.descriptorSet,
-            dispatch.extent.width, dispatch.extent.height, 1);
+    recordIndependentRun(vk, cmd, dispatches);
+}
+
+void ManagedShader::dispatchGroups(const vk::Vulkan& vk,
+        const vk::CommandBuffer& cmd, std::span<const ManagedDispatch> dispatches,
+        const std::function<void(size_t, size_t)>& afterRun) {
+    std::vector<std::span<const vk::Barrier>> accesses;
+    accesses.reserve(dispatches.size());
+    for (const auto& dispatch : dispatches)
+        accesses.emplace_back(dispatch.shader.get().barriers);
+
+    size_t begin = 0;
+    for (const size_t end : independentRunEnds(accesses)) {
+        const auto run = dispatches.subspan(begin, end - begin);
+        if (run.size() == 1)
+            run.front().shader.get().dispatch(vk, cmd, run.front().extent);
+        else
+            recordIndependentRun(vk, cmd, run);
+        if (afterRun)
+            afterRun(begin, end);
+        begin = end;
     }
 }

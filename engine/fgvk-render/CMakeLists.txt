@@ -403,6 +403,13 @@ if(BUILD_TESTING)
     add_test(NAME backend-fence-ring COMMAND fgvk-backend-fence-ring-tests)
     fgvk_register_portable_policy_test(fgvk-backend-fence-ring-tests backend-fence-ring)
 
+    # GP2 grouping: the in-order run partition behind ManagedShader::dispatchGroups, and the
+    # FGVK_BACKEND_OVERLAP parser. Synthetic barrier lists only; no Vulkan device.
+    add_executable(fgvk-backend-dispatch-groups-tests "../fgvk-backend/tests/dispatch_groups_tests.cpp")
+    target_include_directories(fgvk-backend-dispatch-groups-tests PRIVATE "../fgvk-backend/src" "../fgvk-common/include")
+    add_test(NAME backend-dispatch-groups COMMAND fgvk-backend-dispatch-groups-tests)
+    fgvk_register_portable_policy_test(fgvk-backend-dispatch-groups-tests backend-dispatch-groups)
+
     add_executable(fgvk-uncapped-auto-cap-tests "tests/uncapped_auto_cap_tests.cpp")
     target_include_directories(fgvk-uncapped-auto-cap-tests PRIVATE "src")
     add_test(NAME uncapped-auto-cap COMMAND fgvk-uncapped-auto-cap-tests)

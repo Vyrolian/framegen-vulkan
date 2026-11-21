@@ -139,8 +139,27 @@ void Delta1::render(const vk::Vulkan& vk, const vk::CommandBuffer& cmd) const {
             };
             ManagedShader::dispatchIndependent(vk, cmd, batch);
         }
+    } else if (backendOverlapEnabled()) {
+        const auto batch = this->dispatches();
+        ManagedShader::dispatchGroups(vk, cmd, batch);
     } else {
         for (const auto& set : this->sets)
             set.dispatch(vk, cmd, dispatchExtent);
     }
+}
+
+std::vector<ManagedDispatch> Delta1::dispatches() const {
+    std::vector<ManagedDispatch> batch;
+    batch.reserve(this->sets.size());
+    if (this->parallelBranches) {
+        // Stage-major, matching render(): each stage pairs its two branches.
+        for (size_t stage = 0; stage < 4; ++stage) {
+            batch.push_back({std::cref(this->sets.at(stage)), dispatchExtent});
+            batch.push_back({std::cref(this->sets.at(stage + 4)), dispatchExtent});
+        }
+    } else {
+        for (const auto& set : this->sets)
+            batch.push_back({std::cref(set), dispatchExtent});
+    }
+    return batch;
 }

@@ -233,6 +233,15 @@ void Swapchain::initializeGpuPacingProfile(backend::Instance& backend,
             present_diagnostics::reportPacingGpuSplitUnavailable("queries", error.what());
         }
     }
+    // GP1 per-step timestamps: diagnostics only, and only on top of the split profile enabled above.
+    if (diagnostics && present_diagnostics::pacingGpuPassProfileEnabled()) {
+        try {
+            backend.enablePassStepProfile(context);
+        } catch (const std::exception& error) {
+            std::cerr << "framegen-vulkan: GPU pass-step profile unavailable; reason=query-initialization; "
+                      << error.what() << '\n';
+        }
+    }
     if (!this->pacingProfile || !present_diagnostics::pacingGpuProfileEnabled()) return;
     try {
         backend.enableFrameProfiling(context, true);

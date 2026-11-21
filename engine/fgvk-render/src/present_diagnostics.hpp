@@ -31,6 +31,8 @@ namespace fgvk::layer::present_diagnostics {
     [[nodiscard]] bool pacingGpuProfileEnabled();
     /// Non-draining split GPU boundaries; active only with FGVK_PACING_PROFILE=1 and FGVK_PACING_PROFILE_GPU_SPLIT=1.
     [[nodiscard]] bool pacingGpuSplitProfileEnabled();
+    /// GP1 per-step GPU timestamps: the split profile plus FGVK_PACING_PROFILE_GPU_PASSES=1.
+    [[nodiscard]] bool pacingGpuPassProfileEnabled();
     [[nodiscard]] bool pacingFrameTraceEnabled();
     [[nodiscard]] bool pacingWaylandProfileEnabled();
     /// Publish already-buffered, structured observer records to the same bounded sink.
@@ -519,6 +521,10 @@ namespace fgvk::layer::present_diagnostics {
     void logPacingGpuSplitFrame(uint64_t context, uint64_t source, uint64_t backendFrame,
         int64_t gameDoneNs, int64_t sourceCopyEndNs, int64_t fgStartNs, int64_t prepassEndNs,
         int64_t generatedEndNs, int64_t batchEndNs) noexcept;
+    /// GP1: one serial backend step, aggregated over a window of generated batches. The name is
+    /// a stable step label, truncated to the record's fixed field.
+    void logPacingGpuPass(uint64_t context, uint32_t step, std::string_view name, bool overlap,
+        uint64_t batches, int64_t p50Ns, int64_t p95Ns) noexcept;
     /// Staging and worker copies of the first generated output, in CLOCK_MONOTONIC nanoseconds.
     /// available is false when no copy timestamps were read (a skipped output, or uncalibrated);
     /// all four times are then zero.
