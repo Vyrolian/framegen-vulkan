@@ -356,6 +356,12 @@ if(BUILD_TESTING)
     add_test(NAME reflex-present-attribution COMMAND fgvk-reflex-present-attribution-tests)
     fgvk_register_portable_policy_test(fgvk-reflex-present-attribution-tests reflex-present-attribution)
 
+    # RX1: the game's submission frame tag transitions and the chain walk (pure).
+    add_executable(fgvk-submit-tag-tracker-tests "tests/submit_tag_tracker_tests.cpp")
+    target_include_directories(fgvk-submit-tag-tracker-tests PRIVATE "src")
+    add_test(NAME submit-tag-tracker COMMAND fgvk-submit-tag-tracker-tests)
+    fgvk_register_portable_policy_test(fgvk-submit-tag-tracker-tests submit-tag-tracker)
+
     # RP1: the real present lead's marker pairing, error rule and limits (pure).
     add_executable(fgvk-real-present-lead-tests "tests/real_present_lead_tests.cpp")
     target_include_directories(fgvk-real-present-lead-tests PRIVATE "src")

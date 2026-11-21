@@ -53,6 +53,7 @@ enum class RecordKind : uint16_t {
     ReflexTiming,
     WaylandSample,
     WaylandGap,
+    SubmitTag,
     Count
 };
 

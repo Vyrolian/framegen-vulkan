@@ -783,6 +783,14 @@ void recordReflexTiming(const VkLatencyTimingsFrameReportNV& report, const int64
         .gpuStartUs = report.gpuRenderStartTimeUs, .gpuEndUs = report.gpuRenderEndTimeUs});
 }
 
+void recordSubmitTag(const VkQueue queue, const uint64_t presentId, const SubmitTagTransition& transition) noexcept {
+    if (!pacingProfileEnabled()) return;
+    present_records::enqueue(trace_recorder::RecordKind::SubmitTag, present_records::SubmitTagPayload{
+        .thread = trace_recorder::currentThreadId(), .nowNs = trace_recorder::nanoseconds(Clock::now()),
+        .queue = queue, .presentId = presentId, .previousId = transition.previousTag,
+        .submits = transition.submits, .untagged = transition.untagged});
+}
+
 void recordReflexMode(const VkBool32 lowLatency, const VkBool32 boost,
         const uint32_t minimumIntervalUs, const VkResult result) noexcept {
     if (!pacingProfileEnabled()) return;

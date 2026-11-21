@@ -20,6 +20,7 @@
 #include "swapchain/present_layout.hpp"
 #include "swapchain/present_marker.hpp"
 #include "swapchain/reflex_out_of_band.hpp"
+#include "swapchain/submit_tag_tracker.hpp"
 #include "pnext_chain.hpp"
 
 #include <algorithm>
@@ -1212,6 +1213,17 @@ namespace {
         return instance_info->funcs.GetDeviceProcAddr(identity->second.device, name);
     }
 
+    // RX1: each game submit's frame tag, observed with the pacing profile only. A change of a queue's tag is
+    // recorded. Nothing here changes the submit.
+    void observeSubmitTags(const VkQueue queue, const uint32_t submitCount, const VkSubmitInfo2* submits) {
+        static SubmitTagTracker tracker;
+        for (uint32_t index = 0; submits && index < submitCount; ++index) {
+            const uint64_t presentId = submissionPresentId(submits[index].pNext);
+            if (const auto transition = tracker.observe(queue, presentId))
+                present_diagnostics::recordSubmitTag(queue, presentId, *transition);
+        }
+    }
+
     // See swapchain/release_gate.hpp: record the cap deadline against the
     // signal-only submit that follows an application present.
     template<const char* Name>
@@ -1229,6 +1241,7 @@ namespace {
         static thread_local CachedLower<PFN_vkQueueSubmit2, VkQueue> lower;
         const auto next = lower.get(queue, [&] { return lowerQueueCommand(queue, Name); });
         ReleaseGate::global().observeSubmit2(queue, submitCount, submits, fence);
+        if (present_diagnostics::pacingProfileEnabled()) observeSubmitTags(queue, submitCount, submits);
         return next(queue, submitCount, submits, fence);
     }
     constexpr char queueSubmit2Name[] = "vkQueueSubmit2";

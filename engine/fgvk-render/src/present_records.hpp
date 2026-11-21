@@ -286,6 +286,18 @@ struct ReflexTimingPayload {
     uint64_t gpuEndUs{};
 };
 
+// RX1: one change of the game's submission frame tag on a queue, with the counts under the previous tag.
+struct SubmitTagPayload {
+    uint32_t thread{};
+    int64_t nowNs{};
+    VkQueue queue{};
+    uint64_t presentId{};
+    uint64_t previousId{};
+    uint64_t submits{};
+    uint64_t untagged{};
+};
+static_assert(sizeof(SubmitTagPayload) <= trace_recorder::payloadCapacity);
+
 struct WaylandSamplePayload {
     uint64_t token{};
     present_diagnostics::WaylandSample sample{};

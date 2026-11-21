@@ -4,6 +4,7 @@
 
 #include "bridge_present_timing.hpp"
 #include "swapchain/low_latency.hpp"
+#include "swapchain/submit_tag_tracker.hpp"
 
 #include <chrono>
 #include <algorithm>
@@ -582,6 +583,8 @@ namespace fgvk::layer::present_diagnostics {
     void recordReflexSleep(Clock::time_point entered, Clock::time_point exited, VkResult result) noexcept;
     /// One driver Reflex frame report, with the nanoseconds the query that returned it took.
     void recordReflexTiming(const VkLatencyTimingsFrameReportNV& report, int64_t queryNs) noexcept;
+    /// RX1: one change of the game's submission frame tag on a queue, with the counts under the previous tag.
+    void recordSubmitTag(VkQueue queue, uint64_t presentId, const SubmitTagTransition& transition) noexcept;
     void recordReflexMode(VkBool32 lowLatency, VkBool32 boost, uint32_t minimumIntervalUs, VkResult result) noexcept;
 
     /// Bounded CPU observations at the application's present entrypoints. These

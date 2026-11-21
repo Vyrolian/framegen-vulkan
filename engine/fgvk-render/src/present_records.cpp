@@ -634,6 +634,14 @@ void formatReflexTiming(const ReflexTimingPayload& payload, std::ostream& line) 
          << " gpu_end_us=" << payload.gpuEndUs << '\n';
 }
 
+void formatSubmitTag(const SubmitTagPayload& payload, std::ostream& line) {
+    line << "framegen-vulkan: present diagnostics: operation=pacing-profile-submit-tag version=1"
+         << " pid=" << getpid() << " tid=" << payload.thread << " now_ns=" << payload.nowNs
+         << " queue=" << payload.queue << " present_id=" << payload.presentId
+         << " previous_id=" << payload.previousId << " submits=" << payload.submits
+         << " untagged=" << payload.untagged << '\n';
+}
+
 void formatWaylandSample(const WaylandSamplePayload& payload, std::ostream& out) {
     constexpr std::array<const char*, 6> names{"request", "call", "presented", "discarded", "unavailable", "abandoned"};
     const auto& s = payload.sample;
@@ -1112,6 +1120,13 @@ void handleRecord(Recorder& s, const trace_recorder::TraceRecord& record, const 
         WaylandGapPayload payload{};
         load(payload);
         emit([&](std::ostream& line) { formatWaylandGap(payload, line); });
+        break;
+    }
+    case RecordKind::SubmitTag: {
+        SubmitTagPayload payload{};
+        load(payload);
+        noteThread(s, payload.thread);
+        emit([&](std::ostream& line) { formatSubmitTag(payload, line); });
         break;
     }
     }
