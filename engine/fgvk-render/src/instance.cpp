@@ -8,6 +8,7 @@
 #include "present_diagnostics.hpp"
 #include "swapchain/create_policy.hpp"
 #include "swapchain/output_margin.hpp"
+#include "swapchain/real_present_lead.hpp"
 #include "swapchain/swapchain.hpp"
 
 #include "fgvk-common/configuration/detection.hpp"
@@ -219,6 +220,7 @@ namespace {
 Root::Root() {
     this->fp16AtStartup = this->config.get().global().allow_fp16;
     fgvk::layer::setRealOffsetAutoConfigured(this->config.get().global().pacing_correction);
+    fgvk::layer::setRealPresentLeadConfigured(this->config.get().global().real_present_lead);
     std::cerr << fgvkBuildIdentity << '\n';
 
     // H3: read for every process, before the gamescope and profile gates. A Wine
@@ -339,6 +341,11 @@ ConfigurationUpdateResult Root::update(const bool forceConfigurationPoll) {
     if (previousCorrection != realOffsetAutoState())
         std::clog << "framegen-vulkan: pacing correction reloaded: "
                   << (realOffsetAuto() ? "on" : "off") << '\n';
+    const auto previousLead = fgvk::layer::realPresentLeadState();
+    fgvk::layer::setRealPresentLeadConfigured(currentGlobal.real_present_lead);
+    if (previousLead != fgvk::layer::realPresentLeadState())
+        std::clog << "framegen-vulkan: real present lead reloaded: "
+                  << ((fgvk::layer::realPresentLeadState() & 1) != 0 ? "on" : "off") << '\n';
     result.globalChangeDeferred = backendGlobalChangePending(
         this->backendGlobal, currentGlobal
     ) || currentGlobal.allow_fp16 != this->fp16AtStartup;

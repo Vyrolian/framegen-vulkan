@@ -2228,6 +2228,11 @@ struct DeferredPresentTestAccess {
     static OutputOffsetController offsetController(const DeferredPresent& worker) {
         return worker.outputOffsetController;
     }
+    // RP1: presets the worker's real present lead before a batch is admitted (the worker reads it on the batch's first output).
+    static void setRealLead(DeferredPresent& worker, const std::chrono::nanoseconds lead) {
+        const std::lock_guard lock(worker.mutex);
+        worker.realPresentLead.lead = lead;
+    }
 };
 }
 
@@ -4734,6 +4739,69 @@ void zeroSnapIsIdentical() {
     expect(gt1SameSchedule(gated, today), "a zero-snap tick lock changed the schedule");
 }
 
+// RP1: a real after a generated output of its batch is presented earlier by the preset lead, and its offset is that lead
+// (negative). With the lead off the real keeps its slot. Where the lead would pass the quarter-interval floor after the
+// generated output's unmoved start, the real stops at that floor instead.
+void realPresentLeadMovesRealEarlier() {
+    struct Outcome {
+        DeferredPresent::Completion done;
+        DeferredPresent::Clock::time_point first;
+    };
+    const auto leadBatch = [](const bool on, const std::chrono::nanoseconds preset,
+            const std::chrono::nanoseconds interval) {
+        auto pool = std::make_shared<PreparedPool>();
+        preparedPool = pool.get();
+        copySubmits.clear();
+        auto queue = std::make_shared<DeferredPresentQueue>();
+        queue->queue = handle<VkQueue>(7);
+        setRealPresentLeadConfigured(on);
+        DeferredPresent worker(queue, preparedPresent);
+        DeferredPresentTestAccess::setRealLead(worker, preset);
+        const auto swapchain = handle<VkSwapchainKHR>(11);
+        const auto wait = handle<VkSemaphore>(12);
+        const uint32_t image = 4;
+        const VkPresentInfoKHR real{.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+            .waitSemaphoreCount = 1, .pWaitSemaphores = &wait,
+            .swapchainCount = 1, .pSwapchains = &swapchain, .pImageIndices = &image};
+        const auto first = DeferredPresent::Clock::now() + 60ms;
+        expect(worker.beginBatch(2, {.overlap = true, .outputInterval = interval}), "lead batch rejected");
+        expect(worker.enqueueGeneratedCopy(swapchain, nullptr, first, preparedCopy()),
+            "lead generated output rejected");
+        const DeferredPresent::InternalRealCopy realCopy{.owner = pool, .tryAcquire = poolRealAcquire,
+            .submit = poolRealSubmit, .abandon = poolRealAbandon};
+        expect(worker.enqueueInternalReal(real, first + interval, realCopy), "lead real rejected");
+        worker.closeBatch();
+        const auto done = worker.finish(UINT64_MAX, false);
+        setRealPresentLeadConfigured(false);
+        expect(done && done->count == 2 && done->result == VK_SUCCESS && !done->calls[0].skipped &&
+            !done->calls[1].skipped, "lead batch failed");
+        return Outcome{*done, first};
+    };
+    // The real is planned one interval after the generated output's start (or its own slot, when that is later).
+    const auto plannedReal = [](const Outcome& outcome, const std::chrono::nanoseconds interval) {
+        return std::max(outcome.first, outcome.done.calls[0].started) + interval;
+    };
+
+    const auto leadOn = leadBatch(true, 1ms, 10ms);
+    const auto& generated = leadOn.done.calls[0];
+    const auto& leadReal = leadOn.done.calls[1];
+    expect(generated.offset == 0ns, "the generated output took an offset from the real present lead");
+    expect(leadReal.offset == -1ms && leadReal.scheduled == plannedReal(leadOn, 10ms) - 1ms,
+        "the real output was not presented 1 ms earlier with the lead on");
+
+    const auto leadOff = leadBatch(false, 1ms, 10ms);
+    expect(leadOff.done.calls[1].offset == 0ns && leadOff.done.calls[1].scheduled == plannedReal(leadOff, 10ms),
+        "the real output moved with the lead off");
+
+    // A 3 ms interval and a 2.5 ms lead: the lead would reach 0.5 ms after the generated start, under the quarter-interval
+    // floor of 0.75 ms, so the real stops at that floor.
+    const auto floorBatch = leadBatch(true, 2500us, 3ms);
+    const auto& floorGenerated = floorBatch.done.calls[0];
+    const auto& floorReal = floorBatch.done.calls[1];
+    expect(floorReal.scheduled == floorGenerated.unmovedStart() + 750us && floorReal.offset == -2250us,
+        "the real output went before the generated output's start plus a quarter interval");
+}
+
 int main([[maybe_unused]] int argc, [[maybe_unused]] char** argv) {
     generatedPreparedOrderAndBudget(); generatedCopyCanPrecedeHostReadiness(); generatedPreparationFallbackAndGates();
     generatedChainOutputOffsetsMoveEachOutput();
@@ -4783,4 +4851,5 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char** argv) {
     presentedJobsKeepTheirFenceForTheLowerPresent(); skippedGeneratedCopySignalsItsFenceOnce();
     reflexMarkersEncloseEachWorkerPresent();
     gamescopeTickLockRemovesSameTickPairs(); nonGamescopeGatesScheduleAsToday(); zeroSnapIsIdentical();
+    realPresentLeadMovesRealEarlier();
 }

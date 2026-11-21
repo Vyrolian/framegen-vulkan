@@ -356,6 +356,12 @@ if(BUILD_TESTING)
     add_test(NAME reflex-present-attribution COMMAND fgvk-reflex-present-attribution-tests)
     fgvk_register_portable_policy_test(fgvk-reflex-present-attribution-tests reflex-present-attribution)
 
+    # RP1: the real present lead's marker pairing, error rule and limits (pure).
+    add_executable(fgvk-real-present-lead-tests "tests/real_present_lead_tests.cpp")
+    target_include_directories(fgvk-real-present-lead-tests PRIVATE "src")
+    add_test(NAME real-present-lead COMMAND fgvk-real-present-lead-tests)
+    fgvk_register_portable_policy_test(fgvk-real-present-lead-tests real-present-lead)
+
     add_executable(fgvk-render-slot-ring-tests "tests/render_slot_ring_tests.cpp")
     target_include_directories(fgvk-render-slot-ring-tests PRIVATE "src")
     add_test(NAME render-slot-ring COMMAND fgvk-render-slot-ring-tests)

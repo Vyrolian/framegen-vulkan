@@ -37,6 +37,7 @@ Known launchers and helpers stay inactive while their child games can match. The
 | `default_profile` | Unset | Exact profile name to use for unmatched games started through `fgvk`. The settings window updates this name on rename and clears it on deletion. |
 | `allow_fp16` | `true` | Selects FP16 for supported LSFG models; `false` selects FP32. If a model lacks native FP16, select FP32. Requires restart; Ultra Performance respects this choice. [Experimental source builds](BUILDING-FROM-SOURCE.md#experimental-forced-lsfg-fp16) have separate limits. |
 | `pacing_correction` | `true` | Fixed Frame Generation with internal images: a GPU timestamp after each output's present measures when the private present queue next runs, and each generated frame is moved (at most ±2.5 ms) onto its own ideal point between its two reals, at every multiplier. Real frames are never moved. No target times or waits. Changes apply to the next worker batch after configuration reload. Enabling it starts with fresh timing samples. `FGVK_REAL_OFFSET_US` accepts only `auto`, which turns it on; any other value, such as `0` or a number, turns it off. The screen time of each output (Xwayland, X11, Gamescope or native Wayland feedback) drives the correction when it is available, with or without the pacing profile; `FGVK_ONSCREEN_CORRECTION=0` keeps the GPU timing only. See [diagnostics](COLLECT_DIAGNOSTICS.md#on-screen-correction-os1). |
+| `real_present_lead` | `false` | Experimental. A real output that follows a generated output presents earlier by the GPU wait its markers measured, at most 2.5 ms, so the GPU spacing of the pair stays even. The real is not otherwise moved. It needs the GPU markers: any `FGVK_REAL_OFFSET_US` value other than `auto` turns them off, and then the lead stays off. Changes apply to the next worker batch after configuration reload. `FGVK_REAL_PRESENT_LEAD` overrides it. |
 
 ## Profile settings
 
@@ -131,6 +132,10 @@ Set `FGVK_ENV=1` to build one profile from environment variables instead of TOML
 `FGVK_PACING_PROFILE_WAYLAND=1` implies CPU capture and adds native Wayland `wp_presentation` feedback on the application's borrowed surface. It records compositor-reported presentation timestamps/discards separately from lower-call timing, without GPU queries, socket reads, commits, target-time changes or an event-reader worker. It uses a private event queue serviced by the application's existing display reader. The [capture guide](COLLECT_DIAGNOSTICS.md#lightweight-minecraft-pacing-capture) describes clock domains, bounded storage, protocol/callback gaps and ambiguous commit association. This process-start observer adds protocol and dispatch overhead; remove it after the capture.
 
 `FGVK_BACKEND_QUEUE_PRIORITY=<value>` sets the priority of fgvk-backend's own device queue, from 0 to 1 (default 1), for an A/B against the game's queue. A value that is not a finite number in [0, 1] logs one line and uses 1; an accepted value is logged at device creation.
+
+`FGVK_REAL_PRESENT_LEAD=1` turns the real present lead on (see `real_present_lead`), and `FGVK_REAL_PRESENT_LEAD=0` turns it off. Any other value, or unset, keeps the `[global] real_present_lead` setting. The variable is read once.
+
+`FGVK_REFLEX_OUT_OF_BAND=present` or `FGVK_REFLEX_OUT_OF_BAND=render` marks fgvk's private present queue as the Reflex out-of-band present or render queue (`vkQueueNotifyOutOfBandNV`), read once. It applies only to a device whose application enabled `VK_NV_low_latency2`, and never to the application's own queues. Any other value, or unset, changes nothing. The per-second pacing summary prints `reflex_oob=` (0 none, 1 present, 2 render) with `backend_queue_priority=`, so a capture names its arm.
 
 ## Experimental early generated copy
 

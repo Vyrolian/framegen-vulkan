@@ -24,6 +24,9 @@ namespace ls {
         /// present times; real outputs are never moved (FGVK_REAL_OFFSET_US=auto turns it on, any
         /// other value off); read once when the layer starts
         bool pacing_correction{true};
+        /// experimental: present each real output after a generated output earlier by its measured GPU wait;
+        /// FGVK_REAL_PRESENT_LEAD=1 or 0 overrides it; read on startup and on reload
+        bool real_present_lead{false};
         /// optional profile for unmatched games launched through fgvk
         std::optional<std::string> default_profile{};
     };

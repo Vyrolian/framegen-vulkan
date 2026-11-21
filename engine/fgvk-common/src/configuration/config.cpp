@@ -28,6 +28,7 @@ void ConfigFile::createDefaultConfigFile(const std::filesystem::path& path) {
 # dll = '/media/games/Lossless Scaling/Lossless.dll' # if you don't have LS in the default location
 allow_fp16 = true # request FP16 model arithmetic; false selects FP32
 pacing_correction = true # centre generated frames from measured GPU present times
+real_present_lead = false # experimental: present real frames earlier by their measured GPU wait
 
 [[profile]]
 name = "4x FG / 85% [Performance]"
@@ -168,6 +169,7 @@ namespace {
             .dll = tbl["dll"].value<std::string>(),
             .allow_fp16 = tbl["allow_fp16"].value_or(true),
             .pacing_correction = tbl["pacing_correction"].value_or(true),
+            .real_present_lead = tbl["real_present_lead"].value_or(false),
             .default_profile = tbl["default_profile"].value<std::string>()
         };
 
@@ -364,6 +366,7 @@ void ConfigFile::write(const std::filesystem::path& path) const {
         global.insert("dll", *this->globalConf.dll);
     global.insert("allow_fp16", this->globalConf.allow_fp16);
     global.insert("pacing_correction", this->globalConf.pacing_correction);
+    global.insert("real_present_lead", this->globalConf.real_present_lead);
     if (this->globalConf.default_profile)
         global.insert("default_profile", *this->globalConf.default_profile);
     table.insert("global", global);

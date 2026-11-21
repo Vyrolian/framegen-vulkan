@@ -7,8 +7,11 @@
 #include "present_records.hpp"
 
 #include "library_pin.hpp"
+#include "fgvk-common/vulkan/queue_priority.hpp"
 #include "swapchain/output_margin.hpp"
 #include "swapchain/release_gate.hpp"
+#include "swapchain/real_present_lead.hpp"
+#include "swapchain/reflex_out_of_band.hpp"
 #include "swapchain/tick_lock.hpp"
 
 #include <algorithm>
@@ -814,6 +817,14 @@ void formatPacingWindowBody(const PacingWindowPayload& payload, const PacingProf
          << " tick_misses=" << fgvk::layer::tickLockMisses.exchange(0, std::memory_order_relaxed)
          << " tick_early=" << fgvk::layer::tickLockEarly.exchange(0, std::memory_order_relaxed)
          << " tick_snapped=" << fgvk::layer::tickLockSnapped.exchange(0, std::memory_order_relaxed);
+    // RL2: the out-of-band type applied to the private present queue (0 none, 1 present, 2 render), and the backend
+    // queue priority that FGVK_BACKEND_QUEUE_PRIORITY selects (1 when unset or rejected), so a capture names its arm.
+    line << " reflex_oob=" << fgvk::layer::reflexOutOfBandApplied.load(std::memory_order_relaxed)
+         << " backend_queue_priority="
+         << vk::parseBackendQueuePriority(std::getenv("FGVK_BACKEND_QUEUE_PRIORITY")).priority;
+    // RP1: real_lead=1 while the real present lead is in effect, and its current lead in microseconds.
+    line << " real_lead=" << (fgvk::layer::realPresentLeadOn.load(std::memory_order_relaxed) ? 1 : 0)
+         << " real_lead_us=" << fgvk::layer::realPresentLeadNs.load(std::memory_order_relaxed) / 1000;
     line << '\n';
     for (size_t i = 0; i < window.outputTraceCount; ++i) {
         const auto& sample = window.outputTrace[i];

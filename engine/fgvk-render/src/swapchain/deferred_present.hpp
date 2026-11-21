@@ -7,6 +7,7 @@
 #include "swapchain/onscreen_watch.hpp"
 #include "swapchain/output_margin.hpp"
 #include "swapchain/present_marker.hpp"
+#include "swapchain/real_present_lead.hpp"
 #include "swapchain/reflex_present_attribution.hpp"
 #include "swapchain/screen_samples.hpp"
 #include "swapchain/tick_lock.hpp"
@@ -298,7 +299,8 @@ public:
         Clock::time_point started{}, finished{};
         Clock::time_point scheduled{};
         // W2: the effective pacing correction of a generated output (its scheduled time minus its
-        // unmoved deadline). Zero for reals, for skipped outputs and when the correction is off.
+        // unmoved deadline). RP1: a real's offset is its present lead (negative) when it presented with one.
+        // Zero otherwise: for skipped outputs, and when the correction is off.
         Clock::duration offset{};
         uint32_t imageIndex{};
         VkSwapchainKHR swapchain{};
@@ -1114,6 +1116,11 @@ private:
     OutputOffsetController outputOffsetController;
     std::optional<uint64_t> correctionState;
     uint64_t correctionFirstSource{};
+    // RP1, worker thread only, like the controller: the real present lead, the last setting read, and whether the
+    // lead is in effect for this batch. The setting stays unset until the first batch, so a preset lead is kept there.
+    RealPresentLead realPresentLead;
+    std::optional<uint64_t> realLeadState;
+    bool realLeadOn{};
     // L3, low_latency: worker thread only, like outputOffsetController. The phase of consecutive
     // batches that take the hold (BH2: just in time or not, with batch_hold on).
     BatchPhaseLock batchPhase;
@@ -1151,17 +1158,50 @@ private:
         }
         correctionState = state;
     }
-    // Caller holds queue->mutex, right after a worker present was marked. OS1: the screen samples of this
-    // context are read first; while they drive the correction, the marker samples are drained and ignored.
+    // RP1, worker thread only, read on each batch's first output like updateCorrection. A change of setting resets the
+    // lead. The lead is in effect only with markers, which the FGVK_REAL_OFFSET_US gate creates: a lead asked for
+    // without them is reported once and stays off.
+    void updateRealLead() noexcept {
+        const auto state = realPresentLeadState();
+        if (realLeadState && *realLeadState != state) {
+            realPresentLead.reset();
+            realPresentLeadNs.store(0, std::memory_order_relaxed);
+        }
+        realLeadState = state;
+        const bool requested = (state & 1) != 0;
+        if (requested && !realOffsetMayEnable()) {
+            static std::atomic<bool> reported{false};
+            if (!reported.exchange(true, std::memory_order_relaxed))
+                std::clog << "framegen-vulkan: real present lead unavailable reason=no-markers\n";
+        }
+        realLeadOn = requested && realOffsetMayEnable();
+        realPresentLeadOn.store(realLeadOn, std::memory_order_relaxed);
+    }
+    // RP1, caller holds queue->mutex, right after a worker present was marked: the lead's call record of that present.
+    // The marker of the present is read later, by observeOutputOffsetLocked. Nothing is recorded with the lead off.
+    void noteLeadCallLocked(const Readiness& ready, const bool generated, const Clock::time_point started,
+            const Clock::time_point unmoved) noexcept {
+        if (!realLeadOn) return;
+        realPresentLead.call(ready.context, ready.source, generated,
+            std::chrono::nanoseconds{steadyNanoseconds(started)},
+            std::chrono::nanoseconds{steadyNanoseconds(unmoved)});
+    }
+    // Caller holds queue->mutex, right after a worker present was marked. One drain reads the marker samples. OS1: the
+    // screen samples of this context are read first; while they drive the correction, the marker samples are ignored
+    // by it. RP1: the real present lead takes every marker of this context, screen mode or not.
     void observeOutputOffsetLocked(const uint64_t context) noexcept {
-        if (!correctionEnabled()) return;
-        const bool screen = screenRing && observeScreenSamplesLocked(context);
+        const bool correction = correctionEnabled();
+        if (!correction && !realLeadOn) return;
+        const bool screen = correction && screenRing && observeScreenSamplesLocked(context);
         std::array<PresentMarkerSample, 16> samples;
         for (;;) {
             const auto count = queue->readMarkerSamplesLocked(&markerCursor, samples.data(), samples.size());
             for (size_t i = 0; i < count; ++i) {
                 const auto& sample = samples[i];
-                if (sample.context != context || sample.source < correctionFirstSource || screen) continue;
+                if (sample.context != context) continue;
+                if (realLeadOn && realPresentLead.observe(sample))
+                    realPresentLeadNs.store(realPresentLead.lead.count(), std::memory_order_relaxed);
+                if (!correction || screen || sample.source < correctionFirstSource) continue;
                 const auto heldBefore = outputOffsetController.held;
                 if (outputOffsetController.observe(sample.generated, sample.source,
                         std::chrono::nanoseconds{sample.gpuNs})) {
@@ -1530,9 +1570,10 @@ private:
     // paths, so the chain, observer and copy status are the same on both. Callers hold
     // queue->mutex. presentWait is the signal of the copy into lowerIndex.
     // onScreenId is the chain's on-screen ID node value when the gate is active (see run()), else null.
+    // RP1: unmoved is the real's unmoved deadline, recorded with its actual start for the lead (see noteLeadCallLocked).
     void presentLower(const Job& job, const Readiness& ready, const void* chain,
             const uint32_t lowerIndex, const VkSemaphore presentWait, Completion& result,
-            uint64_t* const onScreenId) {
+            uint64_t* const onScreenId, const Clock::time_point unmoved) {
         const VkPresentInfoKHR info{
             .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
             .pNext = chain,
@@ -1556,6 +1597,7 @@ private:
         queue->endCall();
         result.finished = Clock::now();
         queue->markPresentLocked(ready.context, ready.source, result.feedback, job.generated);
+        noteLeadCallLocked(ready, job.generated, result.started, unmoved);
         observeOutputOffsetLocked(ready.context);
         if (onScreenIds) noteOnScreenLocked(job, ready, *onScreenId, result.result, result.started, result.targetTick);
         // D7d: the lower present is noted with its source, only when history is set.
@@ -1577,7 +1619,7 @@ private:
     // application image is abandoned on a lower error or while stopping. Each attempt
     // holds queue->mutex for tryAcquire and the copy/present only, and sleeps outside it.
     void presentInternalReal(Job& job, const Readiness& ready, const void* chain, Completion& result,
-            uint64_t* const onScreenId) {
+            uint64_t* const onScreenId, const Clock::time_point unmoved) {
         const InternalRealCopy& copy = job.internal;
         void* const owner = copy.owner.get();
         result.workerCopy = true;
@@ -1617,7 +1659,7 @@ private:
                             result.result = submitted;
                             return;
                         }
-                        presentLower(job, ready, chain, lowerIndex, presentWait, result, onScreenId);
+                        presentLower(job, ready, chain, lowerIndex, presentWait, result, onScreenId, unmoved);
                         return;
                     }
                     if (acquired < 0) {
@@ -1679,9 +1721,11 @@ private:
                 outputOffsetController.forget();
                 batchPhase.reset();
                 tickLock.resetOutputs();
+                realPresentLead.forget();
             }
             const auto ready = batch.readiness;
             if (first) updateCorrection(ready.source);
+            if (first) updateRealLead();
             // GT1: a new refresh period starts the tick grid again (rule 6). Only the first output of a batch asks.
             if (first && tickLockEnabled && correctionEnabled()) tickLock.setRefresh(ready.refreshNs);
             const size_t limit = batch.limit;
@@ -1744,6 +1788,16 @@ private:
                     ? std::max(ready.latestOutput, unmovedGeneratedStart + ready.outputInterval / 4)
                     : ready.latestOutput;
                 deadline = std::min(moved, cap);
+                appliedOffset = deadline - unmovedDeadline;
+            }
+            // RP1: a real after a generated output of its batch presents earlier by the measured lead, but never before
+            // the generated output's unmoved start plus a quarter interval. limitTail already keeps the unmoved deadline at
+            // or after that floor, so the applied offset is zero or negative. It is kept with the call (see below). A real
+            // without a lead is unchanged.
+            const bool leadOutput = realLeadOn && copyTail && !current.generated;
+            if (leadOutput) {
+                deadline = std::max(unmovedDeadline - realPresentLead.lead,
+                    unmovedGeneratedStart + ready.outputInterval / 4);
                 appliedOffset = deadline - unmovedDeadline;
             }
             lock.unlock();
@@ -2013,9 +2067,10 @@ private:
                 if (ready.trace) result.queueLockStarted = Clock::now();
                 const std::lock_guard queueLock(queue->mutex);
                 if (ready.trace) result.queueLockAcquired = Clock::now();
-                presentLower(job, ready, chain, prep.lowerIndex, prep.presentWait, result, &onScreenLowerId);
+                presentLower(job, ready, chain, prep.lowerIndex, prep.presentWait, result, &onScreenLowerId,
+                    unmovedDeadline);
             } else if (job.internalActive) {
-                presentInternalReal(job, ready, chain, result, &onScreenLowerId);
+                presentInternalReal(job, ready, chain, result, &onScreenLowerId, unmovedDeadline);
             } else {
                 VkResult skipResult = earlyGenerated && prep.settled ? prep.error : VK_SUCCESS;
                 bool acquired = earlyGenerated && prep.acquired;
@@ -2158,6 +2213,7 @@ private:
                             job.copy.acquireProbe->sample(job.copy.device,
                                 result.copyAcquireReturned, result.copyAcquireBounds);
                         queue->markPresentLocked(ready.context, ready.source, result.feedback, job.generated);
+                        noteLeadCallLocked(ready, job.generated, result.started, unmovedDeadline);
                         observeOutputOffsetLocked(ready.context);
                         if (onScreenIds)
                             noteOnScreenLocked(job, ready, onScreenLowerId, result.result, result.started, result.targetTick);
@@ -2188,6 +2244,8 @@ private:
                     result.startedUnsnapped());
                 outputOffsetController.limited[index] = outputOffsetLimited(commandedOffset, result.offset);
             }
+            // RP1: a real that presented with its lead keeps the lead as its offset, so unmovedStart() stays the unmoved start.
+            if (leadOutput && !result.skipped) result.offset = appliedOffset;
             // A prepared output follows F9b: its lower present is always issued,
             // including during stop/retirement; no second release mechanism is needed.
             heldLowerImages = 0;

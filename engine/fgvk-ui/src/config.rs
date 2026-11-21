@@ -36,6 +36,7 @@ const DEFAULT_MULTIPLIER: i64 = 2;
 const DEFAULT_FLOW_SCALE: f64 = 0.8;
 const DEFAULT_ALLOW_FP16: bool = true;
 const DEFAULT_PACING_CORRECTION: bool = true;
+const DEFAULT_REAL_PRESENT_LEAD: bool = false;
 const DEFAULT_PERFORMANCE_MODE: bool = false;
 const DEFAULT_LOW_LATENCY: bool = true;
 const DEFAULT_BATCH_HOLD: bool = true;
@@ -136,6 +137,7 @@ pub struct Settings {
     pub dll: Option<String>,
     pub allow_fp16: bool,
     pub pacing_correction: bool,
+    pub real_present_lead: bool,
 }
 
 /// What the window should show for the file right now.
@@ -220,6 +222,11 @@ impl Config {
                     doc,
                     "pacing_correction",
                     DEFAULT_PACING_CORRECTION,
+                ),
+                real_present_lead: read_global_bool(
+                    doc,
+                    "real_present_lead",
+                    DEFAULT_REAL_PRESENT_LEAD,
                 ),
             }),
         }
@@ -367,6 +374,16 @@ impl Config {
         self.edit(|doc| {
             if let Some(global) = global_mut(doc) {
                 set_value(global, "pacing_correction", Value::from(value));
+            }
+            Ok(())
+        })
+    }
+
+    /// Writes `[global] real_present_lead`. The `[global]` table is created when the file has none.
+    pub fn set_global_real_present_lead(&mut self, value: bool) -> Result<(), String> {
+        self.edit(|doc| {
+            if let Some(global) = global_mut(doc) {
+                set_value(global, "real_present_lead", Value::from(value));
             }
             Ok(())
         })
@@ -1171,6 +1188,50 @@ mod tests {
         let saved = fs::read_to_string(&bare).expect("read back");
         assert!(
             saved.contains("[global]\npacing_correction = false"),
+            "{saved}"
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn real_present_lead_defaults_off_and_round_trips() {
+        let doc = parse("version = 2\n\n[[profile]]\nname = \"Bare\"\n");
+        assert!(!read_global_bool(
+            &doc,
+            "real_present_lead",
+            DEFAULT_REAL_PRESENT_LEAD
+        ));
+
+        let dir = temp_dir("real-present-lead");
+        let path = dir.join(FILE_NAME);
+        let text = "version = 2\n\n[global]\npacing_correction = false\n\n[[profile]]\nname = \"Alpha\"\n";
+        fs::write(&path, text).expect("write fixture");
+        let mut config = Config::open(Ok(path.clone()));
+        assert!(!ready(&config).real_present_lead, "missing key reads as off");
+
+        config
+            .set_global_real_present_lead(true)
+            .expect("real present lead on saves");
+        let settings = ready(&config);
+        assert!(settings.real_present_lead);
+        assert!(!settings.pacing_correction, "other global keys are kept");
+        let out = fs::read_to_string(&path).expect("read back");
+        assert!(out.contains("real_present_lead = true"), "{out}");
+
+        config
+            .set_global_real_present_lead(false)
+            .expect("real present lead off saves");
+        assert!(!ready(&config).real_present_lead);
+
+        let bare = dir.join("bare.toml");
+        fs::write(&bare, "version = 2\n\n[[profile]]\nname = \"Alpha\"\n").expect("write fixture");
+        let mut config = Config::open(Ok(bare.clone()));
+        config
+            .set_global_real_present_lead(true)
+            .expect("creates [global]");
+        let saved = fs::read_to_string(&bare).expect("read back");
+        assert!(
+            saved.contains("[global]\nreal_present_lead = true"),
             "{saved}"
         );
         fs::remove_dir_all(&dir).ok();

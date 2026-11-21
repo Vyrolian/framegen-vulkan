@@ -19,6 +19,7 @@
 #include "swapchain/internal_images.hpp"
 #include "swapchain/present_layout.hpp"
 #include "swapchain/present_marker.hpp"
+#include "swapchain/reflex_out_of_band.hpp"
 #include "pnext_chain.hpp"
 
 #include <algorithm>
@@ -1023,6 +1024,30 @@ namespace {
                         privateQueue->markAfterPresent = &presentMarkerAfterPresent;
                         if (realOffsetMayEnable()) privateQueue->readMarkerSamples = &readPresentMarkerSamples;
                     }
+                }
+                // RL2: an out-of-band queue type on the private present queue only (never the application's queues),
+                // and only when the application enabled VK_NV_low_latency2 on this device.
+                const auto requested = reflexOutOfBandRequest();
+                if (privateQueue->queue && requested != ReflexOutOfBandType::None) {
+                    const auto applicationExtensions = std::span{info->ppEnabledExtensionNames, info->enabledExtensionCount};
+                    const bool enabled = std::ranges::any_of(applicationExtensions, [](const char* name) {
+                        return std::strcmp(name, VK_NV_LOW_LATENCY_2_EXTENSION_NAME) == 0;
+                    });
+                    const auto notify = enabled ? reinterpret_cast<PFN_vkQueueNotifyOutOfBandNV>(
+                        instance_info->funcs.GetDeviceProcAddr(*device, "vkQueueNotifyOutOfBandNV")) : nullptr;
+                    const VkOutOfBandQueueTypeInfoNV typeInfo{
+                        .sType = VK_STRUCTURE_TYPE_OUT_OF_BAND_QUEUE_TYPE_INFO_NV,
+                        .pNext = nullptr,
+                        .queueType = requested == ReflexOutOfBandType::Present
+                            ? VK_OUT_OF_BAND_QUEUE_TYPE_PRESENT_NV : VK_OUT_OF_BAND_QUEUE_TYPE_RENDER_NV,
+                    };
+                    const bool applied = notify != nullptr;
+                    if (applied) notify(privateQueue->queue, &typeInfo);
+                    reflexOutOfBandApplied.store(applied ? static_cast<uint32_t>(requested) : 0u,
+                        std::memory_order_relaxed);
+                    std::cerr << "framegen-vulkan: reflex out-of-band queue: type="
+                              << (requested == ReflexOutOfBandType::Present ? "present" : "render")
+                              << " applied=" << (applied ? 1 : 0) << '\n';
                 }
                 if (privateQueue->queue)
                     instance_info->deferredPresentQueues.emplace(*device, std::move(privateQueue));

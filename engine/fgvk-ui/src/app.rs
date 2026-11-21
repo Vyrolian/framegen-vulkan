@@ -233,6 +233,7 @@ impl App {
             dll,
             allow_fp16,
             pacing_correction,
+            real_present_lead,
         } = settings;
         if !self.restored {
             self.select(initial_index(&profiles, self.remembered.as_deref()));
@@ -265,7 +266,13 @@ impl App {
         }
 
         section(ui, "Global");
-        self.global(ui, dll.unwrap_or_default(), allow_fp16, pacing_correction);
+        self.global(
+            ui,
+            dll.unwrap_or_default(),
+            allow_fp16,
+            pacing_correction,
+            real_present_lead,
+        );
     }
 
     fn profile_row(&mut self, ui: &mut Ui, profiles: &[Profile]) {
@@ -639,7 +646,14 @@ impl App {
         }
     }
 
-    fn global(&mut self, ui: &mut Ui, dll: String, allow_fp16: bool, pacing_correction: bool) {
+    fn global(
+        &mut self,
+        ui: &mut Ui,
+        dll: String,
+        allow_fp16: bool,
+        pacing_correction: bool,
+        real_present_lead: bool,
+    ) {
         let mut fp16 = allow_fp16;
         if ui.checkbox(&mut fp16, "FP16 (faster)").changed() {
             let result = self.config.set_global_allow_fp16(fp16);
@@ -658,6 +672,16 @@ impl App {
         hint(
             ui,
             "Centres generated frames between real frames using timing feedback. Applies while the game is running.",
+        );
+
+        let mut lead = real_present_lead;
+        if ui.checkbox(&mut lead, "Real present lead (experimental)").changed() {
+            let result = self.config.set_global_real_present_lead(lead);
+            self.report(result);
+        }
+        hint(
+            ui,
+            "Presents real frames earlier by their measured GPU wait. Experimental. Applies while the game is running.",
         );
 
         ui.label("Lossless.dll");

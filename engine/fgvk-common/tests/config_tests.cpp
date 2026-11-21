@@ -455,6 +455,16 @@ int main() {
     uncorrected.write(precisionPath);
     expect(!ls::ConfigFile(precisionPath).global().pacing_correction,
         "Saving must preserve pacing_correction = false");
+    expect(!ls::GlobalConf{}.real_present_lead && !generatedDefaults.global().real_present_lead &&
+            !inMemoryDefaults.global().real_present_lead && !fp32Config.global().real_present_lead,
+        "Real present lead must default off, also when the key is missing");
+    writeText(precisionPath, "version = 2\n[global]\nreal_present_lead = true\n[[profile]]\n");
+    const ls::ConfigFile leading(precisionPath);
+    expect(leading.global().real_present_lead && leading.global().pacing_correction,
+        "An explicit real_present_lead = true must be read, and pacing correction keeps its default");
+    leading.write(precisionPath);
+    expect(ls::ConfigFile(precisionPath).global().real_present_lead,
+        "Saving must preserve real_present_lead = true");
 
     const auto path = directory / "conf.toml";
     writeText(path, validConfiguration);
