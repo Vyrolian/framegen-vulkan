@@ -873,7 +873,13 @@ void formatPacingWindowBody(const PacingWindowPayload& payload, const PacingProf
          << " inline_call_fallback_cascade=" << window.inlineCallFallbackCascade
          << " inline_call_fallback_other=" << window.inlineCallFallbackOther
          << " inline_call_parked=" << window.inlineCallParked;
-    // FP3: the worker's lower park outcomes (Drained is not counted), then the idle retries and the retries that parked.
+    // FP4: the waits for the worker's present at a call output: those that did not return None, by outcome, and their total in us.
+    line << " inline_call_wait=" << window.inlineCallWait
+         << " inline_call_wait_parked=" << window.inlineCallWaitParked
+         << " inline_call_wait_unlocked=" << window.inlineCallWaitUnlocked
+         << " inline_call_wait_timeout=" << window.inlineCallWaitTimeout
+         << " inline_call_wait_us=" << window.inlineCallWaitUs;
+    // FP3: the worker's lower park outcomes (Drained is not counted). Each outcome is its own field.
     const auto parkOutcome = [&window](const fgvk::layer::ParkOutcome outcome) {
         return window.parkOutcomes[static_cast<size_t>(outcome)];
     };
@@ -883,9 +889,7 @@ void formatPacingWindowBody(const PacingWindowPayload& payload, const PacingProf
          << " park_slot_busy=" << parkOutcome(fgvk::layer::ParkOutcome::SlotBusy)
          << " park_fence=" << parkOutcome(fgvk::layer::ParkOutcome::Fence)
          << " park_acquire=" << parkOutcome(fgvk::layer::ParkOutcome::Acquire)
-         << " park_error=" << parkOutcome(fgvk::layer::ParkOutcome::Error)
-         << " park_retry=" << window.parkRetries
-         << " park_retry_ok=" << window.parkRetriesParked;
+         << " park_error=" << parkOutcome(fgvk::layer::ParkOutcome::Error);
     line << '\n';
     for (size_t i = 0; i < window.outputTraceCount; ++i) {
         const auto& sample = window.outputTrace[i];

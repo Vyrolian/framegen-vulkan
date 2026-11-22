@@ -280,6 +280,10 @@ bool Swapchain::enqueueInternalRealPresent(const vk::Vulkan& vk,
     // FP2: the worker parks lower images for this owner after its lower presents, for an attached swapchain only.
     if (this->attachedGeneration())
         this->deferredPresent->setParkHook(image.keepAlive, &internalRealParkAfterPresent);
+    // FP4: the real may find no parked image while the worker's present is in flight. The wait holds no fgvk lock (see
+    // DeferredPresent::awaitCallLower), and admission then takes a parked image first, as it always does.
+    if (this->inlineRealCall.eligible)
+        static_cast<void>(this->deferredPresent->awaitCallLower([&] { return image.owner->parkedCount(); }));
     InlineCallOutcome outcome = InlineCallOutcome::None;
     if (!this->deferredPresent->enqueueInternalReal(presentInfo, deadline, copy, {}, this->reflexPresentId,
             &outcome))

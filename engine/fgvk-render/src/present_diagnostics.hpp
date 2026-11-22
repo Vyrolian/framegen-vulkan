@@ -284,10 +284,13 @@ namespace fgvk::layer::present_diagnostics {
             // FP1: the fallbacks by reason (the five sum to inlineCallFallback), and the outputs served from a parked image.
             size_t inlineCallFallbackLock{}, inlineCallFallbackAcquire{}, inlineCallFallbackBudget{};
             size_t inlineCallFallbackCascade{}, inlineCallFallbackOther{}, inlineCallParked{};
-            // FP3: the worker's lower park outcomes by ParkOutcome (Drained is not kept), and the idle retries (attempts, and
-            // those that parked). Taken from the worker at each present (see parkCounts).
+            // FP4: the waits for the worker's present at a call output (generated and real) that did not return None, by
+            // outcome, and their total in us. Taken from the worker at each present (see callWaitCounts).
+            size_t inlineCallWait{}, inlineCallWaitParked{}, inlineCallWaitUnlocked{}, inlineCallWaitTimeout{};
+            size_t inlineCallWaitUs{};
+            // FP3: the worker's lower park outcomes by ParkOutcome (Drained is not kept). Taken from the worker at each present
+            // (see parkCounts).
             std::array<size_t, fgvk::layer::parkCountedOutcomeCount> parkOutcomes{};
-            size_t parkRetries{}, parkRetriesParked{};
             size_t fifoCallerTimingSources{};
             std::array<OutputSample, outputTraceCapacity> outputTrace{};
             size_t outputTraceCount{}, outputTraceDropped{};
@@ -494,8 +497,14 @@ namespace fgvk::layer::present_diagnostics {
         // FP3: the worker's park counters taken since the last call (DeferredPresent::takeParkCounts), added to this window.
         void parkCounts(const fgvk::layer::ParkCounts& counts) {
             for (size_t i = 0; i < counts.outcomes.size(); ++i) window.parkOutcomes[i] += counts.outcomes[i];
-            window.parkRetries += counts.retries;
-            window.parkRetriesParked += counts.retriesParked;
+        }
+        // FP4: the call waits taken since the last call (DeferredPresent::takeCallWaitCounts), added to this window.
+        void callWaitCounts(const fgvk::layer::CallWaitCounts& counts) {
+            window.inlineCallWait += counts.waits;
+            window.inlineCallWaitParked += counts.parked;
+            window.inlineCallWaitUnlocked += counts.unlocked;
+            window.inlineCallWaitTimeout += counts.timeout;
+            window.inlineCallWaitUs += counts.waitUs;
         }
         // Persistent for this swapchain: set once a present uses F5 internal images.
         void internalImagesActive() { internalImages = true; }

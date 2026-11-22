@@ -235,8 +235,11 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
                 present_diagnostics::logPacingSource(owner.diagnosticsState.contextId, swapchain,
                     owner.pacingProfile->sourceSample(now));
             // FP3: the worker's park counts since the last present join this window before it is finished.
-            if (owner.deferredPresent)
+            // FP4: so do the call waits of this present (see DeferredPresent::awaitCallLower).
+            if (owner.deferredPresent) {
                 owner.pacingProfile->parkCounts(owner.deferredPresent->takeParkCounts());
+                owner.pacingProfile->callWaitCounts(owner.deferredPresent->takeCallWaitCounts());
+            }
             const auto window = owner.pacingProfile->finishSource(now);
             if (window) present_diagnostics::logPacingProfile(
                 owner.diagnosticsState.contextId, owner.currentPresentMode, now, *window, swapchain,

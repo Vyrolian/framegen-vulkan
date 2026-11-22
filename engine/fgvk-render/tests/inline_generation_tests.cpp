@@ -190,8 +190,7 @@ void testParkAfterPresentAction() {
         "a sticky owner with a target of zero did not drain its parked images");
 }
 
-// FP3: each lower acquire poll maps to its park outcome, and only the outcomes an idle wait can clear are retried. Budget,
-// Full, Error, Drained and Parked are final for their present. The retry allowance and wait are the ones the worker uses.
+// FP3: each lower acquire poll maps to its park outcome. FP4 removed the idle retry, so no outcome is retried any more.
 void testParkOutcomes() {
     using namespace fgvk::layer;
     require(parkOutcomeOfPoll(LowerPoll::Acquired) == ParkOutcome::Parked, "a successful poll is not a parked image");
@@ -199,18 +198,21 @@ void testParkOutcomes() {
     require(parkOutcomeOfPoll(LowerPoll::Fence) == ParkOutcome::Fence, "an unsignalled fence is not fence");
     require(parkOutcomeOfPoll(LowerPoll::Acquire) == ParkOutcome::Acquire, "a not-ready acquire is not acquire");
     require(parkOutcomeOfPoll(LowerPoll::Error) == ParkOutcome::Error, "a poll error is not error");
-    require(parkRetryAfter(ParkOutcome::SlotBusy) && parkRetryAfter(ParkOutcome::Fence) &&
-        parkRetryAfter(ParkOutcome::Acquire), "a busy slot, an unsignalled fence or a not-ready acquire is not retried");
-    require(!parkRetryAfter(ParkOutcome::Parked) && !parkRetryAfter(ParkOutcome::Full) &&
-        !parkRetryAfter(ParkOutcome::Budget) && !parkRetryAfter(ParkOutcome::Error) &&
-        !parkRetryAfter(ParkOutcome::Drained), "a final park outcome was retried");
-    require(inlineParkRetryLimit == 8, "the idle retry allowance is not eight per worker present");
-    require(inlineParkRetryWait == std::chrono::microseconds{500}, "the idle retry wait is not 0.5 ms");
     static_assert(parkCountedOutcomeCount == 7 && static_cast<size_t>(ParkOutcome::Drained) == parkCountedOutcomeCount,
         "Drained must be the only outcome left out of the counters");
     const ParkCounts empty{};
-    require(empty.retries == 0 && empty.retriesParked == 0 && empty.outcomes[0] == 0,
-        "fresh park counts are not zero");
+    require(empty.outcomes[0] == 0 && empty.outcomes.back() == 0, "fresh park counts are not zero");
+}
+
+// FP4: the call wait is bounded at 0.5 ms, and its counts start at zero. The wait itself is tested in deferred_present_tests.
+void testCallLowerWaitBounds() {
+    using namespace fgvk::layer;
+    require(inlineCallLowerWait == std::chrono::microseconds{500}, "the call wait for the worker's present is not 0.5 ms");
+    const CallWaitCounts empty{};
+    require(empty.waits == 0 && empty.parked == 0 && empty.unlocked == 0 && empty.timeout == 0 && empty.waitUs == 0,
+        "fresh call wait counts are not zero");
+    require(CallLowerWait::None != CallLowerWait::Parked && CallLowerWait::Unlocked != CallLowerWait::Timeout,
+        "the call wait outcomes are not distinct");
 }
 
 // FP2 rules 4 and 5 (fixed): an acquire takes the oldest parked image before a fresh acquire, whatever the park target.
@@ -237,6 +239,7 @@ int main() {
         testParkBudget();
         testParkAfterPresentAction();
         testParkOutcomes();
+        testCallLowerWaitBounds();
         testAcquireTakesParkedFirst();
     } catch (const std::exception& error) {
         std::cerr << "Inline generation test failed: " << error.what() << '\n';

@@ -180,25 +180,31 @@ enum class LowerPoll : uint8_t { Acquired, SlotBusy, Fence, Acquire, Error };
     return ParkOutcome::Error;
 }
 
-// FP3: a park that ended SlotBusy, Fence or Acquire is retried while the worker is idle, because the slot or the lower image
-// may free within a few milliseconds. Every other outcome is final for its present. Budget is never retried.
-[[nodiscard]] constexpr bool parkRetryAfter(const ParkOutcome outcome) noexcept {
-    return outcome == ParkOutcome::SlotBusy || outcome == ParkOutcome::Fence || outcome == ParkOutcome::Acquire;
-}
-
-// FP3: idle retries allowed per worker present, and the idle wait before each one.
-inline constexpr uint32_t inlineParkRetryLimit = 8;
-inline constexpr std::chrono::microseconds inlineParkRetryWait{500};
-
 // FP3: the outcomes the park counters keep, indexed by ParkOutcome. Drained is last and is not kept.
 inline constexpr size_t parkCountedOutcomeCount = static_cast<size_t>(ParkOutcome::Drained);
 
-// FP3: the park counters taken from the worker for one window. outcomes counts every park attempt, retries included, by
-// outcome. retries counts the idle retry attempts, and retriesParked those that parked.
+// FP3: the park counters taken from the worker for one window. outcomes counts every park attempt by outcome.
 struct ParkCounts {
     std::array<size_t, parkCountedOutcomeCount> outcomes{};
-    size_t retries{};
-    size_t retriesParked{};
+};
+
+// FP4: what DeferredPresent::awaitCallLower found. None: no wait, because an image was already parked or the queue lock was
+// free at once. Parked: an image was parked during the wait. Unlocked: the queue lock was free during the wait, so the
+// worker's present and its park were over. Timeout: neither happened within inlineCallLowerWait.
+enum class CallLowerWait : uint8_t { None, Parked, Unlocked, Timeout };
+
+// FP4: the longest wait at a present call for the worker's present of a lower image. The FP measurements put that present at
+// p50 0.105 ms and p99 0.52 ms, so this wait covers almost every present that the call collides with.
+inline constexpr std::chrono::microseconds inlineCallLowerWait{500};
+
+// FP4: the call waits taken from the worker for one window, generated and real together. waits counts the waits that did not
+// return None, each outcome is counted in its own field, and waitUs is the sum of their durations.
+struct CallWaitCounts {
+    size_t waits{};
+    size_t parked{};
+    size_t unlocked{};
+    size_t timeout{};
+    size_t waitUs{};
 };
 
 }  // namespace fgvk::layer

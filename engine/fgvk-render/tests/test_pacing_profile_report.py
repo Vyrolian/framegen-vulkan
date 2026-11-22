@@ -853,14 +853,27 @@ class WindowFieldTests(unittest.TestCase):
         self.assertEqual(windows[0].values["application_present_modes"], "-")
 
     def test_park_counters_are_plain_counts(self):
-        # FP3: the park counters follow inline_call_parked. They are plain counts, not computed measurements.
+        # FP3: the park counters follow inline_call_parked. They are plain counts, not computed measurements. FP4 removed
+        # the park_retry fields, so the report no longer reads them.
         body = self.base + self.current + (" inline_call_parked=2 park_ok=2 park_full=1 park_budget=1 "
-            "park_slot_busy=0 park_fence=1 park_acquire=0 park_error=3 park_retry=2 park_retry_ok=1")
+            "park_slot_busy=0 park_fence=1 park_acquire=0 park_error=3")
         windows, invalid = self.read([self.prefix + body])
         self.assertEqual((len(windows), invalid), (1, 0))
         self.assertEqual(windows[0].values["park_ok"], 2.0)
         self.assertEqual(windows[0].values["park_error"], 3.0)
-        self.assertEqual(windows[0].values["park_retry_ok"], 1.0)
+
+    def test_call_wait_counters_are_plain_counts(self):
+        # FP4: the call wait counts follow inline_call_parked. The sum in us is a computed measurement, so it must be finite and
+        # not negative, and the counts are plain numbers.
+        body = self.base + self.current + (" inline_call_parked=2 inline_call_wait=3 inline_call_wait_parked=1 "
+            "inline_call_wait_unlocked=1 inline_call_wait_timeout=1 inline_call_wait_us=612 park_ok=2")
+        windows, invalid = self.read([self.prefix + body])
+        self.assertEqual((len(windows), invalid), (1, 0))
+        self.assertEqual(windows[0].values["inline_call_wait"], 3.0)
+        self.assertEqual(windows[0].values["inline_call_wait_timeout"], 1.0)
+        self.assertEqual(windows[0].values["inline_call_wait_us"], 612.0)
+        negative = self.read([self.prefix + self.base + self.current + " inline_call_wait_us=-1"])
+        self.assertEqual((len(negative[0]), negative[1]), (0, 1))
 
     def test_computed_fields_still_reject_bad_values(self):
         cases = {

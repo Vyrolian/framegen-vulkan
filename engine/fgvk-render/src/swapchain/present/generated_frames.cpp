@@ -156,8 +156,15 @@ VkResult Swapchain::presentGeneratedFrames(
         std::optional<ParkedLowerTake> parked;
         bool direct = false;
         if (tryDirect) {
-            if (inlineCalls && parkSameSwapchain)
+            if (inlineCalls && parkSameSwapchain) {
                 parked = parkOwner->takeParked();
+                // FP4: no parked image yet. The worker's present may park one within inlineCallLowerWait. The wait holds no
+                // fgvk lock (see DeferredPresent::awaitCallLower), and the take after it is the same as the first.
+                if (!parked) {
+                    static_cast<void>(this->deferredPresent->awaitCallLower(parkedNow));
+                    parked = parkOwner->takeParked();
+                }
+            }
             if (parked) {
                 // FP2 rule 4: the parked image is counted by the budget already, so taking it needs no budget check and no
                 // queue lock. The total of call-held and parked outputs does not change.

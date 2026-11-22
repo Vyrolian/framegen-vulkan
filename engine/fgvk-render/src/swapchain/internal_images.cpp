@@ -1512,7 +1512,7 @@ namespace fgvk::layer {
         uint32_t index{};
         LowerPoll poll{};
         // The acquire commits workerSlot. It is zero-timeout, so the worker never sleeps here. FP3: a failed acquire
-        // reports why (busy slot, unsignalled fence, NOT_READY or TIMEOUT, or error) for the idle retry.
+        // reports why (busy slot, unsignalled fence, NOT_READY or TIMEOUT, or error) for the park counters.
         if (tryAcquireLowerLocked(lowerOpAcquirePark, &index, &poll) != VK_SUCCESS)
             return parkOutcomeOfPoll(poll);
         const std::lock_guard leafLock(impl->leaf);

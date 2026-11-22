@@ -58,11 +58,17 @@ void profileScenario() {
     profile.gpuMicroseconds(PacingProfile::GpuSpan, 12000);
     profile.gpuMicroseconds(PacingProfile::GpuReadback, 20);
     profile.completedWorkerBatch(true);
-    // FP3: the worker's park counts for this window: outcomes by ParkOutcome, and two idle retries of which one parked.
+    // FP3: the worker's park counts for this window, by ParkOutcome (Drained is the last entry and is not written).
     profile.parkCounts(fgvk::layer::ParkCounts{
         .outcomes = {2, 1, 1, 0, 1, 0, 3},
-        .retries = 2,
-        .retriesParked = 1,
+    });
+    // FP4: the call waits of this window: three that did not return None, one parked, one unlocked and one timed out.
+    profile.callWaitCounts(fgvk::layer::CallWaitCounts{
+        .waits = 3,
+        .parked = 1,
+        .unlocked = 1,
+        .timeout = 1,
+        .waitUs = 612,
     });
     profile.justInTimeBatch(2ms);
     profile.outputTiming(PacingProfile::ExtTiming, start + 10ms);
