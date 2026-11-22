@@ -9,6 +9,7 @@
 #include "swapchain/create_policy.hpp"
 #include "swapchain/output_margin.hpp"
 #include "swapchain/real_present_lead.hpp"
+#include "swapchain/reflex_dynamic_cap.hpp"
 #include "swapchain/swapchain.hpp"
 
 #include "fgvk-common/configuration/detection.hpp"
@@ -216,6 +217,13 @@ namespace {
     }
 }
 
+
+bool Root::reflexDynamicCapWanted() const {
+    if (const int forced = reflexDynamicCapEnvironment(); forced >= 0)
+        return forced == 1;
+    return std::ranges::any_of(this->config.get().profiles(),
+        [](const ls::GameConf& profile) { return profile.reflex_dynamic_cap; });
+}
 
 Root::Root() {
     this->fp16AtStartup = this->config.get().global().allow_fp16;

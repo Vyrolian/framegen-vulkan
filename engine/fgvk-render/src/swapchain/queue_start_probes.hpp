@@ -28,6 +28,12 @@ using ResolveQueue = QueueSource (*)(VkQueue queue);
 [[nodiscard]] std::span<const VkSubmitInfo2> prepare(VkQueue queue, std::span<const VkSubmitInfo2> submits,
     ResolveQueue resolve) noexcept;
 
+// RDC1: called once a device is created that the dynamic Reflex cap runs on (calibrated timestamps and
+// VK_NV_low_latency2). From then on the submit path runs the probe outside the pacing profile too, so the cap's
+// controller gets the queue waits. Until then nothing outside the pacing profile changes.
+void requestDynamicProbes() noexcept;
+[[nodiscard]] bool dynamicProbesRequested() noexcept;
+
 // Destroys the probes of a device's queues. Call before the lower vkDestroyDevice; the application has finished
 // all work on the device by then.
 void destroyDevice(VkDevice device) noexcept;

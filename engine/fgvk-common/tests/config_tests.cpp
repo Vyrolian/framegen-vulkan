@@ -56,6 +56,7 @@ namespace {
                 right.swapchain_image_count_compatibility &&
             left.base_fps_cap == right.base_fps_cap &&
             left.low_latency == right.low_latency &&
+            left.reflex_dynamic_cap == right.reflex_dynamic_cap &&
             left.batch_hold == right.batch_hold &&
             left.ultra_performance == right.ultra_performance &&
             left.flow_scale == right.flow_scale &&
@@ -354,6 +355,27 @@ dynamic_cadence_probe_interval_seconds = 0.5
             "Rewriting a configuration must keep low_latency = false");
     }
 
+    // reflex_dynamic_cap defaults on for a profile that omits it, keeps an explicit off across a rewrite, and
+    // sameGameConf tells the two apart.
+    void testReflexDynamicCapKey(const std::filesystem::path& directory) {
+        const auto path = directory / "reflex-dynamic-cap.toml";
+        writeText(path, "version = 2\n[[profile]]\nname = 'game'\n");
+        const ls::ConfigFile omitted(path);
+        expect(omitted.profiles().front().reflex_dynamic_cap,
+            "A profile without reflex_dynamic_cap must read as on");
+        writeText(path, "version = 2\n[[profile]]\nname = 'game'\nreflex_dynamic_cap = false\n");
+        const ls::ConfigFile off(path);
+        expect(!off.profiles().front().reflex_dynamic_cap,
+            "An explicit reflex_dynamic_cap = false must be read");
+        expect(!sameGameConf(omitted.profiles().front(), off.profiles().front()),
+            "sameGameConf must distinguish reflex_dynamic_cap");
+        off.write(path);
+        expect(readText(path).find("reflex_dynamic_cap = false") != std::string::npos,
+            "Rewriting a configuration must keep reflex_dynamic_cap = false");
+        expect(!ls::ConfigFile(path).profiles().front().reflex_dynamic_cap,
+            "A rewritten reflex_dynamic_cap = false must read back as off");
+    }
+
     // batch_hold defaults on for a profile that omits it, keeps an explicit off across a rewrite, and
     // sameGameConf tells the two apart.
     void testBatchHoldKey(const std::filesystem::path& directory) {
@@ -385,6 +407,7 @@ int main() {
                 ls::GameConfDefaults::swapchainImageCountCompatibility &&
             defaults.base_fps_cap == ls::GameConfDefaults::baseFpsCap &&
             defaults.low_latency == ls::GameConfDefaults::lowLatency &&
+            defaults.reflex_dynamic_cap == ls::GameConfDefaults::reflexDynamicCap &&
             defaults.batch_hold == ls::GameConfDefaults::batchHold &&
             defaults.ultra_performance ==
                 ls::GameConfDefaults::ultraPerformance &&
@@ -405,6 +428,7 @@ int main() {
     testRetiredAdaptiveKeys(directory);
     testRetiredStableCadenceKey(directory);
     testLowLatencyKey(directory);
+    testReflexDynamicCapKey(directory);
     testBatchHoldKey(directory);
     testOptionalLosslessDll(directory);
     testRetiredPowerTables(directory);

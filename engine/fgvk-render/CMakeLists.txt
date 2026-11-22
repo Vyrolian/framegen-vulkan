@@ -358,6 +358,13 @@ if(BUILD_TESTING)
     add_test(NAME reflex-frame-limit COMMAND fgvk-reflex-frame-limit-tests)
     fgvk_register_portable_policy_test(fgvk-reflex-frame-limit-tests reflex-frame-limit)
 
+    # RDC1: the dynamic Reflex cap controller, pure logic with no Vulkan device.
+    add_executable(fgvk-reflex-dynamic-cap-tests "tests/reflex_dynamic_cap_tests.cpp")
+    target_include_directories(fgvk-reflex-dynamic-cap-tests PRIVATE "src")
+    target_link_libraries(fgvk-reflex-dynamic-cap-tests PRIVATE Threads::Threads)
+    add_test(NAME reflex-dynamic-cap COMMAND fgvk-reflex-dynamic-cap-tests)
+    fgvk_register_portable_policy_test(fgvk-reflex-dynamic-cap-tests reflex-dynamic-cap)
+
     # Reflex present attribution: the application's marker rule, the present's ID and the lower out-of-band pair.
     add_executable(fgvk-reflex-present-attribution-tests "tests/reflex_present_attribution_tests.cpp")
     target_include_directories(fgvk-reflex-present-attribution-tests PRIVATE "src")

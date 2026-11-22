@@ -4,14 +4,17 @@
 
 #include "present_diagnostics.hpp"
 #include "swapchain/queue_start_probe.hpp"
+#include "swapchain/reflex_dynamic_cap.hpp"
 #include "swapchain/submit_tag_tracker.hpp"
 
 #include "fgvk-common/vulkan/gpu_clock.hpp"
 #include "fgvk-common/vulkan/vulkan.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <iostream>
 #include <memory>
 #include <mutex>
@@ -43,6 +46,9 @@ void logOnce(const char* reason) {
         std::cerr << "framegen-vulkan: queue frame probe (GQ1) skips a queue: " << reason << '\n';
     });
 }
+
+// RDC1: set by the device creation that wants the dynamic cap's queue waits (entrypoint.cpp).
+std::atomic<bool> dynamicProbesWanted{false};
 
 class Probe {
 public:
@@ -131,6 +137,7 @@ private:
         const auto createQueryPool = reinterpret_cast<PFN_vkCreateQueryPool>(get("vkCreateQueryPool"));
         this->destroyQueryPool = reinterpret_cast<PFN_vkDestroyQueryPool>(get("vkDestroyQueryPool"));
         this->queryResults = reinterpret_cast<PFN_vkGetQueryPoolResults>(get("vkGetQueryPoolResults"));
+        this->dynamic = ReflexDynamicCapRegistry::get(this->device);
         const auto resetQueries = reinterpret_cast<PFN_vkCmdResetQueryPool>(get("vkCmdResetQueryPool"));
         const auto writeTimestamp = reinterpret_cast<PFN_vkCmdWriteTimestamp>(get("vkCmdWriteTimestamp"));
         this->destroyCommandPool = vk.df().DestroyCommandPool;
@@ -216,6 +223,9 @@ private:
                         endNs + calibrationSlackNs >= frame->lastSubmitNs) {
                     present_diagnostics::recordQueueFrame(this->queue, this->family, frame->presentId,
                         frame->submits, frame->submitNs, frame->lastSubmitNs, startNs, endNs, true);
+                    // RDC1: the controller takes the wait of every available frame; it picks the main queue itself.
+                    if (this->dynamic) this->dynamic->feed(reinterpret_cast<uintptr_t>(this->queue), frame->submits,
+                        startNs - frame->submitNs, frame->lastSubmitNs);
                     this->ring.retireOldest();
                     continue;
                 }
@@ -232,6 +242,8 @@ private:
     VkQueue queue{VK_NULL_HANDLE};
     uint32_t family{};
     VkDevice device{VK_NULL_HANDLE};
+    // RDC1: the device's dynamic cap controller, fed by every available frame of every queue of the device.
+    std::shared_ptr<ReflexDynamicCap> dynamic;
     QueueFrameRing ring;
     std::optional<vk::CalibratedClock> clock;
     Clock::time_point calibratedAt{};
@@ -291,6 +303,14 @@ std::span<const VkSubmitInfo2> prepare(const VkQueue queue, const std::span<cons
     } catch (...) {
         return submits;
     }
+}
+
+void requestDynamicProbes() noexcept {
+    dynamicProbesWanted.store(true, std::memory_order_relaxed);
+}
+
+bool dynamicProbesRequested() noexcept {
+    return dynamicProbesWanted.load(std::memory_order_relaxed);
 }
 
 void destroyDevice(const VkDevice device) noexcept {

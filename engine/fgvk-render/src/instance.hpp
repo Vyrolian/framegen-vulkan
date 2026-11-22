@@ -66,6 +66,11 @@ namespace fgvk::layer {
             return this->fp16AtStartup;
         }
 
+        /// RDC1: whether a device created in this process may run the dynamic Reflex cap: FGVK_REFLEX_DYNAMIC_CAP
+        /// when it is set, else the setting of any loaded profile. Decided at device creation, where the calibrated
+        /// timestamps are negotiated. The per-profile setting still decides each swapchain's cap.
+        [[nodiscard]] bool reflexDynamicCapWanted() const;
+
         /// Whether the process was started inside a Gamescope session, detected once at layer init.
         [[nodiscard]] bool gamescopeSession() const {
             return this->gamescopeSessionAtStartup;

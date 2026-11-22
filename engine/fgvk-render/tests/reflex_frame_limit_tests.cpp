@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <limits>
+#include <memory>
 #include <string_view>
 #include <thread>
 #include <vector>
@@ -15,6 +16,8 @@ namespace {
 void expect(bool value, const char* message) {
     if (!value) { std::cerr << "FAIL: " << message << '\n'; std::exit(1); }
 }
+
+constexpr uintptr_t mainQueue = 0x100;
 
 template<class T> T handle(uintptr_t value) { return reinterpret_cast<T>(value); }
 
@@ -214,6 +217,84 @@ void concurrentRequestsKeepDriverState() {
     expect(!driverIntervals.empty() && driverIntervals.back() == 16667,
         "the driver did not end on the final cap interval");
 }
+// RDC1: the dynamic cap raises the forwarded interval only with its setting, Reflex low latency mode, frame generation
+// and a cap. A change under 50 us is not sent, a return to the static interval always is, and an application request
+// carries the raised interval too.
+void dynamicCapForwarding() {
+    ReflexFrameLimit limit;
+    Recorder driver;
+    const auto cap = std::make_shared<ReflexDynamicCap>();
+    const int64_t now = reflexClockNs();
+    const auto feedWindow = [&](const int64_t waitNs) {
+        for (size_t frame = 0; frame < reflexDynamicWindowFrames; ++frame)
+            cap->feed(mainQueue, 18, waitNs, now);
+    };
+    const auto observe = [&](const bool setting, Recorder& recorder) {
+        limit.observe(swapchain, true, 119.99, ReflexDynamicInput{.controller = cap, .setting = setting, .nowNs = now},
+            recorder.send());
+    };
+
+    limit.applicationRequest(swapchain, request(true, 0), driver.send());
+    observe(true, driver);
+    expect(driver.calls.size() == 2 && driver.calls.back().info.minimumIntervalUs == 8335 &&
+            std::string_view(driver.calls.back().reason) == "frame-generation",
+        "the 119.99 fps cap interval was not forwarded");
+
+    // A 5 ms median raises it by 5 %: 8335 -> 8752. (A refresh-derived 119.99 fps cap is 8335 us.)
+    feedWindow(5'000'000);
+    observe(true, driver);
+    expect(driver.calls.size() == 3 && driver.calls.back().info.minimumIntervalUs == 8752 &&
+            driver.calls.back().previousIntervalUs == 8335 && driver.calls.back().dynamic &&
+            std::string_view(driver.calls.back().reason) == "dynamic",
+        "a raised interval was not forwarded as dynamic");
+    observe(true, driver);
+    expect(driver.calls.size() == 3, "an unchanged dynamic interval reached the driver again");
+
+    // The first 0.5 % decay moves 44 us, under the 50 us threshold: nothing is sent.
+    feedWindow(100'000);
+    observe(true, driver);
+    expect(driver.calls.size() == 3, "a dynamic change under 50 us reached the driver");
+    // The second decay moves 87 us from the sent value and is sent.
+    feedWindow(100'000);
+    observe(true, driver);
+    expect(driver.calls.size() == 4 && driver.calls.back().info.minimumIntervalUs == 8665 &&
+            driver.calls.back().previousIntervalUs == 8752,
+        "a dynamic change of 50 us or more was not sent");
+
+    // Decays continue until the static interval, and the return to it is exact.
+    for (int window = 0; window < 400 && driver.calls.back().info.minimumIntervalUs != 8335; ++window) {
+        feedWindow(100'000);
+        observe(true, driver);
+    }
+    expect(driver.calls.back().info.minimumIntervalUs == 8335 && !driver.calls.back().dynamic &&
+            std::string_view(driver.calls.back().reason) == "dynamic",
+        "the return to the static interval was not exact");
+    const auto settled = driver.calls.size();
+    observe(true, driver);
+    expect(driver.calls.size() == settled, "the static interval was sent again");
+
+    // The setting off: even high waits forward the static interval only.
+    feedWindow(5'000'000);
+    observe(true, driver);
+    expect(driver.calls.back().info.minimumIntervalUs == 8752, "setup did not raise the interval again");
+    observe(false, driver);
+    expect(driver.calls.back().info.minimumIntervalUs == 8335 && !driver.calls.back().dynamic,
+        "turning the setting off did not return the static interval");
+    const auto off = driver.calls.size();
+    feedWindow(5'000'000);
+    observe(false, driver);
+    expect(driver.calls.size() == off, "a setting that is off forwarded a dynamic interval");
+
+    // An application request while the cap is raised carries the raised interval.
+    feedWindow(5'000'000);
+    observe(true, driver);
+    expect(driver.calls.back().info.minimumIntervalUs == 8752, "setup did not raise the interval for the request");
+    limit.applicationRequest(swapchain, request(true, 0), driver.send());
+    expect(driver.calls.back().info.minimumIntervalUs == 8752 &&
+            std::string_view(driver.calls.back().reason) == "application" &&
+            driver.calls.back().applicationIntervalUs == 0,
+        "an application request did not carry the dynamic interval");
+}
 }
 
 int main() {
@@ -225,5 +306,6 @@ int main() {
     failedCapUpdateIsNotApplied();
     lowLatencyStateFollowsTheLastRequest();
     concurrentRequestsKeepDriverState();
+    dynamicCapForwarding();
     std::cout << "reflex frame limit tests passed\n";
 }
