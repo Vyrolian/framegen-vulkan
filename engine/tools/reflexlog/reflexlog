@@ -1,0 +1,16 @@
+#!/bin/sh
+# framegen-vulkan reflexlog: launch wrapper for the testing-only capture layer.
+# Steam launch option: reflexlog %command%
+# Launches with framegen-vulkan disabled and reflexlog enabled. Logs go to
+# $REFLEXLOG_DIR, or $HOME/fgvk-logs by default.
+
+if [ "$#" -eq 0 ]; then
+    echo "usage: reflexlog <command> [arguments...]" >&2
+    echo "       Steam launch option: reflexlog %command%" >&2
+    exit 2
+fi
+
+unset ENABLE_FGVK
+export DISABLE_FGVK=1 REFLEXLOG=1
+mkdir -p "${REFLEXLOG_DIR:-$HOME/fgvk-logs}"
+exec "$@"

@@ -1,0 +1,18 @@
+{
+    "file_format_version": "1.2.0",
+    "layer": {
+        "name": "VK_LAYER_REFLEXLOG_capture",
+        "type": "GLOBAL",
+        "library_path": "../../../lib/libVkLayer_reflexlog.so",
+        "library_arch": "64",
+        "api_version": "1.4.365",
+        "implementation_version": "1",
+        "description": "framegen-vulkan reflexlog: records Reflex and present calls without changing them (testing only)",
+        "enable_environment": {
+            "REFLEXLOG": "1"
+        },
+        "disable_environment": {
+            "DISABLE_REFLEXLOG": "1"
+        }
+    }
+}
