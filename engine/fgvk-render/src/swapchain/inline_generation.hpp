@@ -63,8 +63,10 @@ enum class ScheduleFailureRoute : uint8_t {
 // FI4: the lower images the swapchain is created with for the call path. These are the outputs of one batch at the
 // profile's capacity (generated outputs plus the real). Off when the inline switch, frame-generation provisioning or a
 // profile capacity is missing; compat when the application's image count is kept as asked; ordered for FIFO-only ordered
-// transport, whose batches may still reach the worker but get no call images, so they keep the worker copy.
-enum class InlineCallImagesReason : uint8_t { Off, Compat, Ordered, Eligible };
+// transport, whose batches may still reach the worker but get no call images, so they keep the worker copy. FI4c:
+// fallback when the lower create succeeded only on a retry (the application's count, and possibly without the owned
+// timing bits), which has no spare images, so every batch keeps the worker copy.
+enum class InlineCallImagesReason : uint8_t { Off, Compat, Ordered, Eligible, Fallback };
 
 struct InlineCallImages {
     uint32_t count{};
@@ -96,6 +98,7 @@ inline constexpr uint32_t inlineCallHeadroomImages = 2;
     case InlineCallImagesReason::Compat: return "compat";
     case InlineCallImagesReason::Ordered: return "ordered";
     case InlineCallImagesReason::Eligible: return "eligible";
+    case InlineCallImagesReason::Fallback: return "fallback";
     }
     return "off";
 }

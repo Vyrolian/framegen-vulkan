@@ -71,14 +71,48 @@ namespace fgvk::layer {
         return privateQueueAvailable;
     }
 
+    /// FI4c: retry the lower create once with the application's own count when the layer raised the count above it and
+    /// the create failed, whatever the error. requestedMinImages is the application's count, provisionedMinImages the
+    /// layer's. An application count at or above the layer's is never retried: there is no layer floor to drop.
     [[nodiscard]] inline bool shouldRetrySwapchainWithApplicationMinimum(
             const VkResult result, const uint32_t requestedMinImages,
-            const uint32_t provisionedMinImages) {
-        if (requestedMinImages >= provisionedMinImages)
-            return false;
-        return result == VK_ERROR_INITIALIZATION_FAILED ||
-            result == VK_ERROR_OUT_OF_DEVICE_MEMORY ||
-            result == VK_ERROR_OUT_OF_HOST_MEMORY;
+            const uint32_t provisionedMinImages) noexcept {
+        return result != VK_SUCCESS && requestedMinImages < provisionedMinImages;
+    }
+
+    /// FI4c: the lower create attempts of one swapchain create, in ladder order. AsBuilt is the request with the layer's
+    /// count and flags. ApplicationCount drops the layer's count. ApplicationCountWithoutOwnedTiming also drops the
+    /// owned present-timing bits that framegen-vulkan added to the request (never the application's own bits).
+    enum class LowerCreateAttempt : uint8_t { AsBuilt, ApplicationCount, ApplicationCountWithoutOwnedTiming };
+
+    /// FI4c: the step name of the create log lines.
+    [[nodiscard]] constexpr const char* lowerCreateAttemptName(const LowerCreateAttempt attempt) noexcept {
+        switch (attempt) {
+        case LowerCreateAttempt::AsBuilt: return "as-built";
+        case LowerCreateAttempt::ApplicationCount: return "app-count";
+        case LowerCreateAttempt::ApplicationCountWithoutOwnedTiming: return "no-owned-timing";
+        }
+        return "as-built";
+    }
+
+    /// FI4c: the attempt that follows `previous` after it failed with `result`, or nullopt when the ladder stops (the
+    /// create succeeded, or no step is left and the last error is returned).
+    /// - The application-count step runs only when the layer raised the count above the application's
+    ///   (shouldRetrySwapchainWithApplicationMinimum). With an equal count it would repeat the request as built, so it is skipped.
+    /// - The no-owned-timing step runs after any failed step when framegen-vulkan added the owned timing bit (the
+    ///   application did not ask for it itself). It is the only attempt that differs from the request in that case.
+    [[nodiscard]] inline std::optional<LowerCreateAttempt> nextLowerCreateAttempt(
+            const LowerCreateAttempt previous, const VkResult result,
+            const uint32_t requestedMinImages, const uint32_t provisionedMinImages,
+            const bool ownedTimingAddedByFgvk) noexcept {
+        if (result == VK_SUCCESS)
+            return std::nullopt;
+        if (previous == LowerCreateAttempt::AsBuilt &&
+                shouldRetrySwapchainWithApplicationMinimum(result, requestedMinImages, provisionedMinImages))
+            return LowerCreateAttempt::ApplicationCount;
+        if (previous != LowerCreateAttempt::ApplicationCountWithoutOwnedTiming && ownedTimingAddedByFgvk)
+            return LowerCreateAttempt::ApplicationCountWithoutOwnedTiming;
+        return std::nullopt;
     }
 
     /// Return the largest generated batch that fits beyond the application's
@@ -105,6 +139,27 @@ namespace fgvk::layer {
         for (const auto& perMode : perModeMinImages)
             minImages = std::max(minImages, perMode.value_or(plainMinImages));
         return minImages;
+    }
+
+    /// FI4c: the largest lower image count the layer may ask for on a swapchain whose present-mode group is queried mode
+    /// by mode: the smallest non-zero of the plain maximum and each mode's maximum (0 = no limit; a failed query is
+    /// ignored). Returns 0 for no limit. When a per-mode maximum narrows the limit, the result is never below the
+    /// application's own count, so the layer never lowers the count the application asked for.
+    [[nodiscard]] inline uint32_t presentModeGroupMaxImages(
+            const uint32_t plainMaxImages,
+            std::span<const std::optional<uint32_t>> perModeMaxImages,
+            const uint32_t applicationMinImages) noexcept {
+        uint32_t limit = plainMaxImages;
+        bool narrowed = false;
+        for (const auto& perMode : perModeMaxImages) {
+            if (!perMode || *perMode == 0)
+                continue;
+            if (limit == 0 || *perMode < limit) {
+                limit = *perMode;
+                narrowed = true;
+            }
+        }
+        return narrowed ? std::max(limit, applicationMinImages) : limit;
     }
 
     /// Lower images the layer itself holds acquired and not yet presented at

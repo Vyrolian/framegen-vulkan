@@ -228,16 +228,18 @@ namespace {
         return {};
     }
 
-    /// FI4b: the surface minimum of each mode in a present-mode group, from vkGetPhysicalDeviceSurfaceCapabilities2KHR
-    /// with VkSurfacePresentModeKHR chained in (the EXT spelling is the same struct). nullopt marks a failed query.
-    /// The caller must have checked that the instance enabled the query.
-    std::vector<std::optional<uint32_t>> presentModeSurfaceMinImages(const vk::Vulkan& vk,
-            const VkSurfaceKHR surface, const std::span<const VkPresentModeKHR> modes) {
-        std::vector<std::optional<uint32_t>> minImages;
-        minImages.reserve(modes.size());
+    /// FI4b/FI4c: one image count of each mode in a present-mode group, from vkGetPhysicalDeviceSurfaceCapabilities2KHR
+    /// with VkSurfacePresentModeKHR chained in (the EXT spelling is the same struct). `field` selects minImageCount (the
+    /// surface minimum) or maxImageCount (the maximum, 0 = no limit). nullopt marks a failed query. The caller must have
+    /// checked that the instance enabled the query.
+    std::vector<std::optional<uint32_t>> presentModeSurfaceCounts(const vk::Vulkan& vk,
+            const VkSurfaceKHR surface, const std::span<const VkPresentModeKHR> modes,
+            const uint32_t VkSurfaceCapabilitiesKHR::* const field) {
+        std::vector<std::optional<uint32_t>> counts;
+        counts.reserve(modes.size());
         const auto query = vk.fi().GetPhysicalDeviceSurfaceCapabilities2KHR;
         for (const auto presentMode : modes) {
-            std::optional<uint32_t> minImage;
+            std::optional<uint32_t> count;
             if (query) {
                 const VkSurfacePresentModeKHR mode{
                     .sType = VK_STRUCTURE_TYPE_SURFACE_PRESENT_MODE_KHR,
@@ -252,11 +254,11 @@ namespace {
                     .sType = VK_STRUCTURE_TYPE_SURFACE_CAPABILITIES_2_KHR,
                 };
                 if (query(vk.physdev(), &info, &caps) == VK_SUCCESS)
-                    minImage = caps.surfaceCapabilities.minImageCount;
+                    count = caps.surfaceCapabilities.*field;
             }
-            minImages.push_back(minImage);
+            counts.push_back(count);
         }
-        return minImages;
+        return counts;
     }
 }
 
@@ -686,7 +688,7 @@ SwapchainCreateModification Root::modifySwapchainCreateInfo(const vk::Vulkan& vk
     const auto applicationModes = lowerPresentModeGroup(createInfo.pNext);
     const uint32_t floorMinImages = presentModeSurfaceQueries && !applicationModes.empty()
         ? presentModeGroupSurfaceMinImages(caps.minImageCount,
-            presentModeSurfaceMinImages(vk, createInfo.surface, applicationModes))
+            presentModeSurfaceCounts(vk, createInfo.surface, applicationModes, &VkSurfaceCapabilitiesKHR::minImageCount))
         : caps.minImageCount;
     modification.privateOrderedTransport = context_ModifySwapchainCreateInfo(
         contextProfile,
@@ -722,9 +724,19 @@ SwapchainCreateModification Root::modifySwapchainCreateInfo(const vk::Vulkan& vk
     // FI4b: the lower group's surface minimum (swapchain-acquire-forward-progress). It reads the chain the driver
     // receives, so a private ordered transport that removed the group keeps the plain minimum.
     const auto lowerModes = lowerPresentModeGroup(createInfo.pNext);
+    // FI4c: the group's maximum, the smallest non-zero of the plain maximum and each mode's maximum. The layer's count
+    // never goes above it (swapchain-acquire-forward-progress: each mode bounds the images it can hold), and never below
+    // the application's own count. Without a group, or without the queries, it is the plain maximum.
+    uint32_t surfaceMaxImageCount = caps.maxImageCount;
     if (presentModeSurfaceQueries && !lowerModes.empty()) {
-        modification.surfaceMinImageCount = presentModeGroupSurfaceMinImages(
-            caps.minImageCount, presentModeSurfaceMinImages(vk, createInfo.surface, lowerModes));
+        modification.surfaceMinImageCount = presentModeGroupSurfaceMinImages(caps.minImageCount,
+            presentModeSurfaceCounts(vk, createInfo.surface, lowerModes, &VkSurfaceCapabilitiesKHR::minImageCount));
+        surfaceMaxImageCount = presentModeGroupMaxImages(caps.maxImageCount,
+            presentModeSurfaceCounts(vk, createInfo.surface, lowerModes, &VkSurfaceCapabilitiesKHR::maxImageCount),
+            applicationMinImages);
+        // Only a per-mode narrowing is applied here: a plain maximum was already applied by the floor above.
+        if (surfaceMaxImageCount != caps.maxImageCount && createInfo.minImageCount > surfaceMaxImageCount)
+            createInfo.minImageCount = surfaceMaxImageCount;
     }
 
     // Once per swapchain creation: what the layer asks the lower driver for.
@@ -745,6 +757,7 @@ SwapchainCreateModification Root::modifySwapchainCreateInfo(const vk::Vulkan& vk
               << " surface_min_images=" << caps.minImageCount
               << " surface_min_images_group=" << modification.surfaceMinImageCount
               << " surface_max_images=" << caps.maxImageCount
+              << " surface_max_images_group=" << surfaceMaxImageCount
               << " present_mode_group=" << presentModeGroup
               << " transport=" << (modification.privateOrderedTransport ? "ordered" : "direct")
               << '\n';

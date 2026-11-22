@@ -2172,6 +2172,8 @@ namespace {
                     ? transferCopyOwner->second : nullptr;
             std::vector<uint32_t> transferFamilies;
             bool transferConcurrent = false;
+            // FI4c: the lower create succeeded only with the application's count, so this swapchain has no call images.
+            bool applicationMinimumFallback = false;
             auto modification =
                 layer_info->root.modifySwapchainCreateInfo(
                     it->second, newInfo, winePassThroughHdr, presentModeSurfaceQueries,
@@ -2191,6 +2193,10 @@ namespace {
                             }
                         }
 #if defined(VK_EXT_present_timing) && defined(VK_KHR_present_id2)
+                        // FI4c: the owned timing bits framegen-vulkan ORs into the request, and whether it added the timing
+                        // bit (the application did not ask for it). A create ladder step can remove exactly these bits.
+                        VkSwapchainCreateFlagsKHR ownedTimingFlagsAdded{};
+                        bool ownedTimingAdded = false;
                         // Native surfaces negotiate their own Vulkan timing contract.
                         if (instance_info->presentTimingDevices.contains(device) &&
                                 driverInfo.presentMode == VK_PRESENT_MODE_FIFO_KHR) {
@@ -2218,35 +2224,69 @@ namespace {
                             if (ownedPresentTiming)
                                 ownedPresentTimingTargetStage =
                                     OwnedPresentTiming::preferredTargetStage(timing.presentStageQueries);
-                            if (ownedPresentTiming)
+                            if (ownedPresentTiming) {
+                                ownedTimingFlagsAdded = (VK_SWAPCHAIN_CREATE_PRESENT_TIMING_BIT_EXT |
+                                    VK_SWAPCHAIN_CREATE_PRESENT_ID_2_BIT_KHR) & ~newInfo->flags;
+                                ownedTimingAdded = (newInfo->flags & VK_SWAPCHAIN_CREATE_PRESENT_TIMING_BIT_EXT) == 0;
                                 driverInfo.flags |= VK_SWAPCHAIN_CREATE_PRESENT_TIMING_BIT_EXT |
                                     VK_SWAPCHAIN_CREATE_PRESENT_ID_2_BIT_KHR;
+                            }
                         }
 #endif
                         const uint32_t provisionedMinImages =
                             newInfo->minImageCount;
-                        auto res = it->second.df().CreateSwapchainKHR(
-                            device, &driverInfo, alloc, swapchain);
-                        present_diagnostics::traceVulkanSetup(layerRoleName, *info, driverInfo,
-                            res, res == VK_SUCCESS ? *swapchain : VK_NULL_HANDLE, device);
-                        if (shouldRetrySwapchainWithApplicationMinimum(
-                                res, info->minImageCount,
-                                provisionedMinImages)) {
-                            VkSwapchainCreateInfoKHR retryInfo = driverInfo;
-                            retryInfo.minImageCount = info->minImageCount;
-                            *swapchain = VK_NULL_HANDLE;
+                        // FI4c: the create ladder. The request as built comes first. A failed create steps to the
+                        // application's count, then to the application's count without the owned timing bits framegen-vulkan
+                        // added. nextLowerCreateAttempt decides which steps run. Every attempt starts from driverInfo.
+                        LowerCreateAttempt attempt = LowerCreateAttempt::AsBuilt;
+                        VkSwapchainCreateInfoKHR attemptInfo = driverInfo;
+                        VkResult firstResult = VK_SUCCESS;
+                        VkResult res = VK_SUCCESS;
+                        for (;;) {
+                            const bool attemptOwnedTiming = ownedPresentTiming &&
+                                attempt != LowerCreateAttempt::ApplicationCountWithoutOwnedTiming;
                             res = it->second.df().CreateSwapchainKHR(
-                                device, &retryInfo, alloc, swapchain
-                            );
-                            present_diagnostics::traceVulkanSetup(layerRoleName, *info, retryInfo,
+                                device, &attemptInfo, alloc, swapchain);
+                            present_diagnostics::traceVulkanSetup(layerRoleName, *info, attemptInfo,
                                 res, res == VK_SUCCESS ? *swapchain : VK_NULL_HANDLE, device);
-                            if (res == VK_SUCCESS)
-                                newInfo->minImageCount = retryInfo.minImageCount;
+                            if (attempt == LowerCreateAttempt::AsBuilt)
+                                firstResult = res;
+                            // The final flags of this attempt. The request line above prints before the owned timing decision.
+                            std::cerr << "framegen-vulkan: lower swapchain create: step=" << lowerCreateAttemptName(attempt)
+                                      << " owned_present_timing=" << (attemptOwnedTiming ? 1 : 0)
+                                      << " flags=0x" << std::hex << attemptInfo.flags << std::dec
+                                      << " min_images=" << attemptInfo.minImageCount
+                                      << " result=" << static_cast<int>(res) << '\n';
+                            if (attempt != LowerCreateAttempt::AsBuilt)
+                                std::cerr << "framegen-vulkan: swapchain creation retry: requested="
+                                          << provisionedMinImages << " retried=" << info->minImageCount
+                                          << " first_result=" << static_cast<int>(firstResult)
+                                          << " result=" << static_cast<int>(res)
+                                          << " step=" << lowerCreateAttemptName(attempt) << '\n';
+                            const auto next = nextLowerCreateAttempt(attempt, res, info->minImageCount,
+                                provisionedMinImages, ownedTimingAdded);
+                            if (!next)
+                                break;
+                            attempt = *next;
+                            attemptInfo = driverInfo;
+                            attemptInfo.minImageCount = info->minImageCount;
+                            if (attempt == LowerCreateAttempt::ApplicationCountWithoutOwnedTiming)
+                                attemptInfo.flags &= ~ownedTimingFlagsAdded;
+                            *swapchain = VK_NULL_HANDLE;
                         }
                         if (res != VK_SUCCESS) {
                             throw ls::vulkan_error(
                                 res, "vkCreateSwapchainKHR() failed"
                             );
+                        }
+                        if (attempt != LowerCreateAttempt::AsBuilt) {
+                            newInfo->minImageCount = attemptInfo.minImageCount;
+                            applicationMinimumFallback = true;
+                        }
+                        if (attempt == LowerCreateAttempt::ApplicationCountWithoutOwnedTiming) {
+                            // FI4c: from here on this swapchain behaves as one that never had owned present timing.
+                            ownedPresentTiming = false;
+                            ownedPresentTimingTargetStage = {};
                         }
                         createdSwapchain = *swapchain;
                         lowerSwapchainCreated = true;
@@ -2254,6 +2294,9 @@ namespace {
                         transferConcurrent = concurrentDriverImages;
                     }
                 );
+            // FI4c: the call images were planned for the layer's count, which the driver refused. The worker copy stays.
+            if (applicationMinimumFallback)
+                modification.inlineCall = InlineCallImages{0, InlineCallImagesReason::Fallback};
 
             // get all swapchain images
             uint32_t imageCount{};

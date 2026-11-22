@@ -12,6 +12,8 @@
 #include <span>
 #include <string_view>
 
+#include <vulkan/vulkan_core.h>
+
 using namespace fgvk::layer;
 
 namespace {
@@ -77,11 +79,94 @@ namespace {
         expect(presentModeGroupSurfaceMinImages(4, std::span<const std::optional<uint32_t>>{}) == 4,
             "an empty group must keep the plain minimum");
     }
+
+    // FI4c: the group's maximum is the smallest non-zero per-mode maximum or the plain maximum; a per-mode maximum that
+    // narrows it is never below the application's own count.
+    void presentModeGroupMaximum() {
+        using Modes = std::array<std::optional<uint32_t>, 2>;
+        expect(presentModeGroupMaxImages(8, Modes{std::nullopt, std::nullopt}, 4) == 8,
+            "failed per-mode queries must keep the plain maximum");
+        expect(presentModeGroupMaxImages(8, Modes{5, 8}, 4) == 5,
+            "the group maximum must be the smallest per-mode maximum");
+        expect(presentModeGroupMaxImages(8, Modes{9, 8}, 4) == 8,
+            "per-mode maxima above the plain maximum must not raise it");
+        expect(presentModeGroupMaxImages(3, Modes{6, 4}, 2) == 3,
+            "the plain maximum must still bound a group whose modes allow more");
+        expect(presentModeGroupMaxImages(8, Modes{5, 8}, 6) == 6,
+            "a per-mode maximum below the application's count must not lower the count the application asked for");
+        expect(presentModeGroupMaxImages(0, Modes{std::nullopt, std::nullopt}, 4) == 0,
+            "no plain maximum and no per-mode maximum must mean no limit");
+        expect(presentModeGroupMaxImages(0, Modes{5, 0}, 4) == 5,
+            "a per-mode maximum must limit a plain maximum of zero, and zero must mean no limit for a mode");
+        expect(presentModeGroupMaxImages(8, std::span<const std::optional<uint32_t>>{}, 4) == 8,
+            "an empty group must keep the plain maximum");
+    }
+
+    // FI4c: the lower create is retried once with the application's count only when the layer raised the count above
+    // it and the create failed, whatever the error.
+    void applicationMinimumRetry() {
+        expect(!shouldRetrySwapchainWithApplicationMinimum(VK_SUCCESS, 4, 8),
+            "a successful create must never be retried");
+        expect(shouldRetrySwapchainWithApplicationMinimum(VK_ERROR_INITIALIZATION_FAILED, 4, 8),
+            "a failed create with the layer's raised count must be retried with the application's count");
+        expect(shouldRetrySwapchainWithApplicationMinimum(VK_ERROR_SURFACE_LOST_KHR, 4, 8),
+            "any create error with the layer's raised count must be retried");
+        expect(shouldRetrySwapchainWithApplicationMinimum(VK_ERROR_OUT_OF_HOST_MEMORY, 4, 8),
+            "an out-of-memory create error with the layer's raised count must be retried");
+        expect(!shouldRetrySwapchainWithApplicationMinimum(VK_ERROR_INITIALIZATION_FAILED, 8, 8),
+            "an application count equal to the layer's count has no layer floor to drop");
+        expect(!shouldRetrySwapchainWithApplicationMinimum(VK_ERROR_INITIALIZATION_FAILED, 9, 8),
+            "an application count above the layer's count must not be retried");
+    }
+
+    // FI4c: the create ladder. (b) runs only when the layer raised the count; (c) runs after any failed step when
+    // framegen-vulkan added the owned timing bits, including with an equal count (then (b) would repeat the request).
+    void lowerCreateLadder() {
+        using Attempt = LowerCreateAttempt;
+        const auto next = [](const Attempt previous, const VkResult result, const uint32_t requested,
+                const uint32_t provisioned, const bool timing) {
+            const auto step = nextLowerCreateAttempt(previous, result, requested, provisioned, timing);
+            return step ? static_cast<int>(*step) : -1;
+        };
+        const auto appCount = static_cast<int>(Attempt::ApplicationCount);
+        const auto noTiming = static_cast<int>(Attempt::ApplicationCountWithoutOwnedTiming);
+        constexpr auto failed = VK_ERROR_INITIALIZATION_FAILED;
+
+        expect(next(Attempt::AsBuilt, VK_SUCCESS, 4, 8, true) == -1 &&
+                next(Attempt::ApplicationCount, VK_SUCCESS, 4, 8, true) == -1 &&
+                next(Attempt::ApplicationCountWithoutOwnedTiming, VK_SUCCESS, 4, 8, false) == -1,
+            "a successful create at any step must stop the ladder");
+        expect(next(Attempt::AsBuilt, failed, 4, 8, false) == appCount &&
+                next(Attempt::ApplicationCount, failed, 4, 8, false) == -1,
+            "a raised count without owned timing: the application's count, then stop");
+        expect(next(Attempt::AsBuilt, failed, 4, 8, true) == appCount &&
+                next(Attempt::ApplicationCount, failed, 4, 8, true) == noTiming &&
+                next(Attempt::ApplicationCountWithoutOwnedTiming, failed, 4, 8, true) == -1,
+            "a raised count with owned timing: request, application's count, then without the owned timing bits");
+        expect(next(Attempt::AsBuilt, failed, 8, 8, true) == noTiming &&
+                next(Attempt::ApplicationCountWithoutOwnedTiming, failed, 8, 8, true) == -1,
+            "an equal count with owned timing must skip the application's count and drop the owned timing bits");
+        expect(next(Attempt::AsBuilt, failed, 8, 8, false) == -1,
+            "an equal count without owned timing has no other request to try");
+        expect(next(Attempt::AsBuilt, failed, 9, 8, false) == -1 &&
+                next(Attempt::AsBuilt, failed, 9, 8, true) == noTiming,
+            "an application count above the layer's count is never a count retry, only the timing step");
+        expect(next(Attempt::AsBuilt, VK_ERROR_SURFACE_LOST_KHR, 4, 8, true) == appCount &&
+                next(Attempt::ApplicationCount, VK_ERROR_OUT_OF_HOST_MEMORY, 4, 8, true) == noTiming,
+            "any create error must step the ladder");
+        expect(std::string_view(lowerCreateAttemptName(Attempt::AsBuilt)) == "as-built" &&
+                std::string_view(lowerCreateAttemptName(Attempt::ApplicationCount)) == "app-count" &&
+                std::string_view(lowerCreateAttemptName(Attempt::ApplicationCountWithoutOwnedTiming)) == "no-owned-timing",
+            "the step names must match the create log lines");
+    }
 }
 
 int main() {
     inlineCallImageFloor();
     presentModeGroupSurfaceMinimum();
+    presentModeGroupMaximum();
+    applicationMinimumRetry();
+    lowerCreateLadder();
     auto cappedFixedPacing = fixedProfile();
     cappedFixedPacing.frame_generation_provisioned = true;
     for (const int multiplier : {2, 3, 4, 5}) {

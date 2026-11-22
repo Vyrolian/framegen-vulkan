@@ -137,8 +137,13 @@ namespace {
         require(std::string_view(inlineCallReasonName(InlineCallImagesReason::Eligible)) == "eligible" &&
                 std::string_view(inlineCallReasonName(InlineCallImagesReason::Ordered)) == "ordered" &&
                 std::string_view(inlineCallReasonName(InlineCallImagesReason::Compat)) == "compat" &&
-                std::string_view(inlineCallReasonName(InlineCallImagesReason::Off)) == "off",
+                std::string_view(inlineCallReasonName(InlineCallImagesReason::Off)) == "off" &&
+                std::string_view(inlineCallReasonName(InlineCallImagesReason::Fallback)) == "fallback",
             "the reason names must match the create log line");
+        // FI4c: a fallback swapchain has no call images, so its budget is zero at every batch size and surface minimum.
+        const fgvk::layer::InlineCallImages fallback{0, InlineCallImagesReason::Fallback};
+        require(fallback.count == 0 && fgvk::layer::inlineCallLowerBudget(8, 4, 2, fallback.count) == 0,
+            "a fallback swapchain must keep the worker copy only");
     }
 
     // FI4: the call path is taken by every worker batch with a budget, on every surface, mode and multiplier. The helper
