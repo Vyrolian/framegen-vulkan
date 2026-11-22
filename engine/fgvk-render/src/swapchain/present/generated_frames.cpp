@@ -39,7 +39,8 @@ using namespace fgvk::layer::present_detail;
 
 VkResult Swapchain::presentGeneratedFrames(
         const PresentInvocation& invocation,
-        const PresentationFramePlan& plan) {
+        const PresentationFramePlan& plan,
+        DirectWriteHold<InternalSwapchainImages, ParkedLowerTake>& directWrite) {
     auto totalAcquireDuration = plan.preacquireDuration;
     auto generatedSubmitDuration = DiagnosticsClock::duration::zero();
     auto generatedPresentDuration = DiagnosticsClock::duration::zero();
@@ -155,7 +156,17 @@ VkResult Swapchain::presentGeneratedFrames(
         // FP2 rule 4: a parked image taken for this direct generated output. Its slot's semaphore is waited by the copy.
         std::optional<ParkedLowerTake> parked;
         bool direct = false;
-        if (tryDirect) {
+        // DG1 rule 5: output 0 adopts the image taken before the schedule. The backend has written it, and its take has
+        // already counted in callInFlight, which this output's scope ends.
+        const bool directWritten = directWrite.holding() && i == 0;
+        if (directWritten) {
+            parked = directWrite.adopt();
+            direct = true;
+            acquiredImageIndex = parked->lowerIndex;
+            result = VK_SUCCESS;
+            callOutcome = InlineCallOutcome::Parked;
+            if (this->pacingProfile) this->pacingProfile->inlineCallDirectWriteActive();
+        } else if (tryDirect) {
             if (inlineCalls && parkSameSwapchain) {
                 parked = parkOwner->takeParked();
                 // FP4: no parked image yet. The worker's present may park one within inlineCallLowerWait. The wait holds no
@@ -303,6 +314,7 @@ VkResult Swapchain::presentGeneratedFrames(
                     slot.outputSource = this->pacingProfile->sourceOrdinal();
                     slot.outputPending = true;
                     slot.outputDirect = false;
+                    slot.outputDirectWrite = false;
                 }
                 // Worker copies are counted on completion, when a pressure
                 // skip can be distinguished from a submitted generated image.
@@ -517,7 +529,8 @@ VkResult Swapchain::presentGeneratedFrames(
         );
         auto& commandBuffer = pass.commandBuffer;
         auto& slot = this->currentRenderSlot();
-        auto* const outputTimer = direct ? slot.outputQueries.get() : nullptr;
+        auto* const outputTimer = direct && !directWritten ? slot.outputQueries.get() : nullptr;
+        if (!directWritten) {
         commandBuffer.begin(invocation.vk);
         if (outputTimer) {
             outputTimer->reset(commandBuffer.handle());
@@ -556,6 +569,7 @@ VkResult Swapchain::presentGeneratedFrames(
         );
         if (outputTimer)
             outputTimer->write(commandBuffer.handle(), VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 1);
+        }
 
         // FP2 rule 4: a parked image's copy waits the slot's semaphore, which its acquire signalled, not this pass's.
         std::array<VkSemaphore, 2> waitSemaphores{
@@ -577,27 +591,54 @@ VkResult Swapchain::presentGeneratedFrames(
             : postCopy.second.handle();
         const std::array signalSemaphores{presentSemaphore.handle(), continuationSemaphore};
 
-        commandBuffer.end(invocation.vk);
+        if (!directWritten)
+            commandBuffer.end(invocation.vk);
         const auto generatedSubmitStarted = startPhaseTimer();
         const auto copyFence = i == plan.scheduledGeneratedFrames.size() - 1
             ? this->currentRenderSlot().fence.handle() : VK_NULL_HANDLE;
         try {
-            present_diagnostics::observeCopySubmission({
-                .context = this->diagnosticsState.contextId,
-                .source = this->pacingProfile ? this->pacingProfile->sourceOrdinal() : 0,
-                .swapchain = invocation.swapchain, .generated = true,
-                .imageIndex = acquiredImageIndex, .pass = static_cast<uint32_t>(i),
-                .device = invocation.vk.dev(), .queue = invocation.vk.queue(), .command = commandBuffer.handle(),
-                .waits = std::span{waitSemaphores}.first(waitSemaphoreCount), .signals = signalSemaphores,
-                .timelineWait = this->syncSemaphore->handle(), .waitValue = this->frameState.backendTimelineIndex,
-                .fence = copyFence,
-            }, [&] {
-                commandBuffer.submit(invocation.vk,
-                    std::span{waitSemaphores}.first(waitSemaphoreCount),
-                    this->syncSemaphore->handle(), this->frameState.backendTimelineIndex,
-                    signalSemaphores, VK_NULL_HANDLE, 0, copyFence
-                );
-            });
+            if (directWritten) {
+                // DG1 rule 5: the backend wrote this output after waiting its acquire, so the submit has no commands. It
+                // keeps the copy's timeline wait and its binary signals, so the present follows the batch.
+                const VkSemaphore timelineSemaphore = this->syncSemaphore->handle();
+                const uint64_t batchValue = this->frameState.backendTimelineIndex;
+                const std::array<uint64_t, 2> noSignalValues{};
+                const VkTimelineSemaphoreSubmitInfo timeline{
+                    .sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
+                    .waitSemaphoreValueCount = 1,
+                    .pWaitSemaphoreValues = &batchValue,
+                    .signalSemaphoreValueCount = static_cast<uint32_t>(noSignalValues.size()),
+                    .pSignalSemaphoreValues = noSignalValues.data(),
+                };
+                const VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+                const VkSubmitInfo submit{
+                    .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .pNext = &timeline,
+                    .waitSemaphoreCount = 1, .pWaitSemaphores = &timelineSemaphore, .pWaitDstStageMask = &waitStage,
+                    .signalSemaphoreCount = static_cast<uint32_t>(signalSemaphores.size()),
+                    .pSignalSemaphores = signalSemaphores.data(),
+                };
+                const VkResult submitted = invocation.vk.df().QueueSubmit(
+                    invocation.vk.queue(), 1, &submit, copyFence);
+                if (submitted != VK_SUCCESS)
+                    throw ls::vulkan_error(submitted, "vkQueueSubmit() failed");
+            } else {
+                present_diagnostics::observeCopySubmission({
+                    .context = this->diagnosticsState.contextId,
+                    .source = this->pacingProfile ? this->pacingProfile->sourceOrdinal() : 0,
+                    .swapchain = invocation.swapchain, .generated = true,
+                    .imageIndex = acquiredImageIndex, .pass = static_cast<uint32_t>(i),
+                    .device = invocation.vk.dev(), .queue = invocation.vk.queue(), .command = commandBuffer.handle(),
+                    .waits = std::span{waitSemaphores}.first(waitSemaphoreCount), .signals = signalSemaphores,
+                    .timelineWait = this->syncSemaphore->handle(), .waitValue = this->frameState.backendTimelineIndex,
+                    .fence = copyFence,
+                }, [&] {
+                    commandBuffer.submit(invocation.vk,
+                        std::span{waitSemaphores}.first(waitSemaphoreCount),
+                        this->syncSemaphore->handle(), this->frameState.backendTimelineIndex,
+                        signalSemaphores, VK_NULL_HANDLE, 0, copyFence
+                    );
+                });
+            }
             if (parked) {
                 // FP2 rule 4: an empty submit after the copy signals the slot's fence, so the slot may be acquired again
                 // once the copy has completed. The game thread owns the slot until this returns.
@@ -611,10 +652,11 @@ VkResult Swapchain::presentGeneratedFrames(
         }
         if (i == plan.scheduledGeneratedFrames.size() - 1)
             slot.inFlight = true;
-        if (outputTimer && this->pacingProfile) {
+        if ((outputTimer || directWritten) && this->pacingProfile) {
             slot.outputSource = this->pacingProfile->sourceOrdinal();
             slot.outputPending = true;
             slot.outputDirect = true;
+            slot.outputDirectWrite = directWritten;
         }
         generatedSubmitDuration += finishPhaseTimer(
             generatedSubmitStarted

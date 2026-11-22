@@ -443,7 +443,8 @@ static void formatTimedCopy(const char* operation, const PacingOutputGpuPayload&
 
 void formatPacingOutputGpu(const PacingOutputGpuPayload& payload, std::ostream& line) {
     formatTimedCopy("pacing-profile-output-gpu", payload, line);
-    line << " staging_start_ns=" << payload.stagingStartNs << " staging_end_ns=" << payload.stagingEndNs << '\n';
+    line << " staging_start_ns=" << payload.stagingStartNs << " staging_end_ns=" << payload.stagingEndNs
+         << " direct_write=" << (payload.directWrite ? 1 : 0) << '\n';
 }
 
 void formatPacingRealCopyGpu(const PacingOutputGpuPayload& payload, std::ostream& line) {
@@ -878,7 +879,8 @@ void formatPacingWindowBody(const PacingWindowPayload& payload, const PacingProf
          << " inline_call_wait_parked=" << window.inlineCallWaitParked
          << " inline_call_wait_unlocked=" << window.inlineCallWaitUnlocked
          << " inline_call_wait_timeout=" << window.inlineCallWaitTimeout
-         << " inline_call_wait_us=" << window.inlineCallWaitUs;
+         << " inline_call_wait_us=" << window.inlineCallWaitUs
+         << " inline_call_direct_write=" << window.inlineCallDirectWrite;
     // FP3: the worker's lower park outcomes (Drained is not counted). Each outcome is its own field.
     const auto parkOutcome = [&window](const fgvk::layer::ParkOutcome outcome) {
         return window.parkOutcomes[static_cast<size_t>(outcome)];

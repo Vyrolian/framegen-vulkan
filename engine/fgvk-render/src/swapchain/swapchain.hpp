@@ -22,6 +22,7 @@
 #include "runtime_transition.hpp"
 #include "present_timing.hpp"
 #include "swapchain/deferred_present.hpp"
+#include "swapchain/direct_write.hpp"
 #include "swapchain/inline_generation.hpp"
 #include "swapchain/internal_images.hpp"
 #include "swapchain/low_latency.hpp"
@@ -92,6 +93,8 @@ namespace fgvk::layer {
         uint32_t provisionedMinImageCount{0};
         uint32_t surfaceMinImageCount{};
         bool swapchainImageCountCompatibility{false};
+        // DG1: the lower images are direct write targets of the attached context (see directWriteLowerCapable).
+        bool directWriteCapable{false};
         // Preserve whether the application supplied the Vulkan replacement
         // lineage explicitly so retirement and replacement stabilization keep
         // the game's ownership boundary.
@@ -119,12 +122,16 @@ namespace fgvk::layer {
     /// @param createInfo swapchain create info to modify
     /// @param winePassThroughHdr native Wayland surface in a Wine process (H3 PASS_THROUGH HDR)
     /// @param surfaceMinImages surface minImageCount for the layer-needs floor (0 = none)
+    /// @param storageSupported the surface and the format both support storage images (DG1)
+    /// @param directWriteCapable receives whether the lower images are direct write targets (DG1), when not null
     [[nodiscard]] bool context_ModifySwapchainCreateInfo(
         const ls::GameConf& profile, uint32_t maxImages,
         VkSwapchainCreateInfoKHR& createInfo,
         bool frameGenerationInteropEnabled,
         bool winePassThroughHdr,
-        uint32_t surfaceMinImages = 0);
+        uint32_t surfaceMinImages = 0,
+        bool storageSupported = false,
+        bool* directWriteCapable = nullptr);
 
     /// swapchain context for a layer instance
     class Swapchain {
@@ -461,6 +468,8 @@ namespace fgvk::layer {
             uint64_t outputSource{};
             bool outputPending{};
             bool outputDirect{};
+            // DG1: the output was written by the backend into its parked lower image, so it has no copy timestamps.
+            bool outputDirectWrite{};
         };
         std::vector<RenderSlot> renderSlots;
         size_t renderSlotIndex{0};
@@ -688,9 +697,11 @@ namespace fgvk::layer {
             size_t requiredStableBatches = 1);
 
         // Generated delivery and lower-swapchain retirement.
+        // DG1: directWrite holds the parked image that the batch's backend schedule wrote (taken before the schedule).
         [[nodiscard]] VkResult presentGeneratedFrames(
             const PresentInvocation& invocation,
-            const PresentationFramePlan& plan);
+            const PresentationFramePlan& plan,
+            DirectWriteHold<InternalSwapchainImages, ParkedLowerTake>& directWrite);
         [[nodiscard]] VkResult queuePresentWithRetirementFence(
             const vk::Vulkan& vk, VkQueue queue,
             const VkPresentInfoKHR& presentInfo,

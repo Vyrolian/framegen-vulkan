@@ -15,4 +15,9 @@ namespace fgvk::backend {
     vk::Limits calculateDescriptorPoolLimits(
         size_t count, bool perf, bool colorConversion = false
     );
+    /// DG1: limits for the direct write sets of `count` lower images, two generate sets each. These sets come from a
+    /// pool of their own, so the context pool keeps its size.
+    /// @param count number of lower images
+    /// @return calculated limits
+    vk::Limits calculateDirectWriteDescriptorLimits(size_t count);
 }

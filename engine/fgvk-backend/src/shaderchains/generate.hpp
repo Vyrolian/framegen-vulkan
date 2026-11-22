@@ -21,12 +21,13 @@ namespace fgvk::backend {
     public:
         /// create a generate shaderchain
         /// @param ctx context
+        /// @param pool descriptor pool the two frame-parity sets are allocated from
         /// @param idx generated frame index
         /// @param sourceImages pair of source images
         /// @param inputImage1 input image 1
         /// @param inputImage2 input image 2
         /// @param inputImage3 input image 3
-        Generate(const Ctx& ctx, size_t idx,
+        Generate(const Ctx& ctx, const vk::DescriptorPool& pool, size_t idx,
             const std::pair<vk::Image, vk::Image>& sourceImages,
             const vk::Image& inputImage1,
             const vk::Image& inputImage2,

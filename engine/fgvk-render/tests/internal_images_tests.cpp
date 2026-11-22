@@ -616,6 +616,35 @@ void testLowerParkingPolicy() {
 // the next acquire. The model drives the owner's decisions (parkAfterPresentAction, acquireTakesParkedFirst) and the pool
 // through repeated park, target-zero and acquire cycles. The lower images the application has not got back (acquired and
 // not presented) always equal the parked images, and stay within the capacity, so no acquire is starved.
+// DG1 rule 6: a taken image goes back to the pool's tail when its schedule did not start. The slot stays busy while the image is
+// out, and a pool that refilled while it was out has no room for it.
+void testLowerParkingReturnRoundTrip() {
+    LowerParkingPool pool;
+    pool.reserveSlots(4);
+    pool.setPolicy(2, 4, true);
+    expect(pool.push(ParkedLower{.lowerIndex = 0, .slot = 0}), "parking the first image failed");
+    expect(pool.push(ParkedLower{.lowerIndex = 1, .slot = 1}), "parking the second image failed");
+    const auto taken = pool.take();
+    expect(taken && taken->lowerIndex == 0 && taken->slot == 0, "the oldest parked image was not taken first");
+    expect(pool.size() == 1 && pool.isBusy(0), "a taken image left the pool or freed its slot");
+    expect(pool.push(ParkedLower{.lowerIndex = 0, .slot = 0}), "a returned image did not park again");
+    expect(pool.size() == 2 && pool.isBusy(0), "a returned image was not held in its busy slot");
+    const auto next = pool.take();
+    expect(next && next->lowerIndex == 1, "a returned image did not queue behind the older parked image");
+    pool.release(1);
+    const auto last = pool.take();
+    expect(last && last->lowerIndex == 0, "the returned image was lost from the pool");
+    pool.release(0);
+
+    // A pool that refilled while the image was out: the return finds no room, so the owner turns sticky.
+    expect(pool.push(ParkedLower{.lowerIndex = 0, .slot = 0}), "parking the image before the refill failed");
+    const auto out = pool.take();
+    expect(out && out->lowerIndex == 0, "the image was not taken for the refill case");
+    expect(pool.push(ParkedLower{.lowerIndex = 2, .slot = 2}), "the refill parked a new image");
+    expect(pool.push(ParkedLower{.lowerIndex = 3, .slot = 3}), "the refill did not fill the pool");
+    expect(!pool.push(ParkedLower{.lowerIndex = 0, .slot = 0}), "a returned image fit a full pool");
+}
+
 void testParkedImagesSurviveTargetZero() {
     LowerParkingPool pool;
     pool.reserveSlots(4);
@@ -661,6 +690,7 @@ void testParkedImagesSurviveTargetZero() {
 }
 
 int main() {
+    testLowerParkingReturnRoundTrip();
     testParkedImagesSurviveTargetZero();
     testLowerParkingPoolBudgetAndOrder();
     testLowerParkingDrainLeavesNone();

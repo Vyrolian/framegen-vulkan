@@ -2,6 +2,7 @@
 
 #include "swapchain/swapchain.hpp"
 #include "swapchain/create_policy.hpp"
+#include "swapchain/direct_write.hpp"
 #include "swapchain/inline_generation.hpp"
 #include "swapchain/retirement.hpp"
 #include "layer_role.hpp"
@@ -69,12 +70,20 @@ bool layer::context_ModifySwapchainCreateInfo(const ls::GameConf& profile,
         VkSwapchainCreateInfoKHR& createInfo,
         const bool frameGenerationInteropEnabled,
         const bool winePassThroughHdr,
-        const uint32_t surfaceMinImages) {
+        const uint32_t surfaceMinImages,
+        const bool storageSupported,
+        bool* const directWriteCapable) {
     const auto colorPipeline = classifySwapchainColor(
         createInfo.imageFormat, createInfo.imageColorSpace, winePassThroughHdr
     );
     const bool frameGenerationProvisioned =
         frameGenerationInteropEnabled && colorPipeline.generationSupported;
+    // DG1 rule 2: the lower images are direct write targets only for an attached Sdr8 swapchain (see directWriteLowerCapable).
+    const bool directWrite = directWriteLowerCapable(frameGenerationProvisioned, inlineGenerationRequested(),
+        directWriteRequested(), colorPipeline.encoding == backend::FrameEncoding::Sdr8,
+        createInfo.imageFormat, storageSupported);
+    if (directWriteCapable)
+        *directWriteCapable = directWrite;
     // P1: the application's per-present mode reaches the lower driver. A create
     // chain whose present-mode group can switch to an unthrottled mode (VKD3D-Proton
     // creates FIFO with {FIFO, IMMEDIATE} and sends IMMEDIATE per present with VSync
@@ -93,7 +102,8 @@ bool layer::context_ModifySwapchainCreateInfo(const ls::GameConf& profile,
         surfaceMinImages,
         orderedSdrCandidate && group.unthrottled && group.fifo,
         // FI2: the lower images for copies at the present call exist only with the inline switch.
-        inlineGenerationRequested()
+        inlineGenerationRequested(),
+        directWrite
     );
 }
 
@@ -217,6 +227,11 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance* backend,
         if (backend->attached()) {
             // FI1: the attached backend shares this device's images and timeline; nothing is exported.
             this->openInlineFrameGenerationContext(vk, *backend, generationExtent);
+            // DG1 rule 7: the lower images are registered as direct targets when the context opens. Closing the context
+            // (the swapchain's teardown) clears them before the lower images are destroyed.
+            if (this->info.directWriteCapable)
+                this->info.directWriteCapable = directWriteTargetsMatch(this->info.format, this->info.extent,
+                    generationExtent) && backend->setDirectTargets(this->ctx.get(), this->info.images);
         } else {
             std::vector<int> sourceFds(2, -1);
             ls::FileDescriptorScope sourceScope{sourceFds};

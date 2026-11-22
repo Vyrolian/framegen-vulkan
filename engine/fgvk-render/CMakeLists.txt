@@ -395,6 +395,12 @@ if(BUILD_TESTING)
     add_test(NAME internal-images COMMAND fgvk-internal-images-tests)
     fgvk_register_portable_policy_test(fgvk-internal-images-tests internal-images)
 
+    # DG1: the direct write rules and the hold that owns a parked lower image (the backend header gives DirectTarget).
+    add_executable(fgvk-direct-write-tests "tests/direct_write_tests.cpp")
+    target_include_directories(fgvk-direct-write-tests PRIVATE "src" "../fgvk-backend/include" "../fgvk-common/include")
+    add_test(NAME direct-write COMMAND fgvk-direct-write-tests)
+    fgvk_register_portable_policy_test(fgvk-direct-write-tests direct-write)
+
     add_executable(fgvk-present-layout-tests
         "tests/present_layout_tests.cpp" "src/swapchain/present_layout.cpp")
     target_include_directories(fgvk-present-layout-tests PRIVATE "src")

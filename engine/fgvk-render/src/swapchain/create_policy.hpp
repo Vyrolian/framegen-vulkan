@@ -131,13 +131,17 @@ namespace fgvk::layer {
             const bool swapchainImageCountCompatibility = false,
             const uint32_t surfaceMinImages = 0,
             const bool fifoGroupRelief = false,
-            const bool inlineCallCopies = false) {
+            const bool inlineCallCopies = false,
+            const bool directWrite = false) {
         if (!frameGenerationProvisioned)
             return false;
 
         createInfo.imageUsage |=
             VK_IMAGE_USAGE_TRANSFER_DST_BIT |
             VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+        // DG1 rule 2: the lower images are direct write targets (see directWriteLowerCapable).
+        if (directWrite)
+            createInfo.imageUsage |= VK_IMAGE_USAGE_STORAGE_BIT;
 
         switch (profile.pacing) {
             case ls::Pacing::None:

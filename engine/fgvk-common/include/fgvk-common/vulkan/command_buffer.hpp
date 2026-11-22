@@ -129,6 +129,7 @@ namespace vk {
 
         /// Submit a nonempty sequence under one synchronization boundary.
         /// Commands must contain the dependencies required between them.
+        /// binaryWaitStage is the stage every binary wait in waitSemaphores waits at.
         static void submitCommands(const vk::Vulkan& vk,
             std::span<const VkCommandBuffer> commands,
             std::span<const VkSemaphore> waitSemaphores,
@@ -136,7 +137,8 @@ namespace vk {
             std::span<const VkSemaphore> signalSemaphores,
             VkSemaphore signalTimelineSemaphore, uint64_t signalValue,
             VkFence fence = VK_NULL_HANDLE,
-            VkQueue queue = VK_NULL_HANDLE);
+            VkQueue queue = VK_NULL_HANDLE,
+            VkPipelineStageFlags binaryWaitStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
 
         /// submit the command buffer instantly
         /// @param vk the vulkan instance

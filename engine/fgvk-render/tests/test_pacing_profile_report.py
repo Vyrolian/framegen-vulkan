@@ -875,6 +875,19 @@ class WindowFieldTests(unittest.TestCase):
         negative = self.read([self.prefix + self.base + self.current + " inline_call_wait_us=-1"])
         self.assertEqual((len(negative[0]), negative[1]), (0, 1))
 
+    def test_direct_write_counter_is_a_plain_count(self):
+        # DG1: outputs the backend wrote into a parked lower image. The counter is a plain count, and a window without it
+        # (written before DG1) still reads.
+        body = self.base + self.current + " inline_call_wait_us=612 inline_call_direct_write=2 park_ok=2"
+        windows, invalid = self.read([self.prefix + body])
+        self.assertEqual((len(windows), invalid), (1, 0))
+        self.assertEqual(windows[0].values["inline_call_direct_write"], 2.0)
+        legacy = self.read([self.prefix + self.base + self.current + " inline_call_wait_us=612 park_ok=2"])
+        self.assertEqual((len(legacy[0]), legacy[1]), (1, 0))
+        # An unsuffixed count is never validated, like park_*, so a negative value does not reject the window.
+        unvalidated = self.read([self.prefix + self.base + self.current + " inline_call_direct_write=-1"])
+        self.assertEqual((len(unvalidated[0]), unvalidated[1]), (1, 0))
+
     def test_computed_fields_still_reject_bad_values(self):
         cases = {
             "negative count": self.base.replace("sources=128", "sources=-1") + self.current,

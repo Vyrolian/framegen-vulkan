@@ -39,6 +39,8 @@ namespace fgvk::layer {
     struct SwapchainCreateModification {
         bool privateOrderedTransport{false};
         bool swapchainImageCountCompatibility{false};
+        // DG1: the lower images may be direct write targets (see directWriteLowerCapable).
+        bool directWriteCapable{false};
         uint32_t surfaceMinImageCount{};
         VkExtent2D applicationExtent{};
         VkExtent2D presentationExtent{};

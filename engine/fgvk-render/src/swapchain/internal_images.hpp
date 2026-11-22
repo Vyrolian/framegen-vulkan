@@ -585,6 +585,9 @@ namespace fgvk::layer {
         /// FP2: the copy of a taken slot could not be recorded or submitted. The slot's fence is never signalled, so the slot
         /// stays busy, and the owner turns sticky.
         void failParkedTake(uint32_t slot) noexcept;
+        /// DG1 rule 6: gives a taken image back before its backend schedule started, so no submit has waited its acquire. The
+        /// image is parked again and its output count ends. A full pool turns the owner sticky, as the image cannot be kept.
+        void returnParked(ParkedLowerTake take) noexcept;
         /// FP2 rule 6: drains every parked image and waits for the last drain to finish, up to timeoutNs. Called before the
         /// lower swapchain is destroyed, so no parked acquire is still pending. VK_TIMEOUT means the drain is still running:
         /// call again.

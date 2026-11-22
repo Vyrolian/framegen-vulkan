@@ -59,7 +59,8 @@ namespace vk::detail {
                 const uint64_t waitValue,
                 const std::span<const VkSemaphore> signalSemaphores,
                 const VkSemaphore signalTimelineSemaphore,
-                const uint64_t signalValue) :
+                const uint64_t signalValue,
+                const VkPipelineStageFlags binaryWaitStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT) :
             combinedWaitSemaphores(combinedSize(
                 waitSemaphores.size(), waitTimelineSemaphore
             )),
@@ -70,8 +71,7 @@ namespace vk::detail {
             signalTimelineValues(
                 this->combinedSignalSemaphores.values().size()
             ),
-            waitStages(this->combinedWaitSemaphores.values().size(),
-                VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT),
+            waitStages(this->combinedWaitSemaphores.values().size(), binaryWaitStage),
             timelineSemaphoresPresent(
                 waitTimelineSemaphore != VK_NULL_HANDLE ||
                 signalTimelineSemaphore != VK_NULL_HANDLE

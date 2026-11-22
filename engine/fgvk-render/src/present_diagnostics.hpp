@@ -288,6 +288,8 @@ namespace fgvk::layer::present_diagnostics {
             // outcome, and their total in us. Taken from the worker at each present (see callWaitCounts).
             size_t inlineCallWait{}, inlineCallWaitParked{}, inlineCallWaitUnlocked{}, inlineCallWaitTimeout{};
             size_t inlineCallWaitUs{};
+            // DG1: outputs whose backend wrote them into a parked lower image at the schedule (see DirectWriteHold).
+            size_t inlineCallDirectWrite{};
             // FP3: the worker's lower park outcomes by ParkOutcome (Drained is not kept). Taken from the worker at each present
             // (see parkCounts).
             std::array<size_t, fgvk::layer::parkCountedOutcomeCount> parkOutcomes{};
@@ -494,6 +496,8 @@ namespace fgvk::layer::present_diagnostics {
         }
         // FP1: one output served from an image the worker parked.
         void inlineCallParkedActive() { ++window.inlineCallParked; }
+        // DG1: one output the backend wrote into its parked lower image.
+        void inlineCallDirectWriteActive() { ++window.inlineCallDirectWrite; }
         // FP3: the worker's park counters taken since the last call (DeferredPresent::takeParkCounts), added to this window.
         void parkCounts(const fgvk::layer::ParkCounts& counts) {
             for (size_t i = 0; i < counts.outcomes.size(); ++i) window.parkOutcomes[i] += counts.outcomes[i];
@@ -575,8 +579,10 @@ namespace fgvk::layer::present_diagnostics {
     /// Staging and worker copies of the first generated output, in CLOCK_MONOTONIC nanoseconds.
     /// available is false when no copy timestamps were read (a skipped output, or uncalibrated);
     /// all four times are then zero.
+    /// DG1: directWrite marks an output the backend wrote into its lower image; it has no copy timestamps then.
     void logPacingOutputGpu(uint64_t context, uint64_t source, bool available,
-        int64_t copyStartNs, int64_t copyEndNs, int64_t stagingStartNs, int64_t stagingEndNs) noexcept;
+        int64_t copyStartNs, int64_t copyEndNs, int64_t stagingStartNs, int64_t stagingEndNs,
+        bool directWrite = false) noexcept;
     /// T3b: the same split for the private -> lower copy of a real output (internal images),
     /// FG on or off. With FG off its start follows the game's present waits.
     void logPacingRealCopyGpu(uint64_t context, uint64_t source, bool available,

@@ -1020,11 +1020,25 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
             sourceCopyStarted
         );
     }
+    // DG1 rules 1 and 5: an eligible single-output batch takes a parked lower image before its schedule, and the backend
+    // writes its output into that image. The hold lives until presentGeneratedFrames adopts it or the batch ends.
+    DirectWriteHold<InternalSwapchainImages, ParkedLowerTake> directWrite;
+    InternalSwapchainImages* const directOwner =
+        inlineAttached && this->internalPresent ? this->internalPresent->owner : nullptr;
+    // Review: the take presents output 0 at the call, so it also needs the call path's surface and mode
+    // (nativeImmediate2x in presentGeneratedFrames). A mode switch away from IMMEDIATE keeps the worker path.
+    if (!bypassGeneratedFrames && directOwner && this->info.surfaceOrigin == SurfaceOrigin::Wayland &&
+            this->currentPresentMode == VK_PRESENT_MODE_IMMEDIATE_KHR && directWriteBatchEligible(this->info.directWriteCapable,
+            inlineAttached, directOwner->lowerSwapchainHandle() == invocation.swapchain,
+            plan.scheduledGeneratedFrames.size(), plan.generatedImagesPreacquired)) {
+        static_cast<void>(directWrite.take(*directOwner));
+    }
     if (!bypassGeneratedFrames) {
         const auto scheduleStarted = startPhaseTimer();
         try {
+            directWrite.beginSchedule();
             this->instance->scheduleFrames(
-                this->ctx.get(), plan.scheduledGeneratedFrames.timestamps()
+                this->ctx.get(), plan.scheduledGeneratedFrames.timestamps(), directWrite.target()
             );
             // A detached copy has not advanced the timeline yet, so S is the value it
             // will signal. An attached copy has advanced it past S, so the same release
@@ -1204,6 +1218,6 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
     }
     this->bridgeOutputBatchSize = plan.scheduledGeneratedFrames.size() + 1;
     return this->presentGeneratedFrames(
-        invocation, plan
+        invocation, plan, directWrite
     );
 }

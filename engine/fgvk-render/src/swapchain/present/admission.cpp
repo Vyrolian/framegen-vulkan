@@ -180,6 +180,12 @@ void Swapchain::refreshSplitRenderCalibration() {
 }
 
 void Swapchain::recordOutputGpuSplit(const vk::Vulkan& vk, const RenderSlot& slot) {
+    // DG1: the backend wrote this output, so no copy was timed and its queries are not read.
+    if (slot.outputDirectWrite) {
+        present_diagnostics::logPacingOutputGpu(this->diagnosticsState.contextId, slot.outputSource,
+            false, 0, 0, 0, 0, true);
+        return;
+    }
     bool available = false;
     int64_t copyStartNs{};
     int64_t copyEndNs{};
