@@ -47,7 +47,6 @@ The window has these controls:
 | Quality (flow scale) | `flow_scale` from 25% to 100%. Higher values track motion more precisely and cost more GPU time. |
 | FPS limit | Optional real-FPS cap, stored as `base_fps_cap`. Turn it off to remove the manual cap. |
 | Low latency | `low_latency` for the selected profile. On by default; starts each capped frame just in time. Applies live. |
-| Reflex dynamic cap | `reflex_dynamic_cap` for the selected profile. On by default; with the game's Reflex on and frame generation at a cap, keeps the GPU just under full load so the game's frames do not queue. Never below the cap. Applies live; a game started with it off in every profile needs a restart to turn it on. |
 | Batch hold | `batch_hold` for the selected profile. On by default; each output batch starts about 2 ms after its frames are ready, with Low latency on or off. Applies live. |
 | Performance mode | `performance_mode` for the selected profile. |
 | FP16 (faster) | `[global] allow_fp16`. Restart the game to apply. |
@@ -81,7 +80,6 @@ Enable `frame_generation_provisioned` before launching to allow Frame Generation
 | `multiplier` | Fixed output multiplier, 2–5. Start at 2. |
 | `base_fps_cap` | Limits real FPS. Off adds no manual cap. |
 | `low_latency` | On by default. With frame generation at a cap, the game starts each frame later, just in time, instead of queueing up to three frames ahead. It also holds the game's next frame until the GPU is about to finish the previous one, like Reflex. Off keeps the release at the cap deadline. How each output batch starts is set by `batch_hold`. With the game's Reflex on, Reflex holds the game; low latency only starts frame generation just in time. Live. The latency effect is not yet measured in a game run. |
-| `reflex_dynamic_cap` | On by default. With the game's Reflex on, frame generation at a cap and calibrated queue timestamps, the cap's interval is raised while the GPU queue makes the game's frames wait, and lowered again once the wait is short. The interval never drops below the cap's, so at an attainable cap the game holds exactly that cap. `FGVK_REFLEX_DYNAMIC_CAP` overrides it. Applies live; a game started with it off in every profile needs a restart to turn it on. |
 | `batch_hold` | On by default. Each output batch starts about 2 ms after its frames are ready, phase-locked to the batch cadence, so GPU timing wobble does not show as uneven frames. With low latency off, a batch starts at its schedule or its held readiness, whichever is later. Off starts each batch at its readiness (or at its schedule, when that is later): up to about 2 ms less latency, slightly less even. Live. |
 
 Older files can still contain `adaptive`, `adaptive_max_multiplier`, `adaptive_auto_base_fps_cap`, `adaptive_fractional_real_frame_priority`, `adaptive_target_refresh_rate`, `target_fps`, `dynamic_cadence_recovery`, and `dynamic_cadence_probe_interval_seconds`. These keys are accepted and ignored: a profile with `adaptive = true` runs Fixed with its `multiplier`, and framegen-vulkan does not write them.
@@ -118,7 +116,7 @@ HDR10/PQ swapchains (A2B10G10R10 or A2R10G10B10) and linear scRGB swapchains (R1
 | Timing | Common settings |
 | --- | --- |
 | Restart | Enabling `frame_generation_provisioned`; `dll`; `allow_fp16`; `gpu`; `ultra_performance`; `swapchain_image_count_compatibility`; launcher compatibility settings |
-| Live | `pacing_correction`; `real_present_lead`; `frame_generation_enabled`; most Frame Generation timing and cap settings; `flow_scale`; `performance_mode`; `low_latency`; `reflex_dynamic_cap` |
+| Live | `pacing_correction`; `real_present_lead`; `frame_generation_enabled`; most Frame Generation timing and cap settings; `flow_scale`; `performance_mode`; `low_latency` |
 | May wait for resolution change or restart | Changes needing more Frame Generation capacity |
 
 Some live changes rebuild resources and may briefly hitch. See [Runtime transitions](RUNTIME-TRANSITIONS.md) for details.

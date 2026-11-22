@@ -11,7 +11,6 @@
 #include "fgvk-common/vulkan/queue_priority.hpp"
 #include "swapchain/output_margin.hpp"
 #include "swapchain/queue_start_probe.hpp"
-#include "swapchain/reflex_dynamic_cap.hpp"
 #include "swapchain/release_gate.hpp"
 #include "swapchain/real_present_lead.hpp"
 #include "swapchain/reflex_out_of_band.hpp"
@@ -855,11 +854,6 @@ void formatPacingWindowBody(const PacingWindowPayload& payload, const PacingProf
     // RP1: real_lead=1 while the real present lead is in effect, and its current lead in microseconds.
     line << " real_lead=" << (fgvk::layer::realPresentLeadOn.load(std::memory_order_relaxed) ? 1 : 0)
          << " real_lead_us=" << fgvk::layer::realPresentLeadNs.load(std::memory_order_relaxed) / 1000;
-    // RDC1: reflex_dynamic=1 while the dynamic Reflex cap runs; its interval and the last window's median queue wait
-    // of the main queue, in microseconds.
-    line << " reflex_dynamic=" << (fgvk::layer::reflexDynamicRunning.load(std::memory_order_relaxed) ? 1 : 0)
-         << " reflex_dynamic_interval_us=" << fgvk::layer::reflexDynamicIntervalUs.load(std::memory_order_relaxed)
-         << " reflex_dynamic_wait_us=" << fgvk::layer::reflexDynamicWaitUs.load(std::memory_order_relaxed);
     // QH2: 1 when this context's generated copies ran on the transfer queue, and the device created one.
     line << " transfer_copy="
          << (window.transferCopy && fgvk::layer::transferCopyApplied.load(std::memory_order_relaxed) ? 1 : 0);

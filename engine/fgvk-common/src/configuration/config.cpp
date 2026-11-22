@@ -43,7 +43,6 @@ frame_generation_enabled = true
 swapchain_image_count_compatibility = false
 base_fps_cap = 0
 low_latency = true # release each capped frame just in time at the cap
-reflex_dynamic_cap = true # with the game's Reflex on, keep the GPU just under full load
 batch_hold = true # start each output batch about 2 ms after its frames are ready
 ultra_performance = false
 flow_scale = 0.85
@@ -82,7 +81,6 @@ ConfigFile::ConfigFile() {
             GameConfDefaults::swapchainImageCountCompatibility,
         .base_fps_cap = GameConfDefaults::baseFpsCap,
         .low_latency = GameConfDefaults::lowLatency,
-        .reflex_dynamic_cap = GameConfDefaults::reflexDynamicCap,
         .batch_hold = GameConfDefaults::batchHold,
         .ultra_performance = GameConfDefaults::ultraPerformance,
         .flow_scale = 0.85F,
@@ -200,7 +198,6 @@ namespace {
                 ),
             .base_fps_cap = tbl["base_fps_cap"].value_or(GameConfDefaults::baseFpsCap),
             .low_latency = tbl["low_latency"].value_or(GameConfDefaults::lowLatency),
-            .reflex_dynamic_cap = tbl["reflex_dynamic_cap"].value_or(GameConfDefaults::reflexDynamicCap),
             .batch_hold = tbl["batch_hold"].value_or(GameConfDefaults::batchHold),
             .ultra_performance = tbl["ultra_performance"].value_or(
                 GameConfDefaults::ultraPerformance
@@ -244,7 +241,6 @@ namespace {
         );
         profile.insert("base_fps_cap", static_cast<int64_t>(conf.base_fps_cap));
         profile.insert("low_latency", conf.low_latency);
-        profile.insert("reflex_dynamic_cap", conf.reflex_dynamic_cap);
         profile.insert("batch_hold", conf.batch_hold);
         profile.insert("ultra_performance", conf.ultra_performance);
         profile.insert("flow_scale", conf.flow_scale);
@@ -290,7 +286,6 @@ namespace {
                 GameConfDefaults::swapchainImageCountCompatibility,
             .base_fps_cap = GameConfDefaults::baseFpsCap,
             .low_latency = GameConfDefaults::lowLatency,
-            .reflex_dynamic_cap = GameConfDefaults::reflexDynamicCap,
             .batch_hold = GameConfDefaults::batchHold,
             .ultra_performance = GameConfDefaults::ultraPerformance,
             .flow_scale = GameConfDefaults::flowScale,

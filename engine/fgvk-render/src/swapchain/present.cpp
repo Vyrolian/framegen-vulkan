@@ -633,7 +633,7 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
     // Frame generation at a cap puts the cap's interval under the application's Reflex limiter, so
     // the game itself holds the cap. Only a changed interval reaches the driver (reflex_frame_limit.hpp).
     this->reflexFrameLimit(swapchain).observe(swapchain, effectiveFrameGenerationEnabled(this->profile), baseFpsCap,
-        this->reflexDynamicInput(vk), [&](const ReflexFrameLimit::Forward& forward) {
+        [&](const ReflexFrameLimit::Forward& forward) {
             const auto setSleepMode = reinterpret_cast<PFN_vkSetLatencySleepModeNV>(
                 vk.fi().GetDeviceProcAddr(vk.dev(), "vkSetLatencySleepModeNV"));
             return setSleepMode ? setSleepMode(vk.dev(), swapchain, &forward.info)

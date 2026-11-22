@@ -27,7 +27,6 @@
 #include "swapchain/low_latency.hpp"
 #include "swapchain/onscreen_watch.hpp"
 #include "swapchain/present_feedback_probe.hpp"
-#include "swapchain/reflex_dynamic_cap.hpp"
 #include "swapchain/reflex_frame_limit.hpp"
 #include "swapchain/reflex_present_attribution.hpp"
 #include "swapchain/release_gate.hpp"
@@ -224,12 +223,6 @@ namespace fgvk::layer {
         [[nodiscard]] ReflexFrameLimit& reflexFrameLimit(VkSwapchainKHR swapchain) {
             if (!this->reflexLimit) this->reflexLimit = ReflexFrameLimitRegistry::get(swapchain);
             return *this->reflexLimit;
-        }
-        /// RDC1: the device's dynamic Reflex cap controller (fetched at the first present) and this profile's setting.
-        [[nodiscard]] ReflexDynamicInput reflexDynamicInput(const vk::Vulkan& vk) {
-            if (!this->reflexDynamic) this->reflexDynamic = ReflexDynamicCapRegistry::get(vk.dev());
-            return ReflexDynamicInput{.controller = this->reflexDynamic,
-                .setting = reflexDynamicCapEnabled(this->profile.reflex_dynamic_cap), .nowNs = reflexClockNs()};
         }
         /// Profile currently applied to this context, read by the F5 internal-image gate.
         [[nodiscard]] const ls::GameConf& appliedProfile() const {
@@ -548,8 +541,6 @@ namespace fgvk::layer {
         // Reflex request of this swapchain, shared with the Reflex wrapper through
         // ReflexFrameLimitRegistry; fetched at the first present.
         std::shared_ptr<ReflexFrameLimit> reflexLimit;
-        // RDC1: the device's dynamic cap controller, fetched at the first present (reflexDynamicInput).
-        std::shared_ptr<ReflexDynamicCap> reflexDynamic;
         // RA1: this swapchain's Reflex attribution, fetched at the first present, the Reflex ID of the present in
         // progress, and the sink its own lower markers are sent to (reflex_present_attribution.hpp).
         std::shared_ptr<ReflexPresentAttribution> reflexAttribution;

@@ -39,7 +39,6 @@ const DEFAULT_PACING_CORRECTION: bool = true;
 const DEFAULT_REAL_PRESENT_LEAD: bool = true;
 const DEFAULT_PERFORMANCE_MODE: bool = false;
 const DEFAULT_LOW_LATENCY: bool = true;
-const DEFAULT_REFLEX_DYNAMIC_CAP: bool = true;
 const DEFAULT_BATCH_HOLD: bool = true;
 
 /// Chooses the configuration path from an environment lookup.
@@ -126,8 +125,6 @@ pub struct Profile {
     pub performance_mode: bool,
     /// Release each capped frame just in time at its cap deadline. Off queues up to three frames.
     pub low_latency: bool,
-    /// With the game's Reflex on, keep the GPU just under full load so frames do not queue. Never below the cap.
-    pub reflex_dynamic_cap: bool,
     /// With low latency, start each output batch about 2 ms after its frames are ready. Off starts it at readiness.
     pub batch_hold: bool,
 }
@@ -347,12 +344,6 @@ impl Config {
         })
     }
 
-    pub fn set_reflex_dynamic_cap(&mut self, key: &ProfileKey, value: bool) -> Result<(), String> {
-        self.edit_profile(key, |table| {
-            set_value(table, "reflex_dynamic_cap", Value::from(value));
-        })
-    }
-
     pub fn set_batch_hold(&mut self, key: &ProfileKey, value: bool) -> Result<(), String> {
         self.edit_profile(key, |table| {
             set_value(table, "batch_hold", Value::from(value));
@@ -540,10 +531,6 @@ fn read_profile(index: usize, table: &Table) -> Profile {
             .get("low_latency")
             .and_then(Item::as_bool)
             .unwrap_or(DEFAULT_LOW_LATENCY),
-        reflex_dynamic_cap: table
-            .get("reflex_dynamic_cap")
-            .and_then(Item::as_bool)
-            .unwrap_or(DEFAULT_REFLEX_DYNAMIC_CAP),
         batch_hold: table
             .get("batch_hold")
             .and_then(Item::as_bool)
@@ -1119,38 +1106,6 @@ mod tests {
             .set_low_latency(&alpha, true)
             .expect("low latency on saves");
         assert!(ready(&config).profiles[0].low_latency);
-        fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn reflex_dynamic_cap_defaults_on_and_round_trips() {
-        let doc = parse("version = 2\n\n[[profile]]\nname = \"Bare\"\n");
-        assert!(
-            profiles(&doc).remove(0).reflex_dynamic_cap,
-            "missing key reads as on"
-        );
-        let doc = parse("version = 2\n\n[[profile]]\nname = \"Bare\"\nreflex_dynamic_cap = 0\n");
-        assert!(
-            profiles(&doc).remove(0).reflex_dynamic_cap,
-            "non-boolean reads as on"
-        );
-
-        let dir = temp_dir("reflex-dynamic-cap");
-        let path = dir.join(FILE_NAME);
-        fs::write(&path, BASE).expect("write fixture");
-        let mut config = Config::open(Ok(path.clone()));
-        let alpha = key(0, "Alpha");
-        assert!(ready(&config).profiles[0].reflex_dynamic_cap);
-        config
-            .set_reflex_dynamic_cap(&alpha, false)
-            .expect("reflex dynamic cap off saves");
-        assert!(!ready(&config).profiles[0].reflex_dynamic_cap);
-        let saved = fs::read_to_string(&path).expect("read saved file");
-        assert!(saved.contains("reflex_dynamic_cap = false"), "{saved}");
-        config
-            .set_reflex_dynamic_cap(&alpha, true)
-            .expect("reflex dynamic cap on saves");
-        assert!(ready(&config).profiles[0].reflex_dynamic_cap);
         fs::remove_dir_all(&dir).ok();
     }
 

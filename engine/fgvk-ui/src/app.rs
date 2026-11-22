@@ -35,8 +35,6 @@ const REMOVE_GAP: f32 = 2.0;
 const NO_GAMES: &str = "No games yet. Add an executable name or pick a running program.";
 const LOW_LATENCY_TIP: &str =
     "starts the game's next frame just in time at the cap; off = up to three frames queued";
-const REFLEX_DYNAMIC_CAP_HINT: &str = "With the game's Reflex on, keeps the GPU just under full load so frames do not queue. \
-    Never below the FPS limit or refresh / multiplier while the GPU keeps up. Applies live.";
 const BATCH_HOLD_HINT: &str =
     "Waits about 2 ms after frames are ready so GPU timing wobble does not show as uneven frames. \
     Off: up to about 2 ms less latency, slightly less even.";
@@ -432,7 +430,6 @@ impl App {
         ui.add_space(6.0);
         self.fps_limit(ui, profile);
         self.low_latency(ui, profile);
-        self.reflex_dynamic_cap(ui, profile);
         self.batch_hold(ui, profile);
     }
 
@@ -591,16 +588,6 @@ impl App {
             let result = self.config.set_low_latency(&profile.key, on);
             self.report(result);
         }
-    }
-
-    /// Keeps the GPU just under full load while the game's Reflex is on, so its frames do not queue. Applies live.
-    fn reflex_dynamic_cap(&mut self, ui: &mut Ui, profile: &Profile) {
-        let mut on = profile.reflex_dynamic_cap;
-        if ui.checkbox(&mut on, "Reflex dynamic cap").changed() {
-            let result = self.config.set_reflex_dynamic_cap(&profile.key, on);
-            self.report(result);
-        }
-        hint(ui, REFLEX_DYNAMIC_CAP_HINT);
     }
 
     /// Holds each output batch about 2 ms after its frames are ready, with Low latency on or off.
@@ -1177,7 +1164,6 @@ mod tests {
             base_fps_cap: 0,
             performance_mode: false,
             low_latency: true,
-            reflex_dynamic_cap: true,
             batch_hold: true,
         }
     }

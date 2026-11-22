@@ -21,7 +21,6 @@
 #include "swapchain/present_layout.hpp"
 #include "swapchain/present_marker.hpp"
 #include "swapchain/queue_start_probes.hpp"
-#include "swapchain/reflex_dynamic_cap.hpp"
 #include "swapchain/reflex_out_of_band.hpp"
 #include "swapchain/submit_tag_tracker.hpp"
 #include "pnext_chain.hpp"
@@ -784,12 +783,6 @@ namespace {
         }
 #endif
         bool copyCalibrationEnabled = false;
-        // RDC1: the dynamic Reflex cap's queue waits need calibrated timestamps on a frame-generation device whose
-        // application enabled VK_NV_low_latency2, and only while the setting (or FGVK_REFLEX_DYNAMIC_CAP=1) asks.
-        const bool reflexDynamicDevice = frameGenerationInteropEnabled &&
-            layer_info->root.reflexDynamicCapWanted() &&
-            std::ranges::any_of(std::span{info->ppEnabledExtensionNames, info->enabledExtensionCount},
-                [](const char* name) { return std::strcmp(name, VK_NV_LOW_LATENCY_2_EXTENSION_NAME) == 0; });
 #if defined(VK_EXT_present_timing) && defined(VK_KHR_present_id2)
         if (frameGenerationInteropEnabled && instance_info->surfaceCapabilities2 &&
                 OwnedPresentTiming::ownsNamespace(*info) &&
@@ -925,7 +918,7 @@ namespace {
             // calibration alias and known clock domains without adding any feature node.
             std::vector<const char*> copyCalibrationExtensions;
             if (frameGenerationInteropEnabled &&
-                    (present_diagnostics::pacingGpuSplitProfileEnabled() || inlineRequested || reflexDynamicDevice)) {
+                    (present_diagnostics::pacingGpuSplitProfileEnabled() || inlineRequested)) {
                 const auto supported = lowerDeviceExtensions(physdev);
                 const char* calibrationExtension{};
                 for (const auto* name : {VK_KHR_CALIBRATED_TIMESTAMPS_EXTENSION_NAME, VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME})
@@ -996,8 +989,6 @@ namespace {
             instance_info->presentMeteringDevices.insert(*device);
         if (copyCalibrationEnabled)
             instance_info->copyCalibrationDevices.insert(*device);
-        if (copyCalibrationEnabled && reflexDynamicDevice)
-            queue_start::requestDynamicProbes();
         if (applicationOwnsPresentationTiming(*info))
             instance_info->applicationTimingDevices.insert(*device);
         if (enablesApplicationPresentId2Wait2(info->pNext))
@@ -1362,13 +1353,11 @@ namespace {
         static thread_local CachedLower<PFN_vkQueueSubmit2, VkQueue> lower;
         const auto next = lower.get(queue, [&] { return lowerQueueCommand(queue, Name); });
         ReleaseGate::global().observeSubmit2(queue, submitCount, submits, fence);
-        const bool pacing = present_diagnostics::pacingProfileEnabled();
-        // RDC1: outside the pacing profile the probe runs only for a device the dynamic Reflex cap runs on.
-        if (!pacing && !queue_start::dynamicProbesRequested()) return next(queue, submitCount, submits, fence);
-        if (pacing) observeSubmitTags(queue, submitCount, submits);
+        if (!present_diagnostics::pacingProfileEnabled()) return next(queue, submitCount, submits, fence);
+        observeSubmitTags(queue, submitCount, submits);
         // GQ1: the game's own submits carry the frame's start and end timestamps; fgvk's submits call the lower
         // function directly and are untouched. vkQueueSubmit (v1) is not probed: VKD3D-Proton submits with
-        // vkQueueSubmit2. Cost with the probe: at most two extra command buffers per call.
+        // vkQueueSubmit2. Cost with the pacing profile only: at most two extra command buffers per call.
         const auto probed = submits ? queue_start::prepare(queue, std::span{submits, submitCount}, queueStartSource)
                                     : std::span<const VkSubmitInfo2>{};
         if (probed.data() == submits) return next(queue, submitCount, submits, fence);
@@ -1519,7 +1508,6 @@ namespace {
         if (layer_info->root.frameGenerationInteropProvisioned())
             present_layout::unregisterDevice(device);
         queue_start::destroyDevice(device);
-        ReflexDynamicCapRegistry::erase(device);
         vkDestroyDevice(device, alloc);
     }
 

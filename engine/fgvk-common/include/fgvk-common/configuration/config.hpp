@@ -45,7 +45,6 @@ namespace ls {
         static constexpr bool swapchainImageCountCompatibility = false;
         static constexpr uint32_t baseFpsCap = 0;
         static constexpr bool lowLatency = true;
-        static constexpr bool reflexDynamicCap = true;
         static constexpr bool batchHold = true;
         static constexpr bool ultraPerformance = false;
         static constexpr float ultraPerformanceFlowScale = 0.7F;
@@ -89,10 +88,6 @@ namespace ls {
         /// release each capped frame just in time at its cap deadline instead of letting the game
         /// queue frames ahead; off keeps the release at the deadline (swapchain/low_latency.hpp)
         bool low_latency{GameConfDefaults::lowLatency};
-        /// with the game's Reflex on and frame generation at a cap, keep the GPU just under full load so the game's
-        /// frames do not queue in the GPU; never below the cap's interval; FGVK_REFLEX_DYNAMIC_CAP overrides it
-        /// (swapchain/reflex_dynamic_cap.hpp)
-        bool reflex_dynamic_cap{GameConfDefaults::reflexDynamicCap};
         /// start each released output batch about 2 ms after its frames are ready, phase-locked to the
         /// batch cadence, with low_latency on or off; off starts it at readiness (swapchain/batch_phase.hpp)
         bool batch_hold{GameConfDefaults::batchHold};
