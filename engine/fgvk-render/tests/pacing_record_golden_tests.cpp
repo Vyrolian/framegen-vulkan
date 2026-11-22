@@ -78,6 +78,13 @@ void profileScenario() {
         .error = 1,
         .waitMaxUs = 15600,
     });
+    // PT1: two reals split by their batch and one generated output given its share, each last at 8333 us.
+    profile.timingRelativeCounts(fgvk::layer::TimingRelativeCounts{
+        .real = 2,
+        .generated = 1,
+        .realLastNs = 8'333'333,
+        .generatedLastNs = 8'333'333,
+    });
     profile.justInTimeBatch(2ms);
     profile.outputTiming(PacingProfile::ExtTiming, start + 10ms);
     profile.outputTiming(PacingProfile::ExtTiming, start + 25ms);

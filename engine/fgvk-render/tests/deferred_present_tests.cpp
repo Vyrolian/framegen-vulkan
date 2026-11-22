@@ -39,6 +39,13 @@ DeferredPresent::Clock::time_point observedAt{};
 #if defined(VK_EXT_present_timing)
 uint64_t observedTargetTime{};
 uint32_t observedTimingNodes{};
+// PT1: the timing request of each lower present in presentation order: whether it carried a VkPresentTimingsInfoEXT, and the
+// VkPresentTimingInfoEXT it carried.
+struct TimingSeen {
+    bool requested{};
+    VkPresentTimingInfoEXT info{};
+};
+std::vector<TimingSeen> timingLog;
 #endif
 // The identified ID of each lower present in presentation order (0 when it has none).
 std::mutex presentLogMutex;
@@ -55,6 +62,17 @@ void clearPresentLog() {
     const std::lock_guard lock(presentLogMutex);
     presentLog.clear();
 }
+#if defined(VK_EXT_present_timing)
+// PT1: the timing requests of the lower presents since the last clear, in presentation order.
+void clearTimingLog() {
+    const std::lock_guard lock(presentLogMutex);
+    timingLog.clear();
+}
+std::vector<TimingSeen> timingRequests() {
+    const std::lock_guard lock(presentLogMutex);
+    return timingLog;
+}
+#endif
 // A driver wait that succeeds only once the worker has presented the ID, so a
 // wait that returned before its own real would report VK_ERROR_UNKNOWN.
 auto awaitedPresent(uint64_t id) {
@@ -76,6 +94,7 @@ VkResult VKAPI_CALL present(VkQueue queue, const VkPresentInfoKHR* info) {
 #if defined(VK_EXT_present_timing)
     observedTargetTime = 0;
     observedTimingNodes = 0;
+    TimingSeen seen{};
 #endif
     for (const void* chain = info->pNext; chain;) {
         VkStructureType type{}; std::memcpy(&type, chain, sizeof(type));
@@ -99,6 +118,8 @@ VkResult VKAPI_CALL present(VkQueue queue, const VkPresentInfoKHR* info) {
             expect(node.swapchainCount == 1 && node.pTimingInfos, "timing request lost its array");
             observedTargetTime = node.pTimingInfos[0].targetTime;
             ++observedTimingNodes;
+            seen.requested = true;
+            seen.info = node.pTimingInfos[0];
 #endif
         } else expect(false, "unknown metadata reached worker");
         const void* next{};
@@ -109,6 +130,9 @@ VkResult VKAPI_CALL present(VkQueue queue, const VkPresentInfoKHR* info) {
     {
         const std::lock_guard lock(presentLogMutex);
         presentLog.push_back(observedId ? observedId : observedId2);
+#if defined(VK_EXT_present_timing)
+        timingLog.push_back(seen);
+#endif
     }
     ++calls;
     --active;
@@ -5706,6 +5730,254 @@ int internalRealStallHoldsNextBatch() {
     return reproduced ? 1 : 0;
 }
 
+#if defined(VK_EXT_present_timing)
+// PT1 helpers. A request is a VkPresentTimingInfoEXT as the application wrote it; the tests keep it, its node and the presents alive
+// until the batch that uses them has finished.
+VkPresentTimingInfoEXT relativeRequest(const uint64_t target) {
+    return VkPresentTimingInfoEXT{.sType = VK_STRUCTURE_TYPE_PRESENT_TIMING_INFO_EXT,
+        .flags = VK_PRESENT_TIMING_INFO_PRESENT_AT_RELATIVE_TIME_BIT_EXT, .targetTime = target,
+        .timeDomainId = 9, .presentStageQueries = VK_PRESENT_STAGE_QUEUE_OPERATIONS_END_BIT_EXT,
+        .targetTimeDomainPresentStage = VK_PRESENT_STAGE_REQUEST_DEQUEUED_BIT_EXT};
+}
+VkPresentTimingsInfoEXT requestNode(VkPresentTimingInfoEXT* const timing) {
+    return VkPresentTimingsInfoEXT{.sType = VK_STRUCTURE_TYPE_PRESENT_TIMINGS_INFO_EXT,
+        .swapchainCount = 1, .pTimingInfos = timing};
+}
+VkPresentInfoKHR presentOf(const void* const chain, const VkSwapchainKHR* const swapchain, const VkSemaphore* const wait,
+        const uint32_t* const image) {
+    return VkPresentInfoKHR{.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, .pNext = chain,
+        .waitSemaphoreCount = 1, .pWaitSemaphores = wait,
+        .swapchainCount = 1, .pSwapchains = swapchain, .pImageIndices = image};
+}
+// The request's fields as the driver receives them: the copy must match the application's struct, pNext included.
+bool sameRequest(const VkPresentTimingInfoEXT& a, const VkPresentTimingInfoEXT& b) {
+    return a.sType == b.sType && a.pNext == b.pNext && a.flags == b.flags && a.targetTime == b.targetTime &&
+        a.timeDomainId == b.timeDomainId && a.presentStageQueries == b.presentStageQueries &&
+        a.targetTimeDomainPresentStage == b.targetTimeDomainPresentStage;
+}
+// One batch of a generated output (no chain) then a real output, waited for. Both presents are the caller's.
+void relativeBatch(DeferredPresent& worker, const VkPresentInfoKHR& generated, const VkPresentInfoKHR& real) {
+    expect(worker.beginBatch(2), "PT1 batch rejected");
+    const auto at = DeferredPresent::Clock::now();
+    expect(worker.enqueue(generated, at, true) && worker.enqueue(real, at + 5ms), "PT1 outputs rejected");
+    worker.closeBatch();
+    const auto done = worker.finish(UINT64_MAX);
+    expect(done && done->count == 2, "PT1 batch did not complete");
+}
+#endif
+
+// PT1: a relative application target is split across its batch. The generated output takes T / L once a real before it has remembered
+// T, and the real takes T * (L - g) / L for the g generated outputs presented before it. The first batch has nothing remembered.
+void relativeTargetSplitsAcrossBatch() {
+#if defined(VK_EXT_present_timing)
+    auto queue = std::make_shared<DeferredPresentQueue>();
+    queue->queue = handle<VkQueue>(7);
+    VkSwapchainKHR swapchain = handle<VkSwapchainKHR>(11);
+    VkSemaphore wait = handle<VkSemaphore>(12);
+    uint32_t image = 0;
+    constexpr uint64_t target = 16'666'666;
+    VkPresentTimingInfoEXT timing = relativeRequest(target);
+    auto node = requestNode(&timing);
+    const auto real = presentOf(&node, &swapchain, &wait, &image);
+    const auto generated = presentOf(nullptr, &swapchain, &wait, &image);
+    DeferredPresent worker(queue, present);
+    clearTimingLog();
+    lowerResult = VK_SUCCESS;
+    relativeBatch(worker, generated, real);
+    relativeBatch(worker, generated, real);
+    const auto seen = timingRequests();
+    expect(seen.size() == 4, "PT1 batches did not present four outputs");
+    // Batch one: nothing is remembered, so the generated output has no timing, and the real takes one half.
+    VkPresentTimingInfoEXT half = timing;
+    half.targetTime = target / 2;
+    expect(!seen[0].requested, "a generated output carried a timing request before any relative real");
+    expect(seen[1].requested && sameRequest(seen[1].info, half), "the first real did not take its share of the target");
+    // Batch two: the generated output takes T / 2 with no feedback stage; the real takes T / 2 with the application's stages.
+    VkPresentTimingInfoEXT share = timing;
+    share.targetTime = target / 2;
+    share.presentStageQueries = 0;
+    expect(seen[2].requested && sameRequest(seen[2].info, share),
+        "the generated output did not take its share with no feedback stage");
+    expect(seen[3].requested && sameRequest(seen[3].info, half), "the second real did not take its share of the target");
+    expect(timing.targetTime == target && node.pTimingInfos == &timing, "the application's request was changed");
+    const auto counts = worker.takeTimingRelativeCounts();
+    expect(counts.real == 2 && counts.generated == 1 && counts.realLastNs == target / 2 &&
+        counts.generatedLastNs == target / 2, "the relative target counts did not match the presents");
+    expect(worker.takeTimingRelativeCounts().real == 0, "the relative target counts were not taken");
+#endif
+}
+
+// PT1: a generated output that is skipped presents nothing, so the real after it takes the whole remembered target.
+void skippedGeneratedGivesRealFullTarget() {
+#if defined(VK_EXT_present_timing)
+    auto queue = std::make_shared<DeferredPresentQueue>();
+    queue->queue = handle<VkQueue>(7);
+    VkSwapchainKHR swapchain = handle<VkSwapchainKHR>(11);
+    VkSemaphore wait = handle<VkSemaphore>(12);
+    uint32_t image = 0;
+    constexpr uint64_t target = 16'666'666;
+    VkPresentTimingInfoEXT timing = relativeRequest(target);
+    auto node = requestNode(&timing);
+    const auto real = presentOf(&node, &swapchain, &wait, &image);
+    const auto generated = presentOf(nullptr, &swapchain, &wait, &image);
+    DeferredPresent worker(queue, present);
+    clearTimingLog();
+    lowerResult = VK_SUCCESS;
+    relativeBatch(worker, generated, real);
+    // The second batch's generated output finds no lower image and is skipped; its real is the only present of that batch.
+    const auto copy = generatedCopy();
+    copyAcquireResult = VK_NOT_READY;
+    expect(worker.beginBatch(2), "PT1 skip batch rejected");
+    const auto at = DeferredPresent::Clock::now();
+    expect(worker.enqueueGeneratedCopy(swapchain, nullptr, at, copy) && worker.enqueue(real, at + 5ms),
+        "PT1 skip outputs rejected");
+    worker.closeBatch();
+    const auto done = worker.finish(UINT64_MAX);
+    copyAcquireResult = VK_SUCCESS;
+    expect(done && done->count == 2 && done->calls[0].skipped && !done->calls[1].skipped,
+        "the generated output was not skipped");
+    const auto seen = timingRequests();
+    expect(seen.size() == 3, "a skipped generated output presented");
+    VkPresentTimingInfoEXT half = timing;
+    half.targetTime = target / 2;
+    expect(seen[1].requested && sameRequest(seen[1].info, half), "the first real did not take its share of the target");
+    expect(seen[2].requested && sameRequest(seen[2].info, timing),
+        "a real after a skipped generated output did not take the whole target");
+    // Neither generated output carried a share: the first had nothing remembered and the second was skipped.
+    const auto counts = worker.takeTimingRelativeCounts();
+    expect(counts.real == 2 && counts.generated == 0, "a generated output without a share was counted");
+#endif
+}
+
+// PT1: an absolute target, a zero target and a batch of one output (FG off) are forwarded exactly as the application wrote them. A
+// real without a relative target leaves nothing to share, and a real without any request forwards none.
+void nonRelativeTimingIsForwardedUnchanged() {
+#if defined(VK_EXT_present_timing)
+    auto queue = std::make_shared<DeferredPresentQueue>();
+    queue->queue = handle<VkQueue>(7);
+    VkSwapchainKHR swapchain = handle<VkSwapchainKHR>(11);
+    VkSemaphore wait = handle<VkSemaphore>(12);
+    uint32_t image = 0;
+    constexpr uint64_t target = 16'666'666;
+    VkPresentTimingInfoEXT absolute{.sType = VK_STRUCTURE_TYPE_PRESENT_TIMING_INFO_EXT, .flags = 0,
+        .targetTime = 1'000'000'000'000, .timeDomainId = 9,
+        .presentStageQueries = VK_PRESENT_STAGE_QUEUE_OPERATIONS_END_BIT_EXT,
+        .targetTimeDomainPresentStage = VK_PRESENT_STAGE_REQUEST_DEQUEUED_BIT_EXT};
+    VkPresentTimingInfoEXT zero = relativeRequest(0);
+    VkPresentTimingInfoEXT one = relativeRequest(target);
+    auto absoluteNode = requestNode(&absolute);
+    auto zeroNode = requestNode(&zero);
+    auto oneNode = requestNode(&one);
+    const auto absoluteReal = presentOf(&absoluteNode, &swapchain, &wait, &image);
+    const auto zeroReal = presentOf(&zeroNode, &swapchain, &wait, &image);
+    const auto oneReal = presentOf(&oneNode, &swapchain, &wait, &image);
+    const auto bareReal = presentOf(nullptr, &swapchain, &wait, &image);
+    const auto generated = presentOf(nullptr, &swapchain, &wait, &image);
+    DeferredPresent worker(queue, present);
+    clearTimingLog();
+    lowerResult = VK_SUCCESS;
+    // The first real is absolute, so the second batch's generated output has nothing to share.
+    relativeBatch(worker, generated, absoluteReal);
+    relativeBatch(worker, generated, zeroReal);
+    // One output: no generated output to share with, so the real keeps the whole target.
+    expect(worker.beginBatch(1), "PT1 single-output batch rejected");
+    const auto at = DeferredPresent::Clock::now();
+    expect(worker.enqueue(oneReal, at), "PT1 single output rejected");
+    worker.closeBatch();
+    expect(worker.finish(UINT64_MAX).has_value(), "PT1 single-output batch did not complete");
+    expect(worker.beginBatch(1), "PT1 bare batch rejected");
+    expect(worker.enqueue(bareReal, DeferredPresent::Clock::now()), "PT1 bare output rejected");
+    worker.closeBatch();
+    expect(worker.finish(UINT64_MAX).has_value(), "PT1 bare batch did not complete");
+    const auto seen = timingRequests();
+    expect(seen.size() == 6, "PT1 batches did not present six outputs");
+    expect(!seen[0].requested && seen[1].requested && sameRequest(seen[1].info, absolute),
+        "an absolute target was changed or a generated output carried timing");
+    expect(!seen[2].requested && seen[3].requested && sameRequest(seen[3].info, zero),
+        "a zero target was changed or the absolute real left a remembered target");
+    expect(seen[4].requested && sameRequest(seen[4].info, one), "a single-output relative target was changed");
+    expect(!seen[5].requested, "a real without a request was given one");
+    const auto counts = worker.takeTimingRelativeCounts();
+    expect(counts.real == 0 && counts.generated == 0, "non-relative or single-output presents were counted");
+#endif
+}
+
+// PT1: a real without a relative target forgets the remembered one, so the next batch's generated output carries no timing.
+void relativeTargetForgottenAfterAbsoluteReal() {
+#if defined(VK_EXT_present_timing)
+    auto queue = std::make_shared<DeferredPresentQueue>();
+    queue->queue = handle<VkQueue>(7);
+    VkSwapchainKHR swapchain = handle<VkSwapchainKHR>(11);
+    VkSemaphore wait = handle<VkSemaphore>(12);
+    uint32_t image = 0;
+    constexpr uint64_t target = 16'666'666;
+    VkPresentTimingInfoEXT relative = relativeRequest(target);
+    VkPresentTimingInfoEXT absolute{.sType = VK_STRUCTURE_TYPE_PRESENT_TIMING_INFO_EXT, .flags = 0,
+        .targetTime = 1'000'000'000'000, .timeDomainId = 9,
+        .presentStageQueries = VK_PRESENT_STAGE_QUEUE_OPERATIONS_END_BIT_EXT,
+        .targetTimeDomainPresentStage = VK_PRESENT_STAGE_REQUEST_DEQUEUED_BIT_EXT};
+    auto relativeNode = requestNode(&relative);
+    auto absoluteNode = requestNode(&absolute);
+    const auto relativeReal = presentOf(&relativeNode, &swapchain, &wait, &image);
+    const auto absoluteReal = presentOf(&absoluteNode, &swapchain, &wait, &image);
+    const auto generated = presentOf(nullptr, &swapchain, &wait, &image);
+    DeferredPresent worker(queue, present);
+    clearTimingLog();
+    lowerResult = VK_SUCCESS;
+    relativeBatch(worker, generated, relativeReal);
+    relativeBatch(worker, generated, absoluteReal);
+    relativeBatch(worker, generated, relativeReal);
+    const auto seen = timingRequests();
+    expect(seen.size() == 6, "PT1 batches did not present six outputs");
+    VkPresentTimingInfoEXT half = relative;
+    half.targetTime = target / 2;
+    VkPresentTimingInfoEXT share = half;
+    share.presentStageQueries = 0;
+    expect(!seen[0].requested && sameRequest(seen[1].info, half), "the first batch did not take its share");
+    expect(seen[2].requested && sameRequest(seen[2].info, share), "the second batch's generated output lost the remembered target");
+    expect(sameRequest(seen[3].info, absolute), "the absolute real was changed");
+    expect(!seen[4].requested, "the generated output after an absolute real still carried the forgotten target");
+    expect(sameRequest(seen[5].info, half), "the third batch's real did not take its share");
+#endif
+}
+
+// PT1: the remembered target is forgotten when an output is on another swapchain, and after the worker's 250 ms gap.
+void relativeTargetForgottenOnSwapchainChangeAndGap() {
+#if defined(VK_EXT_present_timing)
+    auto queue = std::make_shared<DeferredPresentQueue>();
+    queue->queue = handle<VkQueue>(7);
+    VkSwapchainKHR swapchainA = handle<VkSwapchainKHR>(11);
+    VkSwapchainKHR swapchainB = handle<VkSwapchainKHR>(13);
+    VkSemaphore wait = handle<VkSemaphore>(12);
+    uint32_t image = 0;
+    constexpr uint64_t target = 16'666'666;
+    VkPresentTimingInfoEXT timing = relativeRequest(target);
+    auto node = requestNode(&timing);
+    const auto realA = presentOf(&node, &swapchainA, &wait, &image);
+    const auto generatedA = presentOf(nullptr, &swapchainA, &wait, &image);
+    const auto realB = presentOf(&node, &swapchainB, &wait, &image);
+    const auto generatedB = presentOf(nullptr, &swapchainB, &wait, &image);
+    DeferredPresent worker(queue, present);
+    clearTimingLog();
+    lowerResult = VK_SUCCESS;
+    relativeBatch(worker, generatedA, realA);
+    // The first output on the second swapchain: the target remembered on the first is not shared.
+    relativeBatch(worker, generatedB, realB);
+    std::this_thread::sleep_for(260ms);
+    // After the gap, the remembered target is forgotten even though the swapchain is the same.
+    relativeBatch(worker, generatedB, realB);
+    const auto seen = timingRequests();
+    expect(seen.size() == 6, "PT1 batches did not present six outputs");
+    expect(!seen[0].requested, "a generated output carried a target before any relative real");
+    expect(!seen[2].requested, "a generated output on another swapchain shared the remembered target");
+    expect(!seen[4].requested, "a generated output after the 250 ms gap shared the remembered target");
+    VkPresentTimingInfoEXT half = timing;
+    half.targetTime = target / 2;
+    expect(sameRequest(seen[1].info, half) && sameRequest(seen[3].info, half) && sameRequest(seen[5].info, half),
+        "a real did not take its share of the target");
+#endif
+}
+
 int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i)
         if (std::strcmp(argv[i], "--repro-xh2") == 0) return internalRealStallHoldsNextBatch();
@@ -5766,4 +6038,8 @@ int main(int argc, char** argv) {
     gamescopeTickLockRemovesSameTickPairs(); nonGamescopeGatesScheduleAsToday(); zeroSnapIsIdentical();
     realPresentLeadMovesRealEarlier();
     realLeadHoldsMarkerCorrection();
+    // PT1 last: each test clears the timing log it reads; the copy fixtures they use are reset at their end.
+    relativeTargetSplitsAcrossBatch(); skippedGeneratedGivesRealFullTarget();
+    nonRelativeTimingIsForwardedUnchanged(); relativeTargetForgottenAfterAbsoluteReal();
+    relativeTargetForgottenOnSwapchainChangeAndGap();
 }

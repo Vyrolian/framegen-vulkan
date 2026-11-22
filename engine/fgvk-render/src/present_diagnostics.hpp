@@ -297,6 +297,11 @@ namespace fgvk::layer::present_diagnostics {
             // window's maximum). Taken from the worker at each present (see workerRealPollCounts).
             size_t workerRealPollSlotBusy{}, workerRealPollFence{}, workerRealPollAcquire{}, workerRealPollError{};
             size_t workerRealWaitMaxUs{};
+            // PT1: the relative application targets the worker forwarded, the reals split by their batch and the generated
+            // outputs given their share, and the last forwarded target of each in ns. Taken from the worker at each present
+            // (see timingRelativeCounts).
+            size_t timingRelativeReal{}, timingRelativeGenerated{};
+            uint64_t timingRelativeRealLastNs{}, timingRelativeGeneratedLastNs{};
             size_t fifoCallerTimingSources{};
             std::array<OutputSample, outputTraceCapacity> outputTrace{};
             size_t outputTraceCount{}, outputTraceDropped{};
@@ -520,6 +525,14 @@ namespace fgvk::layer::present_diagnostics {
             window.workerRealPollAcquire += counts.acquire;
             window.workerRealPollError += counts.error;
             window.workerRealWaitMaxUs = std::max(window.workerRealWaitMaxUs, counts.waitMaxUs);
+        }
+        // PT1: the relative-target counts taken since the last call (DeferredPresent::takeTimingRelativeCounts), added to this
+        // window. A window keeps the last target of a kind from the last take that forwarded one of that kind.
+        void timingRelativeCounts(const fgvk::layer::TimingRelativeCounts& counts) {
+            window.timingRelativeReal += counts.real;
+            window.timingRelativeGenerated += counts.generated;
+            if (counts.real) window.timingRelativeRealLastNs = counts.realLastNs;
+            if (counts.generated) window.timingRelativeGeneratedLastNs = counts.generatedLastNs;
         }
         // Persistent for this swapchain: set once a present uses F5 internal images.
         void internalImagesActive() { internalImages = true; }

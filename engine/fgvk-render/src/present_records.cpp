@@ -899,6 +899,12 @@ void formatPacingWindowBody(const PacingWindowPayload& payload, const PacingProf
          << " worker_real_poll_acquire=" << window.workerRealPollAcquire
          << " worker_real_poll_error=" << window.workerRealPollError
          << " worker_real_wait_max_us=" << window.workerRealWaitMaxUs;
+    // PT1: the relative targets the worker forwarded, by output (reals split by their batch, generated outputs given their share),
+    // and the last forwarded target of each in us.
+    line << " timing_relative_split_real=" << window.timingRelativeReal
+         << " timing_relative_generated=" << window.timingRelativeGenerated
+         << " timing_relative_real_last_us=" << window.timingRelativeRealLastNs / 1000
+         << " timing_relative_generated_last_us=" << window.timingRelativeGeneratedLastNs / 1000;
     line << '\n';
     for (size_t i = 0; i < window.outputTraceCount; ++i) {
         const auto& sample = window.outputTrace[i];

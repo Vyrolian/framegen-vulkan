@@ -804,6 +804,16 @@ public:
         counts.waitMaxUs = workerRealWaitMaxUs.exchange(0, std::memory_order_relaxed);
         return counts;
     }
+    // PT1: the relative-target counts since the last take, for the pacing profile's window (see TimingRelativeCounts). The last
+    // targets are read, not taken, so a take with no forwarded target keeps the last one for the window that gets it.
+    [[nodiscard]] TimingRelativeCounts takeTimingRelativeCounts() noexcept {
+        TimingRelativeCounts counts;
+        counts.real = timingRelativeReal.exchange(0, std::memory_order_relaxed);
+        counts.generated = timingRelativeGenerated.exchange(0, std::memory_order_relaxed);
+        counts.realLastNs = timingRelativeRealLastNs.load(std::memory_order_relaxed);
+        counts.generatedLastNs = timingRelativeGeneratedLastNs.load(std::memory_order_relaxed);
+        return counts;
+    }
     // FP2: the owner that parks lower images after this worker's lower presents (see parkAfterPresentLocked). The swapchain
     // sets it before its first internal present. One swapchain has one owner, so the first one set is kept.
     // FP3: park returns why it did or did not park (see ParkOutcome).
@@ -1227,6 +1237,29 @@ private:
         }
         return copy;
     }
+#if defined(VK_EXT_present_timing)
+    // PT1 rule 1: a relative application target. An absolute or a zero target is forwarded as the application wrote it.
+    [[nodiscard]] static bool relativeRequest(const VkPresentTimingInfoEXT& timing) noexcept {
+        return timing.targetTime != 0 &&
+            (timing.flags & VK_PRESENT_TIMING_INFO_PRESENT_AT_RELATIVE_TIME_BIT_EXT) != 0;
+    }
+    // PT1: floor(target * numerator / denominator) in integer ns, exact for any target. The numerator is at most the
+    // denominator, so the product never overflows.
+    [[nodiscard]] static uint64_t relativeShare(const uint64_t target, const uint64_t numerator,
+            const uint64_t denominator) noexcept {
+        return target / denominator * numerator + target % denominator * numerator / denominator;
+    }
+    // PT1, worker thread only: the relative target of the most recent real this worker presented with one, and the fields a
+    // generated output of a later batch copies from it (rule 3). Forgotten by rules 4 and the 250 ms reset of run().
+    struct RelativeTiming {
+        bool valid{};
+        VkSwapchainKHR swapchain{};
+        VkPresentTimingInfoFlagsEXT flags{};
+        uint64_t targetTime{};
+        uint64_t timeDomainId{};
+        VkPresentStageFlagsEXT stage{};
+    };
+#endif
     struct Job {
         VkSwapchainKHR swapchain{};
         uint32_t image{};
@@ -1381,6 +1414,10 @@ private:
     std::atomic<size_t> workerRealWaitMaxUs{};
     // XH2a, worker thread only: when the last worker real wait over 50 ms was logged. At most one log line a second.
     Clock::time_point workerRealLogged{};
+    // PT1: the relative targets forwarded since the last take, by output kind, and the last target of each in ns. Relaxed
+    // atomics: the worker stores them, and takeTimingRelativeCounts reads the last targets without a lock.
+    std::atomic<size_t> timingRelativeReal{}, timingRelativeGenerated{};
+    std::atomic<uint64_t> timingRelativeRealLastNs{}, timingRelativeGeneratedLastNs{};
     // W2, FGVK_REAL_OFFSET_US=auto: worker thread only; the cursor is used under queue->mutex.
     OutputOffsetController outputOffsetController;
     std::optional<uint64_t> correctionState;
@@ -2026,6 +2063,10 @@ private:
         bool havePrevious{};
         uint32_t heldLowerImages{};
         Clock::time_point lastBatchFinished{};
+#if defined(VK_EXT_present_timing)
+        // PT1 rule 4: the relative target a later batch's generated outputs share (worker thread only).
+        RelativeTiming relativeTiming{};
+#endif
         for (;;) {
             changed.wait(lock, [this] {
                 return stopping || (count && batches[head].consumed < batches[head].produced);
@@ -2041,7 +2082,14 @@ private:
                 batchPhase.reset();
                 tickLock.resetOutputs();
                 realPresentLead.forget();
+#if defined(VK_EXT_present_timing)
+                relativeTiming = {};
+#endif
             }
+#if defined(VK_EXT_present_timing)
+            // PT1 rule 4: an output on another swapchain forgets the remembered target.
+            if (relativeTiming.valid && relativeTiming.swapchain != current.swapchain) relativeTiming = {};
+#endif
             const auto ready = batch.readiness;
             if (first) updateCorrection(ready.source);
             if (first) updateRealLead();
@@ -2348,11 +2396,46 @@ private:
             };
             if (metadata.hasMode) chain = &mode;
 #if defined(VK_EXT_present_timing)
+            // PT1 rules 1 to 3: the timing this output forwards. A relative application target of a batch with outputs of its
+            // own is split (a real takes what its generated outputs did not), a generated output takes its share of the
+            // remembered target, and every other request is forwarded as the application wrote it. The timing info is a
+            // local copy, so the application's and the job's metadata are never changed.
+            VkPresentTimingInfoEXT timingInfo = metadata.timing;
+            bool timingRequested = metadata.hasTiming;
+            // A relative target forwarded by rule 2 or 3 is counted once its output presents, with its value.
+            bool relativeForwarded{};
+            uint64_t relativeForwardedNs{};
+            if (current.generated) {
+                if (!metadata.hasTiming && limit > 1 && relativeTiming.valid) {
+                    // Rule 3: the share of the remembered target, with the remembered fields. No feedback slot is reserved.
+                    timingInfo = VkPresentTimingInfoEXT{
+                        .sType = VK_STRUCTURE_TYPE_PRESENT_TIMING_INFO_EXT,
+                        .flags = relativeTiming.flags,
+                        .targetTime = relativeTiming.targetTime / limit,
+                        .timeDomainId = relativeTiming.timeDomainId,
+                        .presentStageQueries = 0,
+                        .targetTimeDomainPresentStage = relativeTiming.stage,
+                    };
+                    timingRequested = true;
+                    relativeForwarded = true;
+                    relativeForwardedNs = timingInfo.targetTime;
+                }
+            } else if (metadata.hasTiming && limit > 1 && relativeRequest(metadata.timing)) {
+                // Rule 2: the real takes the target less the shares of the generated outputs presented before it in this
+                // batch. Each one is presented or skipped in order, so the count is complete here.
+                size_t presented{};
+                for (size_t i = 0; i < index; ++i)
+                    presented += batch.aggregate.calls[i].generated && !batch.aggregate.calls[i].skipped ? 1 : 0;
+                timingInfo.targetTime = relativeShare(metadata.timing.targetTime,
+                    limit - std::min(presented, limit - 1), limit);
+                relativeForwarded = true;
+                relativeForwardedNs = timingInfo.targetTime;
+            }
             VkPresentTimingsInfoEXT timings{
                 .sType = VK_STRUCTURE_TYPE_PRESENT_TIMINGS_INFO_EXT,
-                .pNext = chain, .swapchainCount = 1, .pTimingInfos = &metadata.timing,
+                .pNext = chain, .swapchainCount = 1, .pTimingInfos = &timingInfo,
             };
-            if (metadata.hasTiming) chain = &timings;
+            if (timingRequested) chain = &timings;
 #endif
             auto job = current;
             Completion result;
@@ -2627,6 +2710,31 @@ private:
                 result.tickSnap = {};
                 result.targetTick = {};
             }
+#if defined(VK_EXT_present_timing)
+            // PT1: a forwarded target is counted once its output presents. A real remembers its own relative target when it
+            // presents (rule 3's source). A real without one forgets the remembered target (rule 4), as does a skipped real
+            // without one; a skipped real with one leaves the remembered target as it was.
+            if (relativeForwarded && !result.skipped) {
+                if (current.generated) {
+                    timingRelativeGenerated.fetch_add(1, std::memory_order_relaxed);
+                    timingRelativeGeneratedLastNs.store(relativeForwardedNs, std::memory_order_relaxed);
+                } else {
+                    timingRelativeReal.fetch_add(1, std::memory_order_relaxed);
+                    timingRelativeRealLastNs.store(relativeForwardedNs, std::memory_order_relaxed);
+                }
+            }
+            if (!current.generated) {
+                if (!metadata.hasTiming || !relativeRequest(metadata.timing)) {
+                    relativeTiming = {};
+                } else if (!result.skipped) {
+                    relativeTiming = RelativeTiming{
+                        .valid = true, .swapchain = current.swapchain, .flags = metadata.timing.flags,
+                        .targetTime = metadata.timing.targetTime, .timeDomainId = metadata.timing.timeDomainId,
+                        .stage = metadata.timing.targetTimeDomainPresentStage,
+                    };
+                }
+            }
+#endif
             if (!result.skipped) {
                 // GT1: the bookkeeping starts are in unsnapped time; the tick floor reads the actual start.
                 previousStarted = result.startedUnsnapped();

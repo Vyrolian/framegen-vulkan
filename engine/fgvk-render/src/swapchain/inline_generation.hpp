@@ -304,6 +304,16 @@ struct WorkerRealPollCounts {
     size_t waitMaxUs{};
 };
 
+// PT1: the relative application targets the worker forwarded and presented, taken for one window. real counts the reals whose
+// target went through the batch split (zero generated outputs keep the whole target), generated counts the generated outputs
+// that carried their share. The last targets are in ns, from the last take that forwarded one of that kind.
+struct TimingRelativeCounts {
+    size_t real{};
+    size_t generated{};
+    uint64_t realLastNs{};
+    uint64_t generatedLastNs{};
+};
+
 // FI4, with FP4: at most one call wait times out per batch. A call output may wait only while no earlier wait of its batch
 // timed out, so later outputs of that batch take the poll and the worker fallback as they do without a wait.
 [[nodiscard]] constexpr bool inlineCallWaitAllowed(const bool batchTimedOut) noexcept {
