@@ -572,14 +572,14 @@ void testLowerParkingPoolBudgetAndOrder() {
     expect(!pool.canPark(1), "a parked image and a call-held output fit a budget of two");
     expect(pool.push(ParkedLower{.lowerIndex = 5, .slot = 2}), "parking the second image failed");
     expect(!pool.canPark(0), "a full pool parked a third image");
-    expect(!pool.push(ParkedLower{.lowerIndex = 6, .slot = 0}), "a third image was pushed past the target");
-    expect(!pool.push(ParkedLower{.lowerIndex = 6, .slot = 9}), "an out-of-range slot was pushed");
+    expect(pool.push(ParkedLower{.lowerIndex = 6, .slot = 0}), "the pool did not hold a third image up to its capacity");
+    expect(!pool.push(ParkedLower{.lowerIndex = 7, .slot = 9}), "an out-of-range slot was pushed");
     const auto first = pool.take();
     expect(first && first->lowerIndex == 3 && first->slot == 1, "the oldest parked image was not taken first");
     expect(pool.isBusy(1), "a taken slot was free before its copy returned");
     pool.release(1);
     expect(!pool.isBusy(1), "a released slot stayed busy");
-    expect(pool.size() == 1 && pool.canPark(0), "the take did not leave one parked image within the budget");
+    expect(pool.size() == 2 && !pool.canPark(0), "the take did not leave the parked images at the target");
     expect(pool.isBusy(9), "an out-of-range slot did not read as busy");
 }
 
@@ -601,13 +601,19 @@ void testLowerParkingDrainLeavesNone() {
 }
 
 // FP2 rule 3 and FP2.4: a target applies only to copies of the call's family, and never exceeds the parked capacity.
+// FI4: the capacity holds one parked image per output of the largest batch, so a 5x target is not clamped below five.
 void testLowerParkingPolicy() {
     LowerParkingPool pool;
-    pool.reserveSlots(4);
+    pool.reserveSlots(8);
+    static_assert(LowerParkingPool::capacity == 5, "the parked capacity must hold a 5x batch's outputs");
     pool.setPolicy(2, 4, false);
     expect(pool.target() == 0 && !pool.canPark(0), "a policy for another family still parked");
-    pool.setPolicy(5, 4, true);
-    expect(pool.target() == 2, "a target above the capacity was not capped at two");
+    for (const uint32_t outputs : {2u, 3u, 4u, 5u}) {
+        pool.setPolicy(outputs, 5, true);
+        expect(pool.target() == outputs, "a target of the outputs per batch was clamped below the batch");
+    }
+    pool.setPolicy(9, 9, true);
+    expect(pool.target() == LowerParkingPool::capacity, "a target above the capacity was not capped at the capacity");
     pool.setPolicy(0, 4, true);
     expect(pool.target() == 0 && !pool.canPark(0), "a zero target still parked");
 }

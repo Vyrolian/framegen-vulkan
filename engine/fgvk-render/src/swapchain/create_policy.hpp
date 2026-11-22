@@ -106,14 +106,13 @@ namespace fgvk::layer {
     /// image). Used as a floor, so the application-derived count, which the
     /// direct path and the generated capacity check rely on, never shrinks.
     /// surfaceMinImages == 0 leaves the count unchanged.
-    /// FI2: inlineCallCopies adds the copies made at the present call (see
-    /// inlineCallLowerImageCap) to the floor. The caller reads the switch.
+    /// FI4: callImages adds the lower images of the call path to the floor (see
+    /// inlineCallSpareImages). Zero for a swapchain without the call path.
     [[nodiscard]] constexpr uint32_t lowerImageCountWithLayerFloor(
             const uint32_t current, const uint32_t surfaceMinImages,
-            const uint32_t maxImages, const bool inlineCallCopies = false) noexcept {
+            const uint32_t maxImages, const uint32_t callImages = 0) noexcept {
         if (surfaceMinImages == 0)
             return current;
-        const uint32_t callImages = inlineCallCopies ? inlineCallLowerImageCap : 0;
         uint32_t count = std::max(current, surfaceMinImages + layerHeldLowerImages + callImages);
         if (maxImages && count > maxImages)
             count = maxImages;
@@ -131,7 +130,7 @@ namespace fgvk::layer {
             const bool swapchainImageCountCompatibility = false,
             const uint32_t surfaceMinImages = 0,
             const bool fifoGroupRelief = false,
-            const bool inlineCallCopies = false) {
+            const uint32_t inlineCallImages = 0) {
         if (!frameGenerationProvisioned)
             return false;
 
@@ -163,7 +162,7 @@ namespace fgvk::layer {
                     if (maxImages && createInfo.minImageCount > maxImages)
                         createInfo.minImageCount = maxImages;
                     createInfo.minImageCount = lowerImageCountWithLayerFloor(
-                        createInfo.minImageCount, surfaceMinImages, maxImages, inlineCallCopies);
+                        createInfo.minImageCount, surfaceMinImages, maxImages, inlineCallImages);
                 }
                 if (orderedFrameGenerationTransport) {
                     createInfo.presentMode = VK_PRESENT_MODE_FIFO_KHR;

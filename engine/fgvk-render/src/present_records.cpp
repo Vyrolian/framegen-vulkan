@@ -879,6 +879,9 @@ void formatPacingWindowBody(const PacingWindowPayload& payload, const PacingProf
          << " inline_call_wait_unlocked=" << window.inlineCallWaitUnlocked
          << " inline_call_wait_timeout=" << window.inlineCallWaitTimeout
          << " inline_call_wait_us=" << window.inlineCallWaitUs;
+    // FI4: the outputs of the last batch that took the call path (generated outputs plus the real), and the swapchain's call
+    // images (outputs per batch at the profile's capacity, zero where the worker path cannot run).
+    line << " inline_call_outputs=" << window.inlineCallOutputs << " inline_call_spare=" << window.inlineCallSpare;
     // FP3: the worker's lower park outcomes (Drained is not counted). Each outcome is its own field.
     const auto parkOutcome = [&window](const fgvk::layer::ParkOutcome outcome) {
         return window.parkOutcomes[static_cast<size_t>(outcome)];

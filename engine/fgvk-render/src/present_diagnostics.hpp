@@ -288,6 +288,8 @@ namespace fgvk::layer::present_diagnostics {
             // outcome, and their total in us. Taken from the worker at each present (see callWaitCounts).
             size_t inlineCallWait{}, inlineCallWaitParked{}, inlineCallWaitUnlocked{}, inlineCallWaitTimeout{};
             size_t inlineCallWaitUs{};
+            // FI4: the outputs of the last eligible batch (its generated outputs and its real), and the swapchain's call images.
+            size_t inlineCallOutputs{}, inlineCallSpare{};
             // FP3: the worker's lower park outcomes by ParkOutcome (Drained is not kept). Taken from the worker at each present
             // (see parkCounts).
             std::array<size_t, fgvk::layer::parkCountedOutcomeCount> parkOutcomes{};
@@ -512,6 +514,10 @@ namespace fgvk::layer::present_diagnostics {
         void transferCopiesActive() { transferCopies = true; }
         // FI1: persistent for this swapchain: set once a generated frame is scheduled on the attached backend.
         void inlineAttachedActive() { inlineAttached = true; }
+        // FI4: persistent for this swapchain: the call images the swapchain was created with (set at create).
+        void inlineCallSpareImages(const size_t count) { inlineSpare = count; }
+        // FI4: persistent for this swapchain: the outputs of the last batch that took the call path.
+        void inlineCallBatchOutputs(const size_t outputs) { inlineOutputs = outputs; }
         std::optional<Window> finishSource(Clock::time_point now) {
             if (!sourceStarted || !windowStarted) return {};
             window.metrics[LayerPresent].add(now - *sourceStarted);
@@ -521,6 +527,8 @@ namespace fgvk::layer::present_diagnostics {
             window.internalImages = internalImages;
             window.transferCopy = transferCopies;
             window.inlineAttached = inlineAttached;
+            window.inlineCallOutputs = inlineOutputs;
+            window.inlineCallSpare = inlineSpare;
             const auto completed = window;
             window = {};
             windowStarted = now;
@@ -538,6 +546,7 @@ namespace fgvk::layer::present_diagnostics {
         bool internalImages{};
         bool transferCopies{};
         bool inlineAttached{};
+        size_t inlineOutputs{}, inlineSpare{};
         std::optional<Clock::time_point> windowStarted, sourceStarted, sourceFinished, previousOutput;
         std::optional<Clock::time_point> previousTarget;
         OutputTiming previousTimingOwner{DriverTiming};

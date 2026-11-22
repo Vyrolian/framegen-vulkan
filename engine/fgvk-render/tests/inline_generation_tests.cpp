@@ -4,6 +4,8 @@
 // FI1: pure helpers of the attached (same-device) generation path: the submit order of the source copy, the release
 // value of a batch scheduled after its copy, and where a failed schedule presents from.
 // FI2: the call-held lower budget (rule 2) and the hold check.
+// FI4: the call path on every worker batch, its spare images, the budget cap, the experiment gate, the park target, the
+// one-timeout-per-batch wait rule and the signal each output waits.
 
 #include "swapchain/inline_generation.hpp"
 
@@ -13,6 +15,7 @@
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 
 namespace {
     using fgvk::layer::ScheduleFailureRoute;
@@ -72,20 +75,167 @@ namespace {
         }
     }
 
-    // FI2 rule 2: the budget is the lower images above the surface minimum and the worker's own holds, capped at four.
+    // FI2 rule 2, FI4: the budget is the lower images above the surface minimum and the worker's own holds, capped at the
+    // swapchain's call images (outputs per batch).
     void testCallBudget() {
         using fgvk::layer::inlineCallLowerBudget;
-        require(fgvk::layer::inlineCallLowerImageCap == 4, "the call-held budget cap must be four");
-        require(inlineCallLowerBudget(8, 4, 2) == 2, "two spare images must give a budget of two");
-        require(inlineCallLowerBudget(10, 4, 2) == 4, "four spare images must give the full budget of four");
-        require(inlineCallLowerBudget(12, 4, 2) == 4, "more spare images than the cap must still give four");
-        require(inlineCallLowerBudget(9, 4, 0) == 4, "a spare count above the cap must be capped with no worker holds");
-        require(inlineCallLowerBudget(7, 4, 0) == 3, "the budget must count the images above the surface minimum");
-        require(inlineCallLowerBudget(6, 4, 2) == 0, "no spare image must give a budget of zero");
-        require(inlineCallLowerBudget(5, 4, 2) == 0, "a negative spare count must give a budget of zero");
-        require(inlineCallLowerBudget(0, 0, 0) == 0, "an empty swapchain must give a budget of zero");
-        require(inlineCallLowerBudget(10, UINT32_MAX, 0) == 0,
+        require(inlineCallLowerBudget(8, 4, 2, 4) == 2, "two spare images must give a budget of two");
+        require(inlineCallLowerBudget(10, 4, 2, 4) == 4, "four spare images must give the full budget of four");
+        require(inlineCallLowerBudget(12, 4, 2, 4) == 4, "more spare images than the cap must still give four");
+        require(inlineCallLowerBudget(9, 4, 0, 4) == 4, "a spare count above the cap must be capped with no worker holds");
+        require(inlineCallLowerBudget(7, 4, 0, 4) == 3, "the budget must count the images above the surface minimum");
+        require(inlineCallLowerBudget(6, 4, 2, 4) == 0, "no spare image must give a budget of zero");
+        require(inlineCallLowerBudget(5, 4, 2, 4) == 0, "a negative spare count must give a budget of zero");
+        require(inlineCallLowerBudget(0, 0, 0, 4) == 0, "an empty swapchain must give a budget of zero");
+        require(inlineCallLowerBudget(10, UINT32_MAX, 0, 4) == 0,
             "a surface minimum above the image count must give a budget of zero");
+    }
+
+    // FI4: a 2x batch's cap is two, a 3x batch's three and a 4x batch's four, so spare images above the cap give the cap.
+    void testCallBudgetFollowsOutputsPerBatch() {
+        using fgvk::layer::inlineCallLowerBudget;
+        for (const uint32_t outputs : {2u, 3u, 4u, 5u}) {
+            require(inlineCallLowerBudget(4 + 2 + outputs, 4, 2, outputs) == outputs,
+                "the budget must equal the outputs per batch when the images allow it");
+            require(inlineCallLowerBudget(4 + 2 + outputs + 3, 4, 2, outputs) == outputs,
+                "spare images above the outputs per batch must not raise the budget");
+            require(inlineCallLowerBudget(4 + 2 + outputs - 1, 4, 2, outputs) == outputs - 1,
+                "one image short of the outputs per batch must give one less");
+        }
+        require(inlineCallLowerBudget(20, 4, 2, 0) == 0, "a swapchain without call images must give a budget of zero");
+    }
+
+    // FI4: spare images are the outputs per batch at the profile's capacity, and only on a swapchain that runs the worker
+    // path. Each zero has one reason, checked in the order off, compat, ordered.
+    void testSpareImages() {
+        using fgvk::layer::InlineCallImagesReason;
+        using fgvk::layer::inlineCallReasonName;
+        using fgvk::layer::inlineCallSpareImages;
+        for (const size_t multiplier : {2u, 3u, 4u, 5u}) {
+            const auto eligible = inlineCallSpareImages(true, true, false, false, multiplier - 1);
+            require(eligible.count == multiplier && eligible.reason == InlineCallImagesReason::Eligible,
+                "spare images must be the outputs per batch at the profile's capacity");
+        }
+        const auto off = inlineCallSpareImages(false, true, false, false, 1);
+        require(off.count == 0 && off.reason == InlineCallImagesReason::Off, "the inline switch off must give no spare images");
+        const auto unprovisioned = inlineCallSpareImages(true, false, false, false, 1);
+        require(unprovisioned.count == 0 && unprovisioned.reason == InlineCallImagesReason::Off,
+            "an unprovisioned swapchain must give no spare images");
+        const auto noCapacity = inlineCallSpareImages(true, true, false, false, 0);
+        require(noCapacity.count == 0 && noCapacity.reason == InlineCallImagesReason::Off,
+            "a profile with no generated capacity must give no spare images, whatever the provisioning flag says");
+        const auto compat = inlineCallSpareImages(true, true, false, true, 1);
+        require(compat.count == 0 && compat.reason == InlineCallImagesReason::Compat,
+            "a swapchain with the application's image count kept must give no spare images");
+        const auto ordered = inlineCallSpareImages(true, true, true, false, 1);
+        require(ordered.count == 0 && ordered.reason == InlineCallImagesReason::Ordered,
+            "an ordered FIFO transport never runs the call path and must give no spare images");
+        const auto both = inlineCallSpareImages(true, true, true, true, 1);
+        require(both.reason == InlineCallImagesReason::Compat, "compat must be named before ordered");
+        require(!inlineCallSpareImages(false, false, true, true, 4).count, "no path may give spare images without a switch");
+        require(std::string_view(inlineCallReasonName(InlineCallImagesReason::Eligible)) == "eligible" &&
+                std::string_view(inlineCallReasonName(InlineCallImagesReason::Ordered)) == "ordered" &&
+                std::string_view(inlineCallReasonName(InlineCallImagesReason::Compat)) == "compat" &&
+                std::string_view(inlineCallReasonName(InlineCallImagesReason::Off)) == "off",
+            "the reason names must match the create log line");
+    }
+
+    // FI4: the call path is taken by every worker batch with a budget, on every surface, mode and multiplier. The helper
+    // takes no surface, mode or multiplier, so those cannot refuse it. The budget and the attachment do.
+    void testCallBatchEligibility() {
+        using fgvk::layer::inlineCallBatchEligible;
+        for (const uint32_t outputs : {2u, 3u, 4u, 5u}) {
+            require(inlineCallBatchEligible(true, true, true, false, 4 + 2 + outputs, 4, 2, outputs),
+                "a worker batch with its call images must take the call path at every multiplier");
+        }
+        require(inlineCallBatchEligible(true, true, true, false, 8, 4, 2, 2),
+            "a worker batch on a swapchain with two spare images must be eligible");
+        require(!inlineCallBatchEligible(false, true, true, false, 8, 4, 2, 2),
+            "a batch of a detached backend must not take the call path");
+        require(!inlineCallBatchEligible(true, false, true, false, 8, 4, 2, 2),
+            "a batch the worker does not copy must not take the call path");
+        require(!inlineCallBatchEligible(true, true, false, false, 8, 4, 2, 2),
+            "a batch without internal images must not take the call path");
+        require(!inlineCallBatchEligible(true, true, true, true, 8, 4, 2, 2),
+            "a batch whose copies are on the transfer family must not take the call path");
+        require(!inlineCallBatchEligible(true, true, true, false, 8, 0, 2, 2),
+            "an unknown surface minimum must not take the call path");
+        require(!inlineCallBatchEligible(true, true, true, false, 6, 4, 2, 2),
+            "a swapchain without spare images must not take the call path");
+        require(!inlineCallBatchEligible(true, true, true, false, 8, 4, 2, 0),
+            "a swapchain with no call images (ordered, compat or off) must not take the call path");
+    }
+
+    // FI4: the experiments keep their gate. Native Wayland, IMMEDIATE and one output are the only batches that pass it.
+    void testExperimentGate() {
+        using fgvk::layer::nativeImmediateTwoXBatch;
+        using fgvk::layer::SurfaceOrigin;
+        require(nativeImmediateTwoXBatch(true, true, 1, SurfaceOrigin::Wayland, VK_PRESENT_MODE_IMMEDIATE_KHR),
+            "the experiment gate must admit a native Wayland IMMEDIATE one-output batch");
+        require(!nativeImmediateTwoXBatch(true, true, 1, SurfaceOrigin::Wayland, VK_PRESENT_MODE_FIFO_KHR),
+            "the experiment gate must refuse FIFO (the mode term)");
+        require(!nativeImmediateTwoXBatch(true, true, 1, SurfaceOrigin::Wayland, VK_PRESENT_MODE_MAILBOX_KHR),
+            "the experiment gate must refuse MAILBOX");
+        require(!nativeImmediateTwoXBatch(true, true, 1, SurfaceOrigin::Wayland, VK_PRESENT_MODE_FIFO_LATEST_READY_KHR),
+            "the experiment gate must refuse FIFO_LATEST_READY");
+        require(!nativeImmediateTwoXBatch(true, true, 1, SurfaceOrigin::Xcb, VK_PRESENT_MODE_IMMEDIATE_KHR),
+            "the experiment gate must refuse X11 (the surface term)");
+        require(!nativeImmediateTwoXBatch(true, true, 2, SurfaceOrigin::Wayland, VK_PRESENT_MODE_IMMEDIATE_KHR),
+            "the experiment gate must refuse a batch of two outputs (the 2x term)");
+        require(!nativeImmediateTwoXBatch(false, true, 1, SurfaceOrigin::Wayland, VK_PRESENT_MODE_IMMEDIATE_KHR),
+            "the experiment gate must refuse a batch the worker does not copy");
+        require(!nativeImmediateTwoXBatch(true, false, 1, SurfaceOrigin::Wayland, VK_PRESENT_MODE_IMMEDIATE_KHR),
+            "the experiment gate must refuse a batch without internal images");
+    }
+
+    // FI4: a batch parks one lower image per output, the generated outputs and the real.
+    void testBatchOutputs() {
+        using fgvk::layer::inlineBatchOutputs;
+        require(inlineBatchOutputs(1) == 2, "a 2x batch has two outputs: one generated and the real");
+        require(inlineBatchOutputs(2) == 3, "a 3x batch has three outputs");
+        require(inlineBatchOutputs(3) == 4, "a 4x batch has four outputs");
+        require(inlineBatchOutputs(4) == 5, "a 5x batch has five outputs");
+    }
+
+    // FI4: the park target of an eligible batch is its outputs, so a park fits within the budget at every multiplier.
+    void testParkTargetFollowsOutputs() {
+        using namespace fgvk::layer;
+        for (const uint32_t outputs : {2u, 3u, 4u, 5u}) {
+            require(parkAfterPresentAction(false, 0, 0, outputs, outputs, false) == ParkOutcome::Parked,
+                "an empty pool did not park within a target and budget of the outputs per batch");
+            require(parkAfterPresentAction(false, outputs - 1, 0, outputs, outputs, false) == ParkOutcome::Parked,
+                "the pool did not fill to the outputs per batch");
+            require(parkAfterPresentAction(false, outputs, 0, outputs, outputs, false) == ParkOutcome::Full,
+                "a pool of the outputs per batch parked one more");
+        }
+    }
+
+    // FI4 with FP4: at most one call wait per batch times out. Only a timeout ends the batch's waits, and a wait that
+    // returns None or a parked or unlocked result never does.
+    void testCallWaitOncePerBatch() {
+        using namespace fgvk::layer;
+        require(inlineCallWaitAllowed(false), "the first call wait of a batch must be allowed");
+        require(!inlineCallWaitAllowed(true), "a call wait after a timed-out wait of the batch must be skipped");
+        require(inlineCallWaitBatchTimedOut(false, CallLowerWait::Timeout),
+            "a timed-out call wait must end the batch's waits");
+        require(!inlineCallWaitBatchTimedOut(false, CallLowerWait::Parked) &&
+                !inlineCallWaitBatchTimedOut(false, CallLowerWait::Unlocked) &&
+                !inlineCallWaitBatchTimedOut(false, CallLowerWait::None),
+            "a parked, unlocked or unwaited call must keep the batch's waits allowed");
+        require(inlineCallWaitBatchTimedOut(true, CallLowerWait::Parked),
+            "a timeout must stay recorded for the rest of the batch");
+    }
+
+    // FI4: each output waits what its predecessor signalled. A worker copy is followed by a copied signal, a direct or
+    // present-thread copy by the post-copy chain, and the first output waits nothing.
+    void testChainSignalBefore() {
+        using namespace fgvk::layer;
+        require(chainSignalBefore(true, false) == ChainSignal::None && chainSignalBefore(true, true) == ChainSignal::None,
+            "the first output must wait no predecessor");
+        require(chainSignalBefore(false, true) == ChainSignal::Copied,
+            "an output after a worker copy must wait that copy's copied signal");
+        require(chainSignalBefore(false, false) == ChainSignal::PostCopy,
+            "an output after a direct or present-thread copy must wait the post-copy chain");
     }
 
     // FI2 rule 2: one more output may be held when the outputs already held, plus this one, stay within the budget.
@@ -232,6 +382,14 @@ int main() {
         testReleaseValue();
         testFailureRoutes();
         testCallBudget();
+        testCallBudgetFollowsOutputsPerBatch();
+        testSpareImages();
+        testCallBatchEligibility();
+        testExperimentGate();
+        testBatchOutputs();
+        testParkTargetFollowsOutputs();
+        testCallWaitOncePerBatch();
+        testChainSignalBefore();
         testCallHoldFits();
         testGeneratedClassification();
         testRealClassification();

@@ -2318,6 +2318,7 @@ namespace {
                 .presentMode = newInfo.presentMode,
                 .privateOrderedTransport =
                     modification.privateOrderedTransport,
+                .inlineCall = modification.inlineCall,
                 .replacement = swapchainCreateIsReplacement(
                     newInfo.oldSwapchain, retiredNullOldReplacement
                 ),

@@ -107,6 +107,8 @@ namespace fgvk::layer {
         // Persist the create-time transport decision; present-mode compatibility
         // cannot change without replacing the game-owned swapchain.
         bool privateOrderedTransport{false};
+        // FI4: the lower images the call path holds for this swapchain (outputs per batch), and why it has none when it has none.
+        InlineCallImages inlineCall{};
         // The upper WSI either supplied a live oldSwapchain handle or framegen-vulkan
         // completed retirement of the exact retained lower handle before a
         // null-old destroy-before-create replacement. This is a known
@@ -120,12 +122,14 @@ namespace fgvk::layer {
     /// @param createInfo swapchain create info to modify
     /// @param winePassThroughHdr native Wayland surface in a Wine process (H3 PASS_THROUGH HDR)
     /// @param surfaceMinImages surface minImageCount for the layer-needs floor (0 = none)
+    /// @param inlineCall FI4: receives the call path's lower images and reason for this create (nullptr = not wanted)
     [[nodiscard]] bool context_ModifySwapchainCreateInfo(
         const ls::GameConf& profile, uint32_t maxImages,
         VkSwapchainCreateInfoKHR& createInfo,
         bool frameGenerationInteropEnabled,
         bool winePassThroughHdr,
-        uint32_t surfaceMinImages = 0);
+        uint32_t surfaceMinImages = 0,
+        InlineCallImages* inlineCall = nullptr);
 
     /// swapchain context for a layer instance
     class Swapchain {
@@ -614,6 +618,9 @@ namespace fgvk::layer {
             InlineCallOutcome outcome{InlineCallOutcome::None};
         };
         InlineRealCall inlineRealCall{};
+        // FI4, with FP4: a call wait of the present in progress timed out, so its later call waits are skipped (see
+        // inlineCallWaitAllowed). Reset at each present.
+        bool callWaitTimedOutThisPresent{false};
 
         SwapchainColorPipeline colorPipeline;
         bool fp16Requested{true};

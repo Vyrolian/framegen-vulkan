@@ -39,6 +39,8 @@ namespace fgvk::layer {
     struct SwapchainCreateModification {
         bool privateOrderedTransport{false};
         bool swapchainImageCountCompatibility{false};
+        // FI4: the call path's lower images for this create (see InlineCallImages).
+        InlineCallImages inlineCall{};
         uint32_t surfaceMinImageCount{};
         VkExtent2D applicationExtent{};
         VkExtent2D presentationExtent{};

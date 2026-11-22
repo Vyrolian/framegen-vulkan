@@ -20,6 +20,7 @@
 #include <utility>
 #include <vector>
 
+#include "generated_frame_plan.hpp"
 #include "swapchain/inline_generation.hpp"
 
 #include <vulkan/vulkan_core.h>
@@ -381,7 +382,9 @@ namespace fgvk::layer {
     /// acquires into a busy slot, so the slot's fence is not read or reset while the call owns it.
     class LowerParkingPool {
     public:
-        static constexpr size_t capacity = 2;
+        // FI4: one parked image per output of a batch (the generated outputs and the real), so the pool holds as many as a
+        // batch can park at the largest multiplier: GeneratedFramePlan::capacity generated outputs plus one real.
+        static constexpr size_t capacity = GeneratedFramePlan::capacity + 1;
 
         /// Sizes the busy flags for the owner's lower-acquire slots. Clears the pool.
         void reserveSlots(const size_t slotCount) {

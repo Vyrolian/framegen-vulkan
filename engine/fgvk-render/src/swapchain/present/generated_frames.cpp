@@ -107,31 +107,39 @@ VkResult Swapchain::presentGeneratedFrames(
             if (batchPasses.at(i).generatedOnTransfer) return true;
         return false;
     }();
-    const bool nativeImmediate2x = workerCopies && this->internalPresent &&
-        plan.scheduledGeneratedFrames.size() == 1 && this->info.surfaceOrigin == SurfaceOrigin::Wayland &&
-        this->currentPresentMode == VK_PRESENT_MODE_IMMEDIATE_KHR;
-    // FI2 rule 1: an attached backend takes the direct copy without FGVK_DIRECT_GENERATED_COPY. Rule 2: its call-held
-    // budget replaces canPreacquireGenerated(), and is checked per output below.
+    // FI4: the opt-in non-inline experiments keep their gate: a worker batch of one output on native Wayland IMMEDIATE.
+    const bool nativeImmediate2x = nativeImmediateTwoXBatch(workerCopies, this->internalPresent != nullptr,
+        plan.scheduledGeneratedFrames.size(), this->info.surfaceOrigin, this->currentPresentMode);
+    // FI2 rule 1 / FI4: an attached backend takes the call path on every worker batch, whatever the surface, present mode
+    // and multiplier (inlineCallBatchEligible). Its call-held budget replaces canPreacquireGenerated(), and is checked per
+    // output below. The budget cap is the swapchain's call images (info.inlineCall), zero when it has none.
     const bool inlineCalls = this->attachedGeneration();
+    const uint32_t callImages = this->info.inlineCall.count;
     const uint32_t callBudget = inlineCalls
-        ? inlineCallLowerBudget(this->info.images.size(), this->info.surfaceMinImageCount, layerHeldLowerImages)
+        ? inlineCallLowerBudget(this->info.images.size(), this->info.surfaceMinImageCount, layerHeldLowerImages, callImages)
         : 0;
-    const bool tryDirect = (directCopies || inlineCalls) && !transferCopies && nativeImmediate2x &&
-        this->info.surfaceMinImageCount &&
-        this->info.images.size() >= static_cast<size_t>(this->info.surfaceMinImageCount) + layerHeldLowerImages &&
-        (inlineCalls || this->deferredPresent->canPreacquireGenerated());
+    const bool inlineEligible = inlineCallBatchEligible(inlineCalls, workerCopies, this->internalPresent != nullptr,
+        transferCopies, this->info.images.size(), this->info.surfaceMinImageCount, layerHeldLowerImages, callImages);
+    const bool tryDirect = inlineCalls
+        ? inlineEligible
+        : directCopies && !transferCopies && nativeImmediate2x && this->info.surfaceMinImageCount &&
+            this->info.images.size() >= static_cast<size_t>(this->info.surfaceMinImageCount) + layerHeldLowerImages &&
+            this->deferredPresent->canPreacquireGenerated();
     // FI2: an eligible attached batch. Each of its outputs is counted as copied at the call or as a fallback, and its real
     // is eligible for the call only when every output went direct (rule 5).
     const bool inlineBatch = tryDirect && inlineCalls;
     bool inlineAllDirect = inlineBatch;
-    // FP2: the owner of this present's internal images parks lower images for an attached batch: target 2 for an eligible
-    // batch (one generated output and one real), 0 otherwise. A direct generated output takes a parked image only when its
+    // FI4: the outputs of this batch, its generated outputs and its real. An eligible batch parks one lower image per output.
+    const uint32_t batchOutputs = inlineBatchOutputs(plan.scheduledGeneratedFrames.size());
+    if (this->pacingProfile && inlineBatch) this->pacingProfile->inlineCallBatchOutputs(batchOutputs);
+    // FP2: the owner of this present's internal images parks lower images for an attached batch: target O (see
+    // inlineBatchOutputs) for an eligible batch, 0 otherwise. A direct generated output takes a parked image only when its
     // acquire is on the owner's lower swapchain (FP2.4: invocation.swapchain is the handle the lower swapchain was created
     // under, so this holds for every present of the swapchain).
     InternalSwapchainImages* const parkOwner = inlineCalls && this->internalPresent ? this->internalPresent->owner : nullptr;
     const bool parkSameSwapchain = parkOwner && parkOwner->lowerSwapchainHandle() == invocation.swapchain;
     if (parkOwner) {
-        parkOwner->setParkPolicy(inlineBatch ? inlineParkTarget : 0, callBudget, invocation.vk.queueFamilyIndex());
+        parkOwner->setParkPolicy(inlineBatch ? batchOutputs : 0, callBudget, invocation.vk.queueFamilyIndex());
         if (this->deferredPresent)
             this->deferredPresent->setParkHook(this->internalPresent->keepAlive, &internalRealParkAfterPresent);
     }
@@ -141,6 +149,16 @@ VkResult Swapchain::presentGeneratedFrames(
         this->info.deferredPresentQueue->tail != VK_NULL_HANDLE &&
         // Earlier outputs still need the private queue ahead of this backend wait.
         !this->deferredPresent->olderBatchPending();
+    // FI4: the previous output of this batch was a worker copy or skip, so its signal is its copied semaphore. Any other
+    // kind of output signals the post-copy chain (see chainSignalBefore). Only the worker branch and direct outputs read it;
+    // a present-thread output always waits the post-copy chain, since a worker refusal converts that chain first.
+    bool previousWorker = false;
+    // The semaphore the direct copy of output i waits for its predecessor (i > 0).
+    const auto directPredecessor = [this](const size_t index, const bool afterWorker) -> VkSemaphore {
+        return chainSignalBefore(index == 0, afterWorker) == ChainSignal::Copied
+            ? this->currentRenderSlot().passes.at(index - 1).copied->handle()
+            : this->postCopySemaphores.at((this->frameState.sequenceIndex - 1) % this->postCopySemaphores.size()).second.handle();
+    };
 
     for (size_t i = 0; i < plan.scheduledGeneratedFrames.size(); ++i) {
         auto& postCopy = this->postCopySemaphores.at(
@@ -159,9 +177,11 @@ VkResult Swapchain::presentGeneratedFrames(
             if (inlineCalls && parkSameSwapchain) {
                 parked = parkOwner->takeParked();
                 // FP4: no parked image yet. The worker's present may park one within inlineCallLowerWait. The wait holds no
-                // fgvk lock (see DeferredPresent::awaitCallLower), and the take after it is the same as the first.
-                if (!parked) {
-                    static_cast<void>(this->deferredPresent->awaitCallLower(parkedNow));
+                // fgvk lock (see DeferredPresent::awaitCallLower), and the take after it is the same as the first. FI4: once
+                // a wait of this batch timed out, its later outputs skip the wait (inlineCallWaitAllowed).
+                if (!parked && inlineCallWaitAllowed(this->callWaitTimedOutThisPresent)) {
+                    const auto waited = this->deferredPresent->awaitCallLower(parkedNow);
+                    this->callWaitTimedOutThisPresent = inlineCallWaitBatchTimedOut(this->callWaitTimedOutThisPresent, waited);
                     parked = parkOwner->takeParked();
                 }
             }
@@ -267,7 +287,8 @@ VkResult Swapchain::presentGeneratedFrames(
                 .submit = invocation.vk.df().QueueSubmit,
                 .acquireSemaphore = pass.acquireSemaphore.handle(),
                 .staged = pass.staged->handle(),
-                .preceding = i ? slot.passes.at(i - 1).copied->handle() : VK_NULL_HANDLE,
+                // FI4: the previous output's signal, by its kind (see directPredecessor).
+                .preceding = i ? directPredecessor(i, previousWorker) : VK_NULL_HANDLE,
                 .continuation = last ? this->postCopySemaphores.at(
                     this->presentationSlotFor(invocation.imageIndex)).first.handle()
                     : pass.copied->handle(),
@@ -308,26 +329,30 @@ VkResult Swapchain::presentGeneratedFrames(
                 // skip can be distinguished from a submitted generated image.
                 this->frameState.sequenceIndex++;
                 this->frameState.backendTimelineIndex++;
+                previousWorker = true;
                 continue;
             }
             // Refused: no worker copy or skip will wait the staged signal, so
-            // consume it here before the present-thread path. For i > 0 the
-            // previous pass's copied signal is consumed too, and the inter-copy
-            // signal that the present-thread path waits for i > 0 is signalled.
+            // consume it here before the present-thread path. For i > 0 after a
+            // worker copy, that pass's copied signal is consumed too, and the
+            // inter-copy signal that the present-thread path waits for i > 0 is
+            // signalled. After a direct copy the post-copy signal is already there,
+            // so only the staged signal is consumed (FI4).
             workerCopies = false;
             const VkSemaphore stagedWait = pass.staged->handle();
+            const bool chainedFromWorker = i > 0 && previousWorker;
             const std::array<VkSemaphore, 2> releaseWaits{
-                stagedWait, i ? slot.passes.at(i - 1).copied->handle() : VK_NULL_HANDLE};
+                stagedWait, chainedFromWorker ? slot.passes.at(i - 1).copied->handle() : VK_NULL_HANDLE};
             const std::array<VkPipelineStageFlags, 2> releaseStages{
                 VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT};
-            const VkSemaphore interCopy = i ? this->postCopySemaphores.at(
+            const VkSemaphore interCopy = chainedFromWorker ? this->postCopySemaphores.at(
                 (this->frameState.sequenceIndex - 1) % this->postCopySemaphores.size()).second.handle()
                 : VK_NULL_HANDLE;
             const VkSubmitInfo release{
                 .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
-                .waitSemaphoreCount = i ? 2u : 1u, .pWaitSemaphores = releaseWaits.data(),
+                .waitSemaphoreCount = chainedFromWorker ? 2u : 1u, .pWaitSemaphores = releaseWaits.data(),
                 .pWaitDstStageMask = releaseStages.data(),
-                .signalSemaphoreCount = i ? 1u : 0u, .pSignalSemaphores = i ? &interCopy : nullptr,
+                .signalSemaphoreCount = chainedFromWorker ? 1u : 0u, .pSignalSemaphores = chainedFromWorker ? &interCopy : nullptr,
             };
             const auto released = invocation.vk.df().QueueSubmit(
                 invocation.vk.queue(), 1, &release, VK_NULL_HANDLE);
@@ -563,10 +588,13 @@ VkResult Swapchain::presentGeneratedFrames(
         };
         size_t waitSemaphoreCount = 1;
         if (i) {
-            const auto& previousPostCopy = this->postCopySemaphores.at(
-                (this->frameState.sequenceIndex - 1) % this->postCopySemaphores.size()
-            );
-            waitSemaphores.at(waitSemaphoreCount++) = previousPostCopy.second.handle();
+            // FI4: a direct copy after a worker copy waits that copy's signal. Every other copy waits the post-copy chain,
+            // which a direct copy or a refusal (above) signals.
+            const VkSemaphore previous = direct && previousWorker
+                ? slot.passes.at(i - 1).copied->handle()
+                : this->postCopySemaphores.at(
+                    (this->frameState.sequenceIndex - 1) % this->postCopySemaphores.size()).second.handle();
+            waitSemaphores.at(waitSemaphoreCount++) = previous;
         }
         // Presentation waits belong to acquired images, not a frame ring.
         // Reacquisition proves the previous presentation wait was consumed;
@@ -682,6 +710,7 @@ VkResult Swapchain::presentGeneratedFrames(
 
         this->frameState.sequenceIndex++;
         this->frameState.backendTimelineIndex++;
+        previousWorker = false;
     }
 
     // FI2 rule 5: the real may be copied at this call only when the batch is eligible and every output went direct. The

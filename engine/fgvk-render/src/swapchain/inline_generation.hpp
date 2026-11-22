@@ -1,6 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #pragma once
 
+#include "swapchain/surface_origin.hpp"
+
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -8,6 +10,8 @@
 #include <cstdint>
 #include <cstdlib>
 #include <string_view>
+
+#include <vulkan/vulkan_core.h>
 
 namespace fgvk::layer {
 
@@ -56,18 +60,84 @@ enum class ScheduleFailureRoute : uint8_t {
                                  : ScheduleFailureRoute::NativeOnly;
 }
 
-// FI2: most lower images that copies made at the present call may hold, on top of the worker's own holds.
-inline constexpr uint32_t inlineCallLowerImageCap = 4;
+// FI4: the lower images the swapchain is created with for the call path. These are the outputs of one batch at the
+// profile's capacity (generated outputs plus the real). Off when the inline switch, frame-generation provisioning or a
+// profile capacity is missing; compat when the application's image count is kept as asked; ordered for FIFO-only ordered
+// transport, whose batches may still reach the worker but get no call images, so they keep the worker copy.
+enum class InlineCallImagesReason : uint8_t { Off, Compat, Ordered, Eligible };
+
+struct InlineCallImages {
+    uint32_t count{};
+    InlineCallImagesReason reason{InlineCallImagesReason::Off};
+};
+
+[[nodiscard]] constexpr InlineCallImages inlineCallSpareImages(const bool switchOn, const bool provisioned,
+        const bool orderedTransport, const bool countCompatibility, const size_t generatedCapacity) noexcept {
+    // A zero capacity is an unprovisioned profile (generatedFrameCapacityForProfile): it has no generated outputs to hold.
+    if (!switchOn || !provisioned || generatedCapacity == 0)
+        return {0, InlineCallImagesReason::Off};
+    if (countCompatibility)
+        return {0, InlineCallImagesReason::Compat};
+    if (orderedTransport)
+        return {0, InlineCallImagesReason::Ordered};
+    return {static_cast<uint32_t>(generatedCapacity + 1), InlineCallImagesReason::Eligible};
+}
+
+// FI4: the reason name of the swapchain create log line.
+[[nodiscard]] constexpr const char* inlineCallReasonName(const InlineCallImagesReason reason) noexcept {
+    switch (reason) {
+    case InlineCallImagesReason::Off: return "off";
+    case InlineCallImagesReason::Compat: return "compat";
+    case InlineCallImagesReason::Ordered: return "ordered";
+    case InlineCallImagesReason::Eligible: return "eligible";
+    }
+    return "off";
+}
 
 // FI2: lower images an attached batch may hold at its present call. These are the images above the surface minimum
-// that the worker's own holds leave, capped at inlineCallLowerImageCap. Zero when there are none.
+// that the worker's own holds leave, capped at callImages (FI4: the swapchain's outputs per batch, see InlineCallImages).
+// Zero when there are none.
 [[nodiscard]] constexpr uint32_t inlineCallLowerBudget(const size_t lowerImages, const uint32_t surfaceMinImages,
-        const uint32_t workerHeldImages) noexcept {
+        const uint32_t workerHeldImages, const uint32_t callImages) noexcept {
     const int64_t spare = static_cast<int64_t>(lowerImages) - static_cast<int64_t>(surfaceMinImages) -
         static_cast<int64_t>(workerHeldImages);
     if (spare <= 0)
         return 0;
-    return static_cast<uint32_t>(std::min<int64_t>(spare, inlineCallLowerImageCap));
+    return static_cast<uint32_t>(std::min<int64_t>(spare, callImages));
+}
+
+// FI4: a batch takes the call path when the worker copies it (every surface, present mode and multiplier), it is
+// attached to the application's device with internal images, its copies are not on the transfer family, and the
+// swapchain has a call budget. The budget is zero without spare images, so no output waits for a park that cannot come.
+[[nodiscard]] constexpr bool inlineCallBatchEligible(const bool attached, const bool workerCopies,
+        const bool internalPresent, const bool transferCopies, const size_t lowerImages,
+        const uint32_t surfaceMinImages, const uint32_t workerHeldImages, const uint32_t callImages) noexcept {
+    return attached && workerCopies && internalPresent && !transferCopies && surfaceMinImages != 0 &&
+        inlineCallLowerBudget(lowerImages, surfaceMinImages, workerHeldImages, callImages) > 0;
+}
+
+// FI4: the gate of the opt-in non-inline experiments (FGVK_DIRECT_GENERATED_COPY and FGVK_SAME_QUEUE_GENERATED_COPY). It is
+// unchanged: a worker batch of one generated output on a native Wayland surface in IMMEDIATE mode.
+[[nodiscard]] constexpr bool nativeImmediateTwoXBatch(const bool workerCopies, const bool internalPresent,
+        const size_t generatedOutputs, const SurfaceOrigin origin, const VkPresentModeKHR mode) noexcept {
+    return workerCopies && internalPresent && generatedOutputs == 1 && origin == SurfaceOrigin::Wayland &&
+        mode == VK_PRESENT_MODE_IMMEDIATE_KHR;
+}
+
+// FI4: the outputs of a batch, its generated outputs and its real. An eligible batch parks this many lower images.
+[[nodiscard]] constexpr uint32_t inlineBatchOutputs(const size_t generatedOutputs) noexcept {
+    return static_cast<uint32_t>(generatedOutputs + 1);
+}
+
+// FI4: the signal that output i waits for before its copy. A worker copy or skip signals its copied semaphore, every other
+// output (a direct call copy or a present-thread copy) signals the post-copy chain. Each output waits what its predecessor
+// signalled, so the two chains join at any boundary between kinds.
+enum class ChainSignal : uint8_t { None, Copied, PostCopy };
+
+[[nodiscard]] constexpr ChainSignal chainSignalBefore(const bool first, const bool previousWorker) noexcept {
+    if (first)
+        return ChainSignal::None;
+    return previousWorker ? ChainSignal::Copied : ChainSignal::PostCopy;
 }
 
 // FI2: one more output may be held at the call when the outputs already held, plus this one, stay within the budget.
@@ -160,9 +230,6 @@ enum class ParkOutcome : uint8_t { Parked, Full, Budget, SlotBusy, Fence, Acquir
     return !sticky && parked > 0;
 }
 
-// FP2: parked images per swapchain while the attached batch is eligible (one generated output and one real).
-inline constexpr uint32_t inlineParkTarget = 2;
-
 // FP3: why a zero-timeout lower acquire under queue->mutex returned no image (InternalSwapchainImages::tryAcquireLowerLocked).
 // Acquired is success. SlotBusy: the next lower-acquire slot is held by a parked image or a call. Fence: its fence is not
 // signalled yet. Acquire: the driver returned NOT_READY or TIMEOUT. Error: any other result.
@@ -206,5 +273,16 @@ struct CallWaitCounts {
     size_t timeout{};
     size_t waitUs{};
 };
+
+// FI4, with FP4: at most one call wait times out per batch. A call output may wait only while no earlier wait of its batch
+// timed out, so later outputs of that batch take the poll and the worker fallback as they do without a wait.
+[[nodiscard]] constexpr bool inlineCallWaitAllowed(const bool batchTimedOut) noexcept {
+    return !batchTimedOut;
+}
+
+// FI4: the batch's timeout state after one wait of that batch. A Timeout ends the batch's waits, and so does a timeout before.
+[[nodiscard]] constexpr bool inlineCallWaitBatchTimedOut(const bool batchTimedOut, const CallLowerWait wait) noexcept {
+    return batchTimedOut || wait == CallLowerWait::Timeout;
+}
 
 }  // namespace fgvk::layer

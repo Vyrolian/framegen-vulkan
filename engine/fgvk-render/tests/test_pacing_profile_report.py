@@ -875,6 +875,21 @@ class WindowFieldTests(unittest.TestCase):
         negative = self.read([self.prefix + self.base + self.current + " inline_call_wait_us=-1"])
         self.assertEqual((len(negative[0]), negative[1]), (0, 1))
 
+    def test_call_path_outputs_and_spare_images_are_plain_counts(self):
+        # FI4: inline_call_outputs and inline_call_spare follow inline_call_wait_us. They are plain counts, so a window with them
+        # is read whatever their value, and a text value is still a plain field, not a rejected measurement.
+        body = self.base + self.current + (" inline_call_wait_us=612 inline_call_outputs=4 inline_call_spare=4 park_ok=2")
+        windows, invalid = self.read([self.prefix + body])
+        self.assertEqual((len(windows), invalid), (1, 0))
+        self.assertEqual(windows[0].values["inline_call_outputs"], 4.0)
+        self.assertEqual(windows[0].values["inline_call_spare"], 4.0)
+        self.assertEqual(windows[0].values["park_ok"], 2.0)
+        zero = self.read([self.prefix + self.base + self.current + " inline_call_outputs=0 inline_call_spare=0"])
+        self.assertEqual((len(zero[0]), zero[1]), (1, 0))
+        self.assertEqual(zero[0][0].values["inline_call_spare"], 0.0)
+        text = report.report(windows)
+        self.assertIn("PID 10, context 20: 1 windows", text)
+
     def test_computed_fields_still_reject_bad_values(self):
         cases = {
             "negative count": self.base.replace("sources=128", "sources=-1") + self.current,

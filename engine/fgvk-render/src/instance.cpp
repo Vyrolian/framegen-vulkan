@@ -642,7 +642,8 @@ SwapchainCreateModification Root::modifySwapchainCreateInfo(const vk::Vulkan& vk
         createInfo,
         vk.frameGenerationInteropEnabled(),
         winePassThroughHdr,
-        caps.minImageCount
+        caps.minImageCount,
+        &modification.inlineCall
     );
 
     // Some WSI layers forward both a MAILBOX base mode and a MAILBOX-only

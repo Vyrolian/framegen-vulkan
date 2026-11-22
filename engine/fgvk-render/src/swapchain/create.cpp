@@ -69,7 +69,8 @@ bool layer::context_ModifySwapchainCreateInfo(const ls::GameConf& profile,
         VkSwapchainCreateInfoKHR& createInfo,
         const bool frameGenerationInteropEnabled,
         const bool winePassThroughHdr,
-        const uint32_t surfaceMinImages) {
+        const uint32_t surfaceMinImages,
+        InlineCallImages* const inlineCall) {
     const auto colorPipeline = classifySwapchainColor(
         createInfo.imageFormat, createInfo.imageColorSpace, winePassThroughHdr
     );
@@ -84,6 +85,13 @@ bool layer::context_ModifySwapchainCreateInfo(const ls::GameConf& profile,
         frameGenerationProvisioned &&
         !directUnthrottledPresentation(createInfo.presentMode);
     const bool orderedFrameGenerationTransport = orderedSdrCandidate && !group.unthrottled;
+    // FI4: the call path's lower images: outputs per batch at the profile's capacity, on a worker-path swapchain only.
+    const InlineCallImages callImages = inlineCallSpareImages(
+        inlineGenerationRequested(), frameGenerationProvisioned,
+        orderedFrameGenerationTransport, profile.swapchain_image_count_compatibility,
+        generatedFrameCapacityForProfile(profile));
+    if (inlineCall)
+        *inlineCall = callImages;
 
     return applySwapchainCreateProvisioning(
         profile, maxImages, createInfo,
@@ -92,8 +100,7 @@ bool layer::context_ModifySwapchainCreateInfo(const ls::GameConf& profile,
         profile.swapchain_image_count_compatibility,
         surfaceMinImages,
         orderedSdrCandidate && group.unthrottled && group.fifo,
-        // FI2: the lower images for copies at the present call exist only with the inline switch.
-        inlineGenerationRequested()
+        callImages.count
     );
 }
 
@@ -150,6 +157,7 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance* backend,
         present_diagnostics::initializePacingProfileLog();
         try {
             this->pacingProfile = std::make_unique<present_diagnostics::PacingProfile>();
+            this->pacingProfile->inlineCallSpareImages(this->info.inlineCall.count);
         } catch (...) {} // Optional observations cannot prevent swapchain creation.
     }
     const DiagnosticsContextScope diagnosticsContext(
@@ -197,6 +205,11 @@ Swapchain::Swapchain(const vk::Vulkan& vk, backend::Instance* backend,
             "the frame-generation backend is unavailable";
     }
 
+    // FI4: one line per swapchain create: the call path's lower images and why this swapchain has them or not.
+    std::clog << "framegen-vulkan: inline call: spare_images=" << this->info.inlineCall.count
+              << " images=" << this->info.images.size()
+              << " surface_min=" << this->info.surfaceMinImageCount
+              << " reason=" << inlineCallReasonName(this->info.inlineCall.reason) << '\n';
     std::cerr << "framegen-vulkan: swapchain colour pipeline: format="
               << static_cast<int>(this->info.format)
               << "; color-space=" << static_cast<int>(this->info.colorSpace)

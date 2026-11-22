@@ -31,23 +31,32 @@ namespace {
         };
     }
 
-    // FI2 rule 3: with the inline switch the floor adds the four call-side images, still capped at the maximum.
+    // FI4: the floor adds the call images the swapchain was created with (outputs per batch), still capped at the maximum.
     void inlineCallImageFloor() {
         expect(lowerImageCountWithLayerFloor(3, 4, 0) == 6,
             "the layer floor must be the surface minimum plus the two worker holds");
-        expect(lowerImageCountWithLayerFloor(3, 4, 0, false) == 6,
-            "the switch-off floor must not add the call images");
-        expect(lowerImageCountWithLayerFloor(3, 4, 0, true) == 10,
-            "the inline floor must add the four call images");
-        expect(lowerImageCountWithLayerFloor(12, 4, 0, true) == 12,
-            "the inline floor must never shrink the application-derived count");
-        expect(lowerImageCountWithLayerFloor(3, 4, 8, true) == 8,
-            "the inline floor must still be capped at the maximum image count");
-        expect(lowerImageCountWithLayerFloor(3, 4, 16, true) == 10,
-            "a maximum above the inline floor must not raise it");
-        expect(lowerImageCountWithLayerFloor(5, 0, 0, true) == 5,
+        expect(lowerImageCountWithLayerFloor(3, 4, 0, 0) == 6,
+            "a swapchain without call images must keep the layer floor");
+        expect(lowerImageCountWithLayerFloor(3, 4, 0, 2) == 8,
+            "a 2x call path must add its two call images");
+        expect(lowerImageCountWithLayerFloor(3, 4, 0, 3) == 9,
+            "a 3x call path must add its three call images");
+        expect(lowerImageCountWithLayerFloor(3, 4, 0, 4) == 10,
+            "a 4x call path must add its four call images");
+        expect(lowerImageCountWithLayerFloor(3, 4, 0, 5) == 11,
+            "a 5x call path must add its five call images");
+        expect(lowerImageCountWithLayerFloor(12, 4, 0, 4) == 12,
+            "the call floor must never shrink the application-derived count");
+        expect(lowerImageCountWithLayerFloor(3, 4, 8, 4) == 8,
+            "the call floor must still be capped at the maximum image count");
+        expect(lowerImageCountWithLayerFloor(3, 4, 8, 2) == 8,
+            "a 2x call floor that exactly meets the NVIDIA Wayland maximum of eight must keep it");
+        expect(lowerImageCountWithLayerFloor(3, 4, 8, 3) == 8,
+            "a 3x call floor above the NVIDIA Wayland maximum of eight must be capped at eight");
+        expect(lowerImageCountWithLayerFloor(3, 4, 16, 4) == 10,
+            "a maximum above the call floor must not raise it");
+        expect(lowerImageCountWithLayerFloor(5, 0, 0, 4) == 5,
             "an unknown surface minimum must leave the count unchanged");
-        expect(fgvk::layer::inlineCallLowerImageCap == 4, "the inline floor must add four images");
     }
 }
 
