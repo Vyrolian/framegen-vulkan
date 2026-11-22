@@ -276,6 +276,31 @@ namespace {
         return std::nullopt;
     }
 
+    void forceFinalizeRetiredSwapchain(
+            const VkSwapchainKHR swapchain, const char* const during) {
+        const std::lock_guard retirementLock(
+            instance_info->retiredSwapchainsMutex
+        );
+        auto node = instance_info->retiredSwapchains.extract(swapchain);
+        if (node.empty())
+            return;
+        auto& state = node.mapped();
+        std::cerr << "framegen-vulkan: forcing pending swapchain retirement during "
+                  << during << '\n';
+        // GP1: the on-screen watcher is joined before the lower swapchain is destroyed.
+        if (state.context) state.context->stopOnScreenProfile();
+        state.context.reset();
+        // FP2 rule 6: the parked lower images are drained before the lower swapchain is destroyed.
+        if (state.internalImages)
+            static_cast<void>(state.internalImages->retireParked(2'000'000'000ULL));
+        state.vk.get().df().DestroySwapchainKHR(
+            state.device, swapchain, VK_NULL_HANDLE
+        );
+        instance_info->retiredSwapchainCount.fetch_sub(
+            1, std::memory_order_acq_rel
+        );
+    }
+
     void forceFinalizeRetiredSwapchains(const VkDevice device) {
         std::vector<VkSwapchainKHR> candidates;
         {
@@ -288,29 +313,8 @@ namespace {
                     candidates.push_back(swapchain);
             }
         }
-        for (const auto swapchain : candidates) {
-            const std::lock_guard retirementLock(
-                instance_info->retiredSwapchainsMutex
-            );
-            auto node = instance_info->retiredSwapchains.extract(swapchain);
-            if (node.empty())
-                continue;
-            auto& state = node.mapped();
-            std::cerr << "framegen-vulkan: forcing pending swapchain retirement "
-                         "during device destruction\n";
-            // GP1: the on-screen watcher is joined before the lower swapchain is destroyed.
-            if (state.context) state.context->stopOnScreenProfile();
-            state.context.reset();
-            // FP2 rule 6: the parked lower images are drained before the lower swapchain is destroyed.
-            if (state.internalImages)
-                static_cast<void>(state.internalImages->retireParked(2'000'000'000ULL));
-            state.vk.get().df().DestroySwapchainKHR(
-                state.device, swapchain, VK_NULL_HANDLE
-            );
-            instance_info->retiredSwapchainCount.fetch_sub(
-                1, std::memory_order_acq_rel
-            );
-        }
+        for (const auto swapchain : candidates)
+            forceFinalizeRetiredSwapchain(swapchain, "device destruction");
     }
 
     void collectRetiredSwapchainsForSurface(const VkSurfaceKHR surface) {
@@ -332,10 +336,11 @@ namespace {
                 }
             }
         }
-        for (const auto swapchain : candidates)
-            static_cast<void>(finalizeRetiredSwapchain(
-                swapchain, UINT64_MAX
-            ));
+        // The wait is bounded because a worker still retrying a lower image only stops when its context is destroyed.
+        for (const auto swapchain : candidates) {
+            if (!finalizeRetiredSwapchain(swapchain, surfaceRetirementTimeoutNs))
+                forceFinalizeRetiredSwapchain(swapchain, "surface destruction");
+        }
     }
 
     std::optional<uint32_t> selectLayerQueueFamily(

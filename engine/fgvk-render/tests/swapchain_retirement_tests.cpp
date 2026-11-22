@@ -392,6 +392,13 @@ int main() {
 
     expect(swapchainRetirementGracePeriod == std::chrono::milliseconds(50),
         "the compositor retirement grace contract changed unexpectedly");
+    expect(surfaceRetirementTimeoutNs != UINT64_MAX,
+        "surface destruction must not wait unboundedly for a retiring worker");
+    expect(surfaceRetirementTimeoutNs >= static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                swapchainRetirementGracePeriod).count()) &&
+            surfaceRetirementTimeoutNs <= 2'000'000'000,
+        "surface retirement timeout must cover the grace period and stay within 2 s");
 
     std::mutex retirementMutex;
     {

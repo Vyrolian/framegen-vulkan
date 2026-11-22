@@ -117,6 +117,13 @@ namespace fgvk::layer {
     inline constexpr auto swapchainRetirementGracePeriod =
         std::chrono::milliseconds(50);
 
+    /// The bounded wait for a retired swapchain's proven retirement before its
+    /// surface is destroyed. Past it the swapchain is force-finalized, because
+    /// the surface may not outlive it (VUID-vkDestroySurfaceKHR-surface-01266)
+    /// and a worker retrying a lower image only stops when its context is
+    /// destroyed.
+    inline constexpr uint64_t surfaceRetirementTimeoutNs = 1'000'000'000;
+
     /// On a native Wayland surface outside gamescope, the lower WSI (NVIDIA)
     /// and Wine's Wayland driver both attach wp_color_management_surface_v1
     /// objects to the same wl_surface. A lower swapchain kept past the
