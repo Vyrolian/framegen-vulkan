@@ -24,6 +24,7 @@ set(LAYER_SOURCES
     "src/swapchain/present/real_frames.cpp"
     "src/swapchain/present/retirement.cpp"
     "src/swapchain/profile.cpp"
+    "src/swapchain/queue_start_probes.cpp"
     "src/swapchain/resources.cpp")
 
 set(COLOR_PIPELINE_SOURCE "src/color_pipeline.cpp")
@@ -368,6 +369,12 @@ if(BUILD_TESTING)
     target_include_directories(fgvk-submit-tag-tracker-tests PRIVATE "src")
     add_test(NAME submit-tag-tracker COMMAND fgvk-submit-tag-tracker-tests)
     fgvk_register_portable_policy_test(fgvk-submit-tag-tracker-tests submit-tag-tracker)
+
+    # GQ1: the queue frame ring and the timestamped submit rewrite (pure).
+    add_executable(fgvk-queue-start-probe-tests "tests/queue_start_probe_tests.cpp")
+    target_include_directories(fgvk-queue-start-probe-tests PRIVATE "src")
+    add_test(NAME queue-start-probe COMMAND fgvk-queue-start-probe-tests)
+    fgvk_register_portable_policy_test(fgvk-queue-start-probe-tests queue-start-probe)
 
     # RP1: the real present lead's marker pairing, error rule and limits (pure).
     add_executable(fgvk-real-present-lead-tests "tests/real_present_lead_tests.cpp")

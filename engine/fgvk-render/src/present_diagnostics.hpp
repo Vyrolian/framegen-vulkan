@@ -635,6 +635,9 @@ namespace fgvk::layer::present_diagnostics {
     void recordReflexTiming(const VkLatencyTimingsFrameReportNV& report, int64_t queryNs) noexcept;
     /// RX1: one change of the game's submission frame tag on a queue, with the counts under the previous tag.
     void recordSubmitTag(VkQueue queue, uint64_t presentId, const SubmitTagTransition& transition) noexcept;
+    /// GQ1: one game frame on one queue (see swapchain/queue_start_probe.hpp). GPU times are 0 when unavailable.
+    void recordQueueFrame(VkQueue queue, uint32_t family, uint64_t presentId, uint64_t submits, int64_t submitNs,
+        int64_t lastSubmitNs, int64_t gpuStartNs, int64_t gpuEndNs, bool available) noexcept;
     void recordReflexMode(VkBool32 lowLatency, VkBool32 boost, uint32_t minimumIntervalUs, VkResult result) noexcept;
 
     /// Bounded CPU observations at the application's present entrypoints. These

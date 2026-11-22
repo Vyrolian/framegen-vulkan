@@ -811,6 +811,16 @@ void recordSubmitTag(const VkQueue queue, const uint64_t presentId, const Submit
         .submits = transition.submits, .untagged = transition.untagged});
 }
 
+void recordQueueFrame(const VkQueue queue, const uint32_t family, const uint64_t presentId, const uint64_t submits,
+        const int64_t submitNs, const int64_t lastSubmitNs, const int64_t gpuStartNs, const int64_t gpuEndNs,
+        const bool available) noexcept {
+    if (!pacingProfileEnabled()) return;
+    present_records::enqueue(trace_recorder::RecordKind::QueueFrame, present_records::QueueFramePayload{
+        .queue = queue, .family = family, .available = available ? 1u : 0u, .presentId = presentId,
+        .submits = submits, .submitNs = submitNs, .lastSubmitNs = lastSubmitNs, .gpuStartNs = gpuStartNs,
+        .gpuEndNs = gpuEndNs});
+}
+
 void recordReflexMode(const VkBool32 lowLatency, const VkBool32 boost,
         const uint32_t minimumIntervalUs, const VkResult result) noexcept {
     if (!pacingProfileEnabled()) return;

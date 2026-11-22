@@ -310,6 +310,21 @@ struct SubmitTagPayload {
 };
 static_assert(sizeof(SubmitTagPayload) <= trace_recorder::payloadCapacity);
 
+// GQ1: one game frame on one queue, from timestamps around the game's own submits. gpu_start_ns - submit_ns is the
+// frame's queue wait on that queue. GPU times are 0 when available is 0.
+struct QueueFramePayload {
+    VkQueue queue{};
+    uint32_t family{};
+    uint32_t available{};
+    uint64_t presentId{};
+    uint64_t submits{};
+    int64_t submitNs{};
+    int64_t lastSubmitNs{};
+    int64_t gpuStartNs{};
+    int64_t gpuEndNs{};
+};
+static_assert(sizeof(QueueFramePayload) <= trace_recorder::payloadCapacity);
+
 struct WaylandSamplePayload {
     uint64_t token{};
     present_diagnostics::WaylandSample sample{};

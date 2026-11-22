@@ -20,6 +20,7 @@
 #include "swapchain/internal_images.hpp"
 #include "swapchain/present_layout.hpp"
 #include "swapchain/present_marker.hpp"
+#include "swapchain/queue_start_probes.hpp"
 #include "swapchain/reflex_out_of_band.hpp"
 #include "swapchain/submit_tag_tracker.hpp"
 #include "pnext_chain.hpp"
@@ -1324,6 +1325,17 @@ namespace {
         }
     }
 
+    // GQ1: the probe's view of an application queue (swapchain/queue_start_probes.hpp).
+    queue_start::QueueSource queueStartSource(const VkQueue queue) {
+        const auto identity = instance_info->queueIdentities.find(queue);
+        if (identity == instance_info->queueIdentities.end()) return {};
+        const auto device = identity->second.device;
+        const auto wrapper = instance_info->devices.find(device);
+        if (wrapper == instance_info->devices.end()) return {.device = device};
+        return {.device = device, .vk = &wrapper->second, .family = identity->second.familyIndex,
+            .calibration = instance_info->copyCalibrationDevices.contains(device)};
+    }
+
     // See swapchain/release_gate.hpp: record the cap deadline against the
     // signal-only submit that follows an application present.
     template<const char* Name>
@@ -1341,8 +1353,15 @@ namespace {
         static thread_local CachedLower<PFN_vkQueueSubmit2, VkQueue> lower;
         const auto next = lower.get(queue, [&] { return lowerQueueCommand(queue, Name); });
         ReleaseGate::global().observeSubmit2(queue, submitCount, submits, fence);
-        if (present_diagnostics::pacingProfileEnabled()) observeSubmitTags(queue, submitCount, submits);
-        return next(queue, submitCount, submits, fence);
+        if (!present_diagnostics::pacingProfileEnabled()) return next(queue, submitCount, submits, fence);
+        observeSubmitTags(queue, submitCount, submits);
+        // GQ1: the game's own submits carry the frame's start and end timestamps; fgvk's submits call the lower
+        // function directly and are untouched. vkQueueSubmit (v1) is not probed: VKD3D-Proton submits with
+        // vkQueueSubmit2. Cost with the pacing profile only: at most two extra command buffers per call.
+        const auto probed = submits ? queue_start::prepare(queue, std::span{submits, submitCount}, queueStartSource)
+                                    : std::span<const VkSubmitInfo2>{};
+        if (probed.data() == submits) return next(queue, submitCount, submits, fence);
+        return next(queue, static_cast<uint32_t>(probed.size()), probed.data(), fence);
     }
     constexpr char queueSubmit2Name[] = "vkQueueSubmit2";
     constexpr char queueSubmit2KhrName[] = "vkQueueSubmit2KHR";
@@ -1488,6 +1507,7 @@ namespace {
 
         if (layer_info->root.frameGenerationInteropProvisioned())
             present_layout::unregisterDevice(device);
+        queue_start::destroyDevice(device);
         vkDestroyDevice(device, alloc);
     }
 

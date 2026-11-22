@@ -10,6 +10,7 @@
 #include "fgvk-common/vulkan/backend_overlap.hpp"
 #include "fgvk-common/vulkan/queue_priority.hpp"
 #include "swapchain/output_margin.hpp"
+#include "swapchain/queue_start_probe.hpp"
 #include "swapchain/release_gate.hpp"
 #include "swapchain/real_present_lead.hpp"
 #include "swapchain/reflex_out_of_band.hpp"
@@ -653,6 +654,15 @@ void formatSubmitTag(const SubmitTagPayload& payload, std::ostream& line) {
          << " untagged=" << payload.untagged << '\n';
 }
 
+void formatQueueFrame(const QueueFramePayload& payload, std::ostream& line) {
+    line << "framegen-vulkan: present diagnostics: operation=pacing-profile-queue-frame version=1"
+         << " pid=" << getpid() << " queue=" << payload.queue << " family=" << payload.family
+         << " present_id=" << payload.presentId << " submits=" << payload.submits
+         << " submit_ns=" << payload.submitNs << " last_submit_ns=" << payload.lastSubmitNs
+         << " gpu_start_ns=" << payload.gpuStartNs << " gpu_end_ns=" << payload.gpuEndNs
+         << " available=" << payload.available << '\n';
+}
+
 void formatWaylandSample(const WaylandSamplePayload& payload, std::ostream& out) {
     constexpr std::array<const char*, 6> names{"request", "call", "presented", "discarded", "unavailable", "abandoned"};
     const auto& s = payload.sample;
@@ -965,6 +975,8 @@ void writeRecorderSecond(Recorder& s, const Clock::time_point now) {
          << " bytes=" << s.sink.captured()
          << " display_probe_max_us=" << static_cast<double>(probeMax) / 1e3
          << " display_probe_sum_us=" << static_cast<double>(probeSum) / 1e3
+         << " queue_frame_dropped=" << fgvk::layer::queueFrameDropped.exchange(0, std::memory_order_relaxed)
+         << " queue_frame_skipped=" << fgvk::layer::queueFrameSkipped.exchange(0, std::memory_order_relaxed)
          << " now_ns=" << trace_recorder::nanoseconds(now) << '\n';
     s.sink.append(line.str());
     writeThreadRecords(s, now);
@@ -1176,6 +1188,12 @@ void handleRecord(Recorder& s, const trace_recorder::TraceRecord& record, const 
         load(payload);
         noteThread(s, payload.thread);
         emit([&](std::ostream& line) { formatSubmitTag(payload, line); });
+        break;
+    }
+    case RecordKind::QueueFrame: {
+        QueueFramePayload payload{};
+        load(payload);
+        emit([&](std::ostream& line) { formatQueueFrame(payload, line); });
         break;
     }
     }
