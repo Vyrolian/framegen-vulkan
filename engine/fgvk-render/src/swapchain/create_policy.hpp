@@ -169,6 +169,12 @@ namespace fgvk::layer {
     /// does not grow with the multiplier.
     inline constexpr uint32_t layerHeldLowerImages = 2;
 
+    /// FI5: the lower images the worker holds at one time, which the call budget reserves for it. The worker's serial
+    /// job loop holds at most one lower image (an acquired generated output or a worker-prepared internal real).
+    /// A call-prepared real and a direct generated output are counted as call-held instead, so the budget reserves
+    /// exactly this many. The create floor keeps layerHeldLowerImages.
+    inline constexpr uint32_t workerHeldLowerImages = 1;
+
     /// Vulkan sizing rule: the surface minimum plus the images held at once
     /// (the same rule as an application's minImageCount + 1 for one held
     /// image). Used as a floor, so the application-derived count, which the

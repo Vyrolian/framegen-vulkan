@@ -113,13 +113,15 @@ VkResult Swapchain::presentGeneratedFrames(
     // FI2 rule 1 / FI4: an attached backend takes the call path on every worker batch, whatever the surface, present mode
     // and multiplier (inlineCallBatchEligible). Its call-held budget replaces canPreacquireGenerated(), and is checked per
     // output below. The budget cap is the swapchain's call images (info.inlineCall), zero when it has none.
+    // FI5: the budget reserves the worker's one held lower image (workerHeldLowerImages), not the create floor's two.
     const bool inlineCalls = this->attachedGeneration();
     const uint32_t callImages = this->info.inlineCall.count;
     const uint32_t callBudget = inlineCalls
-        ? inlineCallLowerBudget(this->info.images.size(), this->info.surfaceMinImageCount, layerHeldLowerImages, callImages)
+        ? inlineCallLowerBudget(this->info.images.size(), this->info.surfaceMinImageCount, workerHeldLowerImages,
+            callImages)
         : 0;
     const bool inlineEligible = inlineCallBatchEligible(inlineCalls, workerCopies, this->internalPresent != nullptr,
-        transferCopies, this->info.images.size(), this->info.surfaceMinImageCount, layerHeldLowerImages, callImages);
+        transferCopies, this->info.images.size(), this->info.surfaceMinImageCount, workerHeldLowerImages, callImages);
     const bool tryDirect = inlineCalls
         ? inlineEligible
         : directCopies && !transferCopies && nativeImmediate2x && this->info.surfaceMinImageCount &&

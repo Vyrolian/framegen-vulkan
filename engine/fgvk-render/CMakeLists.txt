@@ -183,6 +183,7 @@ if(BUILD_TESTING)
     # FI1: the attached timeline accounting, submit order and failure routing as pure functions.
     add_executable(fgvk-inline-generation-tests "tests/inline_generation_tests.cpp")
     target_include_directories(fgvk-inline-generation-tests PRIVATE "src")
+    target_include_directories(fgvk-inline-generation-tests PRIVATE "../fgvk-common/include")
     add_test(NAME inline-generation COMMAND fgvk-inline-generation-tests)
     fgvk_register_portable_policy_test(fgvk-inline-generation-tests inline-generation)
 

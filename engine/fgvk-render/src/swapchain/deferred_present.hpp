@@ -2057,11 +2057,11 @@ private:
                     if (stopping) return;
                 }
                 assert(heldLowerImages == 0);
-                assert(heldLowerImages < layerHeldLowerImages);
+                assert(heldLowerImages < workerHeldLowerImages);
                 prep = current.internalActive ? prepareInternalReal(current, ready.profile)
                                                : prepareGenerated(current, ready);
                 if (prep.prepared || prep.acquired) ++heldLowerImages;
-                assert(heldLowerImages <= layerHeldLowerImages);
+                assert(heldLowerImages <= workerHeldLowerImages);
             };
             // The producer submitted the staging signal before publishing this job. A queued
             // copy waits on staging and acquire, and owns its present even if the host wait times out.

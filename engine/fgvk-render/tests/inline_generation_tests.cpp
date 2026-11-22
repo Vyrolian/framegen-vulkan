@@ -7,6 +7,7 @@
 // FI4: the call path on every worker batch, its spare images, the budget cap, the experiment gate, the park target, the
 // one-timeout-per-batch wait rule and the signal each output waits.
 
+#include "swapchain/create_policy.hpp"
 #include "swapchain/inline_generation.hpp"
 
 #include <cstddef>
@@ -89,6 +90,23 @@ namespace {
         require(inlineCallLowerBudget(0, 0, 0, 4) == 0, "an empty swapchain must give a budget of zero");
         require(inlineCallLowerBudget(10, UINT32_MAX, 0, 4) == 0,
             "a surface minimum above the image count must give a budget of zero");
+        // FI5: the call budget reserves the worker's one held lower image, not the create floor's two.
+        using fgvk::layer::workerHeldLowerImages;
+        require(inlineCallLowerBudget(8, 4, workerHeldLowerImages, 4) == 3,
+            "X11/gamescope: surface minimum 4 of 8 leaves three call images");
+        require(inlineCallLowerBudget(8, 2, workerHeldLowerImages, 4) == 4,
+            "the cap of four is unchanged on Wayland");
+        for (size_t lowerImages = 0; lowerImages <= 12; ++lowerImages) {
+            for (uint32_t surfaceMin = 0; surfaceMin <= lowerImages; ++surfaceMin) {
+                for (uint32_t callImages = 1; callImages <= 8; ++callImages) {
+                    const uint32_t budget =
+                        inlineCallLowerBudget(lowerImages, surfaceMin, workerHeldLowerImages, callImages);
+                    require(budget <= callImages, "the call budget must not exceed the call images");
+                    require(budget == 0 || budget + workerHeldLowerImages <= lowerImages - surfaceMin,
+                        "call budget plus the worker's hold must stay within S - M");
+                }
+            }
+        }
     }
 
     // FI4: a 2x batch's cap is two, a 3x batch's three and a 4x batch's four, so spare images above the cap give the cap.

@@ -275,7 +275,7 @@ bool Swapchain::enqueueInternalRealPresent(const vk::Vulkan& vk,
         copy.callQueue = vk.queue();
         copy.callFamily = vk.queueFamilyIndex();
         copy.callBudget = inlineCallLowerBudget(this->info.images.size(), this->info.surfaceMinImageCount,
-            layerHeldLowerImages, this->info.inlineCall.count);
+            workerHeldLowerImages, this->info.inlineCall.count);
     }
     // FP2: the worker parks lower images for this owner after its lower presents, for an attached swapchain only.
     if (this->attachedGeneration())

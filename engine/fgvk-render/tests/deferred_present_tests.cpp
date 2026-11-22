@@ -3246,7 +3246,7 @@ VkResult poolAcquire(uint32_t* image) {
     *image = pool.next++;
     ++pool.held;
     pool.peak = std::max(pool.peak, pool.held);
-    expect(pool.held <= layerHeldLowerImages, "early copies exceeded the lower-image budget");
+    expect(pool.held <= workerHeldLowerImages, "the worker held more than one lower image");
     pool.acquiredAt.push_back(DeferredPresent::Clock::now());
     return VK_SUCCESS;
 }
