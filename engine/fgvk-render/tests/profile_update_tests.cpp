@@ -766,7 +766,7 @@ int main() {
                 plan.decision.action == ProfileUpdateAction::NoRuntimeChange &&
                 !plan.decision.swapchainRecreationDeferred && !plan.decision.processRestartDeferred,
             "A batch_hold change must apply live without a recreation or restart");
-        expect(ls::GameConf{}.batch_hold, "batch_hold must default to on");
+        expect(!ls::GameConf{}.batch_hold, "batch_hold must default to off");
     }
 
     std::cout << "profile update tests passed\n";

@@ -354,24 +354,24 @@ dynamic_cadence_probe_interval_seconds = 0.5
             "Rewriting a configuration must keep low_latency = false");
     }
 
-    // batch_hold defaults on for a profile that omits it, keeps an explicit off across a rewrite, and
+    // batch_hold defaults off for a profile that omits it, keeps an explicit on across a rewrite, and
     // sameGameConf tells the two apart.
     void testBatchHoldKey(const std::filesystem::path& directory) {
         const auto path = directory / "batch-hold.toml";
         writeText(path, "version = 2\n[[profile]]\nname = 'game'\n");
         const ls::ConfigFile omitted(path);
-        expect(omitted.profiles().front().batch_hold,
-            "A profile without batch_hold must read as on");
-        writeText(path, "version = 2\n[[profile]]\nname = 'game'\nbatch_hold = false\n");
-        const ls::ConfigFile off(path);
-        expect(!off.profiles().front().batch_hold, "An explicit batch_hold = false must be read");
-        expect(!sameGameConf(omitted.profiles().front(), off.profiles().front()),
+        expect(!omitted.profiles().front().batch_hold,
+            "A profile without batch_hold must read as off");
+        writeText(path, "version = 2\n[[profile]]\nname = 'game'\nbatch_hold = true\n");
+        const ls::ConfigFile on(path);
+        expect(on.profiles().front().batch_hold, "An explicit batch_hold = true must be read");
+        expect(!sameGameConf(omitted.profiles().front(), on.profiles().front()),
             "sameGameConf must distinguish batch_hold");
-        off.write(path);
-        expect(readText(path).find("batch_hold = false") != std::string::npos,
-            "Rewriting a configuration must keep batch_hold = false");
-        expect(!ls::ConfigFile(path).profiles().front().batch_hold,
-            "A rewritten batch_hold = false must read back as off");
+        on.write(path);
+        expect(readText(path).find("batch_hold = true") != std::string::npos,
+            "Rewriting a configuration must keep batch_hold = true");
+        expect(ls::ConfigFile(path).profiles().front().batch_hold,
+            "A rewritten batch_hold = true must read back as on");
     }
 
 int main() {

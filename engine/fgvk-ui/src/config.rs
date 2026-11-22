@@ -39,7 +39,7 @@ const DEFAULT_PACING_CORRECTION: bool = true;
 const DEFAULT_REAL_PRESENT_LEAD: bool = true;
 const DEFAULT_PERFORMANCE_MODE: bool = false;
 const DEFAULT_LOW_LATENCY: bool = true;
-const DEFAULT_BATCH_HOLD: bool = true;
+const DEFAULT_BATCH_HOLD: bool = false;
 
 /// Chooses the configuration path from an environment lookup.
 ///
@@ -1110,16 +1110,16 @@ mod tests {
     }
 
     #[test]
-    fn batch_hold_defaults_on_and_round_trips() {
+    fn batch_hold_defaults_off_and_round_trips() {
         let doc = parse("version = 2\n\n[[profile]]\nname = \"Bare\"\n");
         assert!(
-            profiles(&doc).remove(0).batch_hold,
-            "missing key reads as on"
+            !profiles(&doc).remove(0).batch_hold,
+            "missing key reads as off"
         );
         let doc = parse("version = 2\n\n[[profile]]\nname = \"Bare\"\nbatch_hold = 0\n");
         assert!(
-            profiles(&doc).remove(0).batch_hold,
-            "non-boolean reads as on"
+            !profiles(&doc).remove(0).batch_hold,
+            "non-boolean reads as off"
         );
 
         let dir = temp_dir("batch-hold");
@@ -1127,17 +1127,17 @@ mod tests {
         fs::write(&path, BASE).expect("write fixture");
         let mut config = Config::open(Ok(path.clone()));
         let alpha = key(0, "Alpha");
-        assert!(ready(&config).profiles[0].batch_hold);
-        config
-            .set_batch_hold(&alpha, false)
-            .expect("batch hold off saves");
         assert!(!ready(&config).profiles[0].batch_hold);
-        let saved = fs::read_to_string(&path).expect("read saved file");
-        assert!(saved.contains("batch_hold = false"), "{saved}");
         config
             .set_batch_hold(&alpha, true)
             .expect("batch hold on saves");
         assert!(ready(&config).profiles[0].batch_hold);
+        let saved = fs::read_to_string(&path).expect("read saved file");
+        assert!(saved.contains("batch_hold = true"), "{saved}");
+        config
+            .set_batch_hold(&alpha, false)
+            .expect("batch hold off saves");
+        assert!(!ready(&config).profiles[0].batch_hold);
         fs::remove_dir_all(&dir).ok();
     }
 

@@ -422,7 +422,7 @@ public:
         bool justInTime{};
         // batch_hold: the phase lock adds its 2 ms margin to the batch's start, just in time or not. Off starts
         // the batch at its readiness, with no lock; a just-in-time batch keeps the quarter-interval guard.
-        bool batchHold{true};
+        bool batchHold{false};
         bool copyBeforeReadiness{};
         Clock::duration outputInterval{};
         // GT1: the refresh period the cap uses, in nanoseconds (0 when unknown). The tick lock starts from it.

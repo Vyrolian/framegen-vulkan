@@ -1164,7 +1164,7 @@ mod tests {
             base_fps_cap: 0,
             performance_mode: false,
             low_latency: true,
-            batch_hold: true,
+            batch_hold: false,
         }
     }
 

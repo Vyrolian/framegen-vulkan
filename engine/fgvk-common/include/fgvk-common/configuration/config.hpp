@@ -45,7 +45,7 @@ namespace ls {
         static constexpr bool swapchainImageCountCompatibility = false;
         static constexpr uint32_t baseFpsCap = 0;
         static constexpr bool lowLatency = true;
-        static constexpr bool batchHold = true;
+        static constexpr bool batchHold = false;
         static constexpr bool ultraPerformance = false;
         static constexpr float ultraPerformanceFlowScale = 0.7F;
         static constexpr float flowScale = 0.8F;

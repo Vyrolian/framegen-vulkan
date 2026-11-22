@@ -313,7 +313,7 @@ namespace fgvk::layer::present_diagnostics {
             // Released batches start at their own readiness (the setting, as for low_latency).
             bool justInTime{};
             // batch_hold: the profile's batch_hold setting at the window's latest present (1: the 2 ms hold).
-            bool batchHold{true};
+            bool batchHold{false};
             // L3, BH2: each held batch's start minus its readiness.
             Samples batchPhaseHold;
             // L5: the GPU release mode of the window's latest capped present, the hold its release
