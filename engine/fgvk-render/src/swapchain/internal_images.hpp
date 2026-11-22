@@ -561,7 +561,8 @@ namespace fgvk::layer {
         /// FP2 rule 2: after a lower present of the worker, parks at most one lower image (see parkAfterPresentAction: a
         /// target of zero drains nothing). Caller holds queue->mutex and the deferred worker's mutex, so callHeld (the outputs
         /// call-held after that present) is read consistently with the admissions, which hold the worker's mutex too.
-        void parkAfterPresent(size_t callHeld);
+        /// FP3: returns why the park did or did not park (see ParkOutcome).
+        [[nodiscard]] ParkOutcome parkAfterPresent(size_t callHeld);
         /// FP2: sets the parking target (0 turns parking off) and the call budget for the attached batch being presented.
         /// callFamily is the family of the call's queue: a target applies only when it matches the copies' family.
         void setParkPolicy(uint32_t target, uint32_t budget, uint32_t callFamily);
@@ -607,8 +608,10 @@ namespace fgvk::layer {
         struct Impl;
         explicit InternalSwapchainImages(std::unique_ptr<Impl> state);
         // FI2: the lower acquire of workerTryAcquire, noted under `op` (lowerOpAcquireReal, or lowerOpAcquireCall for the
-        // call path). Caller holds queue->mutex.
-        [[nodiscard]] VkResult tryAcquireLowerLocked(uint8_t op, uint32_t* lowerIndex);
+        // call path). Caller holds queue->mutex. FP3: *poll is set on every path. It says why a result other than VK_SUCCESS
+        // returned no image: a busy slot, an unsignalled slot fence, a NOT_READY or TIMEOUT acquire, or an error. Each
+        // caller keeps VK_NOT_READY semantics and only the park reads *poll.
+        [[nodiscard]] VkResult tryAcquireLowerLocked(uint8_t op, uint32_t* lowerIndex, LowerPoll* poll);
         // Copies application image p into lower image lower after the waits and the lower-acquire slot. On success it
         // signals copied[lower] and the release timeline of queue and frees p. On failure it records the sticky error
         // and frees p at the last submitted release value. queue is the private queue (the caller holds queue->mutex) or
@@ -640,8 +643,8 @@ namespace fgvk::layer {
         VkSemaphore* presentWait, bool* consumed);
     [[nodiscard]] size_t internalRealParkedCount(void* owner);
     /// FP2: parks at most one lower image after a lower present of the worker, called with queue->mutex held.
-    /// callHeld is the outputs call-held after that present.
-    void internalRealParkAfterPresent(void* owner, size_t callHeld);
+    /// callHeld is the outputs call-held after that present. FP3: returns the outcome (see ParkOutcome).
+    [[nodiscard]] ParkOutcome internalRealParkAfterPresent(void* owner, size_t callHeld);
     [[nodiscard]] VkResult internalRealSubmit(void* owner, VkQueue queue,
         uint32_t applicationIndex, uint32_t lowerIndex, VkSemaphore continuation,
         VkSemaphore* presentWait);

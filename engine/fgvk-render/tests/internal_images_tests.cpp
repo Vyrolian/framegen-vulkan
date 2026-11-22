@@ -634,7 +634,7 @@ void testParkedImagesSurviveTargetZero() {
         for (int present = 0; present < parkingPresents; ++present) {
             const uint32_t slot = firstFreeSlot();
             if (parkAfterPresentAction(false, pool.size(), 0, pool.target(), pool.budgetOutputs(),
-                    pool.isBusy(slot)) == ParkAction::Park) {
+                    pool.isBusy(slot)) == ParkOutcome::Parked) {
                 ++acquired;
                 expect(pool.push(ParkedLower{.lowerIndex = slot, .slot = slot}), "a parked image was not pushed");
             }
@@ -643,7 +643,7 @@ void testParkedImagesSurviveTargetZero() {
         pool.setPolicy(0, 2, true);
         const size_t parkedBefore = pool.size();
         expect(parkAfterPresentAction(false, pool.size(), 0, pool.target(), pool.budgetOutputs(), false) ==
-            ParkAction::Nothing, "a park target of zero drained or parked an image");
+            ParkOutcome::Full, "a park target of zero drained or parked an image");
         expect(pool.size() == parkedBefore, "a park target of zero changed the parked images");
         // A synchronous or worker acquire takes the oldest parked image before any fresh acquire, and presents it.
         if (acquireTakesParkedFirst(false, pool.size())) {

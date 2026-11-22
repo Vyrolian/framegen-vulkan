@@ -1270,10 +1270,13 @@ namespace fgvk::layer {
                 }
             }
         }
-        return tryAcquireLowerLocked(lowerOpAcquireReal, lowerIndex);
+        LowerPoll poll{};
+        return tryAcquireLowerLocked(lowerOpAcquireReal, lowerIndex, &poll);
     }
 
-    VkResult InternalSwapchainImages::tryAcquireLowerLocked(const uint8_t op, uint32_t* const lowerIndex) {
+    VkResult InternalSwapchainImages::tryAcquireLowerLocked(const uint8_t op, uint32_t* const lowerIndex,
+            LowerPoll* const poll) {
+        *poll = LowerPoll::Error;
         if (const auto sticky = impl->sticky.load(); sticky < 0) {
             // FP2 rule 6: a sticky owner parks nothing, so its parked images are drained here, under the queue lock.
             static_cast<void>(drainParkedLocked());
@@ -1285,13 +1288,17 @@ namespace fgvk::layer {
             const std::lock_guard leafLock(impl->leaf);
             slotBusy = impl->parking.isBusy(impl->lowerHead);
         }
-        if (slotBusy)
+        if (slotBusy) {
+            *poll = LowerPoll::SlotBusy;
             return VK_NOT_READY;
+        }
         // Poll only: this runs under the queue lock and must never sleep.
         const VkFence fence = impl->lowerFences.at(impl->lowerHead);
         const VkResult ready = impl->funcs.GetFenceStatus(impl->device, fence);
-        if (ready != VK_SUCCESS)
+        if (ready != VK_SUCCESS) {
+            *poll = ready < 0 ? LowerPoll::Error : LowerPoll::Fence;
             return ready < 0 ? ready : VK_NOT_READY;
+        }
         uint32_t index = 0;
         // D7d: timed and noted only with history. A poll that is not ready or timed out is not noted.
         const bool noted = impl->queue->history;
@@ -1307,12 +1314,14 @@ namespace fgvk::layer {
         }
         if (lower != VK_SUCCESS && lower != VK_SUBOPTIMAL_KHR) {
             noteLowerError(lower);
+            *poll = lower == VK_NOT_READY || lower == VK_TIMEOUT ? LowerPoll::Acquire : LowerPoll::Error;
             return lower;
         }
         *lowerIndex = index;
         impl->workerSlot = commitLowerAcquire();
         if (lower == VK_SUBOPTIMAL_KHR)
             markLowerSuboptimal();
+        *poll = LowerPoll::Acquired;
         return VK_SUCCESS;
     }
 
@@ -1325,7 +1334,8 @@ namespace fgvk::layer {
         if (impl->copyFamily != callFamily)
             return VK_ERROR_FEATURE_NOT_PRESENT;
         uint32_t index = 0;
-        const VkResult acquired = tryAcquireLowerLocked(lowerOpAcquireCall, &index);
+        LowerPoll poll{};
+        const VkResult acquired = tryAcquireLowerLocked(lowerOpAcquireCall, &index, &poll);
         if (acquired != VK_SUCCESS)
             return acquired;
         *lowerIndex = index;
@@ -1481,32 +1491,35 @@ namespace fgvk::layer {
         return result;
     }
 
-    void InternalSwapchainImages::parkAfterPresent(const size_t callHeld) {
+    ParkOutcome InternalSwapchainImages::parkAfterPresent(const size_t callHeld) {
         // FP2 rule 2, caller holds queue->mutex right after a lower present of the worker. The decision is
         // parkAfterPresentAction: a sticky owner drains its parked images (the error path). A park target of zero drains
         // nothing and parks nothing, so the parked images stay in the pool for the next acquire (FP2 rule 6, fixed).
         const bool sticky = impl->sticky.load() != VK_SUCCESS;
-        ParkAction action = ParkAction::Nothing;
+        ParkOutcome outcome = ParkOutcome::Drained;
         {
             const std::lock_guard leafLock(impl->leaf);
             // The in-flight direct outputs hold lower images too, so the budget counts them (FP2 rule 2).
-            action = parkAfterPresentAction(sticky, impl->parking.size(), callHeld + impl->callInFlight,
+            outcome = parkAfterPresentAction(sticky, impl->parking.size(), callHeld + impl->callInFlight,
                 impl->parking.target(), impl->parking.budgetOutputs(), impl->parking.isBusy(impl->lowerHead));
         }
-        if (action == ParkAction::Drain) {
+        if (outcome == ParkOutcome::Drained) {
             static_cast<void>(drainParkedLocked());
-            return;
+            return outcome;
         }
-        if (action != ParkAction::Park)
-            return;
+        if (outcome != ParkOutcome::Parked)
+            return outcome;
         uint32_t index{};
-        // The acquire commits workerSlot. It is zero-timeout, so the worker never sleeps here.
-        if (tryAcquireLowerLocked(lowerOpAcquirePark, &index) != VK_SUCCESS)
-            return;
+        LowerPoll poll{};
+        // The acquire commits workerSlot. It is zero-timeout, so the worker never sleeps here. FP3: a failed acquire
+        // reports why (busy slot, unsignalled fence, NOT_READY or TIMEOUT, or error) for the idle retry.
+        if (tryAcquireLowerLocked(lowerOpAcquirePark, &index, &poll) != VK_SUCCESS)
+            return parkOutcomeOfPoll(poll);
         const std::lock_guard leafLock(impl->leaf);
         const bool parked = impl->parking.push(ParkedLower{.lowerIndex = index, .slot = impl->workerSlot});
         assert(parked && "FP2: parking outside the budget");
         static_cast<void>(parked);
+        return ParkOutcome::Parked;
     }
 
     VkResult InternalSwapchainImages::retireParked(const uint64_t timeoutNs) {
@@ -1575,8 +1588,8 @@ namespace fgvk::layer {
         return static_cast<const InternalSwapchainImages*>(owner)->outstandingCallOutputs();
     }
 
-    void internalRealParkAfterPresent(void* const owner, const size_t callHeld) {
-        static_cast<InternalSwapchainImages*>(owner)->parkAfterPresent(callHeld);
+    ParkOutcome internalRealParkAfterPresent(void* const owner, const size_t callHeld) {
+        return static_cast<InternalSwapchainImages*>(owner)->parkAfterPresent(callHeld);
     }
 
     VkResult internalRealCallPrepare(void* const owner, const VkQueue callQueue, const uint32_t callFamily,

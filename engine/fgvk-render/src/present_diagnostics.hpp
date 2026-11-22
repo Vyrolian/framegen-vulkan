@@ -284,6 +284,10 @@ namespace fgvk::layer::present_diagnostics {
             // FP1: the fallbacks by reason (the five sum to inlineCallFallback), and the outputs served from a parked image.
             size_t inlineCallFallbackLock{}, inlineCallFallbackAcquire{}, inlineCallFallbackBudget{};
             size_t inlineCallFallbackCascade{}, inlineCallFallbackOther{}, inlineCallParked{};
+            // FP3: the worker's lower park outcomes by ParkOutcome (Drained is not kept), and the idle retries (attempts, and
+            // those that parked). Taken from the worker at each present (see parkCounts).
+            std::array<size_t, fgvk::layer::parkCountedOutcomeCount> parkOutcomes{};
+            size_t parkRetries{}, parkRetriesParked{};
             size_t fifoCallerTimingSources{};
             std::array<OutputSample, outputTraceCapacity> outputTrace{};
             size_t outputTraceCount{}, outputTraceDropped{};
@@ -487,6 +491,12 @@ namespace fgvk::layer::present_diagnostics {
         }
         // FP1: one output served from an image the worker parked.
         void inlineCallParkedActive() { ++window.inlineCallParked; }
+        // FP3: the worker's park counters taken since the last call (DeferredPresent::takeParkCounts), added to this window.
+        void parkCounts(const fgvk::layer::ParkCounts& counts) {
+            for (size_t i = 0; i < counts.outcomes.size(); ++i) window.parkOutcomes[i] += counts.outcomes[i];
+            window.parkRetries += counts.retries;
+            window.parkRetriesParked += counts.retriesParked;
+        }
         // Persistent for this swapchain: set once a present uses F5 internal images.
         void internalImagesActive() { internalImages = true; }
         // QH2: persistent for this swapchain: set once a generated copy is submitted on the transfer queue.

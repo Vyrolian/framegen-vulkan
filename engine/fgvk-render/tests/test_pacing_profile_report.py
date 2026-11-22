@@ -852,6 +852,16 @@ class WindowFieldTests(unittest.TestCase):
         self.assertEqual(windows[0].values["present_mode"], -1.0)
         self.assertEqual(windows[0].values["application_present_modes"], "-")
 
+    def test_park_counters_are_plain_counts(self):
+        # FP3: the park counters follow inline_call_parked. They are plain counts, not computed measurements.
+        body = self.base + self.current + (" inline_call_parked=2 park_ok=2 park_full=1 park_budget=1 "
+            "park_slot_busy=0 park_fence=1 park_acquire=0 park_error=3 park_retry=2 park_retry_ok=1")
+        windows, invalid = self.read([self.prefix + body])
+        self.assertEqual((len(windows), invalid), (1, 0))
+        self.assertEqual(windows[0].values["park_ok"], 2.0)
+        self.assertEqual(windows[0].values["park_error"], 3.0)
+        self.assertEqual(windows[0].values["park_retry_ok"], 1.0)
+
     def test_computed_fields_still_reject_bad_values(self):
         cases = {
             "negative count": self.base.replace("sources=128", "sources=-1") + self.current,

@@ -7,6 +7,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <cstdlib>
+#include <future>
 #include <cstring>
 #include <iostream>
 #include <mutex>
@@ -2233,6 +2234,10 @@ struct DeferredPresentTestAccess {
         const std::lock_guard lock(worker.mutex);
         worker.realPresentLead.lead = lead;
     }
+    // FP3: the idle retry attempts so far. A relaxed read, so the test can poll while the worker runs.
+    static size_t parkRetryAttempts(const DeferredPresent& worker) {
+        return worker.parkRetryAttempts.load(std::memory_order_relaxed);
+    }
 };
 }
 
@@ -2351,10 +2356,11 @@ VkResult fakeCallPrepareParked(void* owner, VkQueue callQueue, [[maybe_unused]] 
 size_t fakeParkedCount(void* owner) {
     return static_cast<InternalFake*>(owner)->parkedReported;
 }
-void recordPark(void* owner, size_t callHeld) {
+ParkOutcome recordPark(void* owner, size_t callHeld) {
     auto& state = *static_cast<InternalFake*>(owner);
     ++state.parks;
     state.parkHeld = callHeld;
+    return ParkOutcome::Parked;
 }
 DeferredPresent::InternalRealCopy internalParkedCallCopy(const std::shared_ptr<InternalFake>& fake,
         uint32_t applicationIndex, uint32_t callBudget) {
@@ -5281,6 +5287,283 @@ void parkHookReceivesHeldOutputs() {
         "the park hook did not run once after the call-prepared present, with that output excluded");
 }
 
+// FP3: a park hook with scripted outcomes. The outcomes are set before the hook is installed, and the last one repeats.
+// The worker thread writes the call count and the times of the first calls, and the test reads them through the atomics.
+struct ParkScript {
+    std::vector<ParkOutcome> outcomes;
+    std::atomic<size_t> calls{};
+    std::array<std::atomic<int64_t>, 16> calledNs{};
+};
+ParkOutcome scriptedPark(void* owner, size_t) {
+    auto& script = *static_cast<ParkScript*>(owner);
+    const size_t call = script.calls.fetch_add(1);
+    if (call < script.calledNs.size())
+        script.calledNs[call].store(DeferredPresent::Clock::now().time_since_epoch().count());
+    return script.outcomes[std::min(call, script.outcomes.size() - 1)];
+}
+// FP3: polls for at most two seconds, so each test waits on the worker's own steps and never on a fixed sleep.
+template<class Condition>
+bool awaitCondition(const Condition& condition) {
+    const auto until = DeferredPresent::Clock::now() + 2s;
+    while (!condition()) {
+        if (DeferredPresent::Clock::now() >= until) return false;
+        std::this_thread::sleep_for(100us);
+    }
+    return true;
+}
+void addParkCounts(ParkCounts& total, const ParkCounts& next) {
+    for (size_t i = 0; i < next.outcomes.size(); ++i) total.outcomes[i] += next.outcomes[i];
+    total.retries += next.retries;
+    total.retriesParked += next.retriesParked;
+}
+// FP3: the present an admission carries. The pointers must outlive the admission.
+VkPresentInfoKHR parkTestInfo(const VkSwapchainKHR* swapchain, const VkSemaphore* continuation, const uint32_t* image) {
+    return VkPresentInfoKHR{.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, .pNext = nullptr,
+        .waitSemaphoreCount = 1, .pWaitSemaphores = continuation,
+        .swapchainCount = 1, .pSwapchains = swapchain, .pImageIndices = image, .pResults = nullptr};
+}
+
+// FP3: each park outcome is counted in its own field, and Drained is never counted. Each present makes one park attempt,
+// and no outcome here arms an idle retry, so the counts are exact.
+void parkCountersKeepEachOutcome() {
+    auto queue = std::make_shared<DeferredPresentQueue>();
+    queue->queue = handle<VkQueue>(7);
+    DeferredPresent worker(queue, recordingPresent);
+    copyPresents.clear();
+    const auto swapchain = handle<VkSwapchainKHR>(11);
+    const auto continuation = handle<VkSemaphore>(12);
+    auto fake = std::make_shared<InternalFake>();
+    auto script = std::make_shared<ParkScript>();
+    script->outcomes = {ParkOutcome::Parked, ParkOutcome::Full, ParkOutcome::Budget, ParkOutcome::Error,
+        ParkOutcome::Drained};
+    worker.setParkHook(script, &scriptedPark);
+    ParkCounts total{};
+    for (uint32_t image = 1; image <= script->outcomes.size(); ++image) {
+        const VkPresentInfoKHR info = parkTestInfo(&swapchain, &continuation, &image);
+        expect(worker.beginBatch(1), "park counter batch rejected");
+        expect(worker.enqueueInternalReal(info, DeferredPresent::Clock::now(), internalCopy(fake, 1)),
+            "park counter real rejected");
+        worker.closeBatch();
+        const auto completion = worker.finish(UINT64_MAX);
+        expect(completion && completion->count == 1 && !completion->calls[0].skipped, "park counter real was skipped");
+        addParkCounts(total, worker.takeParkCounts());
+    }
+    expect(script->calls.load() == 5, "a present did not make exactly one park attempt");
+    expect(total.outcomes[static_cast<size_t>(ParkOutcome::Parked)] == 1 &&
+        total.outcomes[static_cast<size_t>(ParkOutcome::Full)] == 1 &&
+        total.outcomes[static_cast<size_t>(ParkOutcome::Budget)] == 1 &&
+        total.outcomes[static_cast<size_t>(ParkOutcome::Error)] == 1 &&
+        total.outcomes[static_cast<size_t>(ParkOutcome::SlotBusy)] == 0 &&
+        total.outcomes[static_cast<size_t>(ParkOutcome::Fence)] == 0 &&
+        total.outcomes[static_cast<size_t>(ParkOutcome::Acquire)] == 0,
+        "a park outcome was counted in the wrong field");
+    size_t counted = 0;
+    for (const size_t value : total.outcomes) counted += value;
+    expect(counted == 4, "Drained was counted, or a park outcome was lost");
+    expect(total.retries == 0 && total.retriesParked == 0, "a final park outcome armed an idle retry");
+    const auto again = worker.takeParkCounts();
+    expect(again.retries == 0 && std::all_of(again.outcomes.begin(), again.outcomes.end(),
+        [](size_t value) { return value == 0; }), "a take did not reset the park counts");
+}
+
+// FP3: a park that ends Acquire is retried once while the worker is idle. The retry comes about 0.5 ms after the park, and
+// its Parked outcome clears the retry, so nothing runs after it.
+void parkRetryParksAfterOneIdleWait() {
+    auto queue = std::make_shared<DeferredPresentQueue>();
+    queue->queue = handle<VkQueue>(7);
+    DeferredPresent worker(queue, recordingPresent);
+    copyPresents.clear();
+    const auto swapchain = handle<VkSwapchainKHR>(11);
+    const auto continuation = handle<VkSemaphore>(12);
+    uint32_t image = 1;
+    const VkPresentInfoKHR info = parkTestInfo(&swapchain, &continuation, &image);
+    auto fake = std::make_shared<InternalFake>();
+    auto script = std::make_shared<ParkScript>();
+    script->outcomes = {ParkOutcome::Acquire, ParkOutcome::Parked};
+    worker.setParkHook(script, &scriptedPark);
+    expect(worker.beginBatch(1), "retry batch rejected");
+    expect(worker.enqueueInternalReal(info, DeferredPresent::Clock::now(), internalCopy(fake, 1)),
+        "retry real rejected");
+    worker.closeBatch();
+    const auto completion = worker.finish(UINT64_MAX);
+    expect(completion && completion->count == 1 && !completion->calls[0].skipped, "retry real was skipped");
+    expect(awaitCondition([&] { return script->calls.load() >= 2; }), "the Acquire park was not retried while idle");
+    std::this_thread::sleep_for(5ms);
+    expect(script->calls.load() == 2, "a park that parked was retried again");
+    const int64_t gapNs = script->calledNs[1].load() - script->calledNs[0].load();
+    expect(gapNs >= 450'000, "the idle retry did not wait about 0.5 ms");
+    ParkCounts total{};
+    expect(awaitCondition([&] {
+        addParkCounts(total, worker.takeParkCounts());
+        return total.retriesParked == 1;
+    }), "the retry that parked was not counted");
+    expect(total.outcomes[static_cast<size_t>(ParkOutcome::Acquire)] == 1 &&
+        total.outcomes[static_cast<size_t>(ParkOutcome::Parked)] == 1 && total.retries == 1,
+        "the Acquire park and its retry were not counted once each");
+}
+
+// FP3: a Budget outcome is never retried, and neither is Full (a park target of zero). The worker stays idle and parks
+// once. Mutation check: retrying on Budget makes this test fail.
+void parkBudgetAndFullAreNotRetried() {
+    for (const ParkOutcome outcome : {ParkOutcome::Budget, ParkOutcome::Full}) {
+        auto queue = std::make_shared<DeferredPresentQueue>();
+        queue->queue = handle<VkQueue>(7);
+        DeferredPresent worker(queue, recordingPresent);
+        copyPresents.clear();
+        const auto swapchain = handle<VkSwapchainKHR>(11);
+        const auto continuation = handle<VkSemaphore>(12);
+        uint32_t image = 1;
+        const VkPresentInfoKHR info = parkTestInfo(&swapchain, &continuation, &image);
+        auto fake = std::make_shared<InternalFake>();
+        auto script = std::make_shared<ParkScript>();
+        script->outcomes = {outcome};
+        worker.setParkHook(script, &scriptedPark);
+        expect(worker.beginBatch(1), "no-retry batch rejected");
+        expect(worker.enqueueInternalReal(info, DeferredPresent::Clock::now(), internalCopy(fake, 1)),
+            "no-retry real rejected");
+        worker.closeBatch();
+        const auto completion = worker.finish(UINT64_MAX);
+        expect(completion && completion->count == 1 && !completion->calls[0].skipped, "no-retry real was skipped");
+        std::this_thread::sleep_for(20ms);
+        expect(script->calls.load() == 1, "a final park outcome was retried while the worker was idle");
+        const auto counts = worker.takeParkCounts();
+        expect(counts.retries == 0 && counts.outcomes[static_cast<size_t>(outcome)] == 1,
+            "a final park outcome was not counted once with no retry");
+    }
+}
+
+// FP3: retries stop at eight per worker present. A park that always ends Acquire runs nine times, the first park and eight
+// retries, and then the worker waits normally.
+void parkRetriesStopAtEight() {
+    auto queue = std::make_shared<DeferredPresentQueue>();
+    queue->queue = handle<VkQueue>(7);
+    DeferredPresent worker(queue, recordingPresent);
+    copyPresents.clear();
+    const auto swapchain = handle<VkSwapchainKHR>(11);
+    const auto continuation = handle<VkSemaphore>(12);
+    uint32_t image = 1;
+    const VkPresentInfoKHR info = parkTestInfo(&swapchain, &continuation, &image);
+    auto fake = std::make_shared<InternalFake>();
+    auto script = std::make_shared<ParkScript>();
+    script->outcomes = {ParkOutcome::Acquire};
+    worker.setParkHook(script, &scriptedPark);
+    expect(worker.beginBatch(1), "retry-limit batch rejected");
+    expect(worker.enqueueInternalReal(info, DeferredPresent::Clock::now(), internalCopy(fake, 1)),
+        "retry-limit real rejected");
+    worker.closeBatch();
+    const auto completion = worker.finish(UINT64_MAX);
+    expect(completion && completion->count == 1 && !completion->calls[0].skipped, "retry-limit real was skipped");
+    expect(awaitCondition([&] { return script->calls.load() >= 9; }), "the eight idle retries did not all run");
+    std::this_thread::sleep_for(20ms);
+    expect(script->calls.load() == 9, "more than eight idle retries ran for one worker present");
+    const auto counts = worker.takeParkCounts();
+    expect(counts.retries == 8 && counts.retriesParked == 0 &&
+        counts.outcomes[static_cast<size_t>(ParkOutcome::Acquire)] == 9,
+        "the retry attempts or the Acquire outcomes were not counted exactly");
+}
+
+// FP3: a new worker present gives the idle retry a fresh allowance. After the first present's eight retries, a second
+// present runs eight more.
+void parkRetryAllowanceResetsOnPresent() {
+    auto queue = std::make_shared<DeferredPresentQueue>();
+    queue->queue = handle<VkQueue>(7);
+    DeferredPresent worker(queue, recordingPresent);
+    copyPresents.clear();
+    const auto swapchain = handle<VkSwapchainKHR>(11);
+    const auto continuation = handle<VkSemaphore>(12);
+    uint32_t image = 1;
+    const VkPresentInfoKHR info = parkTestInfo(&swapchain, &continuation, &image);
+    auto fake = std::make_shared<InternalFake>();
+    auto script = std::make_shared<ParkScript>();
+    script->outcomes = {ParkOutcome::Acquire};
+    worker.setParkHook(script, &scriptedPark);
+    for (int present = 0; present < 2; ++present) {
+        expect(worker.beginBatch(1), "allowance batch rejected");
+        expect(worker.enqueueInternalReal(info, DeferredPresent::Clock::now(), internalCopy(fake, 1)),
+            "allowance real rejected");
+        worker.closeBatch();
+        const auto completion = worker.finish(UINT64_MAX);
+        expect(completion && completion->count == 1 && !completion->calls[0].skipped, "allowance real was skipped");
+        expect(awaitCondition([&] { return script->calls.load() >= static_cast<size_t>(9 * (present + 1)); }),
+            "a worker present did not get its eight idle retries");
+    }
+    std::this_thread::sleep_for(20ms);
+    expect(script->calls.load() == 18, "the second worker present did not get exactly eight retries");
+    const auto counts = worker.takeParkCounts();
+    expect(counts.retries == 16, "the retry attempts of two worker presents were not counted");
+}
+
+// FP3: a job admitted while the worker is idle with a retry armed wakes it at once, and no idle retry runs. Both outputs share
+// one open batch: the first output's park arms the retry, and the second output is already pending, so the worker never idles
+// before it. The second output's park then clears the retry. The deadlines are far enough away that the admission finishes
+// first.
+void newJobWakesWithoutIdleRetry() {
+    auto queue = std::make_shared<DeferredPresentQueue>();
+    queue->queue = handle<VkQueue>(7);
+    DeferredPresent worker(queue, recordingPresent);
+    copyPresents.clear();
+    const auto swapchain = handle<VkSwapchainKHR>(11);
+    const auto continuation = handle<VkSemaphore>(12);
+    uint32_t image = 1;
+    const VkPresentInfoKHR info = parkTestInfo(&swapchain, &continuation, &image);
+    auto fake = std::make_shared<InternalFake>();
+    auto script = std::make_shared<ParkScript>();
+    script->outcomes = {ParkOutcome::Acquire, ParkOutcome::Parked};
+    worker.setParkHook(script, &scriptedPark);
+    const auto far = DeferredPresent::Clock::now() + 50ms;
+    expect(worker.beginBatch(2), "pending-job batch rejected");
+    expect(worker.enqueueInternalReal(info, far, internalCopy(fake, 1)), "first pending real rejected");
+    expect(worker.enqueueInternalReal(info, far, internalCopy(fake, 2)), "second pending real rejected");
+    worker.closeBatch();
+    const auto completion = worker.finish(UINT64_MAX);
+    expect(completion && completion->count == 2 && !completion->calls[0].skipped && !completion->calls[1].skipped,
+        "a pending real was skipped");
+    expect(script->calls.load() == 2, "the worker did not park once per present");
+    const auto counts = worker.takeParkCounts();
+    expect(counts.retries == 0 && counts.outcomes[static_cast<size_t>(ParkOutcome::Acquire)] == 1 &&
+        counts.outcomes[static_cast<size_t>(ParkOutcome::Parked)] == 1,
+        "a pending job woke the worker to an idle retry");
+}
+
+// FP3, the lock order. A retry that waits for queue->mutex must not hold the DeferredPresent mutex, or admission would stall
+// behind it. The test holds queue->mutex from its own thread while the retry is due, then admits a second output, which must
+// be accepted without waiting for the lock. The admission runs on another thread so a stall fails the test instead of hanging.
+void parkRetryDoesNotStallAdmission() {
+    auto queue = std::make_shared<DeferredPresentQueue>();
+    queue->queue = handle<VkQueue>(7);
+    DeferredPresent worker(queue, recordingPresent);
+    copyPresents.clear();
+    const auto swapchain = handle<VkSwapchainKHR>(11);
+    const auto continuation = handle<VkSemaphore>(12);
+    uint32_t image = 1;
+    const VkPresentInfoKHR info = parkTestInfo(&swapchain, &continuation, &image);
+    auto fake = std::make_shared<InternalFake>();
+    auto script = std::make_shared<ParkScript>();
+    script->outcomes = {ParkOutcome::Acquire};
+    worker.setParkHook(script, &scriptedPark);
+    expect(worker.beginBatch(2), "admission batch rejected");
+    expect(worker.enqueueInternalReal(info, DeferredPresent::Clock::now(), internalCopy(fake, 1)),
+        "first admitted real rejected");
+    expect(awaitCondition([&] { return script->calls.load() >= 1; }), "the first output was not parked");
+    // The worker releases queue->mutex after the park, so this returns once its present is over. The next idle retry then
+    // blocks on queue->mutex, which this test holds.
+    std::unique_lock held(queue->mutex);
+    const size_t attempts = DeferredPresentTestAccess::parkRetryAttempts(worker);
+    expect(awaitCondition([&] { return DeferredPresentTestAccess::parkRetryAttempts(worker) > attempts; }),
+        "no idle retry ran while queue->mutex was held");
+    auto admitted = std::async(std::launch::async, [&] {
+        return worker.enqueueInternalReal(info, DeferredPresent::Clock::now(), internalCopy(fake, 2));
+    });
+    const bool prompt = admitted.wait_for(2s) == std::future_status::ready;
+    held.unlock();
+    const bool accepted = admitted.get();
+    expect(prompt && accepted, "admission stalled behind a park retry waiting for queue->mutex");
+    worker.closeBatch();
+    const auto completion = worker.finish(UINT64_MAX);
+    expect(completion && completion->count == 2 && !completion->calls[0].skipped && !completion->calls[1].skipped,
+        "the admitted real was not presented after the lock was released");
+}
+
 int main([[maybe_unused]] int argc, [[maybe_unused]] char** argv) {
     generatedPreparedOrderAndBudget(); generatedCopyCanPrecedeHostReadiness(); generatedPreparationFallbackAndGates();
     generatedChainOutputOffsetsMoveEachOutput();
@@ -5326,6 +5609,9 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char** argv) {
     internalRealCallSubmitErrorSettles(); internalRealCallBudgetLimitsSecondReal();
     internalRealParkedTakeIsLockFree(); internalRealCallLockMissFallsBack();
     internalRealParkedCountsTowardBudget(); parkHookReceivesHeldOutputs();
+    parkCountersKeepEachOutcome(); parkRetryParksAfterOneIdleWait(); parkBudgetAndFullAreNotRetried();
+    parkRetriesStopAtEight(); parkRetryAllowanceResetsOnPresent(); newJobWakesWithoutIdleRetry();
+    parkRetryDoesNotStallAdmission();
     lowerRecordsFollowHistory(); inFlightCallFollowsHistory(); synchronousPresentIsNoted();
     presentsAreNotedWithHistory();
     // X3 last: presentedJobsKeepTheirFenceForTheLowerPresent uses the shared `present` fake, which

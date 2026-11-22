@@ -578,6 +578,7 @@ public:
         {
             const std::lock_guard lock(mutex);
             stopping = true;
+            parkRetry = false;
         }
         changed.notify_one();
         worker.join();
@@ -774,13 +775,24 @@ public:
         const std::lock_guard lock(mutex);
         return callHeldLocked();
     }
+    // FP3: the park counters since the last take, for the pacing profile's window. Relaxed atomics: any thread may take
+    // them while the worker parks, and each count lands in the window that takes it.
+    [[nodiscard]] ParkCounts takeParkCounts() noexcept {
+        ParkCounts counts;
+        for (size_t i = 0; i < parkCountedOutcomeCount; ++i)
+            counts.outcomes[i] = parkOutcomeCounts[i].exchange(0, std::memory_order_relaxed);
+        counts.retries = parkRetryAttempts.exchange(0, std::memory_order_relaxed);
+        counts.retriesParked = parkRetryParked.exchange(0, std::memory_order_relaxed);
+        return counts;
+    }
     // FP2: the owner that parks lower images after this worker's lower presents (see parkAfterPresentLocked). The swapchain
     // sets it before its first internal present. One swapchain has one owner, so the first one set is kept.
+    // FP3: park returns why it did or did not park (see ParkOutcome).
     struct ParkHook {
         std::shared_ptr<void> owner;
-        void (*park)(void* owner, size_t callHeld) = nullptr;
+        ParkOutcome (*park)(void* owner, size_t callHeld) = nullptr;
     };
-    void setParkHook(std::shared_ptr<void> owner, void (*park)(void* owner, size_t callHeld)) {
+    void setParkHook(std::shared_ptr<void> owner, ParkOutcome (*park)(void* owner, size_t callHeld)) {
         if (!owner || !park) return;
         const std::lock_guard lock(mutex);
         if (!parkHook.owner) parkHook = ParkHook{std::move(owner), park};
@@ -1232,6 +1244,13 @@ private:
     mutable std::mutex mutex;
     std::condition_variable changed;
     bool stopping{};
+    // FP3: parkRetry is set while the last park ended SlotBusy, Fence or Acquire, and parkRetriesLeft is the idle retries left
+    // for the current worker present. Both are guarded by mutex. The park counters are relaxed atomics: the worker adds to
+    // them under mutex, and takeParkCounts exchanges them without it.
+    bool parkRetry{};
+    uint32_t parkRetriesLeft{};
+    std::array<std::atomic<size_t>, parkCountedOutcomeCount> parkOutcomeCounts{};
+    std::atomic<size_t> parkRetryAttempts{}, parkRetryParked{};
     // W2, FGVK_REAL_OFFSET_US=auto: worker thread only; the cursor is used under queue->mutex.
     OutputOffsetController outputOffsetController;
     std::optional<uint64_t> correctionState;
@@ -1310,15 +1329,44 @@ private:
     }
     // FP2, caller holds queue->mutex, right after a lower present of this worker. Hands the owner the outputs call-held after
     // this present. The presented output is not counted when it was call-held: its lower image is out of the layer's hands
-    // once presented. Nothing is parked while stopping.
+    // once presented. Nothing is parked while stopping. FP3: the present also gives the idle retry a fresh allowance.
     void parkAfterPresentLocked(const bool presentedCallHeld) {
         // The mutex is held across the park, so the owner's parked and in-flight counts are read in step with the
         // admissions, which hold this mutex too (lock order: queue->mutex, this mutex, then the owner's leaf mutex).
         const std::lock_guard lock(mutex);
-        if (stopping || !parkHook.owner || !parkHook.park) return;
+        parkRetriesLeft = inlineParkRetryLimit;
+        static_cast<void>(parkLocked(presentedCallHeld));
+    }
+    // FP3, caller holds queue->mutex and mutex. The park of parkAfterPresentLocked, also used by the idle retry, so both run
+    // the same decision and count the same outcomes. A park that ends SlotBusy, Fence or Acquire arms the idle retry. Stopping
+    // or no owner parks nothing and disarms it.
+    ParkOutcome parkLocked(const bool presentedCallHeld) {
+        if (stopping || !parkHook.owner || !parkHook.park) {
+            parkRetry = false;
+            return ParkOutcome::Drained;
+        }
         size_t held = callHeldLocked();
         if (presentedCallHeld && held > 0) --held;
-        parkHook.park(parkHook.owner.get(), held);
+        const ParkOutcome outcome = parkHook.park(parkHook.owner.get(), held);
+        if (outcome != ParkOutcome::Drained)
+            parkOutcomeCounts[static_cast<size_t>(outcome)].fetch_add(1, std::memory_order_relaxed);
+        parkRetry = parkRetryAfter(outcome);
+        return outcome;
+    }
+    // FP3, the idle retry of a park, called by run with `lock` held on mutex and parkRetry set. It releases mutex before it
+    // takes queue->mutex, so admission never waits for a retry, and the lock order holds: queue->mutex, then mutex. The retry
+    // is one more zero-timeout park attempt under queue->mutex (see parkAfterPresent). It returns with mutex held again.
+    void retryParkLocked(std::unique_lock<std::mutex>& lock) {
+        --parkRetriesLeft;
+        parkRetryAttempts.fetch_add(1, std::memory_order_relaxed);
+        lock.unlock();
+        {
+            const std::lock_guard queueLock(queue->mutex);
+            const std::lock_guard parkLock(mutex);
+            if (parkLocked(false) == ParkOutcome::Parked)
+                parkRetryParked.fetch_add(1, std::memory_order_relaxed);
+        }
+        lock.lock();
     }
     // RP1, caller holds queue->mutex, right after a worker present was marked: the lead's call record of that present.
     // The marker of the present is read later, by observeOutputOffsetLocked. Nothing is recorded with the lead off.
@@ -1866,10 +1914,20 @@ private:
         bool havePrevious{};
         uint32_t heldLowerImages{};
         Clock::time_point lastBatchFinished{};
+        const auto hasWork = [this] {
+            return stopping || (count && batches[head].consumed < batches[head].produced);
+        };
         for (;;) {
-            changed.wait(lock, [this] {
-                return stopping || (count && batches[head].consumed < batches[head].produced);
-            });
+            // FP3: while a park retry is armed, the idle wait ends after inlineParkRetryWait to retry the park. A job or a stop
+            // wakes it at once. A timed-out wait has no job and is not stopping, so the retry runs.
+            if (parkRetry && parkRetriesLeft > 0) {
+                if (!changed.wait_for(lock, inlineParkRetryWait, hasWork)) {
+                    retryParkLocked(lock);
+                    continue;
+                }
+            } else {
+                changed.wait(lock, hasWork);
+            }
             if (stopping) return;
             Batch& batch = batches[head];
             const size_t index = batch.consumed;
