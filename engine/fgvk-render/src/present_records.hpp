@@ -108,8 +108,6 @@ struct PacingOutputGpuPayload {
     int64_t stagingEndNs{};
     // FI2: the real-copy record's queue: true when the copy was submitted on the game queue at the call.
     bool gameQueue{};
-    // DG1: the output-gpu record of an output the backend wrote into its lower image.
-    bool directWrite{};
 };
 
 struct PacingPresentMarkerPayload {

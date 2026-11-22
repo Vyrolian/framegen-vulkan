@@ -130,10 +130,9 @@ namespace fgvk::backend {
     class PassStepMarks {
     public:
         PassStepMarks() = default;
-        // A null nameList writes the queries without naming steps: the tails of a phase, whose step names the chain recorded.
         PassStepMarks(const vk::TimestampQueryPool& queries, VkCommandBuffer cmd,
-                uint32_t first, std::vector<std::string>* nameList)
-            : pool(&queries), commandBuffer(cmd), next(first), names(nameList) {}
+                uint32_t first, std::vector<std::string>& nameList)
+            : pool(&queries), commandBuffer(cmd), next(first), names(&nameList) {}
 
         explicit operator bool() const { return this->pool != nullptr; }
 
@@ -149,8 +148,7 @@ namespace fgvk::backend {
             if (this->next >= PassStepProfilingState::queryCount)
                 throw std::logic_error("GP1 pass-step timestamps exceed the query pool");
             this->pool->write(this->commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, this->next++);
-            if (this->names)
-                this->names->emplace_back(name);
+            this->names->emplace_back(name);
         }
     private:
         const vk::TimestampQueryPool* pool{};
@@ -282,16 +280,7 @@ namespace fgvk::backend {
         void pollSplitProfiles();
 
         /// schedule a variable number of frames at explicit timestamps
-        void scheduleFrames(std::span<const float> timestamps, const DirectTarget* direct = nullptr);
-        /// DG1 (see Instance::setDirectTargets): replaces the direct targets of an attached single-output context.
-        [[nodiscard]] bool setDirectTargets(std::span<const VkImage> lowerImages);
-        /// DG1 rule 4: the tail that writes a registered lower image for the current phase, recorded once and cached.
-        const vk::CommandBuffer& recordDirectWriteTail(size_t lowerIndex);
-        /// The generated output i's tail into its destination image: discard, generate, query 5, colour conversion, release,
-        /// query 6. Output 0's tail is recorded with its chain; the others are recorded in their own buffer.
-        void recordDestinationTail(const vk::CommandBuffer& cmdbuf, size_t i, PassStepMarks& marks);
-        /// GP1 marks of a tail: the generate query after the chain's marks, which name nothing new.
-        [[nodiscard]] PassStepMarks generateMarks(const vk::CommandBuffer& cmdbuf);
+        void scheduleFrames(std::span<const float> timestamps);
 
         /// update temporal history without generating output frames
         /// (see fgvk documentation)
@@ -363,8 +352,6 @@ namespace fgvk::backend {
         void collectPassSteps(size_t phase);
         using RecordedCommands = std::array<std::optional<vk::CommandBuffer>, commandPhaseCount>;
         std::vector<RecordedCommands> cmdbufs;
-        // DG1 rule 4: the destination tail of output 0. Its chain is cmdbufs[1]; the two are submitted together.
-        std::array<std::optional<vk::CommandBuffer>, commandPhaseCount> destinationTails;
         RecordedCommands prepassDependency;
         RecordedCommands sourceRelease;
         std::vector<vk::Fence> cmdbufFences; // one per in-flight batch slot
@@ -408,17 +395,6 @@ namespace fgvk::backend {
             ls::lazy<Generate> generate;
         };
         std::vector<Pass> passes;
-
-        // DG1: the lower images single-output batches write into (see Instance::setDirectTargets). Declared last, so the
-        // tails, sets and views are destroyed before the pool, the images and the recordings above.
-        struct DirectWriteTargets {
-            vk::DescriptorPool pool;
-            std::vector<vk::Image> images;     // non-owning views of the lower images, in DirectTarget::lowerIndex order
-            std::vector<Generate> generates;   // per lower image; both frame parities
-            // Per lower image and phase, recorded lazily like cmdbufs. Its chain is cmdbufs[1] of the same phase.
-            std::vector<std::array<std::optional<vk::CommandBuffer>, commandPhaseCount>> tails;
-        };
-        std::optional<DirectWriteTargets> directWrite;
     };
 }
 
@@ -1131,7 +1107,7 @@ ContextImpl::ContextImpl(const InstanceImpl& instance, const ContextExchange& ex
             }
         }
 
-        pass.generate.emplace(ctx, ctx.pool, i,
+        pass.generate.emplace(ctx, i,
             modelSourceImages,
             pass.gamma1.at(6).getImage(),
             pass.delta1.at(2).getImage0(),
@@ -1501,12 +1477,7 @@ FrameProfile Context::readFrameProfile() const {
     return result;
 }
 
-bool Instance::setDirectTargets(Context& context, std::span<const VkImage> lowerImages) { // NOLINT (static)
-    return context.setDirectTargets(lowerImages);
-}
-
-void Instance::scheduleFrames(Context& context, std::span<const float> timestamps,
-        const DirectTarget* const direct) { // NOLINT (static)
+void Instance::scheduleFrames(Context& context, std::span<const float> timestamps) { // NOLINT (static)
     if (timestamps.empty())
         throw backend::error("At least one interpolation timestamp is required");
 #ifdef FGVK_TESTING_RENDERDOC
@@ -1518,7 +1489,7 @@ void Instance::scheduleFrames(Context& context, std::span<const float> timestamp
     }
 #endif
     try {
-        context.scheduleFrames(timestamps, direct);
+        context.scheduleFrames(timestamps);
     } catch (const std::exception& e) {
         context.markScheduleFailure();
         throw backend::error("Unable to schedule frames", e);
@@ -1638,7 +1609,7 @@ const vk::CommandBuffer& Context::recordPrepass() {
             names.prepass.clear();
             const auto& pool = *this->passSteps->pools.at(phase);
             pool.reset(cmdbuf.handle());
-            marks = PassStepMarks(pool, cmdbuf.handle(), 1, &names.prepass);
+            marks = PassStepMarks(pool, cmdbuf.handle(), 1, names.prepass);
             marks.start();
         }
 
@@ -1761,17 +1732,13 @@ void Context::scheduleFrames() {
     this->scheduleFrames({});
 }
 
-void Context::scheduleFrames(std::span<const float> timestamps, const DirectTarget* const direct) {
+void Context::scheduleFrames(std::span<const float> timestamps) {
     const bool explicitTimestamps = !timestamps.empty();
     const size_t generatedFrameCount = explicitTimestamps
         ? timestamps.size()
         : this->destImages.size();
     if (generatedFrameCount > this->destImages.size())
         throw backend::error("Too many interpolation timestamps for this context");
-    // DG1 rule 4: a direct target needs one output into a registered lower image. Checked before any work is done.
-    if (direct && (generatedFrameCount != 1 || !this->directWrite || direct->wait == VK_NULL_HANDLE ||
-            direct->lowerIndex >= this->directWrite->images.size()))
-        throw backend::error("direct write needs one generated output and a registered lower image");
     if (generatedFrameCount == 0) {
         this->scheduleFrameHistory();
         return;
@@ -1835,6 +1802,22 @@ void Context::scheduleFrames(std::span<const float> timestamps, const DirectTarg
             if (this->profiling)
                 this->profiling->queries.write(cmdbuf.handle(), VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, static_cast<uint32_t>(4 + i * 3));
 
+            // Every generated output is fully overwritten. Discarding its old
+            // contents permits taking ownership without a consumer release.
+            const VkImageMemoryBarrier discard{
+                .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                .dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+                .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .image = this->destImages.at(i).handle(),
+                .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
+            };
+            ctx.vk.get().df().CmdPipelineBarrier(cmdbuf.handle(),
+                VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                0, 0, nullptr, 0, nullptr, 1, &discard);
+
             // GP1 times the first output only; later outputs record unmarked.
             PassStepMarks marks;
             if (this->passSteps && i == 0) {
@@ -1843,7 +1826,7 @@ void Context::scheduleFrames(std::span<const float> timestamps, const DirectTarg
                 names.generated.clear();
                 const auto& pool = *this->passSteps->pools.at(phase);
                 marks = PassStepMarks(pool, cmdbuf.handle(), 1 + static_cast<uint32_t>(names.prepass.size()),
-                    &names.generated);
+                    names.generated);
             }
             const auto& pass = this->passes.at(i);
             // GP2 (FGVK_BACKEND_OVERLAP=1): Gamma0(j+1) joins the Delta work of level j when the
@@ -1889,25 +1872,22 @@ void Context::scheduleFrames(std::span<const float> timestamps, const DirectTarg
                     marks.mark(delta1Steps.at(j - 4));
                 }
             }
-            if (i == 0) {
-                // DG1 rule 4: output 0 is this chain and a tail recorded with it, submitted together. The chain names
-                // "generate" for every tail of the phase, so a direct tail recorded later names nothing new.
-                if (this->passSteps)
-                    this->passSteps->names.at(this->fidx % commandPhaseCount).generated.emplace_back("generate");
-                vk::CommandBuffer tail = this->newCommandBuffer();
-                tail.begin(ctx.vk, 0);
-                PassStepMarks tailMarks = this->generateMarks(tail);
-                this->recordDestinationTail(tail, 0, tailMarks);
-                tail.end(ctx.vk);
-                cmdbuf.end(ctx.vk);
-                recorded.emplace(std::move(cmdbuf));
-                this->destinationTails.at(this->fidx % commandPhaseCount).emplace(std::move(tail));
-            } else {
-                PassStepMarks noMarks;
-                this->recordDestinationTail(cmdbuf, i, noMarks);
-                cmdbuf.end(ctx.vk);
-                recorded.emplace(std::move(cmdbuf));
-            }
+            pass.generate->render(ctx.vk, cmdbuf, this->fidx);
+            marks.mark("generate");
+            if (this->profiling)
+                this->profiling->queries.write(cmdbuf.handle(), VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, static_cast<uint32_t>(5 + i * 3));
+            if (this->destColorConversion)
+                this->destColorConversion->render(ctx.vk, cmdbuf, i);
+
+            vk::releaseExternalImage(ctx.vk, cmdbuf.handle(), this->destImages.at(i).handle(),
+                VK_ACCESS_SHADER_WRITE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                VK_IMAGE_LAYOUT_GENERAL, this->sharedOwnership());
+
+            if (this->profiling)
+                this->profiling->queries.write(cmdbuf.handle(), VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, static_cast<uint32_t>(6 + i * 3));
+
+            cmdbuf.end(ctx.vk);
+            recorded.emplace(std::move(cmdbuf));
         }
     }
 
@@ -1930,28 +1910,18 @@ void Context::scheduleFrames(std::span<const float> timestamps, const DirectTarg
             dependency.end(ctx.vk);
             recordedDependency.emplace(std::move(dependency));
         }
-        // DG1 rule 4: output 0's tail is the destination tail, or the direct tail when the batch writes a lower image.
-        // Both are recorded before the completion fence is reset.
-        const vk::CommandBuffer& tail = direct
-            ? this->recordDirectWriteTail(direct->lowerIndex)
-            : *this->destinationTails.at(this->fidx % commandPhaseCount);
         const std::array commands{
             prepass.handle(), recordedDependency->handle(),
             this->cmdbufs.at(1).at(this->fidx % commandPhaseCount)->handle(),
-            tail.handle(),
             sourceReleaseCommand.handle(),
         };
-        // DG1 rule 3: the direct batch waits the lower image's acquire at compute, in this same submit.
-        const std::array directWaits{direct ? direct->wait : VK_NULL_HANDLE};
         // Finish fallible recording before resetting the completion fence.
         this->cmdbufFences.at(this->fidx % inFlightDepth).reset(this->ctx.vk);
         this->fenceScheduled.at(this->fidx % inFlightDepth) = true;
         const auto start = this->profiling ? ProfileClock::now() : ProfileClock::time_point{};
         vk::CommandBuffer::submitCommands(this->ctx.vk, commands,
-            direct ? std::span<const VkSemaphore>{directWaits} : std::span<const VkSemaphore>{},
-            this->syncSemaphore.handle(), this->idx,
-            {}, this->syncSemaphore.handle(), this->idx + 1, this->currentFence(),
-            VK_NULL_HANDLE, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+            {}, this->syncSemaphore.handle(), this->idx,
+            {}, this->syncSemaphore.handle(), this->idx + 1, this->currentFence());
         this->batchSubmitted = true;
         if (this->profiling) {
             this->profiling->timings.cpuPrepassSubmitUs = 0.0;
@@ -1962,20 +1932,13 @@ void Context::scheduleFrames(std::span<const float> timestamps, const DirectTarg
         this->schedulePrepass(VK_NULL_HANDLE);
         const auto start = this->profiling ? ProfileClock::now() : ProfileClock::time_point{};
         for (size_t i = 0; i < generatedFrameCount; i++) {
-            const bool last = i == generatedFrameCount - 1;
-            // DG1 rule 4: output 0 submits its chain with its destination tail.
-            std::array<VkCommandBuffer, 3> commands{};
-            size_t count = 0;
-            commands.at(count++) = this->cmdbufs.at(i + 1).at(this->fidx % commandPhaseCount)->handle();
-            if (i == 0)
-                commands.at(count++) = this->destinationTails.at(this->fidx % commandPhaseCount)->handle();
-            if (last)
-                commands.at(count++) = sourceReleaseCommand.handle();
+            const auto& cmdbuf = *this->cmdbufs.at(i + 1).at(this->fidx % commandPhaseCount);
+            const std::array commands{cmdbuf.handle(), sourceReleaseCommand.handle()};
             vk::CommandBuffer::submitCommands(this->ctx.vk,
-                std::span{commands}.first(count),
+                std::span{commands}.first(i == generatedFrameCount - 1 ? 2 : 1),
                 {}, this->prepassSemaphore.handle(), this->idx - 1,
                 {}, this->syncSemaphore.handle(), this->idx + i,
-                last ? this->currentFence() : VK_NULL_HANDLE);
+                i == generatedFrameCount - 1 ? this->currentFence() : VK_NULL_HANDLE);
             this->batchSubmitted = true;
         }
         if (this->profiling)
@@ -1983,148 +1946,6 @@ void Context::scheduleFrames(std::span<const float> timestamps, const DirectTarg
         this->idx += generatedFrameCount;
     }
     this->fidx++;
-}
-
-bool Context::setDirectTargets(const std::span<const VkImage> lowerImages) {
-    // DG1 rule 1: only an attached Sdr8 context with one output writes a lower image. Its R8G8B8A8_UNORM output is the
-    // only format the direct sets bind. Sdr8 is the only encoding without high precision.
-    if (!this->attached || this->broken || this->destImages.size() != 1 || this->ctx.highPrecision)
-        return false;
-    // DG1 rule 3: the recorded direct tails and sets name the targets replaced here, so every in-flight batch ends first.
-    // A context with nothing scheduled returns at once.
-    try {
-        bool reported{false};
-        while (!this->waitForIdle(previousWorkFenceTimeoutNs)) {
-            if (!reported) {
-                std::cerr << "framegen-vulkan: direct write targets wait for an in-flight backend batch\n";
-                reported = true;
-            }
-        }
-    } catch (const std::exception& error) {
-        std::cerr << "framegen-vulkan: unable to wait for direct write targets: " << error.what() << '\n';
-        return false;
-    }
-    this->directWrite.reset();
-    if (lowerImages.empty())
-        return true;
-    try {
-        DirectWriteTargets targets{
-            .pool = vk::DescriptorPool(this->ctx.vk,
-                calculateDirectWriteDescriptorLimits(lowerImages.size())),
-        };
-        targets.images.reserve(lowerImages.size());
-        targets.generates.reserve(lowerImages.size());
-        targets.tails.resize(lowerImages.size());
-        const VkExtent2D extent = this->destImages.front().getExtent();
-        for (const VkImage image : lowerImages)
-            targets.images.emplace_back(this->ctx.vk, image, extent,
-                VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_STORAGE_BIT);
-        // Every input is the one output 0's generate binds (see the constructor); only the output and its constants differ.
-        const auto& first = this->passes.front();
-        const auto& modelSources = selectModelSourceImages(this->sourceImages, this->workingSourceImages);
-        for (const auto& image : targets.images)
-            targets.generates.emplace_back(this->ctx, targets.pool, 0, modelSources,
-                first.gamma1.at(6).getImage(), first.delta1.at(2).getImage0(), first.delta1.at(2).getImage1(),
-                image);
-        this->directWrite.emplace(std::move(targets));
-        return true;
-    } catch (const std::exception& error) {
-        std::cerr << "framegen-vulkan: direct write targets unavailable; reason=" << error.what() << '\n';
-        return false;
-    }
-}
-
-PassStepMarks Context::generateMarks(const vk::CommandBuffer& cmdbuf) {
-    if (!this->passSteps)
-        return {};
-    const auto phase = this->fidx % commandPhaseCount;
-    const auto& names = this->passSteps->names.at(phase);
-    if (names.generated.empty())
-        throw std::logic_error("GP1 generate step is not named by its chain");
-    // The chain named every step before "generate", so this tail's generate query follows the chain's marks.
-    const auto next = 1 + names.prepass.size() + names.generated.size() - 1;
-    return PassStepMarks(*this->passSteps->pools.at(phase), cmdbuf.handle(),
-        static_cast<uint32_t>(next), nullptr);
-}
-
-void Context::recordDestinationTail(const vk::CommandBuffer& cmdbuf, const size_t i, PassStepMarks& marks) {
-    // Every generated output is fully overwritten. Discarding its old
-    // contents permits taking ownership without a consumer release.
-    const VkImageMemoryBarrier discard{
-        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-        .dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
-        .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-        .newLayout = VK_IMAGE_LAYOUT_GENERAL,
-        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .image = this->destImages.at(i).handle(),
-        .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
-    };
-    ctx.vk.get().df().CmdPipelineBarrier(cmdbuf.handle(),
-        VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-        0, 0, nullptr, 0, nullptr, 1, &discard);
-    this->passes.at(i).generate->render(ctx.vk, cmdbuf, this->fidx);
-    marks.mark("generate");
-    if (this->profiling)
-        this->profiling->queries.write(cmdbuf.handle(), VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, static_cast<uint32_t>(5 + i * 3));
-    if (this->destColorConversion)
-        this->destColorConversion->render(ctx.vk, cmdbuf, i);
-
-    vk::releaseExternalImage(ctx.vk, cmdbuf.handle(), this->destImages.at(i).handle(),
-        VK_ACCESS_SHADER_WRITE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-        VK_IMAGE_LAYOUT_GENERAL, this->sharedOwnership());
-
-    if (this->profiling)
-        this->profiling->queries.write(cmdbuf.handle(), VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, static_cast<uint32_t>(6 + i * 3));
-}
-
-const vk::CommandBuffer& Context::recordDirectWriteTail(const size_t lowerIndex) {
-    auto& targets = *this->directWrite;
-    auto& recorded = targets.tails.at(lowerIndex).at(this->fidx % commandPhaseCount);
-    if (!recorded) {
-        vk::CommandBuffer tail = this->newCommandBuffer();
-        tail.begin(ctx.vk, 0);
-        const VkImage lower = targets.images.at(lowerIndex).handle();
-        // The lower image is fully overwritten, so its previous contents are discarded (as the destination's are).
-        const VkImageMemoryBarrier enter{
-            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-            .dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
-            .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-            .newLayout = VK_IMAGE_LAYOUT_GENERAL,
-            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .image = lower,
-            .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
-        };
-        ctx.vk.get().df().CmdPipelineBarrier(tail.handle(),
-            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-            0, 0, nullptr, 0, nullptr, 1, &enter);
-        PassStepMarks marks = this->generateMarks(tail);
-        targets.generates.at(lowerIndex).render(ctx.vk, tail, this->fidx);
-        marks.mark("generate");
-        if (this->profiling)
-            this->profiling->queries.write(tail.handle(), VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 5);
-        // The image leaves in PRESENT_SRC_KHR: the caller presents it without a copy (DG1 rule 4).
-        const VkImageMemoryBarrier leave{
-            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-            .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
-            .dstAccessMask = VK_ACCESS_NONE,
-            .oldLayout = VK_IMAGE_LAYOUT_GENERAL,
-            .newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .image = lower,
-            .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
-        };
-        ctx.vk.get().df().CmdPipelineBarrier(tail.handle(),
-            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-            0, 0, nullptr, 0, nullptr, 1, &leave);
-        if (this->profiling)
-            this->profiling->queries.write(tail.handle(), VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 6);
-        tail.end(ctx.vk);
-        recorded.emplace(std::move(tail));
-    }
-    return *recorded;
 }
 
 void Context::abandonSourceFrame() {

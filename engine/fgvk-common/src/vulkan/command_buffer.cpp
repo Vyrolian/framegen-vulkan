@@ -353,12 +353,12 @@ void CommandBuffer::submitCommands(const vk::Vulkan& vk,
         VkSemaphore waitTimelineSemaphore, uint64_t waitValue,
         const std::span<const VkSemaphore> signalSemaphores,
         VkSemaphore signalTimelineSemaphore, uint64_t signalValue,
-        VkFence fence, const VkQueue queue, const VkPipelineStageFlags binaryWaitStage) {
+        VkFence fence, const VkQueue queue) {
     if (commands.empty())
         throw std::invalid_argument("Command-buffer submission is empty");
     const vk::detail::CommandBufferSubmitStorage storage{
         waitSemaphores, waitTimelineSemaphore, waitValue,
-        signalSemaphores, signalTimelineSemaphore, signalValue, binaryWaitStage
+        signalSemaphores, signalTimelineSemaphore, signalValue
     };
     VkTimelineSemaphoreSubmitInfo timelineInfo{};
     const auto info = submitInfo(storage, timelineInfo, commands);

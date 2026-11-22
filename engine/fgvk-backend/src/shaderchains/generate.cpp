@@ -15,7 +15,7 @@
 
 using namespace fgvk::backend;
 
-Generate::Generate(const Ctx& ctx, const vk::DescriptorPool& pool, size_t idx,
+Generate::Generate(const Ctx& ctx, size_t idx,
         const std::pair<vk::Image, vk::Image>& sourceImages,
         const vk::Image& inputImage1,
         const vk::Image& inputImage2,
@@ -35,7 +35,7 @@ Generate::Generate(const Ctx& ctx, const vk::DescriptorPool& pool, size_t idx,
         .sampler(ctx.bnbSampler)
         .sampler(ctx.eabSampler)
         .buffer(ctx.constantBuffers.at(idx))
-        .build(ctx.vk, pool, shader));
+        .build(ctx.vk, ctx.pool, shader));
     this->sets.emplace_back(ManagedShaderBuilder()
         .sampled(sourceImages.first)
         .sampled(sourceImages.second)
@@ -46,7 +46,7 @@ Generate::Generate(const Ctx& ctx, const vk::DescriptorPool& pool, size_t idx,
         .sampler(ctx.bnbSampler)
         .sampler(ctx.eabSampler)
         .buffer(ctx.constantBuffers.at(idx))
-        .build(ctx.vk, pool, shader));
+        .build(ctx.vk, ctx.pool, shader));
 
     // store dispatch extent
     this->dispatchExtent = backend::add_shift_extent(ctx.sourceExtent, 15, 4);

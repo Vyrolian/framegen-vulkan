@@ -1433,19 +1433,6 @@ namespace fgvk::layer {
         return VK_SUCCESS;
     }
 
-    void InternalSwapchainImages::returnParked(const ParkedLowerTake take) noexcept {
-        // DG1 rule 6, caller holds no lock. The slot stays busy, as it did under the take, and the push marks it again.
-        bool pushed{};
-        {
-            const std::lock_guard leafLock(impl->leaf);
-            if (impl->callInFlight > 0)
-                --impl->callInFlight;
-            pushed = impl->parking.push(ParkedLower{.lowerIndex = take.lowerIndex, .slot = take.slot});
-        }
-        if (!pushed)
-            impl->failSticky(VK_ERROR_UNKNOWN);
-    }
-
     void InternalSwapchainImages::failParkedTake(const uint32_t slot) noexcept {
         // The slot stays busy: its fence is never submitted, so nothing may acquire into it.
         static_cast<void>(slot);

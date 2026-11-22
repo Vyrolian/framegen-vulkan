@@ -35,19 +35,6 @@ namespace {
     };
 }
 
-vk::Limits backend::calculateDirectWriteDescriptorLimits(size_t count) {
-    // Each Generate builds two sets, and each set binds five sampled images, one storage image, two samplers and one
-    // uniform buffer (see Generate's constructor).
-    const auto m = static_cast<uint32_t>(count);
-    return vk::Limits{
-        .sets = 2 * m,
-        .uniform_buffers = 2 * m,
-        .samplers = 4 * m,
-        .sampled_images = 10 * m,
-        .storage_images = 2 * m,
-    };
-}
-
 vk::Limits backend::calculateDescriptorPoolLimits(
         size_t count, bool perf, bool colorConversion) {
     const auto m = static_cast<uint16_t>(count);

@@ -621,12 +621,6 @@ SwapchainCreateModification Root::modifySwapchainCreateInfo(const vk::Vulkan& vk
         throw ls::vulkan_error(res, "vkGetPhysicalDeviceSurfaceCapabilitiesKHR() failed");
     modification.surfaceMinImageCount = caps.minImageCount;
 
-    // DG1 rule 2: storage usage needs the surface and the lower format (R8G8B8A8_UNORM) to support storage images.
-    VkFormatProperties formatProperties{};
-    vk.fi().GetPhysicalDeviceFormatProperties(vk.physdev(), VK_FORMAT_R8G8B8A8_UNORM, &formatProperties);
-    const bool storageSupported = (caps.supportedUsageFlags & VK_IMAGE_USAGE_STORAGE_BIT) != 0 &&
-        (formatProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT) != 0;
-
     const auto contextProfile = *this->active_profile;
     modification.swapchainImageCountCompatibility =
         contextProfile.swapchain_image_count_compatibility;
@@ -637,8 +631,7 @@ SwapchainCreateModification Root::modifySwapchainCreateInfo(const vk::Vulkan& vk
         prospectiveCreateInfo,
         vk.frameGenerationInteropEnabled(),
         winePassThroughHdr,
-        caps.minImageCount,
-        storageSupported
+        caps.minImageCount
     ));
 
     const uint32_t applicationMinImages = createInfo.minImageCount;
@@ -649,9 +642,7 @@ SwapchainCreateModification Root::modifySwapchainCreateInfo(const vk::Vulkan& vk
         createInfo,
         vk.frameGenerationInteropEnabled(),
         winePassThroughHdr,
-        caps.minImageCount,
-        storageSupported,
-        &modification.directWriteCapable
+        caps.minImageCount
     );
 
     // Some WSI layers forward both a MAILBOX base mode and a MAILBOX-only

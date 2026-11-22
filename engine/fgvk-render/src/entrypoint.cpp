@@ -2285,7 +2285,6 @@ namespace {
                 .surfaceMinImageCount = modification.surfaceMinImageCount,
                 .swapchainImageCountCompatibility =
                     modification.swapchainImageCountCompatibility,
-                .directWriteCapable = modification.directWriteCapable,
                 .applicationOldSwapchainProvided =
                     info->oldSwapchain != VK_NULL_HANDLE,
                 .applicationExtent = modification.applicationExtent,

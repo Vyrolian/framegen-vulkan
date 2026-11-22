@@ -517,15 +517,12 @@ void logPacingGpuPass(const uint64_t context, const uint32_t step, const std::st
 }
 
 void logPacingOutputGpu(const uint64_t context, const uint64_t source, const bool available,
-        const int64_t copyStartNs, const int64_t copyEndNs, const int64_t stagingStartNs, const int64_t stagingEndNs,
-        const bool directWrite) noexcept {
+        const int64_t copyStartNs, const int64_t copyEndNs, const int64_t stagingStartNs, const int64_t stagingEndNs) noexcept {
     if (!pacingProfileEnabled()) return;
-    // DG1: a direct-written output has no copy, so its copy timestamps are zero.
-    const bool copied = available && !directWrite;
     present_records::enqueue(trace_recorder::RecordKind::PacingOutputGpu,
         present_records::PacingOutputGpuPayload{context, source, available,
-            copied ? copyStartNs : 0, copied ? copyEndNs : 0,
-            copied ? stagingStartNs : 0, copied ? stagingEndNs : 0, false, directWrite});
+            available ? copyStartNs : 0, available ? copyEndNs : 0,
+            available ? stagingStartNs : 0, available ? stagingEndNs : 0});
 }
 
 void logPacingRealCopyGpu(const uint64_t context, const uint64_t source, const bool available,

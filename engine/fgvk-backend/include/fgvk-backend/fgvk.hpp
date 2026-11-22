@@ -87,14 +87,6 @@ namespace fgvk::backend {
         bool overlap{};       // Whether FGVK_BACKEND_OVERLAP=1 grouped the recording.
     };
 
-    /// DG1: a registered lower image that one single-output batch writes in place of its destination image. The batch
-    /// waits `wait` at compute, so the caller may write the image only after `wait` is signalled by the image's acquire,
-    /// and the batch consumes that wait. The image leaves in PRESENT_SRC_KHR, so the caller presents it without a copy.
-    struct DirectTarget {
-        uint32_t lowerIndex{};                // Index in the span given to setDirectTargets.
-        VkSemaphore wait{VK_NULL_HANDLE};     // Binary semaphore the image's acquire signals.
-    };
-
     ///
     /// Primitive exception class that deliveres a detailed error message
     ///
@@ -311,15 +303,6 @@ namespace fgvk::backend {
         /// Performs no Vulkan operation.
         [[nodiscard]] std::vector<PassStepSummary> takePassStepSummaries(Context& context);
 
-        /// Register the lower images that a single-output attached context may write (DG1, see DirectTarget). Each image
-        /// is an R8G8B8A8_UNORM STORAGE image of the context's extent on the context's device, and its index is the
-        /// DirectTarget lowerIndex. Replacing or clearing waits for every in-flight batch of the context first, so no
-        /// recorded tail names a retired set or view. An empty span clears the targets.
-        /// @returns false when the context is not attached, is not Sdr8 with one output, is broken, or the targets
-        ///          cannot be created; the previous targets then stay in place.
-        ///
-        [[nodiscard]] bool setDirectTargets(Context& context, std::span<const VkImage> lowerImages);
-
         ///
         /// Schedule generated frames at explicit interpolation timestamps.
         ///
@@ -327,18 +310,11 @@ namespace fgvk::backend {
         /// number of timestamps may not exceed the destination-image capacity
         /// supplied when the context was opened.
         ///
-        /// With a direct target the batch must generate exactly one output, and the
-        /// output is written into the target's lower image instead of the destination
-        /// image. A direct target that is not registered throws before any work is
-        /// submitted.
-        ///
         /// @param context Context to use.
         /// @param timestamps Normalized positions between the previous and current real frame.
-        /// @param direct Optional lower image to write the single generated output into.
         /// @throws backend::error on failure
         ///
-        void scheduleFrames(Context& context, std::span<const float> timestamps,
-            const DirectTarget* direct = nullptr);
+        void scheduleFrames(Context& context, std::span<const float> timestamps);
 
         ///
         /// Update temporal model history without generating output frames.
