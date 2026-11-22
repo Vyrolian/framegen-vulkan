@@ -21,6 +21,7 @@
 #include "present_diagnostics.hpp"
 #include "runtime_transition.hpp"
 #include "present_timing.hpp"
+#include "swapchain/anti_lag_frame_limit.hpp"
 #include "swapchain/deferred_present.hpp"
 #include "swapchain/inline_generation.hpp"
 #include "swapchain/internal_images.hpp"
@@ -223,6 +224,12 @@ namespace fgvk::layer {
         [[nodiscard]] ReflexFrameLimit& reflexFrameLimit(VkSwapchainKHR swapchain) {
             if (!this->reflexLimit) this->reflexLimit = ReflexFrameLimitRegistry::get(swapchain);
             return *this->reflexLimit;
+        }
+        /// AMD anti-lag state of this swapchain's device, shared with the anti-lag wrapper
+        /// (anti_lag_frame_limit.hpp).
+        [[nodiscard]] AntiLagFrameLimit& antiLagFrameLimit(VkDevice device) {
+            if (!this->antiLagLimit) this->antiLagLimit = AntiLagFrameLimitRegistry::get(device);
+            return *this->antiLagLimit;
         }
         /// Profile currently applied to this context, read by the F5 internal-image gate.
         [[nodiscard]] const ls::GameConf& appliedProfile() const {
@@ -541,6 +548,9 @@ namespace fgvk::layer {
         // Reflex request of this swapchain, shared with the Reflex wrapper through
         // ReflexFrameLimitRegistry; fetched at the first present.
         std::shared_ptr<ReflexFrameLimit> reflexLimit;
+        // AL1: this device's AMD anti-lag state, shared with the anti-lag wrapper through
+        // AntiLagFrameLimitRegistry; fetched at the first present.
+        std::shared_ptr<AntiLagFrameLimit> antiLagLimit;
         // RA1: this swapchain's Reflex attribution, fetched at the first present, the Reflex ID of the present in
         // progress, and the sink its own lower markers are sent to (reflex_present_attribution.hpp).
         std::shared_ptr<ReflexPresentAttribution> reflexAttribution;

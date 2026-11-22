@@ -253,9 +253,10 @@ private:
 // controller above with its holds: the release point moves by the delay, the DXVK
 // token is recorded and the native acquire fallback holds. The GPU release (L5,
 // GpuReleasePredictor or GpuSteppingHold) runs with `releaseDelay` too. While the
-// application's own Reflex limiter holds the game (its last sleep mode has lowLatencyMode on,
-// reflex_frame_limit.hpp), `releaseDelay` is off and the controller and the GPU release reset,
-// and `justInTime` stays on. `reflexHolds` marks a present where Reflex is the reason.
+// application's own game limiter holds the game: Reflex (its last sleep mode has lowLatencyMode on,
+// reflex_frame_limit.hpp) or AMD anti-lag (its last ON call is recent, anti_lag_frame_limit.hpp), `releaseDelay`
+// is off and the controller and the GPU release reset, and `justInTime` stays on. `reflexHolds` marks a present
+// where either limiter is the reason; the parameter keeps the name `reflexLowLatency` for Reflex's flag.
 struct LowLatencyPlan {
     bool justInTime{};
     bool releaseDelay{};

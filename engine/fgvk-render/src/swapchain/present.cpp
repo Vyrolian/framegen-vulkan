@@ -639,6 +639,9 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
             return setSleepMode ? setSleepMode(vk.dev(), swapchain, &forward.info)
                                 : VK_ERROR_EXTENSION_NOT_PRESENT;
         });
+    // AL1: the same cap is the limit of the application's AMD anti-lag request, rounded up (anti_lag_frame_limit.hpp).
+    // The device's state is stored here and sent only when the application calls vkAntiLagUpdateAMD.
+    this->antiLagFrameLimit(vk.dev()).observe(effectiveFrameGenerationEnabled(this->profile), baseFpsCap);
     // An automatic cap change between two automatic values must move the next
     // source boundary, not grant a free frame; a free frame deepens the GPU
     // queue by one frame and costs about 0.3 s of render-fence holds near the
@@ -696,11 +699,12 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
     // Just-in-time release (low_latency; low_latency.hpp). A capped source present sets the
     // delay of its release point from its lead after the catch-up above. The cap clock and
     // limiterDeadline do not move. The delay is zero, and every hold it adds is off, without a
-    // cap or frame generation and while the application's Reflex limiter holds the game. The
-    // just-in-time batch start stays on with Reflex (latency.justInTime).
+    // cap or frame generation and while the application's Reflex limiter or AMD anti-lag holds the
+    // game. The just-in-time batch start stays on with either (latency.justInTime).
+    const bool antiLagHoldsGame = this->antiLagFrameLimit(vk.dev()).holdsGame(AntiLagFrameLimit::Clock::now());
     const auto latency = lowLatencyPlan(this->profile.low_latency, baseFpsCap > 0,
         effectiveFrameGenerationEnabled(this->profile),
-        this->reflexFrameLimit(swapchain).reflexLowLatency());
+        this->reflexFrameLimit(swapchain).reflexLowLatency() || antiLagHoldsGame);
     // A late present's lead is negative by its lateness (lastLateness), so the controller sees how
     // late it is. The release gate and the logs below keep the plain deadline minus arrival.
     const auto releaseDelay = this->lowLatencyRelease.update(latency.releaseDelay,

@@ -22,6 +22,7 @@
 #include "swapchain/present_marker.hpp"
 #include "swapchain/queue_start_probes.hpp"
 #include "swapchain/reflex_out_of_band.hpp"
+#include "swapchain/anti_lag_frame_limit.hpp"
 #include "swapchain/submit_tag_tracker.hpp"
 #include "pnext_chain.hpp"
 
@@ -1495,6 +1496,7 @@ namespace {
         instance_info->copyCalibrationDevices.erase(device);
         instance_info->applicationTimingDevices.erase(device);
         instance_info->presentFeedbackDevices.erase(device);
+        AntiLagFrameLimitRegistry::erase(device);
 
         // destroy device
         auto vkDestroyDevice = reinterpret_cast<PFN_vkDestroyDevice>(
@@ -1786,6 +1788,28 @@ namespace {
         return wrapper;
     }
 
+    // AL1: the application's AMD anti-lag update, limited with the frame-generation cap (anti_lag_frame_limit.hpp).
+    // A null pData forwards unchanged. The extension is never advertised, and the update is returned only when the
+    // next layer exports the command, as the Reflex wrappers are.
+    void VKAPI_CALL myvkAntiLagUpdateAMD(VkDevice device, const VkAntiLagDataAMD* pData) {
+        static thread_local CachedLower<PFN_vkAntiLagUpdateAMD, VkDevice> lower;
+        const auto next = lower.get(device, [&] {
+            return instance_info->funcs.GetDeviceProcAddr(device, "vkAntiLagUpdateAMD"); });
+        if (!next) return;
+        AntiLagFrameLimitRegistry::get(device)->applicationUpdate(pData,
+            [&](const VkAntiLagDataAMD* forwarded) {
+                next(device, forwarded);
+                // vkAntiLagUpdateAMD returns nothing; the call is reported as VK_SUCCESS.
+                return VK_SUCCESS;
+            });
+    }
+
+    PFN_vkVoidFunction antiLagPassThrough(VkDevice device, const char* name) {
+        if (std::string_view(name) != "vkAntiLagUpdateAMD") return nullptr;
+        if (!instance_info->funcs.GetDeviceProcAddr(device, name)) return nullptr;
+        return reinterpret_cast<PFN_vkVoidFunction>(myvkAntiLagUpdateAMD);
+    }
+
     PFN_vkVoidFunction myvkGetDeviceProcAddr(VkDevice device, const char* name) {
         if (!name) return nullptr;
         if (!layer_info || !instance_info) return nullptr;
@@ -1808,6 +1832,7 @@ namespace {
         }
 
         if (const auto reflex = reflexPassThrough(device, name)) return reflex;
+        if (const auto antiLag = antiLagPassThrough(device, name)) return antiLag;
         auto func = getProcAddr(name);
         if (func) return func;
 
