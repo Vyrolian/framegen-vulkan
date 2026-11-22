@@ -36,7 +36,7 @@ Check for `26.08` in the `version=` or `versions=` entry under `[Extension org.f
 
 ## Packaged extensions
 
-Download and extract `framegen-vulkan-v<version>-flatpak.tar.xz` from the matching release. You can also [build the bundle locally](BUILDING-FROM-SOURCE.md#choose-the-right-build-path). Run the installer from the extracted folder, then prepare each app below.
+Download and extract `framegen-vulkan-v<version>.zip` from the matching release and open its `flatpak` folder (releases up to v1.1.0: `framegen-vulkan-v<version>-flatpak.tar.xz`). You can also [build the bundle locally](BUILDING-FROM-SOURCE.md#choose-the-right-build-path). Run the installer from the extracted folder, then prepare each app below.
 
 ```bash
 ./install-flatpak

@@ -183,10 +183,76 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-  publish:
-    name: Publish Linux and Flatpak packages to GitHub Releases
-    if: github.event_name == 'push' && github.ref_type == 'tag'
+  bundle:
+    name: One release zip with the native and Flatpak installers
     needs: [release-archive, flatpak-archive]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    outputs:
+      zip: ${{ steps.zip.outputs.zip }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Download the verified Linux archive
+        uses: actions/download-artifact@v8
+        with:
+          name: framegen-vulkan-linux
+          path: parts
+
+      - name: Download the verified Flatpak archive
+        uses: actions/download-artifact@v8
+        with:
+          name: framegen-vulkan-flatpak
+          path: parts
+
+      - name: Build and verify the release zip
+        id: zip
+        env:
+          LINUX_ARCHIVE: ${{ needs.release-archive.outputs.archive }}
+          FLATPAK_ARCHIVE: ${{ needs.flatpak-archive.outputs.archive }}
+        run: |
+          sudo apt-get install -y zip unzip
+          (cd parts && sha256sum --check "$LINUX_ARCHIVE.sha256" "$FLATPAK_ARCHIVE.sha256")
+          version="$(tr -d '[:space:]' < engine/VERSION)"
+          name="framegen-vulkan-v${version}"
+          mkdir -p "bundle/$name/native" "bundle/$name/flatpak"
+          tar -xJf "parts/$LINUX_ARCHIVE" -C "bundle/$name/native"
+          tar -xJf "parts/$FLATPAK_ARCHIVE" -C "bundle/$name/flatpak"
+          # Both archives are regular files and directories only; a link would not survive every unzip tool.
+          test -z "$(find bundle -type l)"
+          # One timestamp for every entry (the HEAD commit time), so the zip does not depend on extraction time.
+          stamp="$(git log -1 --format=%cd --date=format:%Y%m%d%H%M.%S)"
+          find bundle -exec touch -h -t "$stamp" {} +
+          (cd bundle && find "$name" -print | LC_ALL=C sort | zip -X -q -@ "../$name.zip")
+          sha256sum "$name.zip" > "$name.zip.sha256"
+          sha256sum --check "$name.zip.sha256"
+          # The zip must unpack to working installers: manifest intact and executable bits kept.
+          mkdir check
+          unzip -q "$name.zip" -d check
+          (cd "check/$name/native" && sha256sum --check --quiet framegen-vulkan-install-manifest.txt)
+          test -x "check/$name/native/install"
+          test -x "check/$name/native/bin/fgvk"
+          test -x "check/$name/flatpak/install-flatpak"
+          ls check/$name/flatpak/*.flatpak
+          echo "zip=$name.zip" >> "$GITHUB_OUTPUT"
+
+      - name: Upload the release zip and its SHA-256 file
+        uses: actions/upload-artifact@v7
+        with:
+          name: framegen-vulkan-release
+          path: |
+            ${{ steps.zip.outputs.zip }}
+            ${{ steps.zip.outputs.zip }}.sha256
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    name: Publish the release zip to GitHub Releases
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    needs: [bundle]
     runs-on: ubuntu-22.04
     timeout-minutes: 10
     permissions:
@@ -197,26 +263,19 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Download the verified Linux archive
+      - name: Download the verified release zip
         uses: actions/download-artifact@v8
         with:
-          name: framegen-vulkan-linux
-          path: release-assets
-
-      - name: Download the verified Flatpak archive
-        uses: actions/download-artifact@v8
-        with:
-          name: framegen-vulkan-flatpak
+          name: framegen-vulkan-release
           path: release-assets
 
       - name: Create the GitHub release
         env:
-          LINUX_ARCHIVE: ${{ needs.release-archive.outputs.archive }}
-          FLATPAK_ARCHIVE: ${{ needs.flatpak-archive.outputs.archive }}
+          RELEASE_ZIP: ${{ needs.bundle.outputs.zip }}
           GH_TOKEN: ${{ github.token }}
         run: |
           cd release-assets
-          sha256sum --check "$LINUX_ARCHIVE.sha256" "$FLATPAK_ARCHIVE.sha256"
+          sha256sum --check "$RELEASE_ZIP.sha256"
           gh release create "$GITHUB_REF_NAME" --verify-tag --title "framegen-vulkan $GITHUB_REF_NAME" \
             --notes-file ../engine/RELEASE_NOTES.md \
-            "$LINUX_ARCHIVE" "$LINUX_ARCHIVE.sha256" "$FLATPAK_ARCHIVE" "$FLATPAK_ARCHIVE.sha256"
+            "$RELEASE_ZIP" "$RELEASE_ZIP.sha256"
