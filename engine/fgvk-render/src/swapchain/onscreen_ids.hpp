@@ -93,6 +93,24 @@ public:
         return !missLogged.exchange(true, std::memory_order_relaxed);
     }
 
+    // PT3: the reverse of translate. The application ID a lower ID was recorded with, exactly: lower IDs are unique on a
+    // swapchain. A lower ID that was not recorded (a generated or internal present, an ID older than the ring, or zero)
+    // gives nullopt.
+    [[nodiscard]] std::optional<uint64_t> applicationIdOf(const uint64_t lowerId) const noexcept {
+        if (!lowerId) return std::nullopt;
+        const std::lock_guard lock(mutex);
+        for (size_t i = 0; i < count; ++i) {
+            if (ring[i].lowerId == lowerId) return ring[i].appId;
+        }
+        return std::nullopt;
+    }
+
+    // PT3: true for the first caller only: a past presentation entry removed for having no application ID is logged once per
+    // swapchain.
+    [[nodiscard]] bool firstDrop() noexcept {
+        return !dropLogged.exchange(true, std::memory_order_relaxed);
+    }
+
 private:
     struct Pair {
         uint64_t appId{};
@@ -104,6 +122,7 @@ private:
     size_t next{};
     size_t count{};
     std::atomic_bool missLogged{false};
+    std::atomic_bool dropLogged{false};
 };
 
 // The ID owners of the active lower swapchains, found by a wait's device and swapchain. Only an

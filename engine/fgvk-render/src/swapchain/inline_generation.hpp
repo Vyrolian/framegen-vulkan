@@ -314,6 +314,17 @@ struct TimingRelativeCounts {
     uint64_t generatedLastNs{};
 };
 
+// PT2: the absolute-target counts for one window. generated counts the generated outputs that carried their share of the
+// last absolute interval, and generatedLeadNs is the last share forwarded in ns. The app counts are the application's target
+// kinds on the worker reals that presented: relative, absolute and zero (a timing request with targetTime 0).
+struct TimingAbsoluteCounts {
+    size_t generated{};
+    uint64_t generatedLeadNs{};
+    size_t appRelative{};
+    size_t appAbsolute{};
+    size_t appZero{};
+};
+
 // FI4, with FP4: at most one call wait times out per batch. A call output may wait only while no earlier wait of its batch
 // timed out, so later outputs of that batch take the poll and the worker fallback as they do without a wait.
 [[nodiscard]] constexpr bool inlineCallWaitAllowed(const bool batchTimedOut) noexcept {

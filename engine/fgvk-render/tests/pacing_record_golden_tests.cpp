@@ -85,6 +85,15 @@ void profileScenario() {
         .realLastNs = 8'333'333,
         .generatedLastNs = 8'333'333,
     });
+    // PT2: one absolute share given to a generated output (its last offset 8333 us), and the application's target kinds:
+    // one relative, two absolute and one zero real.
+    profile.timingAbsoluteCounts(fgvk::layer::TimingAbsoluteCounts{
+        .generated = 1,
+        .generatedLeadNs = 8'333'333,
+        .appRelative = 1,
+        .appAbsolute = 2,
+        .appZero = 1,
+    });
     profile.justInTimeBatch(2ms);
     profile.outputTiming(PacingProfile::ExtTiming, start + 10ms);
     profile.outputTiming(PacingProfile::ExtTiming, start + 25ms);

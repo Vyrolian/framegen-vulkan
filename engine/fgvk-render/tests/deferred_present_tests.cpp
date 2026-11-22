@@ -5978,6 +5978,399 @@ void relativeTargetForgottenOnSwapchainChangeAndGap() {
 #endif
 }
 
+#if defined(VK_EXT_present_timing)
+// PT2 helpers. An absolute request is a target with no relative flag, as the application wrote it. The tests keep the requests,
+// their nodes and the presents alive until the batches that use them have finished, as the PT1 helpers do.
+VkPresentTimingInfoEXT absoluteTarget(const uint64_t target) {
+    return VkPresentTimingInfoEXT{.sType = VK_STRUCTURE_TYPE_PRESENT_TIMING_INFO_EXT, .flags = 0,
+        .targetTime = target, .timeDomainId = 9, .presentStageQueries = VK_PRESENT_STAGE_QUEUE_OPERATIONS_END_BIT_EXT,
+        .targetTimeDomainPresentStage = VK_PRESENT_STAGE_REQUEST_DEQUEUED_BIT_EXT};
+}
+// One output of a batch: its present, and whether it is a generated output.
+struct BatchOutput {
+    const VkPresentInfoKHR* info;
+    bool generated;
+};
+// One batch of outputs in order, waited for. Output i is due 5 ms after output i - 1.
+void batchOf(DeferredPresent& worker, const std::vector<BatchOutput>& outputs) {
+    expect(worker.beginBatch(outputs.size()), "PT2 batch rejected");
+    const auto at = DeferredPresent::Clock::now();
+    for (size_t i = 0; i < outputs.size(); ++i)
+        expect(worker.enqueue(*outputs[i].info, at + 5ms * static_cast<long>(i), outputs[i].generated),
+            "PT2 output rejected");
+    worker.closeBatch();
+    const auto done = worker.finish(UINT64_MAX);
+    expect(done && done->count == outputs.size(), "PT2 batch did not complete");
+}
+// The request a generated output carries when it takes a share of an absolute interval: no feedback slot, no relative flag.
+VkPresentTimingInfoEXT absoluteShare(const uint64_t target) {
+    return VkPresentTimingInfoEXT{.sType = VK_STRUCTURE_TYPE_PRESENT_TIMING_INFO_EXT, .flags = 0,
+        .targetTime = target, .timeDomainId = 9, .presentStageQueries = 0,
+        .targetTimeDomainPresentStage = VK_PRESENT_STAGE_REQUEST_DEQUEUED_BIT_EXT};
+}
+#endif
+
+// PT2: an absolute target is forwarded unchanged. A generated output of a later batch takes A2 + D * k / L, where A2 and A1 are the
+// last two absolute reals presented on the swapchain, D = A2 - A1 and k is its place among the batch's generated outputs. The first
+// absolute real gives no share: one real is not an interval.
+void absoluteTargetSharesItsIntervalAcrossBatch() {
+#if defined(VK_EXT_present_timing)
+    auto queue = std::make_shared<DeferredPresentQueue>();
+    queue->queue = handle<VkQueue>(7);
+    VkSwapchainKHR swapchain = handle<VkSwapchainKHR>(11);
+    VkSemaphore wait = handle<VkSemaphore>(12);
+    uint32_t image = 0;
+    constexpr uint64_t base = 1'000'000'000'000;
+    constexpr uint64_t interval = 16'666'666;
+    VkPresentTimingInfoEXT first = absoluteTarget(base);
+    VkPresentTimingInfoEXT second = absoluteTarget(base + interval);
+    VkPresentTimingInfoEXT third = absoluteTarget(base + 2 * interval);
+    auto firstNode = requestNode(&first);
+    auto secondNode = requestNode(&second);
+    auto thirdNode = requestNode(&third);
+    const auto firstReal = presentOf(&firstNode, &swapchain, &wait, &image);
+    const auto secondReal = presentOf(&secondNode, &swapchain, &wait, &image);
+    const auto thirdReal = presentOf(&thirdNode, &swapchain, &wait, &image);
+    const auto generated = presentOf(nullptr, &swapchain, &wait, &image);
+    DeferredPresent worker(queue, present);
+    clearTimingLog();
+    lowerResult = VK_SUCCESS;
+    batchOf(worker, {{&generated, true}, {&firstReal, false}});
+    batchOf(worker, {{&generated, true}, {&secondReal, false}});
+    batchOf(worker, {{&generated, true}, {&thirdReal, false}});
+    const auto seen = timingRequests();
+    expect(seen.size() == 6, "PT2 batches did not present six outputs");
+    expect(!seen[0].requested && !seen[2].requested, "a generated output shared an interval before a pair of absolute reals");
+    expect(seen[1].requested && sameRequest(seen[1].info, first) && seen[3].requested && sameRequest(seen[3].info, second),
+        "an absolute real was not forwarded unchanged");
+    // The generated output of the third batch follows the second real: A2 + D / 2 with D = A2 - A1.
+    expect(seen[4].requested && sameRequest(seen[4].info, absoluteShare(base + interval + interval / 2)),
+        "the generated output did not take its share of the absolute interval");
+    expect(seen[5].requested && sameRequest(seen[5].info, third), "the third absolute real was changed");
+    expect(first.targetTime == base && second.targetTime == base + interval && third.targetTime == base + 2 * interval,
+        "the application's absolute targets were changed");
+    const auto counts = worker.takeTimingAbsoluteCounts();
+    expect(counts.generated == 1 && counts.generatedLeadNs == interval / 2 && counts.appAbsolute == 3 &&
+        counts.appRelative == 0 && counts.appZero == 0, "the absolute counts did not match the presents");
+    expect(worker.takeTimingAbsoluteCounts().generated == 0, "the absolute counts were not taken");
+#endif
+}
+
+// PT2: a batch of four outputs. Its three generated outputs take A2 + D / 4, A2 + 2D / 4 and A2 + 3D / 4 in order.
+void absoluteShareSplitsFourOutputs() {
+#if defined(VK_EXT_present_timing)
+    auto queue = std::make_shared<DeferredPresentQueue>();
+    queue->queue = handle<VkQueue>(7);
+    VkSwapchainKHR swapchain = handle<VkSwapchainKHR>(11);
+    VkSemaphore wait = handle<VkSemaphore>(12);
+    uint32_t image = 0;
+    constexpr uint64_t base = 2'000'000'000'000;
+    constexpr uint64_t interval = 16'666'666;
+    VkPresentTimingInfoEXT first = absoluteTarget(base);
+    VkPresentTimingInfoEXT second = absoluteTarget(base + interval);
+    VkPresentTimingInfoEXT third = absoluteTarget(base + 2 * interval);
+    auto firstNode = requestNode(&first);
+    auto secondNode = requestNode(&second);
+    auto thirdNode = requestNode(&third);
+    const auto firstReal = presentOf(&firstNode, &swapchain, &wait, &image);
+    const auto secondReal = presentOf(&secondNode, &swapchain, &wait, &image);
+    const auto thirdReal = presentOf(&thirdNode, &swapchain, &wait, &image);
+    const auto generated = presentOf(nullptr, &swapchain, &wait, &image);
+    DeferredPresent worker(queue, present);
+    clearTimingLog();
+    lowerResult = VK_SUCCESS;
+    batchOf(worker, {{&generated, true}, {&firstReal, false}});
+    batchOf(worker, {{&generated, true}, {&secondReal, false}});
+    batchOf(worker, {{&generated, true}, {&generated, true}, {&generated, true}, {&thirdReal, false}});
+    const auto seen = timingRequests();
+    expect(seen.size() == 8, "PT2 four-output batch did not present four outputs");
+    // The pair is (first, second), so D = interval. The shares are D * k / 4 for k = 1, 2, 3.
+    for (uint64_t k = 1; k <= 3; ++k) {
+        const auto& output = seen[3 + k];
+        expect(output.requested && sameRequest(output.info, absoluteShare(base + interval + interval * k / 4)),
+            "a generated output of a four-output batch did not take its share");
+    }
+    expect(seen[7].requested && sameRequest(seen[7].info, third), "the third absolute real was changed");
+    const auto counts = worker.takeTimingAbsoluteCounts();
+    expect(counts.generated == 3 && counts.generatedLeadNs == interval * 3 / 4, "the four-output counts did not match");
+#endif
+}
+
+// PT2: an interval wider than 250 ms, or one that does not go forward, gives no share. The next pair that is valid shares again.
+void absoluteIntervalLimitsAreRespected() {
+#if defined(VK_EXT_present_timing)
+    auto queue = std::make_shared<DeferredPresentQueue>();
+    queue->queue = handle<VkQueue>(7);
+    VkSwapchainKHR swapchain = handle<VkSwapchainKHR>(11);
+    VkSemaphore wait = handle<VkSemaphore>(12);
+    uint32_t image = 0;
+    constexpr uint64_t ms = 1'000'000;
+    constexpr uint64_t base = 3'000'000'000'000;
+    VkPresentTimingInfoEXT t1 = absoluteTarget(base);
+    VkPresentTimingInfoEXT t2 = absoluteTarget(base + 300 * ms);
+    VkPresentTimingInfoEXT t3 = absoluteTarget(base + 301 * ms);
+    VkPresentTimingInfoEXT t4 = absoluteTarget(base + 317 * ms);
+    VkPresentTimingInfoEXT t5 = absoluteTarget(base + 300 * ms);
+    VkPresentTimingInfoEXT t6 = absoluteTarget(base + 320 * ms);
+    auto n1 = requestNode(&t1);
+    auto n2 = requestNode(&t2);
+    auto n3 = requestNode(&t3);
+    auto n4 = requestNode(&t4);
+    auto n5 = requestNode(&t5);
+    auto n6 = requestNode(&t6);
+    const auto r1 = presentOf(&n1, &swapchain, &wait, &image);
+    const auto r2 = presentOf(&n2, &swapchain, &wait, &image);
+    const auto r3 = presentOf(&n3, &swapchain, &wait, &image);
+    const auto r4 = presentOf(&n4, &swapchain, &wait, &image);
+    const auto r5 = presentOf(&n5, &swapchain, &wait, &image);
+    const auto r6 = presentOf(&n6, &swapchain, &wait, &image);
+    const auto generated = presentOf(nullptr, &swapchain, &wait, &image);
+    DeferredPresent worker(queue, present);
+    clearTimingLog();
+    lowerResult = VK_SUCCESS;
+    batchOf(worker, {{&generated, true}, {&r1, false}});
+    batchOf(worker, {{&generated, true}, {&r2, false}});
+    // The pair (t1, t2) is 300 ms apart: no share.
+    batchOf(worker, {{&generated, true}, {&r3, false}});
+    // The pair (t2, t3) is 1 ms apart: the share is t3 + 0.5 ms.
+    batchOf(worker, {{&generated, true}, {&r4, false}});
+    // The pair (t3, t4) is 16 ms apart: the share is t4 + 8 ms.
+    batchOf(worker, {{&generated, true}, {&r5, false}});
+    // t5 is before t4, so the pair (t4, t5) goes backwards: no share.
+    batchOf(worker, {{&generated, true}, {&r6, false}});
+    const auto seen = timingRequests();
+    expect(seen.size() == 12, "PT2 limit batches did not present twelve outputs");
+    expect(!seen[0].requested && !seen[2].requested && !seen[4].requested,
+        "a generated output shared an interval before a valid pair");
+    expect(seen[6].requested && sameRequest(seen[6].info, absoluteShare(base + 301 * ms + ms / 2)),
+        "a 1 ms pair did not give its share");
+    expect(seen[8].requested && sameRequest(seen[8].info, absoluteShare(base + 317 * ms + 8 * ms)),
+        "a 16 ms pair did not give its share");
+    expect(!seen[10].requested, "a backwards pair gave a share");
+    expect(sameRequest(seen[5].info, t3) && sameRequest(seen[7].info, t4) && sameRequest(seen[9].info, t5) &&
+        sameRequest(seen[11].info, t6), "an absolute real was changed");
+#endif
+}
+
+// PT2: a zero target forgets the pair, so the generated output after it has no share. The zero target is counted as zero.
+void absoluteZeroTargetForgetsThePair() {
+#if defined(VK_EXT_present_timing)
+    auto queue = std::make_shared<DeferredPresentQueue>();
+    queue->queue = handle<VkQueue>(7);
+    VkSwapchainKHR swapchain = handle<VkSwapchainKHR>(11);
+    VkSemaphore wait = handle<VkSemaphore>(12);
+    uint32_t image = 0;
+    constexpr uint64_t base = 4'000'000'000'000;
+    constexpr uint64_t interval = 16'666'666;
+    VkPresentTimingInfoEXT first = absoluteTarget(base);
+    VkPresentTimingInfoEXT second = absoluteTarget(base + interval);
+    VkPresentTimingInfoEXT zero = absoluteTarget(0);
+    VkPresentTimingInfoEXT third = absoluteTarget(base + 3 * interval);
+    auto firstNode = requestNode(&first);
+    auto secondNode = requestNode(&second);
+    auto zeroNode = requestNode(&zero);
+    auto thirdNode = requestNode(&third);
+    const auto firstReal = presentOf(&firstNode, &swapchain, &wait, &image);
+    const auto secondReal = presentOf(&secondNode, &swapchain, &wait, &image);
+    const auto zeroReal = presentOf(&zeroNode, &swapchain, &wait, &image);
+    const auto thirdReal = presentOf(&thirdNode, &swapchain, &wait, &image);
+    const auto generated = presentOf(nullptr, &swapchain, &wait, &image);
+    DeferredPresent worker(queue, present);
+    clearTimingLog();
+    lowerResult = VK_SUCCESS;
+    batchOf(worker, {{&generated, true}, {&firstReal, false}});
+    batchOf(worker, {{&generated, true}, {&secondReal, false}});
+    // The pair is intact here: the generated output shares it. The zero target then forgets the pair.
+    batchOf(worker, {{&generated, true}, {&zeroReal, false}});
+    batchOf(worker, {{&generated, true}, {&thirdReal, false}});
+    const auto seen = timingRequests();
+    expect(seen.size() == 8, "PT2 zero batches did not present eight outputs");
+    expect(seen[4].requested && sameRequest(seen[4].info, absoluteShare(base + interval + interval / 2)),
+        "the generated output before the zero target did not take its share");
+    expect(sameRequest(seen[5].info, zero), "the zero target was changed");
+    expect(!seen[6].requested, "a generated output after a zero target still shared the forgotten pair");
+    expect(sameRequest(seen[7].info, third), "the third absolute real was changed");
+    const auto counts = worker.takeTimingAbsoluteCounts();
+    expect(counts.generated == 1 && counts.appZero == 1 && counts.appAbsolute == 3,
+        "the zero-target counts did not match the presents");
+#endif
+}
+
+// PT2: a timeDomainId change starts a new pair: an interval is never taken across domains.
+void absoluteDomainChangeForgetsThePair() {
+#if defined(VK_EXT_present_timing)
+    auto queue = std::make_shared<DeferredPresentQueue>();
+    queue->queue = handle<VkQueue>(7);
+    VkSwapchainKHR swapchain = handle<VkSwapchainKHR>(11);
+    VkSemaphore wait = handle<VkSemaphore>(12);
+    uint32_t image = 0;
+    constexpr uint64_t base = 5'000'000'000'000;
+    constexpr uint64_t interval = 16'666'666;
+    VkPresentTimingInfoEXT first = absoluteTarget(base);
+    VkPresentTimingInfoEXT second = absoluteTarget(base + interval);
+    VkPresentTimingInfoEXT third = absoluteTarget(base + 2 * interval);
+    third.timeDomainId = 10;
+    VkPresentTimingInfoEXT fourth = absoluteTarget(base + 3 * interval);
+    fourth.timeDomainId = 10;
+    VkPresentTimingInfoEXT fifth = absoluteTarget(base + 4 * interval);
+    fifth.timeDomainId = 10;
+    auto firstNode = requestNode(&first);
+    auto secondNode = requestNode(&second);
+    auto thirdNode = requestNode(&third);
+    auto fourthNode = requestNode(&fourth);
+    auto fifthNode = requestNode(&fifth);
+    const auto firstReal = presentOf(&firstNode, &swapchain, &wait, &image);
+    const auto secondReal = presentOf(&secondNode, &swapchain, &wait, &image);
+    const auto thirdReal = presentOf(&thirdNode, &swapchain, &wait, &image);
+    const auto fourthReal = presentOf(&fourthNode, &swapchain, &wait, &image);
+    const auto fifthReal = presentOf(&fifthNode, &swapchain, &wait, &image);
+    const auto generated = presentOf(nullptr, &swapchain, &wait, &image);
+    DeferredPresent worker(queue, present);
+    clearTimingLog();
+    lowerResult = VK_SUCCESS;
+    batchOf(worker, {{&generated, true}, {&firstReal, false}});
+    batchOf(worker, {{&generated, true}, {&secondReal, false}});
+    // The pair (first, second) is in domain 9: the share uses it. The real after it is in domain 10 and starts a new pair.
+    batchOf(worker, {{&generated, true}, {&thirdReal, false}});
+    batchOf(worker, {{&generated, true}, {&fourthReal, false}});
+    batchOf(worker, {{&generated, true}, {&fifthReal, false}});
+    const auto seen = timingRequests();
+    expect(seen.size() == 10, "PT2 domain batches did not present ten outputs");
+    expect(seen[4].requested && sameRequest(seen[4].info, absoluteShare(base + interval + interval / 2)),
+        "the pair in the first domain did not give its share");
+    expect(!seen[6].requested, "a generated output shared an interval across a timeDomainId change");
+    VkPresentTimingInfoEXT domainShare = absoluteShare(base + 3 * interval + interval / 2);
+    domainShare.timeDomainId = 10;
+    expect(seen[8].requested && sameRequest(seen[8].info, domainShare),
+        "the pair after the domain change did not give its share in the new domain");
+#endif
+}
+
+// PT2: a relative real switches the live state. The absolute pair is forgotten and the PT1 relative share takes over; the next
+// absolute real starts a new pair, so one real gives no share.
+void relativeRealSwitchesTheLiveState() {
+#if defined(VK_EXT_present_timing)
+    auto queue = std::make_shared<DeferredPresentQueue>();
+    queue->queue = handle<VkQueue>(7);
+    VkSwapchainKHR swapchain = handle<VkSwapchainKHR>(11);
+    VkSemaphore wait = handle<VkSemaphore>(12);
+    uint32_t image = 0;
+    constexpr uint64_t base = 6'000'000'000'000;
+    constexpr uint64_t interval = 16'666'666;
+    constexpr uint64_t relative = 16'666'666;
+    VkPresentTimingInfoEXT first = absoluteTarget(base);
+    VkPresentTimingInfoEXT second = absoluteTarget(base + interval);
+    VkPresentTimingInfoEXT relativeOne = relativeRequest(relative);
+    VkPresentTimingInfoEXT relativeTwo = relativeRequest(relative);
+    VkPresentTimingInfoEXT fifth = absoluteTarget(base + 10 * interval);
+    VkPresentTimingInfoEXT sixth = absoluteTarget(base + 11 * interval);
+    auto firstNode = requestNode(&first);
+    auto secondNode = requestNode(&second);
+    auto relativeNode = requestNode(&relativeOne);
+    auto relativeNodeTwo = requestNode(&relativeTwo);
+    auto fifthNode = requestNode(&fifth);
+    auto sixthNode = requestNode(&sixth);
+    const auto firstReal = presentOf(&firstNode, &swapchain, &wait, &image);
+    const auto secondReal = presentOf(&secondNode, &swapchain, &wait, &image);
+    const auto relativeReal = presentOf(&relativeNode, &swapchain, &wait, &image);
+    const auto relativeRealTwo = presentOf(&relativeNodeTwo, &swapchain, &wait, &image);
+    const auto fifthReal = presentOf(&fifthNode, &swapchain, &wait, &image);
+    const auto sixthReal = presentOf(&sixthNode, &swapchain, &wait, &image);
+    const auto generated = presentOf(nullptr, &swapchain, &wait, &image);
+    DeferredPresent worker(queue, present);
+    clearTimingLog();
+    lowerResult = VK_SUCCESS;
+    batchOf(worker, {{&generated, true}, {&firstReal, false}});
+    batchOf(worker, {{&generated, true}, {&secondReal, false}});
+    // The absolute pair shares into this batch; the relative real then takes the PT1 split, half its target.
+    batchOf(worker, {{&generated, true}, {&relativeReal, false}});
+    // The live state is relative: the generated output takes the PT1 share, and the relative real its half.
+    batchOf(worker, {{&generated, true}, {&relativeRealTwo, false}});
+    // The generated output before the absolute real still takes the relative share; the absolute real then forgets it.
+    batchOf(worker, {{&generated, true}, {&fifthReal, false}});
+    batchOf(worker, {{&generated, true}, {&sixthReal, false}});
+    const auto seen = timingRequests();
+    expect(seen.size() == 12, "PT2 switch batches did not present twelve outputs");
+    expect(seen[4].requested && sameRequest(seen[4].info, absoluteShare(base + interval + interval / 2)),
+        "the absolute pair did not share before the relative real");
+    VkPresentTimingInfoEXT half = relativeOne;
+    half.targetTime = relative / 2;
+    VkPresentTimingInfoEXT halfShare = half;
+    halfShare.presentStageQueries = 0;
+    expect(seen[5].requested && sameRequest(seen[5].info, half), "the relative real did not take its PT1 split");
+    expect(seen[6].requested && sameRequest(seen[6].info, halfShare),
+        "the generated output after the relative real did not take the PT1 share");
+    expect(seen[7].requested && sameRequest(seen[7].info, half), "the second relative real did not take its PT1 split");
+    expect(seen[8].requested && sameRequest(seen[8].info, halfShare),
+        "the generated output before the absolute real lost the relative target");
+    expect(sameRequest(seen[9].info, fifth), "the absolute real after relative targets was changed");
+    expect(!seen[10].requested, "a generated output after an absolute real shared a pair of one real");
+    expect(sameRequest(seen[11].info, sixth), "the last absolute real was changed");
+    const auto counts = worker.takeTimingAbsoluteCounts();
+    expect(counts.generated == 1 && counts.appRelative == 2 && counts.appAbsolute == 4,
+        "the switch counts did not match the presents");
+#endif
+}
+
+// PT2: a presented absolute real on another swapchain starts a new pair, and the 250 ms gap of the worker forgets the pair.
+void absolutePairForgottenOnSwapchainChangeAndGap() {
+#if defined(VK_EXT_present_timing)
+    auto queue = std::make_shared<DeferredPresentQueue>();
+    queue->queue = handle<VkQueue>(7);
+    VkSwapchainKHR swapchainX = handle<VkSwapchainKHR>(11);
+    VkSwapchainKHR swapchainY = handle<VkSwapchainKHR>(13);
+    VkSemaphore wait = handle<VkSemaphore>(12);
+    uint32_t image = 0;
+    constexpr uint64_t base = 7'000'000'000'000;
+    constexpr uint64_t interval = 16'666'666;
+    VkPresentTimingInfoEXT xFirst = absoluteTarget(base);
+    VkPresentTimingInfoEXT xSecond = absoluteTarget(base + interval);
+    VkPresentTimingInfoEXT yFirst = absoluteTarget(base);
+    VkPresentTimingInfoEXT ySecond = absoluteTarget(base + interval);
+    VkPresentTimingInfoEXT yThird = absoluteTarget(base + 2 * interval);
+    VkPresentTimingInfoEXT yFourth = absoluteTarget(base + 3 * interval);
+    auto xFirstNode = requestNode(&xFirst);
+    auto xSecondNode = requestNode(&xSecond);
+    auto yFirstNode = requestNode(&yFirst);
+    auto ySecondNode = requestNode(&ySecond);
+    auto yThirdNode = requestNode(&yThird);
+    auto yFourthNode = requestNode(&yFourth);
+    const auto xFirstReal = presentOf(&xFirstNode, &swapchainX, &wait, &image);
+    const auto xSecondReal = presentOf(&xSecondNode, &swapchainX, &wait, &image);
+    const auto yFirstReal = presentOf(&yFirstNode, &swapchainY, &wait, &image);
+    const auto ySecondReal = presentOf(&ySecondNode, &swapchainY, &wait, &image);
+    const auto yThirdReal = presentOf(&yThirdNode, &swapchainY, &wait, &image);
+    const auto yFourthReal = presentOf(&yFourthNode, &swapchainY, &wait, &image);
+    const auto generatedX = presentOf(nullptr, &swapchainX, &wait, &image);
+    const auto generatedY = presentOf(nullptr, &swapchainY, &wait, &image);
+    DeferredPresent worker(queue, present);
+    clearTimingLog();
+    lowerResult = VK_SUCCESS;
+    batchOf(worker, {{&generatedX, true}, {&xFirstReal, false}});
+    // X has one real: no pair yet.
+    batchOf(worker, {{&generatedX, true}, {&xSecondReal, false}});
+    // X now holds a pair, but the first output on Y must not share it.
+    batchOf(worker, {{&generatedY, true}, {&yFirstReal, false}});
+    // Y holds one real: no pair yet.
+    batchOf(worker, {{&generatedY, true}, {&ySecondReal, false}});
+    // Y holds the pair (yFirst, ySecond): it shares now.
+    batchOf(worker, {{&generatedY, true}, {&yThirdReal, false}});
+    // After the 250 ms gap the pair is forgotten, although the swapchain is the same.
+    std::this_thread::sleep_for(260ms);
+    batchOf(worker, {{&generatedY, true}, {&yFourthReal, false}});
+    const auto seen = timingRequests();
+    expect(seen.size() == 12, "PT2 swapchain batches did not present twelve outputs");
+    expect(!seen[0].requested && !seen[2].requested, "a generated output shared a pair before it had two reals");
+    expect(!seen[4].requested, "a generated output on another swapchain shared the absolute pair");
+    expect(!seen[6].requested, "a generated output shared a pair it had only one real of");
+    expect(seen[8].requested && sameRequest(seen[8].info, absoluteShare(base + interval + interval / 2)),
+        "the second swapchain's pair did not share after its second real");
+    expect(!seen[10].requested, "a generated output after the 250 ms gap shared the forgotten pair");
+    expect(sameRequest(seen[11].info, yFourth) && sameRequest(seen[9].info, yThird),
+        "an absolute real was changed");
+#endif
+}
+
 int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i)
         if (std::strcmp(argv[i], "--repro-xh2") == 0) return internalRealStallHoldsNextBatch();
@@ -6042,4 +6435,9 @@ int main(int argc, char** argv) {
     relativeTargetSplitsAcrossBatch(); skippedGeneratedGivesRealFullTarget();
     nonRelativeTimingIsForwardedUnchanged(); relativeTargetForgottenAfterAbsoluteReal();
     relativeTargetForgottenOnSwapchainChangeAndGap();
+    // PT2 last: each test clears the timing log it reads; the absolute pairs are per worker, so each test starts from none.
+    absoluteTargetSharesItsIntervalAcrossBatch(); absoluteShareSplitsFourOutputs();
+    absoluteIntervalLimitsAreRespected(); absoluteZeroTargetForgetsThePair();
+    absoluteDomainChangeForgetsThePair(); relativeRealSwitchesTheLiveState();
+    absolutePairForgottenOnSwapchainChangeAndGap();
 }

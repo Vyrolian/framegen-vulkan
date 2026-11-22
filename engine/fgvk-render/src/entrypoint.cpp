@@ -23,6 +23,7 @@
 #include "swapchain/queue_start_probes.hpp"
 #include "swapchain/reflex_out_of_band.hpp"
 #include "swapchain/anti_lag_frame_limit.hpp"
+#include "swapchain/past_presentation_ids.hpp"
 #include "swapchain/submit_tag_tracker.hpp"
 #include "pnext_chain.hpp"
 
@@ -39,6 +40,7 @@
 #include <cstdint>
 #include <exception>
 #include <iostream>
+#include <memory>
 #include <mutex>
 #include <new>
 #include <string_view>
@@ -1568,8 +1570,18 @@ namespace {
             ;
     }
 
+    // PT3: the past presentation timing query, exported only where the lower device exports it (VK_EXT_present_timing).
+    bool isPresentTimingCommand(const std::string_view name) {
+#if defined(VK_EXT_present_timing)
+        return name == "vkGetPastPresentationTimingEXT";
+#else
+        static_cast<void>(name);
+        return false;
+#endif
+    }
+
     bool isOptionalPresentationCommand(const std::string_view name) {
-        return name == "vkAcquireNextImage2KHR" || isPresentWaitCommand(name);
+        return name == "vkAcquireNextImage2KHR" || isPresentWaitCommand(name) || isPresentTimingCommand(name);
     }
 
     InternalSwapchainImages* internalImagesFor(VkSwapchainKHR swapchain);
@@ -1814,6 +1826,37 @@ namespace {
         if (!instance_info->funcs.GetDeviceProcAddr(device, name)) return nullptr;
         return reinterpret_cast<PFN_vkVoidFunction>(myvkAntiLagUpdateAMD);
     }
+
+#if defined(VK_EXT_present_timing)
+    // PT3: the application's past presentation timings on a swapchain whose on-screen gate is active. The driver reports the lower
+    // IDs; each kept entry gets the application ID it was recorded with, and an entry with none is removed (past_presentation_ids.hpp).
+    // The call goes down unchanged first: no gate, a count query, a swapchain without an owner or a failed call return its result
+    // untouched. The driver overwrites each presentStageCount, so the application's stage capacities are read before the call.
+    VkResult VKAPI_CALL myvkGetPastPresentationTimingEXT(VkDevice device,
+            const VkPastPresentationTimingInfoEXT* info, VkPastPresentationTimingPropertiesEXT* properties) {
+        static thread_local CachedLower<PFN_vkGetPastPresentationTimingEXT, VkDevice> lower;
+        const auto next = lower.get(device, [&] {
+            return instance_info->funcs.GetDeviceProcAddr(device, "vkGetPastPresentationTimingEXT"); });
+        if (!next) return VK_ERROR_EXTENSION_NOT_PRESENT;
+        std::shared_ptr<OnScreenIds> ids;
+        if (info && properties && properties->pPresentationTimings && OnScreenRegistry::anyActive())
+            ids = OnScreenRegistry::find({handleBits(device), handleBits(info->swapchain)});
+        if (!ids) return next(device, info, properties);
+        std::vector<uint32_t> capacities(properties->presentationTimingCount);
+        for (size_t i = 0; i < capacities.size(); ++i) {
+            const auto& slot = properties->pPresentationTimings[i];
+            capacities[i] = slot.pPresentStages ? slot.presentStageCount : 0;
+        }
+        const VkResult result = next(device, info, properties);
+        if (result != VK_SUCCESS && result != VK_INCOMPLETE) return result;
+        const uint32_t removed = rewritePastPresentationIds(*properties, capacities, *ids);
+        if (removed && ids->firstDrop())
+            std::clog << "framegen-vulkan: past presentation timing: removed " << removed
+                      << " entries with no application ID; swapchain=0x" << std::hex << handleBits(info->swapchain)
+                      << std::dec << '\n';
+        return result;
+    }
+#endif
 
     PFN_vkVoidFunction myvkGetDeviceProcAddr(VkDevice device, const char* name) {
         if (!name) return nullptr;
@@ -3200,6 +3243,9 @@ namespace {
                     { "vkWaitForPresentKHR", VKPTR(myvkWaitForPresentKHR) },
 #if defined(VK_KHR_present_wait2)
                     { "vkWaitForPresent2KHR", VKPTR(myvkWaitForPresent2KHR) },
+#endif
+#if defined(VK_EXT_present_timing)
+                    { "vkGetPastPresentationTimingEXT", VKPTR(myvkGetPastPresentationTimingEXT) },
 #endif
                     { "vkDestroySwapchainKHR", VKPTR(myvkDestroySwapchainKHR) }
 #undef VKPTR

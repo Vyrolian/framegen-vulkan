@@ -905,6 +905,13 @@ void formatPacingWindowBody(const PacingWindowPayload& payload, const PacingProf
          << " timing_relative_generated=" << window.timingRelativeGenerated
          << " timing_relative_real_last_us=" << window.timingRelativeRealLastNs / 1000
          << " timing_relative_generated_last_us=" << window.timingRelativeGeneratedLastNs / 1000;
+    // PT2: the absolute shares given to generated outputs (the last share in us), and the application's target kinds on the
+    // worker reals that presented.
+    line << " timing_absolute_generated=" << window.timingAbsoluteGenerated
+         << " timing_absolute_generated_lead_us=" << window.timingAbsoluteGeneratedLeadNs / 1000
+         << " timing_app_relative=" << window.timingAppRelative
+         << " timing_app_absolute=" << window.timingAppAbsolute
+         << " timing_app_zero=" << window.timingAppZero;
     line << '\n';
     for (size_t i = 0; i < window.outputTraceCount; ++i) {
         const auto& sample = window.outputTrace[i];

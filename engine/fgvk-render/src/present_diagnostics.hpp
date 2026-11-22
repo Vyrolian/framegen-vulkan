@@ -302,6 +302,10 @@ namespace fgvk::layer::present_diagnostics {
             // (see timingRelativeCounts).
             size_t timingRelativeReal{}, timingRelativeGenerated{};
             uint64_t timingRelativeRealLastNs{}, timingRelativeGeneratedLastNs{};
+            // PT2: the absolute shares the worker forwarded to generated outputs, the last share in ns, and the application's
+            // target kinds on the worker reals that presented (see timingAbsoluteCounts).
+            size_t timingAbsoluteGenerated{}, timingAppRelative{}, timingAppAbsolute{}, timingAppZero{};
+            uint64_t timingAbsoluteGeneratedLeadNs{};
             size_t fifoCallerTimingSources{};
             std::array<OutputSample, outputTraceCapacity> outputTrace{};
             size_t outputTraceCount{}, outputTraceDropped{};
@@ -533,6 +537,15 @@ namespace fgvk::layer::present_diagnostics {
             window.timingRelativeGenerated += counts.generated;
             if (counts.real) window.timingRelativeRealLastNs = counts.realLastNs;
             if (counts.generated) window.timingRelativeGeneratedLastNs = counts.generatedLastNs;
+        }
+        // PT2: the absolute-target counts taken since the last call (DeferredPresent::takeTimingAbsoluteCounts), added to this
+        // window. The last share keeps the value from the last take that forwarded one.
+        void timingAbsoluteCounts(const fgvk::layer::TimingAbsoluteCounts& counts) {
+            window.timingAbsoluteGenerated += counts.generated;
+            if (counts.generated) window.timingAbsoluteGeneratedLeadNs = counts.generatedLeadNs;
+            window.timingAppRelative += counts.appRelative;
+            window.timingAppAbsolute += counts.appAbsolute;
+            window.timingAppZero += counts.appZero;
         }
         // Persistent for this swapchain: set once a present uses F5 internal images.
         void internalImagesActive() { internalImages = true; }

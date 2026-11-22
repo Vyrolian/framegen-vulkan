@@ -2,7 +2,9 @@
 // GP1 and OS1 tests: the on-screen gate, the lower present ID owner with its translation, and the
 // watcher with its screen samples. No Vulkan: the watcher's wait is a fake function.
 #include "swapchain/onscreen_watch.hpp"
+#include "swapchain/past_presentation_ids.hpp"
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -169,6 +171,84 @@ void registryFindsOnlyWhileRegistered() {
     expect(!OnScreenRegistry::find(key), "a removed owner is no longer found");
     expect(!OnScreenRegistry::anyActive(), "the registry is inactive again after the last removal");
 }
+
+// ---- PT3: past presentation timing IDs ---------------------------------------------------------------
+
+void applicationIdOfIsTheExactReverse() {
+    OnScreenIds ids;
+    ids.record(10, 1);
+    ids.record(30, 3);
+    expect(ids.applicationIdOf(1) == 10, "a recorded lower ID gives its application ID");
+    expect(ids.applicationIdOf(3) == 30, "the second lower ID gives its own application ID");
+    expect(!ids.applicationIdOf(2), "an unrecorded lower ID has no application ID");
+    expect(!ids.applicationIdOf(4), "a lower ID newer than the records has no application ID");
+    expect(!ids.applicationIdOf(0), "lower ID zero has no application ID");
+    // The reverse lookup is by lower ID: the application ID 10 is not a lower ID, and it does not match the "at least" rule.
+    expect(!ids.applicationIdOf(10), "the reverse lookup matched an application ID");
+    for (uint64_t lower = 100; lower < 356; ++lower) ids.record(lower + 1000, lower);
+    expect(!ids.applicationIdOf(1), "a lower ID older than the ring has no application ID");
+    expect(ids.applicationIdOf(100) == 1100 && ids.applicationIdOf(355) == 1355,
+        "the newest 256 records keep their application IDs");
+}
+
+void firstDropIsReportedOnce() {
+    OnScreenIds ids;
+    expect(ids.firstDrop(), "the first removed past timing entry is reported");
+    expect(!ids.firstDrop(), "later removed entries are not reported again");
+}
+
+#if defined(VK_EXT_present_timing)
+// The driver reports four entries; the second has a lower ID that nothing recorded. Each slot's stage array is the application's, and
+// the capacities hold what the application passed in before the driver overwrote presentStageCount.
+void pastTimingIdsAreRewrittenAndCompacted() {
+    OnScreenIds ids;
+    ids.record(10, 1);
+    ids.record(30, 3);
+    ids.record(40, 4);
+    constexpr auto stage = VK_PRESENT_STAGE_QUEUE_OPERATIONS_END_BIT_EXT;
+    VkPresentStageTimeEXT stages0[2] {{stage, 100}, {stage, 101}};
+    VkPresentStageTimeEXT stages1[1] {{stage, 200}};
+    VkPresentStageTimeEXT stages2[2] {{stage, 300}, {stage, 301}};
+    VkPresentStageTimeEXT stages3[1] {{stage, 400}};
+    VkPastPresentationTimingEXT entries[4] {
+        {VK_STRUCTURE_TYPE_PAST_PRESENTATION_TIMING_EXT, nullptr, 1, 500, 2, stages0, VK_TIME_DOMAIN_DEVICE_KHR, 7, VK_TRUE},
+        {VK_STRUCTURE_TYPE_PAST_PRESENTATION_TIMING_EXT, nullptr, 2, 550, 1, stages1, VK_TIME_DOMAIN_DEVICE_KHR, 7, VK_TRUE},
+        {VK_STRUCTURE_TYPE_PAST_PRESENTATION_TIMING_EXT, nullptr, 3, 600, 2, stages2, VK_TIME_DOMAIN_DEVICE_KHR, 7, VK_FALSE},
+        {VK_STRUCTURE_TYPE_PAST_PRESENTATION_TIMING_EXT, nullptr, 4, 650, 1, stages3, VK_TIME_DOMAIN_DEVICE_KHR, 7, VK_TRUE},
+    };
+    const std::array<uint32_t, 4> capacities{2, 1, 2, 1};
+    VkPastPresentationTimingPropertiesEXT result{.sType = VK_STRUCTURE_TYPE_PAST_PRESENTATION_TIMING_PROPERTIES_EXT,
+        .presentationTimingCount = 4, .pPresentationTimings = entries};
+    const auto removed = rewritePastPresentationIds(result, capacities, ids);
+    expect(removed == 1 && result.presentationTimingCount == 3, "the entry with no application ID was not removed");
+    expect(entries[0].presentId == 10 && entries[0].presentStageCount == 2 && entries[0].pPresentStages == stages0 &&
+        entries[0].targetTime == 500 && stages0[1].time == 101, "the first entry changed when it was kept in place");
+    // The third driver entry moves into slot 1: its scalars come with it, and only one stage fits that slot's array.
+    expect(entries[1].presentId == 30 && entries[1].targetTime == 600 && entries[1].timeDomainId == 7 &&
+        entries[1].reportComplete == VK_FALSE && entries[1].presentStageCount == 1 && entries[1].pPresentStages == stages1 &&
+        stages1[0].time == 300, "the kept entry did not move with its scalars and its clamped stages");
+    // The fourth driver entry moves into slot 2, which keeps its own array.
+    expect(entries[2].presentId == 40 && entries[2].targetTime == 650 && entries[2].presentStageCount == 1 &&
+        entries[2].pPresentStages == stages2 && stages2[0].time == 400, "the last kept entry did not keep its slot's array");
+
+    // A count-only query is left as it is.
+    VkPastPresentationTimingPropertiesEXT countOnly{.sType = VK_STRUCTURE_TYPE_PAST_PRESENTATION_TIMING_PROPERTIES_EXT,
+        .presentationTimingCount = 4, .pPresentationTimings = nullptr};
+    expect(rewritePastPresentationIds(countOnly, capacities, ids) == 0 && countOnly.presentationTimingCount == 4,
+        "a count-only query was changed");
+
+    // When nothing is recorded, every entry goes.
+    OnScreenIds empty;
+    VkPresentStageTimeEXT lone[1] {{stage, 9}};
+    VkPastPresentationTimingEXT only{VK_STRUCTURE_TYPE_PAST_PRESENTATION_TIMING_EXT, nullptr, 9, 1, 1, lone,
+        VK_TIME_DOMAIN_DEVICE_KHR, 7, VK_TRUE};
+    VkPastPresentationTimingPropertiesEXT none{.sType = VK_STRUCTURE_TYPE_PAST_PRESENTATION_TIMING_PROPERTIES_EXT,
+        .presentationTimingCount = 1, .pPresentationTimings = &only};
+    const std::array<uint32_t, 1> oneCapacity{1};
+    expect(rewritePastPresentationIds(none, oneCapacity, empty) == 1 && none.presentationTimingCount == 0,
+        "entries with no recorded application ID were kept");
+}
+#endif
 
 // ---- Watcher ----------------------------------------------------------------------------------------
 
@@ -392,6 +472,11 @@ int main() {
     pushAfterStopIsIgnored();
     recordLineHasTheDocumentedFields();
     profileRegistersUntilStopped();
+    applicationIdOfIsTheExactReverse();
+    firstDropIsReportedOnce();
+#if defined(VK_EXT_present_timing)
+    pastTimingIdsAreRewrittenAndCompacted();
+#endif
     std::cout << "framegen-vulkan: on-screen profile tests passed\n";
     return 0;
 }

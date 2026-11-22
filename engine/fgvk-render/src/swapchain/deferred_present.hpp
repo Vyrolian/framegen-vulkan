@@ -814,6 +814,17 @@ public:
         counts.generatedLastNs = timingRelativeGeneratedLastNs.load(std::memory_order_relaxed);
         return counts;
     }
+    // PT2: the absolute-target counts since the last take, for the pacing profile's window (see TimingAbsoluteCounts). The last
+    // share is read, not taken, as takeTimingRelativeCounts does.
+    [[nodiscard]] TimingAbsoluteCounts takeTimingAbsoluteCounts() noexcept {
+        TimingAbsoluteCounts counts;
+        counts.generated = timingAbsoluteGenerated.exchange(0, std::memory_order_relaxed);
+        counts.generatedLeadNs = timingAbsoluteGeneratedLeadNs.load(std::memory_order_relaxed);
+        counts.appRelative = timingAppRelative.exchange(0, std::memory_order_relaxed);
+        counts.appAbsolute = timingAppAbsolute.exchange(0, std::memory_order_relaxed);
+        counts.appZero = timingAppZero.exchange(0, std::memory_order_relaxed);
+        return counts;
+    }
     // FP2: the owner that parks lower images after this worker's lower presents (see parkAfterPresentLocked). The swapchain
     // sets it before its first internal present. One swapchain has one owner, so the first one set is kept.
     // FP3: park returns why it did or did not park (see ParkOutcome).
@@ -1259,6 +1270,49 @@ private:
         uint64_t timeDomainId{};
         VkPresentStageFlagsEXT stage{};
     };
+    // PT2 rule 1: an absolute application target, a nonzero target without the relative flag.
+    [[nodiscard]] static bool absoluteRequest(const VkPresentTimingInfoEXT& timing) noexcept {
+        return timing.targetTime != 0 && (timing.flags & VK_PRESENT_TIMING_INFO_PRESENT_AT_RELATIVE_TIME_BIT_EXT) == 0;
+    }
+    // PT2 rule 3: the largest interval between two absolute targets that generated outputs share. A wider pair is not a
+    // frame cadence (the application paused or changed its target), so it gives no share.
+    static constexpr uint64_t absoluteIntervalLimitNs = 250'000'000;
+    // PT2, worker thread only: the last two absolute reals this worker presented on one swapchain (rule 2), and the fields a
+    // generated output of a later batch copies from the newer one (rule 3). A real switches which state is live (rule 4).
+    struct AbsoluteTiming {
+        bool valid{};
+        bool haveOlder{};
+        VkSwapchainKHR swapchain{};
+        uint64_t olderTargetTime{};
+        uint64_t newerTargetTime{};
+        VkPresentTimingInfoFlagsEXT flags{};
+        uint64_t timeDomainId{};
+        VkPresentStageFlagsEXT stage{};
+    };
+    // PT2 rule 2: the newer target minus the older one, when both exist, the newer is later, and the pair is within the limit.
+    [[nodiscard]] static bool absoluteInterval(const AbsoluteTiming& state, uint64_t& interval) noexcept {
+        if (!state.valid || !state.haveOlder || state.newerTargetTime <= state.olderTargetTime) return false;
+        interval = state.newerTargetTime - state.olderTargetTime;
+        return interval <= absoluteIntervalLimitNs;
+    }
+    // PT2 rules 2 and 4: a presented absolute real joins the pair. Another timeDomainId (or another swapchain) starts a new
+    // pair with this real alone, so no interval is ever taken across domains. The RELATIVE flag is never copied.
+    static void recordAbsolute(AbsoluteTiming& state, const VkPresentTimingInfoEXT& timing,
+            const VkSwapchainKHR swapchain) noexcept {
+        if (!state.valid || state.swapchain != swapchain || state.timeDomainId != timing.timeDomainId) {
+            state = AbsoluteTiming{};
+            state.valid = true;
+            state.swapchain = swapchain;
+            state.timeDomainId = timing.timeDomainId;
+        } else {
+            state.olderTargetTime = state.newerTargetTime;
+            state.haveOlder = true;
+        }
+        state.newerTargetTime = timing.targetTime;
+        state.flags = static_cast<VkPresentTimingInfoFlagsEXT>(timing.flags &
+            ~static_cast<VkPresentTimingInfoFlagsEXT>(VK_PRESENT_TIMING_INFO_PRESENT_AT_RELATIVE_TIME_BIT_EXT));
+        state.stage = timing.targetTimeDomainPresentStage;
+    }
 #endif
     struct Job {
         VkSwapchainKHR swapchain{};
@@ -1418,6 +1472,10 @@ private:
     // atomics: the worker stores them, and takeTimingRelativeCounts reads the last targets without a lock.
     std::atomic<size_t> timingRelativeReal{}, timingRelativeGenerated{};
     std::atomic<uint64_t> timingRelativeRealLastNs{}, timingRelativeGeneratedLastNs{};
+    // PT2: the absolute shares forwarded since the last take, the last share in ns, and the application's target kinds on the
+    // worker reals that presented (relaxed atomics, like the PT1 counts).
+    std::atomic<size_t> timingAbsoluteGenerated{}, timingAppRelative{}, timingAppAbsolute{}, timingAppZero{};
+    std::atomic<uint64_t> timingAbsoluteGeneratedLeadNs{};
     // W2, FGVK_REAL_OFFSET_US=auto: worker thread only; the cursor is used under queue->mutex.
     OutputOffsetController outputOffsetController;
     std::optional<uint64_t> correctionState;
@@ -2066,6 +2124,8 @@ private:
 #if defined(VK_EXT_present_timing)
         // PT1 rule 4: the relative target a later batch's generated outputs share (worker thread only).
         RelativeTiming relativeTiming{};
+        // PT2: the last two absolute reals, whose interval the next batch's generated outputs share (worker thread only).
+        AbsoluteTiming absoluteTiming{};
 #endif
         for (;;) {
             changed.wait(lock, [this] {
@@ -2084,11 +2144,13 @@ private:
                 realPresentLead.forget();
 #if defined(VK_EXT_present_timing)
                 relativeTiming = {};
+                absoluteTiming = {};
 #endif
             }
 #if defined(VK_EXT_present_timing)
-            // PT1 rule 4: an output on another swapchain forgets the remembered target.
+            // PT1 rule 4: an output on another swapchain forgets the remembered target. PT2 rule 4 is the same for the pair.
             if (relativeTiming.valid && relativeTiming.swapchain != current.swapchain) relativeTiming = {};
+            if (absoluteTiming.valid && absoluteTiming.swapchain != current.swapchain) absoluteTiming = {};
 #endif
             const auto ready = batch.readiness;
             if (first) updateCorrection(ready.source);
@@ -2405,7 +2467,11 @@ private:
             // A relative target forwarded by rule 2 or 3 is counted once its output presents, with its value.
             bool relativeForwarded{};
             uint64_t relativeForwardedNs{};
+            // PT2 rule 3: an absolute share is counted the same way, with the share's offset from the newer absolute target.
+            bool absoluteForwarded{};
+            uint64_t absoluteForwardedNs{};
             if (current.generated) {
+                uint64_t interval{};
                 if (!metadata.hasTiming && limit > 1 && relativeTiming.valid) {
                     // Rule 3: the share of the remembered target, with the remembered fields. No feedback slot is reserved.
                     timingInfo = VkPresentTimingInfoEXT{
@@ -2419,6 +2485,25 @@ private:
                     timingRequested = true;
                     relativeForwarded = true;
                     relativeForwardedNs = timingInfo.targetTime;
+                } else if (!metadata.hasTiming && limit > 1 && absoluteInterval(absoluteTiming, interval)) {
+                    // PT2 rule 3: the newer absolute target plus this output's share of the interval. The output's place is
+                    // the generated outputs of this batch before it, presented or skipped, plus one, never past limit - 1.
+                    size_t before{};
+                    for (size_t i = 0; i < index; ++i)
+                        before += batch.aggregate.calls[i].generated ? 1 : 0;
+                    const uint64_t place = std::min<uint64_t>(before + 1, limit - 1);
+                    const uint64_t offset = relativeShare(interval, place, limit);
+                    timingInfo = VkPresentTimingInfoEXT{
+                        .sType = VK_STRUCTURE_TYPE_PRESENT_TIMING_INFO_EXT,
+                        .flags = absoluteTiming.flags,
+                        .targetTime = absoluteTiming.newerTargetTime + offset,
+                        .timeDomainId = absoluteTiming.timeDomainId,
+                        .presentStageQueries = 0,
+                        .targetTimeDomainPresentStage = absoluteTiming.stage,
+                    };
+                    timingRequested = true;
+                    absoluteForwarded = true;
+                    absoluteForwardedNs = offset;
                 }
             } else if (metadata.hasTiming && limit > 1 && relativeRequest(metadata.timing)) {
                 // Rule 2: the real takes the target less the shares of the generated outputs presented before it in this
@@ -2732,6 +2817,25 @@ private:
                         .targetTime = metadata.timing.targetTime, .timeDomainId = metadata.timing.timeDomainId,
                         .stage = metadata.timing.targetTimeDomainPresentStage,
                     };
+                }
+            }
+            // PT2: an absolute share is counted once its output presents. A presented absolute real joins the pair (rule 2) and
+            // a real without an absolute target forgets it (rule 4); a skipped absolute real leaves the pair as it was. The
+            // application's target kind is counted for each real that presented.
+            if (absoluteForwarded && !result.skipped && current.generated) {
+                timingAbsoluteGenerated.fetch_add(1, std::memory_order_relaxed);
+                timingAbsoluteGeneratedLeadNs.store(absoluteForwardedNs, std::memory_order_relaxed);
+            }
+            if (!current.generated) {
+                if (!metadata.hasTiming || !absoluteRequest(metadata.timing)) {
+                    absoluteTiming = {};
+                } else if (!result.skipped) {
+                    recordAbsolute(absoluteTiming, metadata.timing, current.swapchain);
+                }
+                if (metadata.hasTiming && !result.skipped) {
+                    if (metadata.timing.targetTime == 0) timingAppZero.fetch_add(1, std::memory_order_relaxed);
+                    else if (relativeRequest(metadata.timing)) timingAppRelative.fetch_add(1, std::memory_order_relaxed);
+                    else timingAppAbsolute.fetch_add(1, std::memory_order_relaxed);
                 }
             }
 #endif

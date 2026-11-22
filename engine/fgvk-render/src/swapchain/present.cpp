@@ -240,11 +240,13 @@ VkResult Swapchain::present(const vk::Vulkan& vk,
             // FP4: so do the call waits of this present (see DeferredPresent::awaitCallLower).
             // XH2a: and the worker's real polls for a lower image (see DeferredPresent::takeWorkerRealPollCounts).
             // PT1: and the relative targets the worker forwarded (see DeferredPresent::takeTimingRelativeCounts).
+            // PT2: and the absolute shares and application target kinds (see DeferredPresent::takeTimingAbsoluteCounts).
             if (owner.deferredPresent) {
                 owner.pacingProfile->parkCounts(owner.deferredPresent->takeParkCounts());
                 owner.pacingProfile->callWaitCounts(owner.deferredPresent->takeCallWaitCounts());
                 owner.pacingProfile->workerRealPollCounts(owner.deferredPresent->takeWorkerRealPollCounts());
                 owner.pacingProfile->timingRelativeCounts(owner.deferredPresent->takeTimingRelativeCounts());
+                owner.pacingProfile->timingAbsoluteCounts(owner.deferredPresent->takeTimingAbsoluteCounts());
             }
             const auto window = owner.pacingProfile->finishSource(now);
             if (window) present_diagnostics::logPacingProfile(

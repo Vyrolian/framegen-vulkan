@@ -901,6 +901,23 @@ class WindowFieldTests(unittest.TestCase):
         negative = self.read([self.prefix + self.base + self.current + " timing_relative_real_last_us=-1"])
         self.assertEqual((len(negative[0]), negative[1]), (0, 1))
 
+    def test_timing_absolute_counters_are_plain_counts(self):
+        # PT2: the absolute shares and the application's target kinds are plain counts after timing_relative_generated_last_us.
+        # The lead is computed in us, so it must be finite and not negative.
+        body = self.base + self.current + (" park_error=3 worker_real_wait_max_us=15600 timing_relative_split_real=2 "
+            "timing_relative_generated=1 timing_relative_real_last_us=8333 timing_relative_generated_last_us=8333 "
+            "timing_absolute_generated=1 timing_absolute_generated_lead_us=8333 timing_app_relative=1 "
+            "timing_app_absolute=2 timing_app_zero=1")
+        windows, invalid = self.read([self.prefix + body])
+        self.assertEqual((len(windows), invalid), (1, 0))
+        self.assertEqual(windows[0].values["timing_absolute_generated"], 1.0)
+        self.assertEqual(windows[0].values["timing_absolute_generated_lead_us"], 8333.0)
+        self.assertEqual(windows[0].values["timing_app_relative"], 1.0)
+        self.assertEqual(windows[0].values["timing_app_absolute"], 2.0)
+        self.assertEqual(windows[0].values["timing_app_zero"], 1.0)
+        negative = self.read([self.prefix + self.base + self.current + " timing_absolute_generated_lead_us=-1"])
+        self.assertEqual((len(negative[0]), negative[1]), (0, 1))
+
     def test_call_path_outputs_and_spare_images_are_plain_counts(self):
         # FI4: inline_call_outputs and inline_call_spare follow inline_call_wait_us. They are plain counts, so a window with them
         # is read whatever their value, and a text value is still a plain field, not a rejected measurement.
