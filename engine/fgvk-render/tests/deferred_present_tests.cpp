@@ -5,9 +5,11 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cmath>
 #include <condition_variable>
 #include <cstdlib>
 #include <cstring>
+#include <iomanip>
 #include <iostream>
 #include <mutex>
 #include <optional>
@@ -2272,10 +2274,13 @@ struct InternalFake {
     // FP2: the park hook. Each call records the outputs call-held when it ran.
     int parks{};
     size_t parkHeld{};
+    // XH2 repro: while set and false, the lower acquire is not ready (see internalRealStallHoldsNextBatch).
+    std::atomic_bool* gate{};
 };
 VkResult fakeTryAcquire(void* owner, uint32_t* lowerIndex) {
     auto& state = *static_cast<InternalFake*>(owner);
     ++state.tryCalls;
+    if (state.gate && !state.gate->load()) return VK_NOT_READY;
     if (state.slow) std::this_thread::sleep_for(100us);
     if (state.notReadyPolls > 0) {
         --state.notReadyPolls;
@@ -5501,7 +5506,88 @@ void awaitCallLowerSeesWorkerParkDuringWait() {
     expect(copyPresents.size() == 1, "the wait real was not presented exactly once");
 }
 
-int main([[maybe_unused]] int argc, [[maybe_unused]] char** argv) {
+// XH2 repro (run only with --repro-xh2, not part of the suite). Batch A is one real whose lower image is not free:
+// its call copy is refused and the gate keeps the worker's lower acquire not ready, so the worker polls it from A's
+// deadline (presentInternalReal). The game's next present call admits batch B on this thread while the worker still
+// owns A, as completeDeferredPresentRetainingOverlap and beginDeferredPresentBatch do: finish() retains the newest
+// sealed batch, then beginBatch admits the next overlapping one. B's two reals are ready at once. The game stalls
+// 350 ms, the gate opens at the following present call, and both batches are finished in order.
+// Prints one line with each real's lateness (started minus its requested deadline) and B's output spacing.
+// Exit 0: B's first real started within 50 ms of its deadline, so the defect did not reproduce.
+// Exit 1: it did, because the worker ran B behind A's stalled real. Exit 2: the setup was not the scenario above.
+// The line ends with reproduced=1 or reproduced=0; CTest matches reproduced=1, so a broken setup (no line) fails.
+int internalRealStallHoldsNextBatch() {
+    using Milliseconds = std::chrono::duration<double, std::milli>;
+    const auto require = [](const bool ok, const char* message) {
+        if (!ok) { std::cerr << "xh2-repro: setup: " << message << '\n'; std::exit(2); }
+    };
+    auto queue = std::make_shared<DeferredPresentQueue>();
+    queue->queue = handle<VkQueue>(7);
+    DeferredPresent worker(queue, recordingPresent);
+    copyPresents.clear();
+    const auto swapchain = handle<VkSwapchainKHR>(11);
+    const auto continuation = handle<VkSemaphore>(12);
+    uint32_t applicationImage = 1;
+    const VkPresentInfoKHR info{.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+        .waitSemaphoreCount = 1, .pWaitSemaphores = &continuation,
+        .swapchainCount = 1, .pSwapchains = &swapchain, .pImageIndices = &applicationImage};
+    std::atomic_bool gate{};
+    auto stalled = std::make_shared<InternalFake>();
+    stalled->callResult = VK_NOT_READY;
+    stalled->lowerIndex = 6;
+    stalled->presentWait = handle<VkSemaphore>(95);
+    stalled->gate = &gate;
+    auto next = std::make_shared<InternalFake>();
+    next->lowerIndex = 2;
+    next->presentWait = handle<VkSemaphore>(96);
+
+    const auto t0 = DeferredPresent::Clock::now();
+    // Batch A: deadline t0 + 4 ms. The call copy is refused, so the worker owns the real from its deadline.
+    require(worker.beginBatch(1, {.overlap = true}), "batch A rejected");
+    InlineCallOutcome outcome{};
+    require(worker.enqueueInternalReal(info, t0 + 4ms, internalCallCopy(stalled, 1, 4), {}, 0, &outcome),
+        "stalled real rejected");
+    require(outcome == InlineCallOutcome::Acquire, "stalled real was not refused at the call");
+    worker.closeBatch();
+    // The next present call arrives at t0 + 6 ms, while the worker is polling A's real.
+    std::this_thread::sleep_until(t0 + 6ms);
+    require(worker.pending() && !worker.hasCompletion(), "batch A finished before the next batch was admitted");
+    static_cast<void>(worker.finish(UINT64_MAX, false, true));
+    require(worker.beginBatch(2, {.overlap = true}), "batch B was not admitted while batch A was outputting");
+    require(worker.enqueueInternalReal(info, t0 + 8ms, internalCopy(next, 2)), "batch B's first real rejected");
+    applicationImage = 3;
+    require(worker.enqueueInternalReal(info, t0 + 12ms, internalCopy(next, 3)), "batch B's second real rejected");
+    worker.closeBatch();
+    // The game stalls 350 ms. The gate opens at the following present call, before anything waits on A.
+    std::this_thread::sleep_for(350ms);
+    gate.store(true);
+    const auto first = worker.finish(UINT64_MAX);
+    const auto second = worker.finish(UINT64_MAX);
+    require(first && first->count == 1 && !first->calls[0].skipped && first->calls[0].workerCopy &&
+        first->calls[0].imageIndex == 6, "the stalled real did not present from its worker copy");
+    require(second && second->count == 2 && !second->calls[0].skipped && !second->calls[1].skipped,
+        "batch B was skipped or failed");
+    require(stalled->tryCalls > 1, "the stalled real was never polled");
+    require(copyPresents.size() == 3 && copyPresents[0] == std::pair{6u, handle<VkSemaphore>(95)} &&
+        copyPresents[1] == std::pair{2u, handle<VkSemaphore>(96)} &&
+        copyPresents[2] == std::pair{2u, handle<VkSemaphore>(96)},
+        "the lower presents were not A's real and then B's two reals in order");
+
+    const auto aLate = Milliseconds(first->calls[0].started - (t0 + 4ms));
+    const auto b0Late = Milliseconds(second->calls[0].started - (t0 + 8ms));
+    const auto b1Late = Milliseconds(second->calls[1].started - (t0 + 12ms));
+    const auto spacing = Milliseconds(second->calls[1].started - second->calls[0].started);
+    std::cout << std::fixed << std::setprecision(1) << "xh2-repro: a_real_late_ms=" << aLate.count()
+              << " b0_late_ms=" << b0Late.count() << " b1_late_ms=" << b1Late.count()
+              << " b_spacing_ms=" << spacing.count();
+    const bool reproduced = std::abs(b0Late.count()) > 50.0;
+    std::cout << " reproduced=" << (reproduced ? 1 : 0) << '\n';
+    return reproduced ? 1 : 0;
+}
+
+int main(int argc, char** argv) {
+    for (int i = 1; i < argc; ++i)
+        if (std::strcmp(argv[i], "--repro-xh2") == 0) return internalRealStallHoldsNextBatch();
     generatedPreparedOrderAndBudget(); generatedCopyCanPrecedeHostReadiness(); generatedPreparationFallbackAndGates();
     generatedChainOutputOffsetsMoveEachOutput();
     generatedPreparedRetirement(); generatedPreparedStop(); generatedPreparationErrors();

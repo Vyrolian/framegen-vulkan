@@ -308,6 +308,10 @@ if(BUILD_TESTING)
     target_include_directories(fgvk-deferred-present-tests PRIVATE "../fgvk-common/include")
     add_test(NAME deferred-present COMMAND fgvk-deferred-present-tests)
     fgvk_register_portable_policy_test(fgvk-deferred-present-tests deferred-present)
+    # XH2 repro: a worker batch queued behind a stalled real. It passes while the defect reproduces (reproduced=1);
+    # a setup failure prints no line and fails. When the fix lands, match reproduced=0 instead.
+    add_test(NAME deferred-present-xh2-repro COMMAND fgvk-deferred-present-tests --repro-xh2)
+    set_tests_properties(deferred-present-xh2-repro PROPERTIES PASS_REGULAR_EXPRESSION "xh2-repro: .* reproduced=1")
 
     # The hitch analyser is standard-library Python; its synthetic capture is checked here.
     add_test(NAME analyze-hitches
