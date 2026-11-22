@@ -112,10 +112,12 @@ VkResult Swapchain::presentGeneratedFrames(
         plan.scheduledGeneratedFrames.size(), this->info.surfaceOrigin, this->currentPresentMode);
     // FI2 rule 1 / FI4: an attached backend takes the call path on every worker batch, whatever the surface, present mode
     // and multiplier (inlineCallBatchEligible). Its call-held budget replaces canPreacquireGenerated(), and is checked per
-    // output below. The budget cap is the swapchain's call images (info.inlineCall), zero when it has none.
+    // output below. The budget cap is this batch's call images (FI6: inlineCallImagesForBatch, the create-time count raised
+    // to the batch's outputs plus two), zero when the swapchain has no call path.
     // FI5: the budget reserves the worker's one held lower image (workerHeldLowerImages), not the create floor's two.
     const bool inlineCalls = this->attachedGeneration();
-    const uint32_t callImages = this->info.inlineCall.count;
+    const uint32_t callImages = inlineCallImagesForBatch(this->info.inlineCall.count,
+        inlineBatchOutputs(plan.scheduledGeneratedFrames.size()));
     const uint32_t callBudget = inlineCalls
         ? inlineCallLowerBudget(this->info.images.size(), this->info.surfaceMinImageCount, workerHeldLowerImages,
             callImages)
@@ -722,6 +724,7 @@ VkResult Swapchain::presentGeneratedFrames(
         .eligible = inlineBatch && inlineAllDirect,
         .batch = inlineBatch,
         .outcome = inlineBatch && !inlineAllDirect ? InlineCallOutcome::Cascade : InlineCallOutcome::None,
+        .callBudget = callBudget,
     };
     const auto result = this->presentOriginalImage(
         invocation, this->postCopySemaphores.at(this->presentationSlotFor(invocation.imageIndex)).first.handle(),

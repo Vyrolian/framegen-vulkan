@@ -274,8 +274,8 @@ bool Swapchain::enqueueInternalRealPresent(const vk::Vulkan& vk,
         copy.parkedCount = &internalRealParkedCount;
         copy.callQueue = vk.queue();
         copy.callFamily = vk.queueFamilyIndex();
-        copy.callBudget = inlineCallLowerBudget(this->info.images.size(), this->info.surfaceMinImageCount,
-            workerHeldLowerImages, this->info.inlineCall.count);
+        // FI6: the batch's call budget, which presentGeneratedFrames set with eligible.
+        copy.callBudget = this->inlineRealCall.callBudget;
     }
     // FP2: the worker parks lower images for this owner after its lower presents, for an attached swapchain only.
     if (this->attachedGeneration())

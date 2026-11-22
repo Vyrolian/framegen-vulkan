@@ -138,6 +138,16 @@ inline constexpr uint32_t inlineCallHeadroomImages = 2;
     return static_cast<uint32_t>(generatedOutputs + 1);
 }
 
+// FI6: the call image cap of one batch. A live multiplier switch does not recreate the swapchain, so the create-time count
+// keeps the outputs of the multiplier it was created for. The cap follows the current batch's outputs, and the create-time
+// count stays the floor. A swapchain without a call path (createdCount 0) has no cap. inlineCallLowerBudget still bounds the
+// cap by the images above the surface minimum and the worker's hold, so it never exceeds the Vulkan forward-progress bound.
+[[nodiscard]] constexpr uint32_t inlineCallImagesForBatch(const uint32_t createdCount, const uint32_t batchOutputs) noexcept {
+    if (createdCount == 0)
+        return 0;
+    return std::max(createdCount, batchOutputs + inlineCallHeadroomImages);
+}
+
 // FI4: the signal that output i waits for before its copy. A worker copy or skip signals its copied semaphore, every other
 // output (a direct call copy or a present-thread copy) signals the post-copy chain. Each output waits what its predecessor
 // signalled, so the two chains join at any boundary between kinds.

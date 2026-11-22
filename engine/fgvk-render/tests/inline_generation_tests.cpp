@@ -6,6 +6,7 @@
 // FI2: the call-held lower budget (rule 2) and the hold check.
 // FI4: the call path on every worker batch, its spare images, the budget cap, the experiment gate, the park target, the
 // one-timeout-per-batch wait rule and the signal each output waits.
+// FI6: the call image cap of a batch follows its outputs after a live multiplier switch, still within the budget bound.
 
 #include "swapchain/create_policy.hpp"
 #include "swapchain/inline_generation.hpp"
@@ -221,6 +222,47 @@ namespace {
         require(inlineBatchOutputs(4) == 5, "a 5x batch has five outputs");
     }
 
+    // FI6: the call image cap of a batch is its create-time count, or its outputs plus the headroom when a live multiplier
+    // switch raised the outputs above that count. A swapchain without a call path has no cap.
+    void testCallImagesForBatch() {
+        using fgvk::layer::inlineCallImagesForBatch;
+        using fgvk::layer::inlineCallLowerBudget;
+        using fgvk::layer::workerHeldLowerImages;
+        require(inlineCallImagesForBatch(0, 3) == 0, "a swapchain without a call path must have no call image cap");
+        require(inlineCallImagesForBatch(4, 2) == 4, "a 2x batch on a 2x create must keep the create-time count of four");
+        require(inlineCallImagesForBatch(4, 3) == 5, "a 3x batch after a live switch from a 2x create must raise the cap to five");
+        require(inlineCallImagesForBatch(4, 4) == 6, "a 4x batch after a live switch from a 2x create must raise the cap to six");
+        require(inlineCallImagesForBatch(5, 3) == 5, "a 3x batch on a 5-image create must keep the create-time count");
+        require(inlineCallImagesForBatch(6, 2) == 6, "a 2x batch on a 6-image create must keep the create-time count");
+        // The live switch's budget: the cap rises, and the surface minimum and the worker's hold still bound the budget.
+        require(inlineCallLowerBudget(8, 2, workerHeldLowerImages, inlineCallImagesForBatch(4, 3)) == 5,
+            "Wayland 3x after a live switch gets five");
+        require(inlineCallLowerBudget(8, 4, workerHeldLowerImages, inlineCallImagesForBatch(4, 3)) == 3,
+            "X11 stays bounded at three");
+        require(inlineCallLowerBudget(8, 2, workerHeldLowerImages, inlineCallImagesForBatch(4, 4)) == 5,
+            "Wayland 4x after a live switch gets the five images above the surface minimum and the hold");
+        require(inlineCallLowerBudget(8, 4, workerHeldLowerImages, inlineCallImagesForBatch(4, 4)) == 3,
+            "X11 4x stays bounded at three");
+        for (uint32_t createdCount = 0; createdCount <= 8; ++createdCount) {
+            for (uint32_t outputs = 2; outputs <= 6; ++outputs) {
+                const uint32_t cap = inlineCallImagesForBatch(createdCount, outputs);
+                const bool capFollowsRule = createdCount == 0
+                    ? cap == 0
+                    : cap >= createdCount && cap >= outputs + fgvk::layer::inlineCallHeadroomImages;
+                require(capFollowsRule,
+                    "the call image cap must be the create-time count or the outputs plus the headroom, whichever is larger");
+                for (size_t lowerImages = 0; lowerImages <= 12; ++lowerImages) {
+                    for (uint32_t surfaceMin = 0; surfaceMin <= lowerImages; ++surfaceMin) {
+                        const uint32_t budget = inlineCallLowerBudget(lowerImages, surfaceMin, workerHeldLowerImages, cap);
+                        require(budget <= cap, "the live-switch budget must not exceed the call image cap");
+                        require(budget == 0 || budget + workerHeldLowerImages <= lowerImages - surfaceMin,
+                            "the live-switch budget plus the worker's hold must stay within S - M");
+                    }
+                }
+            }
+        }
+    }
+
     // FI4: the park target of an eligible batch is its outputs, so a park fits within the budget at every multiplier.
     void testParkTargetFollowsOutputs() {
         using namespace fgvk::layer;
@@ -411,6 +453,7 @@ int main() {
         testCallBatchEligibility();
         testExperimentGate();
         testBatchOutputs();
+        testCallImagesForBatch();
         testParkTargetFollowsOutputs();
         testCallWaitOncePerBatch();
         testChainSignalBefore();

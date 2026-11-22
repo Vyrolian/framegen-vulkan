@@ -616,6 +616,9 @@ namespace fgvk::layer {
             bool eligible{false};
             bool batch{false};
             InlineCallOutcome outcome{InlineCallOutcome::None};
+            // FI6: the batch's call budget, set with eligible. The real's copy at the call is bounded by the same budget as
+            // the batch's generated outputs, not by the create-time count.
+            uint32_t callBudget{};
         };
         InlineRealCall inlineRealCall{};
         // FI4, with FP4: a call wait of the present in progress timed out, so its later call waits are skipped (see
