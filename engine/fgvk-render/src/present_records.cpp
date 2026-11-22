@@ -893,6 +893,12 @@ void formatPacingWindowBody(const PacingWindowPayload& payload, const PacingProf
          << " park_fence=" << parkOutcome(fgvk::layer::ParkOutcome::Fence)
          << " park_acquire=" << parkOutcome(fgvk::layer::ParkOutcome::Acquire)
          << " park_error=" << parkOutcome(fgvk::layer::ParkOutcome::Error);
+    // XH2a: the worker's real polls that found no lower image, by reason, and the longest worker real wait in us.
+    line << " worker_real_poll_slot_busy=" << window.workerRealPollSlotBusy
+         << " worker_real_poll_fence=" << window.workerRealPollFence
+         << " worker_real_poll_acquire=" << window.workerRealPollAcquire
+         << " worker_real_poll_error=" << window.workerRealPollError
+         << " worker_real_wait_max_us=" << window.workerRealWaitMaxUs;
     line << '\n';
     for (size_t i = 0; i < window.outputTraceCount; ++i) {
         const auto& sample = window.outputTrace[i];

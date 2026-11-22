@@ -1256,7 +1256,7 @@ namespace fgvk::layer {
         return result;
     }
 
-    VkResult InternalSwapchainImages::workerTryAcquire(uint32_t* const lowerIndex) {
+    VkResult InternalSwapchainImages::workerTryAcquire(uint32_t* const lowerIndex, LowerPoll* const poll) {
         // FP2 rule 5: a parked image is taken before the worker acquires, so parking never starves the worker. Its slot
         // stays busy until the worker's submit releases it, and the worker's own slot is the parked one.
         {
@@ -1266,12 +1266,13 @@ namespace fgvk::layer {
                 if (const auto entry = impl->parking.take()) {
                     *lowerIndex = entry->lowerIndex;
                     impl->workerSlot = entry->slot;
+                    if (poll) *poll = LowerPoll::Acquired;
                     return VK_SUCCESS;
                 }
             }
         }
-        LowerPoll poll{};
-        return tryAcquireLowerLocked(lowerOpAcquireReal, lowerIndex, &poll);
+        LowerPoll reason{};
+        return tryAcquireLowerLocked(lowerOpAcquireReal, lowerIndex, poll ? poll : &reason);
     }
 
     VkResult InternalSwapchainImages::tryAcquireLowerLocked(const uint8_t op, uint32_t* const lowerIndex,
@@ -1560,8 +1561,8 @@ namespace fgvk::layer {
         return impl->releaseLocked(queue, applicationIndex, waits);
     }
 
-    VkResult internalRealTryAcquire(void* const owner, uint32_t* const lowerIndex) {
-        return static_cast<InternalSwapchainImages*>(owner)->workerTryAcquire(lowerIndex);
+    VkResult internalRealTryAcquire(void* const owner, uint32_t* const lowerIndex, LowerPoll* const poll) {
+        return static_cast<InternalSwapchainImages*>(owner)->workerTryAcquire(lowerIndex, poll);
     }
 
     VkResult internalRealSubmit(void* const owner, const VkQueue queue,

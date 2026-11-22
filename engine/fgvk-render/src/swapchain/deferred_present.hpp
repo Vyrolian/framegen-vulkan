@@ -512,7 +512,8 @@ public:
     // owner.get(); this header names no swapchain or wrapper type. Each callback
     // runs with DeferredPresentQueue::mutex held and never sleeps.
     //   tryAcquire: non-blocking lower acquire. Returns VK_SUCCESS with the index,
-    //     VK_NOT_READY/VK_TIMEOUT to retry, or an error to abandon.
+    //     VK_NOT_READY/VK_TIMEOUT to retry, or an error to abandon. XH2a: poll may be null. When set, it
+    //     receives the LowerPoll reason of every return (Acquired on success, see tryAcquireLowerLocked).
     //   submit: copies the application image into the lower image, waiting
     //     continuation, and returns the semaphore the presentation waits.
     //   abandon: frees the application image without presenting, after continuation.
@@ -526,7 +527,7 @@ public:
     // by admission. A preparedError below zero settles the job as an Error skip, and nothing is presented.
     struct InternalRealCopy {
         std::shared_ptr<void> owner;
-        VkResult (*tryAcquire)(void* owner, uint32_t* lowerIndex) = nullptr;
+        VkResult (*tryAcquire)(void* owner, uint32_t* lowerIndex, LowerPoll* poll) = nullptr;
         VkResult (*submit)(void* owner, VkQueue queue, uint32_t applicationIndex,
             uint32_t lowerIndex, VkSemaphore continuation, VkSemaphore* presentWait) = nullptr;
         VkResult (*abandon)(void* owner, VkQueue queue, uint32_t applicationIndex,
@@ -792,6 +793,17 @@ public:
         counts.waitUs = callWaitUs.exchange(0, std::memory_order_relaxed);
         return counts;
     }
+    // XH2a: the worker's real polls that found no lower image, and the longest real wait, since the last take, for the pacing
+    // profile's window (see WorkerRealPollCounts). Relaxed atomics, like takeParkCounts.
+    [[nodiscard]] WorkerRealPollCounts takeWorkerRealPollCounts() noexcept {
+        WorkerRealPollCounts counts;
+        counts.slotBusy = workerRealPollSlotBusy.exchange(0, std::memory_order_relaxed);
+        counts.fence = workerRealPollFence.exchange(0, std::memory_order_relaxed);
+        counts.acquire = workerRealPollAcquire.exchange(0, std::memory_order_relaxed);
+        counts.error = workerRealPollError.exchange(0, std::memory_order_relaxed);
+        counts.waitMaxUs = workerRealWaitMaxUs.exchange(0, std::memory_order_relaxed);
+        return counts;
+    }
     // FP2: the owner that parks lower images after this worker's lower presents (see parkAfterPresentLocked). The swapchain
     // sets it before its first internal present. One swapchain has one owner, so the first one set is kept.
     // FP3: park returns why it did or did not park (see ParkOutcome).
@@ -995,6 +1007,64 @@ private:
         case CallLowerWait::Timeout: callWaitTimeout.fetch_add(1, std::memory_order_relaxed); break;
         case CallLowerWait::None: break;
         }
+    }
+
+    // XH2a: one worker real's polls for a lower image, kept by presentInternalReal until the real ends. The wait runs from the
+    // first poll that found no image to the poll that ends the real: an acquire, an error, or a stop. Worker thread only.
+    struct WorkerRealWait {
+        size_t polls{}, slotBusy{}, fence{}, acquire{};
+        bool waiting{};
+        Clock::time_point started{};
+        // The owner's parked images and call-held outputs at the first poll that found no image.
+        size_t parked{}, callHeld{};
+    };
+    // XH2a, caller holds queue->mutex: notes one poll of a worker real. An acquired poll is not counted, it ends the wait. The
+    // other reasons are counted per window with one relaxed add each. The first poll that finds no image starts the wait and
+    // reads the owner's parked images and call-held outputs. A poll that finds no image changes neither, so these reads, made
+    // just after it, are the values at that first poll.
+    void notePollLocked(WorkerRealWait& wait, const InternalRealCopy& copy, const LowerPoll poll) {
+        ++wait.polls;
+        switch (poll) {
+        case LowerPoll::Acquired: return;
+        case LowerPoll::SlotBusy:
+            ++wait.slotBusy;
+            workerRealPollSlotBusy.fetch_add(1, std::memory_order_relaxed);
+            break;
+        case LowerPoll::Fence:
+            ++wait.fence;
+            workerRealPollFence.fetch_add(1, std::memory_order_relaxed);
+            break;
+        case LowerPoll::Acquire:
+            ++wait.acquire;
+            workerRealPollAcquire.fetch_add(1, std::memory_order_relaxed);
+            break;
+        case LowerPoll::Error:
+            workerRealPollError.fetch_add(1, std::memory_order_relaxed);
+            break;
+        }
+        if (wait.waiting) return;
+        wait.waiting = true;
+        wait.started = Clock::now();
+        wait.parked = copy.parkedCount ? copy.parkedCount(copy.owner.get()) : 0;
+        wait.callHeld = callHeldOutputs();
+    }
+    // XH2a, caller holds queue->mutex: ends a worker real's wait, if it had one. Its length is kept as the window's maximum.
+    // A wait over 50 ms is logged, at most once a second. Nothing happens for a real that never waited.
+    void finishWorkerRealWait(WorkerRealWait& wait, const Readiness& ready) {
+        if (!wait.waiting) return;
+        wait.waiting = false;
+        const auto now = Clock::now();
+        const auto waited = now - wait.started;
+        const auto micros = static_cast<size_t>(
+            std::max<int64_t>(0, std::chrono::duration_cast<std::chrono::microseconds>(waited).count()));
+        size_t seen = workerRealWaitMaxUs.load(std::memory_order_relaxed);
+        while (seen < micros && !workerRealWaitMaxUs.compare_exchange_weak(seen, micros, std::memory_order_relaxed)) {}
+        if (waited <= std::chrono::milliseconds{50} || now - workerRealLogged < std::chrono::seconds{1}) return;
+        workerRealLogged = now;
+        std::clog << "framegen-vulkan: worker real waited: source=" << ready.source << " wait_ms="
+                  << std::chrono::duration<double, std::milli>(waited).count() << " polls=" << wait.polls
+                  << " slot_busy=" << wait.slotBusy << " fence=" << wait.fence << " acquire=" << wait.acquire
+                  << " parked=" << wait.parked << " call_held=" << wait.callHeld << '\n';
     }
 
     // Test seam only. Production sets stopping in ~DeferredPresent, after every batch
@@ -1305,6 +1375,12 @@ private:
     // FP4: the call waits since the last take (see awaitCallLower). Relaxed atomics, like parkOutcomeCounts: the waits run
     // on the present thread, and takeCallWaitCounts exchanges them without a lock.
     std::atomic<size_t> callWaits{}, callWaitParked{}, callWaitUnlocked{}, callWaitTimeout{}, callWaitUs{};
+    // XH2a: the worker's real polls that found no lower image by reason, and the longest worker real wait (us), since the last
+    // take. Relaxed atomics: the worker adds to them under queue->mutex and takeWorkerRealPollCounts exchanges them without it.
+    std::atomic<size_t> workerRealPollSlotBusy{}, workerRealPollFence{}, workerRealPollAcquire{}, workerRealPollError{};
+    std::atomic<size_t> workerRealWaitMaxUs{};
+    // XH2a, worker thread only: when the last worker real wait over 50 ms was logged. At most one log line a second.
+    Clock::time_point workerRealLogged{};
     // W2, FGVK_REAL_OFFSET_US=auto: worker thread only; the cursor is used under queue->mutex.
     OutputOffsetController outputOffsetController;
     std::optional<uint64_t> correctionState;
@@ -1717,8 +1793,9 @@ private:
         InternalPreparation prep;
         const std::lock_guard queueLock(queue->mutex);
         uint32_t lowerIndex{};
+        // XH2a: the preparation's poll is not counted (only presentInternalReal's polls are, see notePollLocked).
         const VkResult acquired = profiledLockCall(profile, prep.acquireNs, [&] {
-            return copy.tryAcquire(owner, &lowerIndex);
+            return copy.tryAcquire(owner, &lowerIndex, nullptr);
         });
         if (acquired < 0) {
             prep.settled = true;
@@ -1861,6 +1938,8 @@ private:
         uint32_t lowerIndex{};
         VkSemaphore presentWait{};
         bool lockStarted{};
+        // XH2a: this real's polls for a lower image, and its wait (see WorkerRealWait).
+        WorkerRealWait wait;
         for (;;) {
             bool stopped{};
             {
@@ -1878,10 +1957,13 @@ private:
                     error = VK_ERROR_UNKNOWN;
                     reason = SkipReason::Stopping;
                 } else {
+                    LowerPoll poll = LowerPoll::Error;
                     const VkResult acquired = profiledLockCall(ready.profile, result.lockAcquireNs, [&] {
-                        return copy.tryAcquire(owner, &lowerIndex);
+                        return copy.tryAcquire(owner, &lowerIndex, &poll);
                     });
+                    notePollLocked(wait, copy, acquired == VK_SUCCESS ? LowerPoll::Acquired : poll);
                     if (acquired == VK_SUCCESS) {
+                        finishWorkerRealWait(wait, ready);
                         const VkResult submitted = profiledLockCall(ready.profile, result.lockSubmitNs, [&] {
                             return copy.submit(owner, queue->queue, copy.applicationIndex, lowerIndex,
                                 job.wait, &presentWait);
@@ -1902,6 +1984,8 @@ private:
                     }
                 }
                 if (error != VK_SUCCESS) {
+                    // The wait ends with the real: a stop, or an acquire error that abandons it.
+                    finishWorkerRealWait(wait, ready);
                     // Frees the application image without a present. Nothing is left acquired.
                     static_cast<void>(profiledLockCall(ready.profile, result.lockSubmitNs, [&] {
                         return copy.abandon(owner, queue->queue, copy.applicationIndex, job.wait);

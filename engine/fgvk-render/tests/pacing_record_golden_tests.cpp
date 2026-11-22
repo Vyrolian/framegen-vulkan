@@ -70,6 +70,14 @@ void profileScenario() {
         .timeout = 1,
         .waitUs = 612,
     });
+    // XH2a: the worker's real polls that found no lower image in this window, by reason, and the longest worker real wait.
+    profile.workerRealPollCounts(fgvk::layer::WorkerRealPollCounts{
+        .slotBusy = 2,
+        .fence = 1,
+        .acquire = 3,
+        .error = 1,
+        .waitMaxUs = 15600,
+    });
     profile.justInTimeBatch(2ms);
     profile.outputTiming(PacingProfile::ExtTiming, start + 10ms);
     profile.outputTiming(PacingProfile::ExtTiming, start + 25ms);

@@ -2277,17 +2277,29 @@ struct InternalFake {
     // XH2 repro: while set and false, the lower acquire is not ready (see internalRealStallHoldsNextBatch).
     std::atomic_bool* gate{};
 };
-VkResult fakeTryAcquire(void* owner, uint32_t* lowerIndex) {
+// XH2a: a lower acquire reports its LowerPoll reason when the caller asks (poll may be null: the take-time preparation).
+void reportPoll(LowerPoll* poll, const LowerPoll reason) {
+    if (poll) *poll = reason;
+}
+VkResult fakeTryAcquire(void* owner, uint32_t* lowerIndex, LowerPoll* poll) {
     auto& state = *static_cast<InternalFake*>(owner);
     ++state.tryCalls;
-    if (state.gate && !state.gate->load()) return VK_NOT_READY;
+    if (state.gate && !state.gate->load()) {
+        reportPoll(poll, LowerPoll::Acquire);
+        return VK_NOT_READY;
+    }
     if (state.slow) std::this_thread::sleep_for(100us);
     if (state.notReadyPolls > 0) {
         --state.notReadyPolls;
+        reportPoll(poll, LowerPoll::Acquire);
         return VK_NOT_READY;
     }
-    if (state.failure < 0) return state.failure;
+    if (state.failure < 0) {
+        reportPoll(poll, LowerPoll::Error);
+        return state.failure;
+    }
     *lowerIndex = state.lowerIndex;
+    reportPoll(poll, LowerPoll::Acquired);
     return VK_SUCCESS;
 }
 VkResult fakeSubmit(void* owner, VkQueue queue, uint32_t applicationIndex, uint32_t lowerIndex,
@@ -3284,7 +3296,11 @@ VkResult VKAPI_CALL preparedPresent(VkQueue, const VkPresentInfoKHR* info) {
     pool.order.push_back(info->pImageIndices[0]);
     return pool.presentResult;
 }
-VkResult poolRealAcquire(void*, uint32_t* image) { return poolAcquire(image); }
+VkResult poolRealAcquire(void*, uint32_t* image, LowerPoll* poll) {
+    const VkResult result = poolAcquire(image);
+    reportPoll(poll, result == VK_SUCCESS ? LowerPoll::Acquired : result < 0 ? LowerPoll::Error : LowerPoll::Acquire);
+    return result;
+}
 VkResult poolRealSubmit(void*, VkQueue, uint32_t, uint32_t, VkSemaphore, VkSemaphore* wait) {
     *wait = handle<VkSemaphore>(100);
     return VK_SUCCESS;
@@ -4424,8 +4440,9 @@ struct StoppingFake {
     std::atomic_int polls{};
     std::atomic_int abandons{};
 };
-VkResult stoppingTryAcquire(void* owner, uint32_t*) {
+VkResult stoppingTryAcquire(void* owner, uint32_t*, LowerPoll* poll) {
     ++static_cast<StoppingFake*>(owner)->polls;
+    reportPoll(poll, LowerPoll::Acquire);
     return VK_NOT_READY;
 }
 VkResult stoppingSubmit(void*, VkQueue, uint32_t, uint32_t, VkSemaphore, VkSemaphore*) {
@@ -5358,6 +5375,99 @@ void parkCountersKeepEachOutcome() {
         [](size_t value) { return value == 0; }), "a take did not reset the park counts");
 }
 
+namespace {
+// XH2a: a scripted lower acquire for one worker real. Its first scripted reason is the take-time preparation's poll
+// (prepareInternalReal), which is not counted. Each later reason is a poll of presentInternalReal, and each one that
+// finds no image sleeps 5 ms. After the script the acquire succeeds, or abandons on an Error reason.
+struct PollScript {
+    std::vector<LowerPoll> reasons;
+    size_t next{};
+    std::atomic_int submits{}, abandons{};
+};
+VkResult scriptedPollAcquire(void* owner, uint32_t* lowerIndex, LowerPoll* poll) {
+    auto& script = *static_cast<PollScript*>(owner);
+    if (script.next == script.reasons.size()) {
+        *lowerIndex = 5;
+        reportPoll(poll, LowerPoll::Acquired);
+        return VK_SUCCESS;
+    }
+    const LowerPoll reason = script.reasons[script.next++];
+    std::this_thread::sleep_for(5ms);
+    reportPoll(poll, reason);
+    return reason == LowerPoll::Error ? VK_ERROR_OUT_OF_DATE_KHR : VK_NOT_READY;
+}
+VkResult scriptedPollSubmit(void* owner, VkQueue queue, uint32_t, uint32_t, VkSemaphore, VkSemaphore* presentWait) {
+    expect(queue == handle<VkQueue>(7), "scripted real submitted on the wrong queue");
+    ++static_cast<PollScript*>(owner)->submits;
+    *presentWait = handle<VkSemaphore>(97);
+    return VK_SUCCESS;
+}
+VkResult scriptedPollAbandon(void* owner, VkQueue, uint32_t, VkSemaphore) {
+    ++static_cast<PollScript*>(owner)->abandons;
+    return VK_SUCCESS;
+}
+}
+
+// XH2a: a worker real's polls are counted by reason, its wait is kept as the window's maximum, and a take resets both. The
+// wait runs from the first counted poll that finds no image to the acquire. Its three later sleeps (the second, third and fourth
+// counted polls) make at least 15 ms.
+void workerRealPollsAreCounted() {
+    auto queue = std::make_shared<DeferredPresentQueue>();
+    queue->queue = handle<VkQueue>(7);
+    DeferredPresent worker(queue, recordingPresent);
+    copyPresents.clear();
+    const auto swapchain = handle<VkSwapchainKHR>(11);
+    const auto continuation = handle<VkSemaphore>(12);
+    uint32_t applicationImage = 1;
+    const VkPresentInfoKHR info{.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+        .waitSemaphoreCount = 1, .pWaitSemaphores = &continuation,
+        .swapchainCount = 1, .pSwapchains = &swapchain, .pImageIndices = &applicationImage};
+    // One real with the scripted reasons. The script stays owned here, since the worker may still hold the real.
+    struct RealRun {
+        std::shared_ptr<PollScript> script;
+        WorkerRealPollCounts counts;
+        bool skipped{};
+    };
+    const auto runReal = [&](std::vector<LowerPoll> reasons) {
+        RealRun run{.script = std::make_shared<PollScript>()};
+        run.script->reasons = std::move(reasons);
+        const DeferredPresent::InternalRealCopy copy{
+            .owner = run.script, .tryAcquire = scriptedPollAcquire, .submit = scriptedPollSubmit,
+            .abandon = scriptedPollAbandon, .applicationIndex = 1,
+        };
+        expect(worker.beginBatch(1), "scripted real batch rejected");
+        expect(worker.enqueueInternalReal(info, DeferredPresent::Clock::now(), copy), "scripted real rejected");
+        worker.closeBatch();
+        const auto completion = worker.finish(UINT64_MAX);
+        expect(completion && completion->count == 1, "scripted real did not complete");
+        run.skipped = completion->calls[0].skipped;
+        run.counts = worker.takeWorkerRealPollCounts();
+        return run;
+    };
+    // The take-time preparation's poll is the only one: the deadline poll acquires at once. Nothing is counted, no wait.
+    const auto fast = runReal({LowerPoll::Acquire});
+    expect(!fast.skipped && fast.script->submits == 1 && fast.script->abandons == 0, "the fast real was not presented once");
+    expect(fast.counts.slotBusy == 0 && fast.counts.fence == 0 && fast.counts.acquire == 0 && fast.counts.error == 0 &&
+        fast.counts.waitMaxUs == 0, "a poll that acquired at once was counted or waited");
+    // Preparation, then two slot-busy polls, a fence poll and an acquire poll, then the acquire.
+    const auto waited = runReal({LowerPoll::Acquire, LowerPoll::SlotBusy, LowerPoll::SlotBusy, LowerPoll::Fence,
+        LowerPoll::Acquire});
+    expect(!waited.skipped && waited.script->submits == 1 && waited.script->abandons == 0 && waited.script->next == 5,
+        "the waiting real was not presented once after its polls");
+    expect(waited.counts.slotBusy == 2 && waited.counts.fence == 1 && waited.counts.acquire == 1 &&
+        waited.counts.error == 0, "the waiting real's polls were counted under the wrong reason");
+    expect(waited.counts.waitMaxUs >= 15000, "the real's wait was shorter than its scripted sleeps");
+    // Preparation, then a slot-busy poll and an error: the real is abandoned, and the error is counted.
+    const auto errored = runReal({LowerPoll::Acquire, LowerPoll::SlotBusy, LowerPoll::Error});
+    expect(errored.skipped && errored.script->submits == 0 && errored.script->abandons == 1,
+        "the errored real was not abandoned once");
+    expect(errored.counts.slotBusy == 1 && errored.counts.error == 1 && errored.counts.fence == 0 &&
+        errored.counts.acquire == 0, "the errored real's polls were counted under the wrong reason");
+    const auto again = worker.takeWorkerRealPollCounts();
+    expect(again.slotBusy == 0 && again.fence == 0 && again.acquire == 0 && again.error == 0 && again.waitMaxUs == 0,
+        "a take did not reset the worker real poll counts");
+}
+
 // FP4: the worker's present of a lower image blocks until the test opens the gate, while it holds queue->mutex. A call that
 // starts its wait then finds the queue locked and nothing parked, and the worker's park is still to come.
 std::atomic<bool> presentGate{};
@@ -5506,16 +5616,17 @@ void awaitCallLowerSeesWorkerParkDuringWait() {
     expect(copyPresents.size() == 1, "the wait real was not presented exactly once");
 }
 
-// XH2 repro (run only with --repro-xh2, not part of the suite). Batch A is one real whose lower image is not free:
-// its call copy is refused and the gate keeps the worker's lower acquire not ready, so the worker polls it from A's
-// deadline (presentInternalReal). The game's next present call admits batch B on this thread while the worker still
-// owns A, as completeDeferredPresentRetainingOverlap and beginDeferredPresentBatch do: finish() retains the newest
-// sealed batch, then beginBatch admits the next overlapping one. B's two reals are ready at once. The game stalls
-// 350 ms, the gate opens at the following present call, and both batches are finished in order.
-// Prints one line with each real's lateness (started minus its requested deadline) and B's output spacing.
-// Exit 0: B's first real started within 50 ms of its deadline, so the defect did not reproduce.
-// Exit 1: it did, because the worker ran B behind A's stalled real. Exit 2: the setup was not the scenario above.
-// The line ends with reproduced=1 or reproduced=0; CTest matches reproduced=1, so a broken setup (no line) fails.
+// XH2 repro (run only with --repro-xh2, not part of the suite). Batch A is a generated output, then one real whose lower
+// image is not free: its call copy is refused and the gate keeps the worker's lower acquire not ready, so the worker polls
+// it from A's deadline (presentInternalReal). The game's next present call admits batch B on this thread while the worker
+// still owns A, as completeDeferredPresentRetainingOverlap and beginDeferredPresentBatch do: finish() retains the newest
+// sealed batch, then beginBatch admits the next overlapping one. B is a generated output, then two reals, all ready at
+// once. The game stalls 350 ms, the gate opens at the following present call, and both batches are finished in order.
+// Prints one line with each output's lateness (started minus its requested deadline) and B's real output spacing.
+// Exit 0: B's first output (its generated output, which the worker reaches first) started within 50 ms of its deadline,
+// so the defect did not reproduce. Exit 1: it did, because the worker ran B behind A's stalled real. Exit 2: the setup was
+// not the scenario above. The line ends with reproduced=1 or reproduced=0; CTest matches reproduced=1, so a broken setup
+// (no line) fails.
 int internalRealStallHoldsNextBatch() {
     using Milliseconds = std::chrono::duration<double, std::milli>;
     const auto require = [](const bool ok, const char* message) {
@@ -5542,8 +5653,10 @@ int internalRealStallHoldsNextBatch() {
     next->presentWait = handle<VkSemaphore>(96);
 
     const auto t0 = DeferredPresent::Clock::now();
-    // Batch A: deadline t0 + 4 ms. The call copy is refused, so the worker owns the real from its deadline.
-    require(worker.beginBatch(1, {.overlap = true}), "batch A rejected");
+    // Batch A: a generated output due at t0, then the real due at t0 + 4 ms. The call copy is refused, so the worker owns the
+    // real from its deadline. The generated output is copied and presented before the real is polled.
+    require(worker.beginBatch(2, {.overlap = true}), "batch A rejected");
+    require(worker.enqueueGeneratedCopy(swapchain, nullptr, t0, generatedCopy()), "batch A's generated output rejected");
     InlineCallOutcome outcome{};
     require(worker.enqueueInternalReal(info, t0 + 4ms, internalCallCopy(stalled, 1, 4), {}, 0, &outcome),
         "stalled real rejected");
@@ -5553,7 +5666,10 @@ int internalRealStallHoldsNextBatch() {
     std::this_thread::sleep_until(t0 + 6ms);
     require(worker.pending() && !worker.hasCompletion(), "batch A finished before the next batch was admitted");
     static_cast<void>(worker.finish(UINT64_MAX, false, true));
-    require(worker.beginBatch(2, {.overlap = true}), "batch B was not admitted while batch A was outputting");
+    // Batch B: a generated output due at t0 + 7 ms, then two reals due at t0 + 8 and t0 + 12 ms.
+    require(worker.beginBatch(3, {.overlap = true}), "batch B was not admitted while batch A was outputting");
+    require(worker.enqueueGeneratedCopy(swapchain, nullptr, t0 + 7ms, generatedCopy()),
+        "batch B's generated output rejected");
     require(worker.enqueueInternalReal(info, t0 + 8ms, internalCopy(next, 2)), "batch B's first real rejected");
     applicationImage = 3;
     require(worker.enqueueInternalReal(info, t0 + 12ms, internalCopy(next, 3)), "batch B's second real rejected");
@@ -5563,24 +5679,29 @@ int internalRealStallHoldsNextBatch() {
     gate.store(true);
     const auto first = worker.finish(UINT64_MAX);
     const auto second = worker.finish(UINT64_MAX);
-    require(first && first->count == 1 && !first->calls[0].skipped && first->calls[0].workerCopy &&
-        first->calls[0].imageIndex == 6, "the stalled real did not present from its worker copy");
-    require(second && second->count == 2 && !second->calls[0].skipped && !second->calls[1].skipped,
-        "batch B was skipped or failed");
+    require(first && first->count == 2 && !first->calls[0].skipped && !first->calls[1].skipped &&
+        first->calls[1].workerCopy && first->calls[1].imageIndex == 6,
+        "the stalled real did not present from its worker copy");
+    require(second && second->count == 3 && !second->calls[0].skipped && !second->calls[1].skipped &&
+        !second->calls[2].skipped, "batch B was skipped or failed");
     require(stalled->tryCalls > 1, "the stalled real was never polled");
-    require(copyPresents.size() == 3 && copyPresents[0] == std::pair{6u, handle<VkSemaphore>(95)} &&
-        copyPresents[1] == std::pair{2u, handle<VkSemaphore>(96)} &&
-        copyPresents[2] == std::pair{2u, handle<VkSemaphore>(96)},
-        "the lower presents were not A's real and then B's two reals in order");
+    require(copyPresents.size() == 5 && copyPresents[0] == std::pair{2u, handle<VkSemaphore>(72)} &&
+        copyPresents[1] == std::pair{6u, handle<VkSemaphore>(95)} &&
+        copyPresents[2] == std::pair{2u, handle<VkSemaphore>(72)} &&
+        copyPresents[3] == std::pair{2u, handle<VkSemaphore>(96)} &&
+        copyPresents[4] == std::pair{2u, handle<VkSemaphore>(96)},
+        "the presents were not A's generated output and real, then B's generated output and two reals, in order");
 
-    const auto aLate = Milliseconds(first->calls[0].started - (t0 + 4ms));
-    const auto b0Late = Milliseconds(second->calls[0].started - (t0 + 8ms));
-    const auto b1Late = Milliseconds(second->calls[1].started - (t0 + 12ms));
-    const auto spacing = Milliseconds(second->calls[1].started - second->calls[0].started);
+    const auto aLate = Milliseconds(first->calls[1].started - (t0 + 4ms));
+    const auto bGenLate = Milliseconds(second->calls[0].started - (t0 + 7ms));
+    const auto b0Late = Milliseconds(second->calls[1].started - (t0 + 8ms));
+    const auto b1Late = Milliseconds(second->calls[2].started - (t0 + 12ms));
+    const auto spacing = Milliseconds(second->calls[2].started - second->calls[1].started);
     std::cout << std::fixed << std::setprecision(1) << "xh2-repro: a_real_late_ms=" << aLate.count()
               << " b0_late_ms=" << b0Late.count() << " b1_late_ms=" << b1Late.count()
-              << " b_spacing_ms=" << spacing.count();
-    const bool reproduced = std::abs(b0Late.count()) > 50.0;
+              << " b_spacing_ms=" << spacing.count() << " b_gen_late_ms=" << bGenLate.count();
+    // B's first output in worker order is its generated output, which waits behind A's stalled real.
+    const bool reproduced = std::abs(bGenLate.count()) > 50.0;
     std::cout << " reproduced=" << (reproduced ? 1 : 0) << '\n';
     return reproduced ? 1 : 0;
 }
@@ -5632,7 +5753,7 @@ int main(int argc, char** argv) {
     internalRealCallSubmitErrorSettles(); internalRealCallBudgetLimitsSecondReal();
     internalRealParkedTakeIsLockFree(); internalRealCallLockMissFallsBack();
     internalRealParkedCountsTowardBudget(); parkHookReceivesHeldOutputs();
-    parkCountersKeepEachOutcome();
+    parkCountersKeepEachOutcome(); workerRealPollsAreCounted();
     awaitCallLowerSkipsTheWait(); awaitCallLowerReturnsParkedWhileLocked(); awaitCallLowerReturnsUnlockedWhenTheLockFrees();
     awaitCallLowerTimesOutWhileLocked(); awaitCallLowerSeesWorkerParkDuringWait();
     lowerRecordsFollowHistory(); inFlightCallFollowsHistory(); synchronousPresentIsNoted();

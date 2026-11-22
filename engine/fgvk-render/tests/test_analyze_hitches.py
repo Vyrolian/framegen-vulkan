@@ -130,6 +130,17 @@ class AnalyseHitchesTest(unittest.TestCase):
         self.assertIn("acquire path=host", out, out)
         self.assertIn("tail_wait_value=7", out, out)
 
+    def test_window_record_with_worker_real_poll_fields_is_ignored(self):
+        # XH2a: a pacing-profile window carries the worker real poll counts after park_error. The analyser reads
+        # operation=pacing-profile-* records by name, so the window line changes nothing in its report.
+        baseline = self.run_analyser("--min-gap", "20")
+        window = ("framegen-vulkan: present diagnostics: operation=pacing-profile version=2 context=1 pid=1 "
+            "swapchain=0x1 wsi=wayland sources=2 window_ms=1000 sample_end_monotonic_ms=1000 park_error=3 "
+            "worker_real_poll_slot_busy=2 worker_real_poll_fence=1 worker_real_poll_acquire=3 "
+            "worker_real_poll_error=1 worker_real_wait_max_us=15600")
+        self.log.write_text("\n".join(capture_lines() + [window]) + "\n", encoding="utf-8")
+        self.assertEqual(self.run_analyser("--min-gap", "20"), baseline)
+
     def test_order_violation_and_joins(self):
         out = self.run_analyser("--min-gap", "20")
         self.assertIn("order violation: generated src3 presented after real src3", out, out)

@@ -875,6 +875,19 @@ class WindowFieldTests(unittest.TestCase):
         negative = self.read([self.prefix + self.base + self.current + " inline_call_wait_us=-1"])
         self.assertEqual((len(negative[0]), negative[1]), (0, 1))
 
+    def test_worker_real_poll_counters_are_plain_counts(self):
+        # XH2a: the worker real poll counts by reason are plain counts after park_error. The longest real wait is a computed
+        # measurement in us, so it must be finite and not negative, like inline_call_wait_us.
+        body = self.base + self.current + (" park_error=3 worker_real_poll_slot_busy=2 worker_real_poll_fence=1 "
+            "worker_real_poll_acquire=3 worker_real_poll_error=1 worker_real_wait_max_us=15600")
+        windows, invalid = self.read([self.prefix + body])
+        self.assertEqual((len(windows), invalid), (1, 0))
+        self.assertEqual(windows[0].values["worker_real_poll_slot_busy"], 2.0)
+        self.assertEqual(windows[0].values["worker_real_poll_acquire"], 3.0)
+        self.assertEqual(windows[0].values["worker_real_wait_max_us"], 15600.0)
+        negative = self.read([self.prefix + self.base + self.current + " worker_real_wait_max_us=-1"])
+        self.assertEqual((len(negative[0]), negative[1]), (0, 1))
+
     def test_call_path_outputs_and_spare_images_are_plain_counts(self):
         # FI4: inline_call_outputs and inline_call_spare follow inline_call_wait_us. They are plain counts, so a window with them
         # is read whatever their value, and a text value is still a plain field, not a rejected measurement.

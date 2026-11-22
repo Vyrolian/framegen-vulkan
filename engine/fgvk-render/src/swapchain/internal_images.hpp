@@ -534,8 +534,9 @@ namespace fgvk::layer {
             std::span<const VkSemaphore> waits, uint32_t* lowerIndex, VkSemaphore* copied);
 
         /// Worker callbacks, reached through the free functions below. The caller
-        /// holds DeferredPresentQueue::mutex and never sleeps there.
-        [[nodiscard]] VkResult workerTryAcquire(uint32_t* lowerIndex);
+        /// holds DeferredPresentQueue::mutex and never sleeps there. XH2a: poll (nullable) reports the
+        /// LowerPoll reason on every return (Acquired when a parked image was taken).
+        [[nodiscard]] VkResult workerTryAcquire(uint32_t* lowerIndex, LowerPoll* poll);
         [[nodiscard]] VkResult workerSubmit(VkQueue queue, uint32_t applicationIndex,
             uint32_t lowerIndex, VkSemaphore continuation, VkSemaphore* presentWait);
         [[nodiscard]] VkResult workerAbandon(VkQueue queue, uint32_t applicationIndex,
@@ -640,7 +641,7 @@ namespace fgvk::layer {
 
     /// Worker callbacks for DeferredPresent's internal real output. They cast owner
     /// back to InternalSwapchainImages and forward to the members above.
-    [[nodiscard]] VkResult internalRealTryAcquire(void* owner, uint32_t* lowerIndex);
+    [[nodiscard]] VkResult internalRealTryAcquire(void* owner, uint32_t* lowerIndex, LowerPoll* poll);
     [[nodiscard]] VkResult internalRealCallPrepareParked(void* owner, VkQueue callQueue, uint32_t callFamily,
         uint32_t applicationIndex, VkSemaphore continuation, uint32_t* lowerIndex,
         VkSemaphore* presentWait, bool* consumed);

@@ -293,6 +293,17 @@ struct CallWaitCounts {
     size_t waitUs{};
 };
 
+// XH2a: the worker's polls of a real for a lower image that found none, taken for one window, by LowerPoll reason (Acquired is
+// the success and is not counted). waitMaxUs is the longest wait of a worker real, from its first poll that found none to the
+// poll that ended it, in us. The window keeps the maximum of the takes it is given.
+struct WorkerRealPollCounts {
+    size_t slotBusy{};
+    size_t fence{};
+    size_t acquire{};
+    size_t error{};
+    size_t waitMaxUs{};
+};
+
 // FI4, with FP4: at most one call wait times out per batch. A call output may wait only while no earlier wait of its batch
 // timed out, so later outputs of that batch take the poll and the worker fallback as they do without a wait.
 [[nodiscard]] constexpr bool inlineCallWaitAllowed(const bool batchTimedOut) noexcept {

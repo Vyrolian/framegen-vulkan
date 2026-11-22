@@ -293,6 +293,10 @@ namespace fgvk::layer::present_diagnostics {
             // FP3: the worker's lower park outcomes by ParkOutcome (Drained is not kept). Taken from the worker at each present
             // (see parkCounts).
             std::array<size_t, fgvk::layer::parkCountedOutcomeCount> parkOutcomes{};
+            // XH2a: the worker's real polls that found no lower image, by reason, and the longest worker real wait in us (the
+            // window's maximum). Taken from the worker at each present (see workerRealPollCounts).
+            size_t workerRealPollSlotBusy{}, workerRealPollFence{}, workerRealPollAcquire{}, workerRealPollError{};
+            size_t workerRealWaitMaxUs{};
             size_t fifoCallerTimingSources{};
             std::array<OutputSample, outputTraceCapacity> outputTrace{};
             size_t outputTraceCount{}, outputTraceDropped{};
@@ -507,6 +511,15 @@ namespace fgvk::layer::present_diagnostics {
             window.inlineCallWaitUnlocked += counts.unlocked;
             window.inlineCallWaitTimeout += counts.timeout;
             window.inlineCallWaitUs += counts.waitUs;
+        }
+        // XH2a: the worker's real polls taken since the last call (DeferredPresent::takeWorkerRealPollCounts), added to this
+        // window. The wait is a maximum over the window, not a sum.
+        void workerRealPollCounts(const fgvk::layer::WorkerRealPollCounts& counts) {
+            window.workerRealPollSlotBusy += counts.slotBusy;
+            window.workerRealPollFence += counts.fence;
+            window.workerRealPollAcquire += counts.acquire;
+            window.workerRealPollError += counts.error;
+            window.workerRealWaitMaxUs = std::max(window.workerRealWaitMaxUs, counts.waitMaxUs);
         }
         // Persistent for this swapchain: set once a present uses F5 internal images.
         void internalImagesActive() { internalImages = true; }
