@@ -232,7 +232,7 @@ impl App {
             default_profile,
             dll,
             allow_fp16,
-            pacing_correction,
+            pacing_correction: _,
             real_present_lead,
         } = settings;
         if !self.restored {
@@ -270,7 +270,6 @@ impl App {
             ui,
             dll.unwrap_or_default(),
             allow_fp16,
-            pacing_correction,
             real_present_lead,
         );
     }
@@ -651,7 +650,6 @@ impl App {
         ui: &mut Ui,
         dll: String,
         allow_fp16: bool,
-        pacing_correction: bool,
         real_present_lead: bool,
     ) {
         let mut fp16 = allow_fp16;
@@ -664,18 +662,10 @@ impl App {
             "Half precision for frame generation. Restart the game to apply.",
         );
 
-        let mut correction = pacing_correction;
-        if ui.checkbox(&mut correction, "Pacing correction").changed() {
-            let result = self.config.set_global_pacing_correction(correction);
-            self.report(result);
-        }
-        hint(
-            ui,
-            "Centres generated frames between real frames using timing feedback. Applies while the game is running.",
-        );
-
         let mut lead = real_present_lead;
-        if ui.checkbox(&mut lead, "Real present lead").changed() {
+        // The `[global] real_present_lead` key; the older `pacing_correction` key stays in the config but has no
+        // control here.
+        if ui.checkbox(&mut lead, "Pacing correction").changed() {
             let result = self.config.set_global_real_present_lead(lead);
             self.report(result);
         }

@@ -50,8 +50,7 @@ The window has these controls:
 | Batch hold | `batch_hold` for the selected profile. On by default; each output batch starts about 2 ms after its frames are ready, with Low latency on or off. Applies live. |
 | Performance mode | `performance_mode` for the selected profile. |
 | FP16 (faster) | `[global] allow_fp16`. Restart the game to apply. |
-| Pacing correction | `[global] pacing_correction`. Applies while the game is running. |
-| Real present lead | `[global] real_present_lead`. Applies while the game is running. |
+| Pacing correction | `[global] real_present_lead`: presents real frames earlier by their measured GPU wait. Applies while the game is running. The older `[global] pacing_correction` key has no control in the window; edit the file to change it. |
 | Lossless.dll | The `dll` path for Frame Generation. Leave it empty to remove the setting. |
 
 Typed values apply when you press Enter or leave the field. Sliders apply when you release them, and buttons apply at once. Live settings change a running game; restart-only settings apply the next time the game starts. See [Applying changes](#applying-changes).

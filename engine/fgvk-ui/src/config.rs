@@ -370,6 +370,8 @@ impl Config {
     }
 
     /// Writes `[global] pacing_correction`. The `[global]` table is created when the file has none.
+    /// Parked: the window no longer shows this setting; kept in case it comes back.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn set_global_pacing_correction(&mut self, value: bool) -> Result<(), String> {
         self.edit(|doc| {
             if let Some(global) = global_mut(doc) {
