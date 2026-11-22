@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <limits>
 #include <optional>
+#include <span>
 
 #include <vulkan/vulkan_core.h>
 
@@ -92,6 +93,18 @@ namespace fgvk::layer {
         if (returnedImages < requestedMinImages)
             return 0;
         return returnedImages - requestedMinImages;
+    }
+
+    /// FI4b: the surface minimum M of a lower swapchain whose present-mode group is queried mode by mode
+    /// (swapchain-acquire-forward-progress): the maximum over the plain minimum and each mode's minimum. A mode whose
+    /// query failed (nullopt) contributes the plain minimum, so it never lowers the result.
+    [[nodiscard]] inline uint32_t presentModeGroupSurfaceMinImages(
+            const uint32_t plainMinImages,
+            std::span<const std::optional<uint32_t>> perModeMinImages) noexcept {
+        uint32_t minImages = plainMinImages;
+        for (const auto& perMode : perModeMinImages)
+            minImages = std::max(minImages, perMode.value_or(plainMinImages));
+        return minImages;
     }
 
     /// Lower images the layer itself holds acquired and not yet presented at

@@ -214,6 +214,50 @@ namespace {
 
         return extensions;
     }
+
+    /// FI4b: the modes of a lower create chain's present-mode group, empty when it carries none. The spec allows one
+    /// node per struct type in a pNext chain, so the first non-empty node is the group.
+    std::vector<VkPresentModeKHR> lowerPresentModeGroup(const void* createChain) {
+        for (const auto* node = static_cast<const VkBaseInStructure*>(createChain); node; node = node->pNext) {
+            if (node->sType != VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_MODES_CREATE_INFO_EXT)
+                continue;
+            const auto* group = reinterpret_cast<const VkSwapchainPresentModesCreateInfoEXT*>(node);
+            if (group->pPresentModes && group->presentModeCount)
+                return {group->pPresentModes, group->pPresentModes + group->presentModeCount};
+        }
+        return {};
+    }
+
+    /// FI4b: the surface minimum of each mode in a present-mode group, from vkGetPhysicalDeviceSurfaceCapabilities2KHR
+    /// with VkSurfacePresentModeKHR chained in (the EXT spelling is the same struct). nullopt marks a failed query.
+    /// The caller must have checked that the instance enabled the query.
+    std::vector<std::optional<uint32_t>> presentModeSurfaceMinImages(const vk::Vulkan& vk,
+            const VkSurfaceKHR surface, const std::span<const VkPresentModeKHR> modes) {
+        std::vector<std::optional<uint32_t>> minImages;
+        minImages.reserve(modes.size());
+        const auto query = vk.fi().GetPhysicalDeviceSurfaceCapabilities2KHR;
+        for (const auto presentMode : modes) {
+            std::optional<uint32_t> minImage;
+            if (query) {
+                const VkSurfacePresentModeKHR mode{
+                    .sType = VK_STRUCTURE_TYPE_SURFACE_PRESENT_MODE_KHR,
+                    .presentMode = presentMode,
+                };
+                const VkPhysicalDeviceSurfaceInfo2KHR info{
+                    .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SURFACE_INFO_2_KHR,
+                    .pNext = &mode,
+                    .surface = surface,
+                };
+                VkSurfaceCapabilities2KHR caps{
+                    .sType = VK_STRUCTURE_TYPE_SURFACE_CAPABILITIES_2_KHR,
+                };
+                if (query(vk.physdev(), &info, &caps) == VK_SUCCESS)
+                    minImage = caps.surfaceCapabilities.minImageCount;
+            }
+            minImages.push_back(minImage);
+        }
+        return minImages;
+    }
 }
 
 
@@ -604,6 +648,7 @@ void Root::modifyDeviceCreateInfo(VkDeviceCreateInfo& createInfo,
 SwapchainCreateModification Root::modifySwapchainCreateInfo(const vk::Vulkan& vk,
         VkSwapchainCreateInfoKHR& createInfo,
         const bool winePassThroughHdr,
+        const bool presentModeSurfaceQueries,
         const std::function<void(void)>& finish) const {
     SwapchainCreateModification modification{
         .applicationExtent = createInfo.imageExtent,
@@ -636,13 +681,20 @@ SwapchainCreateModification Root::modifySwapchainCreateInfo(const vk::Vulkan& vk
 
     const uint32_t applicationMinImages = createInfo.minImageCount;
     const VkPresentModeKHR applicationPresentMode = createInfo.presentMode;
+    // FI4b: the image-count floor uses the application group's surface minimum, so the created count covers M plus the
+    // layer's holds (swapchain-acquire-forward-progress). An ordered transport that drops the group below only over-counts.
+    const auto applicationModes = lowerPresentModeGroup(createInfo.pNext);
+    const uint32_t floorMinImages = presentModeSurfaceQueries && !applicationModes.empty()
+        ? presentModeGroupSurfaceMinImages(caps.minImageCount,
+            presentModeSurfaceMinImages(vk, createInfo.surface, applicationModes))
+        : caps.minImageCount;
     modification.privateOrderedTransport = context_ModifySwapchainCreateInfo(
         contextProfile,
         caps.maxImageCount,
         createInfo,
         vk.frameGenerationInteropEnabled(),
         winePassThroughHdr,
-        caps.minImageCount,
+        floorMinImages,
         &modification.inlineCall
     );
 
@@ -667,20 +719,23 @@ SwapchainCreateModification Root::modifySwapchainCreateInfo(const vk::Vulkan& vk
     }
     createInfo.pNext = presentModes.head();
 
+    // FI4b: the lower group's surface minimum (swapchain-acquire-forward-progress). It reads the chain the driver
+    // receives, so a private ordered transport that removed the group keeps the plain minimum.
+    const auto lowerModes = lowerPresentModeGroup(createInfo.pNext);
+    if (presentModeSurfaceQueries && !lowerModes.empty()) {
+        modification.surfaceMinImageCount = presentModeGroupSurfaceMinImages(
+            caps.minImageCount, presentModeSurfaceMinImages(vk, createInfo.surface, lowerModes));
+    }
+
     // Once per swapchain creation: what the layer asks the lower driver for.
     // present_mode_group lists the modes each present may switch between
     // (VK_EXT_swapchain_maintenance1); with a group, present_mode is only
     // the starting mode.
     std::string presentModeGroup = "-";
-    for (auto* node = static_cast<const VkBaseInStructure*>(createInfo.pNext); node; node = node->pNext) {
-        if (node->sType != VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_MODES_CREATE_INFO_EXT)
-            continue;
-        const auto* group = reinterpret_cast<const VkSwapchainPresentModesCreateInfoEXT*>(node);
-        if (!group->pPresentModes || !group->presentModeCount)
-            continue;
+    if (!lowerModes.empty()) {
         presentModeGroup.clear();
-        for (uint32_t m = 0; m < group->presentModeCount; ++m)
-            presentModeGroup += (m ? "," : "") + std::to_string(static_cast<int64_t>(group->pPresentModes[m]));
+        for (size_t m = 0; m < lowerModes.size(); ++m)
+            presentModeGroup += (m ? "," : "") + std::to_string(static_cast<int64_t>(lowerModes[m]));
     }
     std::cerr << "framegen-vulkan: lower swapchain request: role=" << layerRoleName
               << " present_mode=" << static_cast<int>(createInfo.presentMode)
@@ -688,6 +743,7 @@ SwapchainCreateModification Root::modifySwapchainCreateInfo(const vk::Vulkan& vk
               << " min_images=" << createInfo.minImageCount
               << " application_min_images=" << applicationMinImages
               << " surface_min_images=" << caps.minImageCount
+              << " surface_min_images_group=" << modification.surfaceMinImageCount
               << " surface_max_images=" << caps.maxImageCount
               << " present_mode_group=" << presentModeGroup
               << " transport=" << (modification.privateOrderedTransport ? "ordered" : "direct")

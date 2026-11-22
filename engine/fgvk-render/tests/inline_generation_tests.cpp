@@ -105,7 +105,7 @@ namespace {
         require(inlineCallLowerBudget(20, 4, 2, 0) == 0, "a swapchain without call images must give a budget of zero");
     }
 
-    // FI4: spare images are the outputs per batch at the profile's capacity, and only on a swapchain that runs the worker
+    // FI4/FI4b: spare images are the outputs per batch at the profile's capacity plus two, and only on a swapchain that runs the worker
     // path. Each zero has one reason, checked in the order off, compat, ordered.
     void testSpareImages() {
         using fgvk::layer::InlineCallImagesReason;
@@ -113,8 +113,9 @@ namespace {
         using fgvk::layer::inlineCallSpareImages;
         for (const size_t multiplier : {2u, 3u, 4u, 5u}) {
             const auto eligible = inlineCallSpareImages(true, true, false, false, multiplier - 1);
-            require(eligible.count == multiplier && eligible.reason == InlineCallImagesReason::Eligible,
-                "spare images must be the outputs per batch at the profile's capacity");
+            require(eligible.count == multiplier + fgvk::layer::inlineCallHeadroomImages &&
+                    eligible.reason == InlineCallImagesReason::Eligible,
+                "spare images must be the outputs per batch at the profile's capacity plus the headroom");
         }
         const auto off = inlineCallSpareImages(false, true, false, false, 1);
         require(off.count == 0 && off.reason == InlineCallImagesReason::Off, "the inline switch off must give no spare images");

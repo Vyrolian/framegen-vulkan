@@ -3,9 +3,13 @@
 #include "profile_update.hpp"
 #include "swapchain/create_policy.hpp"
 
+#include <array>
+#include <cstdint>
 #include <cstdlib>
 #include <iostream>
 #include <limits>
+#include <optional>
+#include <span>
 #include <string_view>
 
 using namespace fgvk::layer;
@@ -58,10 +62,26 @@ namespace {
         expect(lowerImageCountWithLayerFloor(5, 0, 0, 4) == 5,
             "an unknown surface minimum must leave the count unchanged");
     }
+
+    // FI4b: the surface minimum of a present-mode group is the largest per-mode minimum; a failed query keeps the plain value.
+    void presentModeGroupSurfaceMinimum() {
+        using Modes = std::array<std::optional<uint32_t>, 3>;
+        expect(presentModeGroupSurfaceMinImages(3, Modes{2, 4, 3}) == 4,
+            "the group minimum must be the largest per-mode minimum");
+        expect(presentModeGroupSurfaceMinImages(3, Modes{2, 3, 1}) == 3,
+            "per-mode minimums that are not above the plain minimum must keep it");
+        expect(presentModeGroupSurfaceMinImages(3, Modes{std::nullopt, 5, std::nullopt}) == 5,
+            "a failed mode must not lower the group minimum");
+        expect(presentModeGroupSurfaceMinImages(3, Modes{std::nullopt, std::nullopt, std::nullopt}) == 3,
+            "failed per-mode queries must keep the plain minimum");
+        expect(presentModeGroupSurfaceMinImages(4, std::span<const std::optional<uint32_t>>{}) == 4,
+            "an empty group must keep the plain minimum");
+    }
 }
 
 int main() {
     inlineCallImageFloor();
+    presentModeGroupSurfaceMinimum();
     auto cappedFixedPacing = fixedProfile();
     cappedFixedPacing.frame_generation_provisioned = true;
     for (const int multiplier : {2, 3, 4, 5}) {

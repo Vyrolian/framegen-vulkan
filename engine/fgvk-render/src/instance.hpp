@@ -41,6 +41,7 @@ namespace fgvk::layer {
         bool swapchainImageCountCompatibility{false};
         // FI4: the call path's lower images for this create (see InlineCallImages).
         InlineCallImages inlineCall{};
+        // Surface minimum M: the plain minimum, or the per-mode maximum over the lower present-mode group (FI4b).
         uint32_t surfaceMinImageCount{};
         VkExtent2D applicationExtent{};
         VkExtent2D presentationExtent{};
@@ -102,10 +103,13 @@ namespace fgvk::layer {
         /// @param vk vulkan instance
         /// @param createInfo original create info
         /// @param winePassThroughHdr native Wayland surface in a Wine process (H3)
+        /// @param presentModeSurfaceQueries every instance enabled VK_KHR_get_surface_capabilities2 and a surface
+        /// maintenance1 extension, so the per-mode surface minimum may be queried (FI4b)
         /// @param finish function to call after modification
         [[nodiscard]] SwapchainCreateModification modifySwapchainCreateInfo(
             const vk::Vulkan& vk, VkSwapchainCreateInfoKHR& createInfo,
-            bool winePassThroughHdr, const std::function<void(void)>& finish) const;
+            bool winePassThroughHdr, bool presentModeSurfaceQueries,
+            const std::function<void(void)>& finish) const;
         /// create swapchain context
         /// @param vk vulkan instance
         /// @param swapchain swapchain handle

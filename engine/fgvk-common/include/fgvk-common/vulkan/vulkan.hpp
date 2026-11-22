@@ -46,6 +46,9 @@ namespace vk {
         PFN_vkGetPhysicalDeviceCalibrateableTimeDomainsKHR GetPhysicalDeviceCalibrateableTimeDomainsKHR;
         // Optional surface format query (VK_KHR_get_surface_capabilities2); null when the instance lacks it.
         PFN_vkGetPhysicalDeviceSurfaceFormats2KHR GetPhysicalDeviceSurfaceFormats2KHR;
+        // Optional per-present-mode surface query (FI4b, VK_KHR_get_surface_capabilities2 with a surface maintenance1
+        // extension); null when the instance lacks it. Call it only when the instance enabled both.
+        PFN_vkGetPhysicalDeviceSurfaceCapabilities2KHR GetPhysicalDeviceSurfaceCapabilities2KHR;
     };
 
     /// initialize vulkan instance function pointers

@@ -71,6 +71,12 @@ struct InlineCallImages {
     InlineCallImagesReason reason{InlineCallImagesReason::Off};
 };
 
+// FI4b: images on top of the outputs per batch. A call-copied image stays acquired until the worker presents it at its
+// paced time, so the call copies the next batch while the last one still waits: two batches in flight at 2×. FI4 run
+// 2026-11-22 12:41 (2× IMMEDIATE, outputs only): 3408 budget fallbacks of 5460 and 84.85 FPS, against 40 and 86.13 FPS
+// with 4 images (FI2). Two more restore FI2 at 2×.
+inline constexpr uint32_t inlineCallHeadroomImages = 2;
+
 [[nodiscard]] constexpr InlineCallImages inlineCallSpareImages(const bool switchOn, const bool provisioned,
         const bool orderedTransport, const bool countCompatibility, const size_t generatedCapacity) noexcept {
     // A zero capacity is an unprovisioned profile (generatedFrameCapacityForProfile): it has no generated outputs to hold.
@@ -80,7 +86,7 @@ struct InlineCallImages {
         return {0, InlineCallImagesReason::Compat};
     if (orderedTransport)
         return {0, InlineCallImagesReason::Ordered};
-    return {static_cast<uint32_t>(generatedCapacity + 1), InlineCallImagesReason::Eligible};
+    return {static_cast<uint32_t>(generatedCapacity + 1 + inlineCallHeadroomImages), InlineCallImagesReason::Eligible};
 }
 
 // FI4: the reason name of the swapchain create log line.

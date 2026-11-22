@@ -2160,6 +2160,10 @@ namespace {
             // H3: Wine maps HDR10/PQ and scRGB to PASS_THROUGH on a native Wayland surface.
             const bool winePassThroughHdr = layer_info->root.wineProcess() &&
                 surfaceOrigin(info->surface) == SurfaceOrigin::Wayland;
+            // FI4b: the per-mode surface minimum needs VK_KHR_get_surface_capabilities2 and a surface maintenance1
+            // extension on the instance. Both flags are ANDed over every shared instance (see InstanceInfo).
+            const bool presentModeSurfaceQueries = instance_info->surfaceCapabilities2 &&
+                (instance_info->surfaceMaintenance1.khr || instance_info->surfaceMaintenance1.ext);
             // QH2: an active swapchain of a device with a transfer queue has concurrent lower images, shared with the
             // layer and transfer families. transferFamilies outlives the create call that reads it.
             const auto transferCopyOwner = instance_info->transferCopyQueues.find(device);
@@ -2170,7 +2174,7 @@ namespace {
             bool transferConcurrent = false;
             auto modification =
                 layer_info->root.modifySwapchainCreateInfo(
-                    it->second, newInfo, winePassThroughHdr,
+                    it->second, newInfo, winePassThroughHdr, presentModeSurfaceQueries,
                     [&, newInfo = &newInfo]() {
                         auto driverInfo = *newInfo;
                         bool concurrentDriverImages = false;
