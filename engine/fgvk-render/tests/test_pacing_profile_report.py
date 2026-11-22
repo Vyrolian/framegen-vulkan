@@ -102,6 +102,23 @@ class FrameTimelineTests(unittest.TestCase):
         self.assertEqual(invalid,3)
         self.assertEqual(observations["sources"],[])
 
+    def test_timing_fields_are_appended_and_past_timing_records_are_not_observations(self):
+        # PT4: an output record with its five timing fields last still reads as the same output, and the past-timing and domain
+        # records are kept out of the observations without counting as invalid.
+        output=dict(pid=10,context=30,source=1,ordinal=1,generated=1,deferred=1,image_index=3,scheduled_ns=0,
+            started_ns=100,finished_ns=200,result=0,copy_checked=0,copy_status=1,copy_sampled_ns=0)
+        timed=output|dict(feedback=0,backend_frame=0,phase=0,present_id=5,app_present_id=17,timing_target_ns=33333333,
+            timing_flags=2,timing_stage=8,timing_domain_id=9,timing_kind=4)
+        past=dict(pid=10,swapchain="0x3000",lower_present_id=5,app_present_id=17,dropped=0,target_ns=16666666,
+            time_domain=1,time_domain_id=9,report_complete=1,stages="4:2000000,8:3000000")
+        domain=dict(pid=10,swapchain="0x3000",time_domain=1,time_domain_id=9)
+        observations,invalid=self.parse([self.line("pacing-profile-output",timed),
+            self.line("pacing-profile-past-timing",past),self.line("pacing-profile-past-timing-domain",domain)])
+        self.assertEqual(invalid,0)
+        self.assertEqual(len(observations["outputs"]),1)
+        self.assertEqual((observations["outputs"][0]["started_ns"],observations["outputs"][0]["finished_ns"]),(100,200))
+        self.assertEqual(sum(len(records) for key,records in observations.items() if key!="invalid_records"),1)
+
     def test_wrapper_trace_flag_applies_only_to_child(self):
         import os
         before=os.environ.get("FGVK_PACING_PROFILE_TRACE")

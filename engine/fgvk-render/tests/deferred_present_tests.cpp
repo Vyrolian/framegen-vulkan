@@ -6371,6 +6371,97 @@ void absolutePairForgottenOnSwapchainChangeAndGap() {
 #endif
 }
 
+#if defined(VK_EXT_present_timing)
+// One batch of outputs in order, waited for; the batch's completion is returned for its output records.
+DeferredPresent::Completion completionOf(DeferredPresent& worker, const std::vector<BatchOutput>& outputs) {
+    expect(worker.beginBatch(outputs.size()), "PT4 batch rejected");
+    const auto at = DeferredPresent::Clock::now();
+    for (size_t i = 0; i < outputs.size(); ++i)
+        expect(worker.enqueue(*outputs[i].info, at + 5ms * static_cast<long>(i), outputs[i].generated),
+            "PT4 output rejected");
+    worker.closeBatch();
+    auto done = worker.finish(UINT64_MAX);
+    expect(done && done->count == outputs.size(), "PT4 batch did not complete");
+    return *done;
+}
+// Whether an output's Call holds exactly this forwarded request.
+bool holdsRequest(const DeferredPresent::Call& call, const uint8_t kind, const uint64_t target, const uint32_t flags,
+        const uint32_t stage, const uint64_t domain) {
+    return call.timingKind == kind && call.timingTarget == target && call.timingFlags == flags &&
+        call.timingStage == stage && call.timingDomainId == domain;
+}
+#endif
+
+// PT4: each output's Call holds the request it forwarded, which its output record prints: kind 1 for a real's request as written,
+// kind 2 for a PT1 split real, kind 3 for a PT1 share, and kind 4 for a PT2 share. An output with no request holds zeros.
+void outputCallsHoldTheForwardedRequest() {
+#if defined(VK_EXT_present_timing)
+    constexpr auto relativeFlag = static_cast<uint32_t>(VK_PRESENT_TIMING_INFO_PRESENT_AT_RELATIVE_TIME_BIT_EXT);
+    constexpr auto dequeued = static_cast<uint32_t>(VK_PRESENT_STAGE_REQUEST_DEQUEUED_BIT_EXT);
+    constexpr uint32_t domain = 9;
+    constexpr uint64_t target = 16'666'666;
+    VkSwapchainKHR swapchain = handle<VkSwapchainKHR>(11);
+    VkSemaphore wait = handle<VkSemaphore>(12);
+    uint32_t image = 0;
+    const auto generated = presentOf(nullptr, &swapchain, &wait, &image);
+    lowerResult = VK_SUCCESS;
+
+    // PT1: a relative real splits its batch with the generated output in front of it. The first batch remembers nothing.
+    {
+        VkPresentTimingInfoEXT relative = relativeRequest(target);
+        auto relativeNode = requestNode(&relative);
+        const auto relativeReal = presentOf(&relativeNode, &swapchain, &wait, &image);
+        const auto plainReal = presentOf(nullptr, &swapchain, &wait, &image);
+        // The fake present accepts only the test queue, so the split worker presents on it too. It runs before the
+        // absolute worker.
+        auto splitQueue = std::make_shared<DeferredPresentQueue>();
+        splitQueue->queue = handle<VkQueue>(7);
+        DeferredPresent split(splitQueue, present);
+        const auto first = completionOf(split, {{&generated, true}, {&relativeReal, false}});
+        const auto second = completionOf(split, {{&generated, true}, {&relativeReal, false}});
+        // The third batch's generated output still takes its share of the remembered target; the real after it has no request.
+        const auto third = completionOf(split, {{&generated, true}, {&plainReal, false}});
+        expect(holdsRequest(first.calls[0], 0, 0, 0, 0, 0), "a generated output with nothing remembered held a request");
+        expect(holdsRequest(first.calls[1], 2, target / 2, relativeFlag, dequeued, domain),
+            "the first relative real's split did not reach its output record");
+        expect(holdsRequest(second.calls[0], 3, target / 2, relativeFlag, dequeued, domain),
+            "the generated output's share did not reach its output record");
+        expect(holdsRequest(second.calls[1], 2, target / 2, relativeFlag, dequeued, domain),
+            "the second relative real's split did not reach its output record");
+        expect(holdsRequest(third.calls[0], 3, target / 2, relativeFlag, dequeued, domain) &&
+            holdsRequest(third.calls[1], 0, 0, 0, 0, 0),
+            "a real without a request did not hold zeros");
+    }
+
+    // PT2: the first two absolute reals leave no interval for a share, so their batches' generated outputs carry no request.
+    constexpr uint64_t base = 1'000'000'000'000;
+    constexpr uint64_t interval = 16'666'666;
+    VkPresentTimingInfoEXT first = absoluteTarget(base);
+    VkPresentTimingInfoEXT second = absoluteTarget(base + interval);
+    VkPresentTimingInfoEXT third = absoluteTarget(base + 2 * interval);
+    auto firstNode = requestNode(&first);
+    auto secondNode = requestNode(&second);
+    auto thirdNode = requestNode(&third);
+    const auto firstReal = presentOf(&firstNode, &swapchain, &wait, &image);
+    const auto secondReal = presentOf(&secondNode, &swapchain, &wait, &image);
+    const auto thirdReal = presentOf(&thirdNode, &swapchain, &wait, &image);
+    auto absoluteQueue = std::make_shared<DeferredPresentQueue>();
+    absoluteQueue->queue = handle<VkQueue>(7);
+    DeferredPresent absolute(absoluteQueue, present);
+    const auto one = completionOf(absolute, {{&generated, true}, {&firstReal, false}});
+    const auto two = completionOf(absolute, {{&generated, true}, {&secondReal, false}});
+    const auto three = completionOf(absolute, {{&generated, true}, {&thirdReal, false}});
+    expect(holdsRequest(one.calls[0], 0, 0, 0, 0, 0) && holdsRequest(one.calls[1], 1, base, 0, dequeued, domain),
+        "an absolute real did not hold its own request as written");
+    expect(holdsRequest(two.calls[0], 0, 0, 0, 0, 0) && holdsRequest(two.calls[1], 1, base + interval, 0, dequeued, domain),
+        "a second absolute real without a share did not hold its request");
+    // The third batch's generated output takes A2 + D / 2, which its record shows as kind 4 with no relative flag.
+    expect(holdsRequest(three.calls[0], 4, base + interval + interval / 2, 0, dequeued, domain) &&
+        holdsRequest(three.calls[1], 1, base + 2 * interval, 0, dequeued, domain),
+        "a PT2 share did not reach its output record");
+#endif
+}
+
 int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i)
         if (std::strcmp(argv[i], "--repro-xh2") == 0) return internalRealStallHoldsNextBatch();
@@ -6440,4 +6531,6 @@ int main(int argc, char** argv) {
     absoluteIntervalLimitsAreRespected(); absoluteZeroTargetForgetsThePair();
     absoluteDomainChangeForgetsThePair(); relativeRealSwitchesTheLiveState();
     absolutePairForgottenOnSwapchainChangeAndGap();
+    // PT4 last: the output records read each worker's Calls, so it runs after the PT1 and PT2 rules it reads back.
+    outputCallsHoldTheForwardedRequest();
 }

@@ -18,6 +18,7 @@
 #include <limits>
 #include <locale>
 #include <mutex>
+#include <set>
 #include <sstream>
 #include <string_view>
 
@@ -429,6 +430,33 @@ void logPacingOutput(const uint64_t context, const VkSwapchainKHR swapchain,
     if (!pacingFrameTraceEnabled()) return;
     present_records::enqueue(trace_recorder::RecordKind::PacingOutput,
         present_records::PacingOutputPayload{context, swapchain, sample});
+}
+
+namespace {
+// PT4: the swapchains whose time domain has been written. Keyed by handle, so a handle that a later swapchain
+// reuses is not written again.
+bool firstPastTimingDomain(const VkSwapchainKHR swapchain) {
+    static std::mutex mutex;
+    static std::set<VkSwapchainKHR> written;
+    const std::lock_guard lock(mutex);
+    return written.insert(swapchain).second;
+}
+}
+
+void logPacingPastTiming(const VkSwapchainKHR swapchain, const std::span<const PastTimingEntry> entries) noexcept {
+    if (!pacingProfileEnabled() || entries.empty()) return;
+    try {
+        if (firstPastTimingDomain(swapchain)) {
+            std::ostringstream out;
+            out << "framegen-vulkan: present diagnostics: operation=pacing-profile-past-timing-domain version=1 pid=" << getpid()
+                << " swapchain=" << swapchain << " time_domain=" << entries.front().timeDomain
+                << " time_domain_id=" << entries.front().timeDomainId << '\n';
+            writePacingProfileRecords(out.str());
+        }
+    } catch (...) {}
+    for (const auto& entry : entries)
+        present_records::enqueue(trace_recorder::RecordKind::PacingPastTiming,
+            present_records::PacingPastTimingPayload{swapchain, entry});
 }
 
 void logPacingSkip(const uint64_t context, const uint64_t source, const std::string_view reason,
@@ -857,6 +885,43 @@ void registerDeferredWorkerThread() noexcept {
     if (!pacingProfileEnabled()) return;
     present_records::registerWorkerThread(trace_recorder::currentThreadId());
 }
+
+#if defined(VK_EXT_present_timing)
+PastTimingEntry pastTimingEntry(const VkPastPresentationTimingEXT& entry) noexcept {
+    PastTimingEntry copy;
+    copy.lowerPresentId = entry.presentId;
+    copy.targetTime = entry.targetTime;
+    copy.timeDomain = static_cast<uint32_t>(entry.timeDomain);
+    copy.timeDomainId = entry.timeDomainId;
+    copy.reportComplete = entry.reportComplete != VK_FALSE;
+    // The driver writes presentStageCount stages. VK_EXT_present_timing defines four stages, so no more than four are kept.
+    if (entry.pPresentStages) {
+        copy.stageCount = std::min(entry.presentStageCount, static_cast<uint32_t>(PastTimingEntry::stageCapacity));
+        for (uint32_t i = 0; i < copy.stageCount; ++i)
+            copy.stages[i] = PastTimingStage{entry.pPresentStages[i].stage, entry.pPresentStages[i].time};
+    }
+    return copy;
+}
+
+bool forwardedPresentTiming(const void* chain, VkPresentTimingInfoEXT& timing) noexcept {
+    // Bounded like lowerPresentId: a present's pNext holds at most a few nodes.
+    for (unsigned depth = 0; chain && depth < 8; ++depth) {
+        VkStructureType type{};
+        std::memcpy(&type, chain, sizeof(type));
+        if (type == VK_STRUCTURE_TYPE_PRESENT_TIMINGS_INFO_EXT) {
+            VkPresentTimingsInfoEXT node{};
+            std::memcpy(&node, chain, sizeof(node));
+            if (node.swapchainCount < 1 || !node.pTimingInfos) return false;
+            timing = node.pTimingInfos[0];
+            return true;
+        }
+        const void* next{};
+        std::memcpy(&next, static_cast<const std::byte*>(chain) + offsetof(VkBaseInStructure, pNext), sizeof(next));
+        chain = next;
+    }
+    return false;
+}
+#endif
 
 uint64_t lowerPresentId(const void* chain) noexcept {
     // Bounded like the worker's own chain walk: the present's pNext holds at most a few nodes.

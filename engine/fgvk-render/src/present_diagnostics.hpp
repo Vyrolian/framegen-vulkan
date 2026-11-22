@@ -203,6 +203,12 @@ namespace fgvk::layer::present_diagnostics {
             Clock::time_point targetTick{};
             Clock::time_point copyAcquireReturned{}, copySubmitStarted{}, copySubmitReturned{};
             uint32_t copyAcquirePendingNs{}, copyAcquireReadyNs{};
+            // PT4: the VK_EXT_present_timing request this output forwarded, zero when none. The kind is 0 none, 1 the
+            // application's request as written, 2 PT1 relative split real, 3 PT1 relative generated share, 4 PT2 absolute
+            // generated, and 5 the target fgvk chose for a synchronous gamescope bridge output (ExtTiming).
+            uint64_t timingTarget{}, timingDomainId{};
+            uint32_t timingFlags{}, timingStage{};
+            uint8_t timingKind{};
         };
         struct OutputSample {
             size_t ordinal{};
@@ -599,6 +605,34 @@ namespace fgvk::layer::present_diagnostics {
         const PacingProfile::SourceSample& sample) noexcept;
     void bindApplicationPresentSource(uint64_t context, uint64_t source) noexcept;
     void logPacingOutput(uint64_t context, VkSwapchainKHR swapchain, const PacingProfile::OutputSample& sample) noexcept;
+    /// PT4: one entry of a past presentation timing result as the driver wrote it. The stages are copied before the PT3 rewrite
+    /// can move them. VK_EXT_present_timing defines four present stages, so an entry keeps up to four.
+    struct PastTimingStage {
+        uint32_t stage{};
+        uint64_t time{};
+    };
+    struct PastTimingEntry {
+        static constexpr size_t stageCapacity = 4;
+        uint64_t lowerPresentId{};
+        /// The application ID the entry was rewritten to, zero when the rewrite dropped it.
+        uint64_t appPresentId{};
+        bool dropped{};
+        uint64_t targetTime{};
+        uint32_t timeDomain{};
+        uint64_t timeDomainId{};
+        bool reportComplete{};
+        uint32_t stageCount{};
+        std::array<PastTimingStage, stageCapacity> stages{};
+    };
+#if defined(VK_EXT_present_timing)
+    /// PT4: copies one entry of a driver result, reading only the stages the driver wrote (up to stageCapacity).
+    [[nodiscard]] PastTimingEntry pastTimingEntry(const VkPastPresentationTimingEXT& entry) noexcept;
+    /// PT4: the first timing request of a present's pNext chain (VkPresentTimingsInfoEXT), copied. False when the chain has none.
+    [[nodiscard]] bool forwardedPresentTiming(const void* chain, VkPresentTimingInfoEXT& timing) noexcept;
+#endif
+    /// PT4: records each returned entry on the pacing profile, with the time domain of the first entry the first time a swapchain
+    /// reports one. Only enqueues: the driver is not called again and nothing waits.
+    void logPacingPastTiming(VkSwapchainKHR swapchain, std::span<const PastTimingEntry> entries) noexcept;
     /// One record per worker-deferred generated output that presented no image. Reason is a stable name.
     void logPacingSkip(uint64_t context, uint64_t source, std::string_view reason,
         Clock::time_point scheduled, Clock::time_point now) noexcept;

@@ -345,6 +345,12 @@ public:
         uint64_t backendFrame{}, presentId{}, feedback{};
         // GP1, diagnostics only: the application's own present ID for a real (0 otherwise).
         uint64_t appPresentId{};
+        // PT4, diagnostics only: the VK_EXT_present_timing request this output forwarded, zero when none. The kind is 0 none,
+        // 1 the application's request as written, 2 PT1 relative split real, 3 PT1 relative generated share, 4 PT2 absolute
+        // generated (see OutputObservation for kind 5).
+        uint64_t timingTarget{}, timingDomainId{};
+        uint32_t timingFlags{}, timingStage{};
+        uint8_t timingKind{};
         double phase{};
         // GT1: the tick snap of this output (its snapped deadline minus the deadline before the snap) and its
         // target tick. Both are zero without the tick lock.
@@ -2470,6 +2476,8 @@ private:
             // PT2 rule 3: an absolute share is counted the same way, with the share's offset from the newer absolute target.
             bool absoluteForwarded{};
             uint64_t absoluteForwardedNs{};
+            // PT4: the kind of the forwarded request, as Call::timingKind records it.
+            uint8_t timingKind{};
             if (current.generated) {
                 uint64_t interval{};
                 if (!metadata.hasTiming && limit > 1 && relativeTiming.valid) {
@@ -2485,6 +2493,7 @@ private:
                     timingRequested = true;
                     relativeForwarded = true;
                     relativeForwardedNs = timingInfo.targetTime;
+                    timingKind = 3;
                 } else if (!metadata.hasTiming && limit > 1 && absoluteInterval(absoluteTiming, interval)) {
                     // PT2 rule 3: the newer absolute target plus this output's share of the interval. The output's place is
                     // the generated outputs of this batch before it, presented or skipped, plus one, never past limit - 1.
@@ -2504,6 +2513,7 @@ private:
                     timingRequested = true;
                     absoluteForwarded = true;
                     absoluteForwardedNs = offset;
+                    timingKind = 4;
                 }
             } else if (metadata.hasTiming && limit > 1 && relativeRequest(metadata.timing)) {
                 // Rule 2: the real takes the target less the shares of the generated outputs presented before it in this
@@ -2515,7 +2525,10 @@ private:
                     limit - std::min(presented, limit - 1), limit);
                 relativeForwarded = true;
                 relativeForwardedNs = timingInfo.targetTime;
+                timingKind = 2;
             }
+            // PT4: any other request is forwarded as the application wrote it.
+            if (timingRequested && !timingKind) timingKind = 1;
             VkPresentTimingsInfoEXT timings{
                 .sType = VK_STRUCTURE_TYPE_PRESENT_TIMINGS_INFO_EXT,
                 .pNext = chain, .swapchainCount = 1, .pTimingInfos = &timingInfo,
@@ -2545,6 +2558,17 @@ private:
             result.outputQueue = queue->queue;
             result.lateReadiness = first && lateReadiness;
             result.arrival = first ? ready.arrival : Clock::time_point{};
+#if defined(VK_EXT_present_timing)
+            // PT4: the timing this output forwards, copied for its output record. The three present paths below all use the chain
+            // built above, so one copy covers them. Without a request the fields stay zero.
+            if (timingRequested) {
+                result.timingTarget = timingInfo.targetTime;
+                result.timingFlags = timingInfo.flags;
+                result.timingStage = timingInfo.targetTimeDomainPresentStage;
+                result.timingDomainId = timingInfo.timeDomainId;
+                result.timingKind = timingKind;
+            }
+#endif
             // A generated output without an early preparation takes its image at the deadline. Polling
             // never sleeps under queue->mutex, and every path below signals the
             // continuation and the render-slot fence.

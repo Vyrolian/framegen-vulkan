@@ -366,11 +366,13 @@ void appendPacingOutput(std::ostream& line, const uint64_t context, const VkSwap
     if (observed.copyAcquireReadyNs != 0)
         line << " acquire_fence_ready_ns="
              << ns(observed.copyAcquireReturned + std::chrono::nanoseconds{observed.copyAcquireReadyNs});
+    // PT4: the timing this output forwarded, last of all. The kind is printed as a number, not a character.
+    line << " timing_target_ns=" << observed.timingTarget
+         << " timing_flags=" << observed.timingFlags
+         << " timing_stage=" << observed.timingStage
+         << " timing_domain_id=" << observed.timingDomainId
+         << " timing_kind=" << static_cast<unsigned>(observed.timingKind);
     line << '\n';
-}
-
-void formatPacingOutput(const PacingOutputPayload& payload, std::ostream& line) {
-    appendPacingOutput(line, payload.context, payload.swapchain, payload.sample);
 }
 
 void formatPacingSkip(const PacingSkipPayload& payload, std::ostream& line) {
@@ -1222,6 +1224,12 @@ void handleRecord(Recorder& s, const trace_recorder::TraceRecord& record, const 
         emit([&](std::ostream& line) { formatQueueFrame(payload, line); });
         break;
     }
+    case RecordKind::PacingPastTiming: {
+        PacingPastTimingPayload payload{};
+        load(payload);
+        emit([&](std::ostream& line) { formatPacingPastTiming(payload, line); });
+        break;
+    }
     }
 }
 
@@ -1365,6 +1373,29 @@ void noteDisplayProbeCost(const uint64_t nanoseconds) noexcept {
     while (nanoseconds > maximum &&
             !s->probeMaxNs.compare_exchange_weak(maximum, nanoseconds, std::memory_order_relaxed)) {
     }
+}
+
+void formatPacingOutput(const PacingOutputPayload& payload, std::ostream& line) {
+    appendPacingOutput(line, payload.context, payload.swapchain, payload.sample);
+}
+
+void formatPacingPastTiming(const PacingPastTimingPayload& payload, std::ostream& line) {
+    const auto& entry = payload.entry;
+    line << "framegen-vulkan: present diagnostics: operation=pacing-profile-past-timing version=1 pid=" << getpid()
+         << " swapchain=" << payload.swapchain
+         << " lower_present_id=" << entry.lowerPresentId
+         << " app_present_id=" << entry.appPresentId
+         << " dropped=" << entry.dropped
+         << " target_ns=" << entry.targetTime
+         << " time_domain=" << entry.timeDomain
+         << " time_domain_id=" << entry.timeDomainId
+         << " report_complete=" << entry.reportComplete
+         << " stages=";
+    for (uint32_t i = 0; i < entry.stageCount; ++i) {
+        if (i) line << ',';
+        line << entry.stages[i].stage << ':' << entry.stages[i].time;
+    }
+    line << '\n';
 }
 
 void formatPacingWindow(const PacingWindowPayload& payload, const PacingProfile::Window& window,

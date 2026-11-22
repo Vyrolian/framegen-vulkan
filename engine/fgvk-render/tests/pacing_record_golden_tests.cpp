@@ -106,6 +106,7 @@ void profileScenario() {
     profile.workerLockSplit(1000000, 2000000, 3000000);
     profile.internalImagesActive();
     profile.publicationCost(1ms);
+    // PT4: the generated output forwarded a PT2 absolute share (kind 4): its target, flags, stage and domain ID.
     profile.output(start + 2ms, start + 3ms, VK_SUCCESS, {
         .scheduled = start + 1ms, .imageIndex = 4, .generated = true, .deferred = true,
         .copyChecked = true, .copyStatus = VK_NOT_READY, .copySampledAt = start + 3ms,
@@ -114,7 +115,10 @@ void profileScenario() {
         .readinessFinished = start + 2ms, .readinessDeadline = start + 2ms,
         .readinessResult = VK_SUCCESS, .readinessChecked = true,
         .queue = fakeQueue(), .presentWait = fakeSemaphore(0x5000),
-        .arrival = start, .readyAt = start + 2ms, .slack = -1ms});
+        .arrival = start, .readyAt = start + 2ms, .slack = -1ms,
+        .timingTarget = 33'333'333, .timingDomainId = 9,
+        .timingFlags = VK_PRESENT_TIMING_INFO_PRESENT_AT_NEAREST_REFRESH_CYCLE_BIT_EXT,
+        .timingStage = VK_PRESENT_STAGE_IMAGE_FIRST_PIXEL_VISIBLE_BIT_EXT, .timingKind = 4});
     const auto sample = profile.output(start + 9ms, start + 10ms, VK_ERROR_OUT_OF_DATE_KHR, {
         .scheduled = start + 9ms, .imageIndex = 2, .deferred = true, .copyChecked = true,
         .copyStatus = VK_SUCCESS, .copySampledAt = start + 10ms});
@@ -143,6 +147,18 @@ void profileScenario() {
     // T4: the private queue marker after a lower present; unavailable keeps no times.
     logPacingPresentMarkerGpu(17, 4, 9, true, true, 10008000, 10008050);
     logPacingPresentMarkerGpu(17, 5, 10, false, false, 10009000, 10009050);
+    // PT4: one gated entry with two stages, one dropped entry with none, and a second swapchain. Each swapchain writes its time
+    // domain once, from its first entry; the second call on the first swapchain writes none.
+    const std::array past{
+        PastTimingEntry{.lowerPresentId = 5, .appPresentId = 17, .dropped = false, .targetTime = 16'666'666,
+            .timeDomain = 1, .timeDomainId = 9, .reportComplete = true, .stageCount = 2,
+            .stages = {PastTimingStage{4, 2'000'000}, PastTimingStage{8, 3'000'000}}},
+        PastTimingEntry{.lowerPresentId = 6, .appPresentId = 0, .dropped = true, .targetTime = 0,
+            .timeDomain = 1, .timeDomainId = 9, .reportComplete = false, .stageCount = 0},
+    };
+    logPacingPastTiming(fakeSwapchain(), past);
+    logPacingPastTiming(fakeSwapchain(), std::array{past[1]});
+    logPacingPastTiming(reinterpret_cast<VkSwapchainKHR>(uint64_t{0x3100}), std::array{past[0]});
 
     // Application present windows: the second call closes the first window.
     recordApplicationFrameTiming(ApplicationFrameApi::Present, 1, fakeSwapchain(), start,

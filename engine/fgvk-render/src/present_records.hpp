@@ -45,6 +45,13 @@ struct PacingOutputPayload {
     present_diagnostics::PacingProfile::OutputSample sample{};
 };
 
+// PT4: one entry of a past presentation timing result, with the swapchain it was returned for.
+struct PacingPastTimingPayload {
+    VkSwapchainKHR swapchain{};
+    present_diagnostics::PastTimingEntry entry{};
+};
+static_assert(sizeof(PacingPastTimingPayload) <= trace_recorder::payloadCapacity);
+
 struct PacingSkipPayload {
     uint64_t context{};
     uint64_t source{};
@@ -355,6 +362,10 @@ bool enqueue(const RecordKind kind, const Payload& payload) noexcept {
     return false;
 }
 
+/// Formats one output sample, its PT4 timing fields last, into the text the analysers read, on the writer thread.
+void formatPacingOutput(const PacingOutputPayload& payload, std::ostream& line);
+/// Formats one past presentation timing entry (PT4) into one pacing-profile-past-timing line, on the writer thread.
+void formatPacingPastTiming(const PacingPastTimingPayload& payload, std::ostream& line);
 /// Formats one window into the text the analysers read, on the writer thread.
 void formatPacingWindow(const PacingWindowPayload& payload,
     const present_diagnostics::PacingProfile::Window& window, std::ostream& line);

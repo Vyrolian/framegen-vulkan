@@ -130,6 +130,8 @@ VkResult Swapchain::completeDeferredPresent(const uint64_t timeoutNs, const bool
                     .copySubmitReturned = call.copySubmitReturned,
                     .copyAcquirePendingNs = call.copyAcquireBounds.pendingNs,
                     .copyAcquireReadyNs = call.copyAcquireBounds.readyNs,
+                    .timingTarget = call.timingTarget, .timingDomainId = call.timingDomainId,
+                    .timingFlags = call.timingFlags, .timingStage = call.timingStage, .timingKind = call.timingKind,
                 });
                 present_diagnostics::logPacingOutput(this->diagnosticsState.contextId, call.swapchain, sample);
             }
@@ -555,6 +557,17 @@ VkResult Swapchain::queuePresentWithRetirementFence(
         observed.feedback = feedbackId;
         observed.presentId = present_diagnostics::lowerPresentId(info.pNext);
         observed.appPresentId = applicationId;
+#if defined(VK_EXT_present_timing)
+        // PT4: the timing this lower present forwarded, as it was in its chain. The bridge output's own target (ExtTiming) is
+        // kind 5; the application's request, forwarded as written, is kind 1.
+        if (VkPresentTimingInfoEXT forwarded{}; present_diagnostics::forwardedPresentTiming(info.pNext, forwarded)) {
+            observed.timingTarget = forwarded.targetTime;
+            observed.timingFlags = forwarded.flags;
+            observed.timingStage = forwarded.targetTimeDomainPresentStage;
+            observed.timingDomainId = forwarded.timeDomainId;
+            observed.timingKind = static_cast<uint8_t>(timingOwner == PacingProfile::ExtTiming ? 5 : 1);
+        }
+#endif
         if (observed.copyExpected && present_diagnostics::pacingGpuProfileEnabled() && !this->renderSlots.empty()) {
             observed.copyChecked = true;
             observed.copyStatus = vk.df().GetFenceStatus(vk.dev(), this->currentRenderSlot().fence.handle());

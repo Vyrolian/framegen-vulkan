@@ -248,6 +248,40 @@ void pastTimingIdsAreRewrittenAndCompacted() {
     expect(rewritePastPresentationIds(none, oneCapacity, empty) == 1 && none.presentationTimingCount == 0,
         "entries with no recorded application ID were kept");
 }
+
+// PT4: the rewrite reports, for each driver entry, the application ID it was given (zero when it was removed). The report is
+// the same decision that rewrote the array, and an empty report changes nothing.
+void pastTimingApplicationIdsAreReported() {
+    OnScreenIds ids;
+    ids.record(10, 1);
+    ids.record(30, 3);
+    constexpr auto stage = VK_PRESENT_STAGE_QUEUE_OPERATIONS_END_BIT_EXT;
+    VkPresentStageTimeEXT stages[1] {{stage, 100}};
+    VkPastPresentationTimingEXT entries[3] {
+        {VK_STRUCTURE_TYPE_PAST_PRESENTATION_TIMING_EXT, nullptr, 1, 500, 1, stages, VK_TIME_DOMAIN_DEVICE_KHR, 7, VK_TRUE},
+        {VK_STRUCTURE_TYPE_PAST_PRESENTATION_TIMING_EXT, nullptr, 2, 550, 0, nullptr, VK_TIME_DOMAIN_DEVICE_KHR, 7, VK_TRUE},
+        {VK_STRUCTURE_TYPE_PAST_PRESENTATION_TIMING_EXT, nullptr, 3, 600, 0, nullptr, VK_TIME_DOMAIN_DEVICE_KHR, 7, VK_TRUE},
+    };
+    VkPastPresentationTimingPropertiesEXT result{.sType = VK_STRUCTURE_TYPE_PAST_PRESENTATION_TIMING_PROPERTIES_EXT,
+        .presentationTimingCount = 3, .pPresentationTimings = entries};
+    const std::array<uint32_t, 3> capacities{1, 0, 0};
+    std::array<uint64_t, 3> applicationIds{};
+    const auto removed = rewritePastPresentationIds(result, capacities, ids, applicationIds);
+    expect(removed == 1 && result.presentationTimingCount == 2 && entries[0].presentId == 10 && entries[1].presentId == 30,
+        "the reported rewrite changed the array differently");
+    expect(applicationIds == std::array<uint64_t, 3>{10, 0, 30},
+        "the application IDs reported for the driver entries are not the ones the rewrite used");
+
+    // Without a report the rewrite is the same as before, and the report is never read.
+    VkPastPresentationTimingEXT again[1] {
+        {VK_STRUCTURE_TYPE_PAST_PRESENTATION_TIMING_EXT, nullptr, 1, 500, 0, nullptr, VK_TIME_DOMAIN_DEVICE_KHR, 7, VK_TRUE},
+    };
+    VkPastPresentationTimingPropertiesEXT unreported{.sType = VK_STRUCTURE_TYPE_PAST_PRESENTATION_TIMING_PROPERTIES_EXT,
+        .presentationTimingCount = 1, .pPresentationTimings = again};
+    const std::array<uint32_t, 1> oneCapacity{0};
+    expect(rewritePastPresentationIds(unreported, oneCapacity, ids) == 0 && again[0].presentId == 10,
+        "the rewrite without a report changed the array");
+}
 #endif
 
 // ---- Watcher ----------------------------------------------------------------------------------------
@@ -476,6 +510,7 @@ int main() {
     firstDropIsReportedOnce();
 #if defined(VK_EXT_present_timing)
     pastTimingIdsAreRewrittenAndCompacted();
+    pastTimingApplicationIdsAreReported();
 #endif
     std::cout << "framegen-vulkan: on-screen profile tests passed\n";
     return 0;

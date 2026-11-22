@@ -20,8 +20,9 @@ using Clock = std::chrono::steady_clock;
 static_assert(std::is_same_v<Clock::duration, std::chrono::nanoseconds>);
 
 /// The fixed payload bound of one record. Larger observations go through a window slot. GT1 grew the pacing output
-/// sample by two 8-byte fields (tick_snap_ns, target_tick_ns) past 256; the queue exists only in a profiled process.
-inline constexpr size_t payloadCapacity = 288;
+/// sample by two 8-byte fields (tick_snap_ns, target_tick_ns) past 256. PT4 grew it by 32 more (the output's forwarded
+/// timing: target, domain ID, flags, stage and kind), to 320. The queue exists only in a profiled process.
+inline constexpr size_t payloadCapacity = 320;
 
 /// Every record kind the writer formats. Kinds are stable names inside the process only.
 enum class RecordKind : uint16_t {
@@ -56,6 +57,8 @@ enum class RecordKind : uint16_t {
     SubmitTag,
     PacingGpuPass,
     QueueFrame,
+    /// PT4: one entry of a past presentation timing result, with the application ID it was rewritten to.
+    PacingPastTiming,
     Count
 };
 

@@ -1838,18 +1838,48 @@ namespace {
         const auto next = lower.get(device, [&] {
             return instance_info->funcs.GetDeviceProcAddr(device, "vkGetPastPresentationTimingEXT"); });
         if (!next) return VK_ERROR_EXTENSION_NOT_PRESENT;
+        // PT4: with the pacing profile, every entry the driver returns is recorded, gated or not. Without the profile this is one
+        // false test, and the call and its result are the same as before.
+        const bool recorded = info && properties && properties->pPresentationTimings &&
+            present_diagnostics::pacingProfileEnabled();
         std::shared_ptr<OnScreenIds> ids;
         if (info && properties && properties->pPresentationTimings && OnScreenRegistry::anyActive())
             ids = OnScreenRegistry::find({handleBits(device), handleBits(info->swapchain)});
-        if (!ids) return next(device, info, properties);
-        std::vector<uint32_t> capacities(properties->presentationTimingCount);
-        for (size_t i = 0; i < capacities.size(); ++i) {
-            const auto& slot = properties->pPresentationTimings[i];
-            capacities[i] = slot.pPresentStages ? slot.presentStageCount : 0;
+        if (!ids && !recorded) return next(device, info, properties);
+        std::vector<uint32_t> capacities;
+        if (ids) {
+            capacities.resize(properties->presentationTimingCount);
+            for (size_t i = 0; i < capacities.size(); ++i) {
+                const auto& slot = properties->pPresentationTimings[i];
+                capacities[i] = slot.pPresentStages ? slot.presentStageCount : 0;
+            }
         }
         const VkResult result = next(device, info, properties);
         if (result != VK_SUCCESS && result != VK_INCOMPLETE) return result;
-        const uint32_t removed = rewritePastPresentationIds(*properties, capacities, *ids);
+        // PT4: the entries are copied before the rewrite, which compacts the array and moves the stages of each kept entry.
+        std::vector<present_diagnostics::PastTimingEntry> entries;
+        if (recorded) {
+            entries.reserve(properties->presentationTimingCount);
+            for (uint32_t i = 0; i < properties->presentationTimingCount; ++i)
+                entries.push_back(present_diagnostics::pastTimingEntry(properties->pPresentationTimings[i]));
+        }
+        if (!ids) {
+            // No gate: the driver reports the application's own IDs, so nothing is rewritten or dropped.
+            if (recorded) {
+                for (auto& entry : entries) entry.appPresentId = entry.lowerPresentId;
+                present_diagnostics::logPacingPastTiming(info->swapchain, entries);
+            }
+            return result;
+        }
+        std::vector<uint64_t> applicationIds(entries.size());
+        const uint32_t removed = rewritePastPresentationIds(*properties, capacities, *ids, applicationIds);
+        if (recorded) {
+            for (size_t i = 0; i < entries.size(); ++i) {
+                entries[i].appPresentId = applicationIds[i];
+                entries[i].dropped = applicationIds[i] == 0;
+            }
+            present_diagnostics::logPacingPastTiming(info->swapchain, entries);
+        }
         if (removed && ids->firstDrop())
             std::clog << "framegen-vulkan: past presentation timing: removed " << removed
                       << " entries with no application ID; swapchain=0x" << std::hex << handleBits(info->swapchain)

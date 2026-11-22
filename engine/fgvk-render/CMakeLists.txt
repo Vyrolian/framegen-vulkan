@@ -216,6 +216,14 @@ if(BUILD_TESTING)
     add_test(NAME pacing-record-golden COMMAND fgvk-pacing-record-golden-tests
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/pacing-record-golden.txt")
     fgvk_register_portable_policy_test(fgvk-pacing-record-golden-tests pacing-record-golden)
+    # PT4: the text of an output's forwarded timing and of a past presentation timing entry, and the copies behind them.
+    add_executable(fgvk-pacing-timing-record-tests
+        "tests/pacing_timing_record_tests.cpp" "src/present_diagnostics.cpp" ${PRESENT_RECORD_SOURCES})
+    target_include_directories(fgvk-pacing-timing-record-tests PRIVATE "src")
+    target_link_libraries(fgvk-pacing-timing-record-tests PRIVATE ${CMAKE_DL_LIBS})
+    target_include_directories(fgvk-pacing-timing-record-tests PRIVATE "../fgvk-common/include")
+    add_test(NAME pacing-timing-record COMMAND fgvk-pacing-timing-record-tests)
+    fgvk_register_portable_policy_test(fgvk-pacing-timing-record-tests pacing-timing-record)
     add_executable(fgvk-trace-recorder-tests "tests/trace_recorder_tests.cpp" "src/trace_recorder.cpp")
     target_include_directories(fgvk-trace-recorder-tests PRIVATE "src")
     target_link_libraries(fgvk-trace-recorder-tests PRIVATE Threads::Threads)
