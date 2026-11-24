@@ -1,26 +1,27 @@
-## What's new in framegen-vulkan v1.3.0
+## What's new in framegen-vulkan v1.4.0
 
-Frame generation now follows the game's own present timing (VK_EXT_present_timing), which vkd3d-proton uses for VSync at a fraction of the refresh rate (for example VSync 60 on a 240 Hz screen).
+The settings window now owns the Lossless.dll path and the default profile, and framegen-vulkan no longer searches for the DLL when a game starts.
 
-- **Even generated frames under partial VSync:** when the game asks for each frame to stay up several refreshes, framegen-vulkan now splits that time across the generated frames instead of showing them at once and holding the real frame. VSync 60 at 2× on 240 Hz now shows 2 refreshes per frame instead of a 1/3 split. With VRR this is clean; on a fixed refresh rate some uneven frames remain, because the NVIDIA driver on Wayland rounds the game's own timestamps up by a refresh. That also happens without framegen-vulkan.
-- **Present timing feedback with frame generation:** vkd3d-proton's timing feedback no longer freezes when frame generation is on, so its own pacing and catch-up after stalls keep working.
-- **Pacing captures:** captures now record the timing target sent with each frame and the driver's reported presentation times.
+- **Lossless.dll is chosen, not searched:** games use only the configured `dll` path. Without one, frame generation stays off and the log says that no path is set. Existing configurations with a path are unchanged.
+- **Browse and Auto-locate:** next to the Lossless.dll field, Browse opens the desktop file picker and Auto-locate searches the Steam libraries once, including libraries on other drives listed in `libraryfolders.vdf`.
+- **System clipboard:** copy and paste in the settings window now use the desktop clipboard.
+- **Always one default profile:** a new configuration starts with **Main profile** as the default. **Set as default** moves the default to another profile, the default is marked `(default)` in the profile list, and it cannot be deleted until another profile is the default.
 
 ### Install
 
-Download `framegen-vulkan-v1.3.0.zip` from this release and extract it.
+Download `framegen-vulkan-v1.4.0.zip` from this release and extract it.
 
 For native Steam and other Linux apps, install or upgrade from the `native` folder:
 
 ```bash
-cd framegen-vulkan-v1.3.0/native
+cd framegen-vulkan-v1.4.0/native
 ./install
 ```
 
-For Flatpak apps, run the extension installer from the `flatpak` folder, then configure each app using the [Flatpak setup guide](https://github.com/Vyrolian/framegen-vulkan/blob/v1.3.0/engine/docs/FLATPAK-GUIDE.md):
+For Flatpak apps, run the extension installer from the `flatpak` folder, then configure each app using the [Flatpak setup guide](https://github.com/Vyrolian/framegen-vulkan/blob/v1.4.0/engine/docs/FLATPAK-GUIDE.md):
 
 ```bash
-cd framegen-vulkan-v1.3.0/flatpak
+cd framegen-vulkan-v1.4.0/flatpak
 ./install-flatpak
 ```
 
@@ -40,4 +41,4 @@ Flatpak: to uninstall the extension for runtime 26.08, close the apps using it a
 flatpak uninstall --user org.freedesktop.Platform.VulkanLayer.fgvkrender//26.08
 ```
 
-Repeat for each installed runtime branch. App overrides and profiles remain. [Flatpak removal and override cleanup](https://github.com/Vyrolian/framegen-vulkan/blob/v1.3.0/engine/docs/FLATPAK-GUIDE.md#uninstall-the-flatpak-extension)
+Repeat for each installed runtime branch. App overrides and profiles remain. [Flatpak removal and override cleanup](https://github.com/Vyrolian/framegen-vulkan/blob/v1.4.0/engine/docs/FLATPAK-GUIDE.md#uninstall-the-flatpak-extension)
