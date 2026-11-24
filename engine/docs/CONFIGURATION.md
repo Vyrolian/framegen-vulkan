@@ -26,7 +26,7 @@ multiplier = 2
 
 ```
 
-framegen-vulkan activates on the next launch of a matched process. Games without a match use the default profile: a new configuration starts with **Main profile** as the default, and **Make default** in the settings window moves it to the selected profile. There is always one default profile. Set the game's Steam launch options to `fgvk %command%`. Per-game matches take priority over the default. `FGVK_PROFILE` selects an exact profile and takes priority over both.
+framegen-vulkan activates on the next launch of a matched process. Games without a match use the default profile: a new configuration starts with **Main profile** as the default, and **Set as default** in the settings window moves it to the selected profile. There is always one default profile. Set the game's Steam launch options to `fgvk %command%`. Per-game matches take priority over the default. `FGVK_PROFILE` selects an exact profile and takes priority over both.
 
 ### Lossless Scaling availability
 
@@ -41,7 +41,7 @@ The window has these controls:
 | Control | What it sets |
 | --- | --- |
 | Profile | Chooses the profile to edit. New, Rename and Delete manage profiles; each profile needs a unique name. |
-| Make default | Makes the selected profile the default for games launched through `fgvk` that have no per-game match. On the default profile the button reads **Default profile** and is disabled; deleting the default profile moves the default to the first remaining profile. |
+| Set as default | Makes the selected profile the default for games launched through `fgvk` that have no per-game match. The button is disabled on the default profile; deleting the default profile moves the default to the first remaining profile. |
 | Games | Lists the `active_in` entries. Type an executable name and press Add, or choose Pick running… to add a program that is running now. The × button removes an entry. |
 | Frame generation | `Off` or a fixed `2x` to `5x` multiplier. |
 | Quality (flow scale) | `flow_scale` from 25% to 100%. Higher values track motion more precisely and cost more GPU time. |

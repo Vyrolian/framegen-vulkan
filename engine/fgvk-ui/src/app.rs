@@ -276,17 +276,8 @@ impl App {
         match profiles.get(self.selected) {
             Some(profile) => {
                 let is_default = default_profile.as_deref() == Some(profile.key.name.as_str());
-                let label = if is_default {
-                    "Default profile"
-                } else {
-                    "Make default"
-                };
                 if ui
-                    .add_enabled(!is_default, Button::new(label))
-                    .on_hover_text("Use this profile for fgvk launches that match no per-game profile.")
-                    .on_disabled_hover_text(
-                        "This is the default profile for fgvk launches that match no per-game profile. Make another profile the default to change it.",
-                    )
+                    .add_enabled(!is_default, Button::new("Set as default"))
                     .clicked()
                 {
                     let result = self.config.set_default_profile(&profile.key, true);
