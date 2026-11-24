@@ -118,7 +118,7 @@ To also build the 32-bit layer, omit `--64-bit-only` and install multilib suppor
 
 You can shorten `~/.local/bin/fgvk` to `fgvk` when `~/.local/bin` is on the `PATH` of the shell or launcher that starts the game.
 
-`fgvk` uses the matching game profile or the profile marked **Use as default for fgvk launches**. The layer stays inactive when neither applies.
+`fgvk` uses the matching game profile or the default profile, marked `(default)` in the settings window. The layer stays inactive when neither applies.
 
 For HDR in Proton on Wayland, add `PROTON_ENABLE_WAYLAND=1 DXVK_HDR=1` to the game’s launch options. To disable frame generation inside gamescope, set `FGVK_GAMESCOPE=0`.
 

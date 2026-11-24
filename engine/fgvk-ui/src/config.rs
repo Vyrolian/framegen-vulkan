@@ -18,7 +18,7 @@ use toml_edit::{value, Array, ArrayOfTables, DocumentMut, Item, Table, TableLike
 const APP_DIR: &str = "framegen-vulkan";
 const FILE_NAME: &str = "conf.toml";
 const FORMAT_VERSION: i64 = 2;
-const DEFAULT_PROFILE_NAME: &str = "Default";
+const DEFAULT_PROFILE_NAME: &str = "Main profile";
 const UNNAMED_PROFILE: &str = "unnamed";
 const STALE_PROFILE: &str = "The profile list changed on disk. Nothing was written; try again.";
 const MISSING_PROFILES: &str = "The file has no profile tables.";
@@ -260,7 +260,7 @@ impl Config {
         }
     }
 
-    /// Creates the file with one `Default` profile. Never overwrites an existing file.
+    /// Creates the file with one `Main profile` profile. Never overwrites an existing file.
     pub fn create_default(&mut self) -> Result<(), String> {
         let path = self.path.clone()?;
         if fs::symlink_metadata(&path).is_ok() {
@@ -1345,8 +1345,8 @@ mod tests {
         let doc = parse_document(&text).expect("default document is valid");
         let list = read_profiles(&doc);
         assert_eq!(list.len(), 1);
-        assert_eq!(list[0].key.name, "Default");
-        assert_eq!(read_default_profile(&doc), Some("Default"));
+        assert_eq!(list[0].key.name, "Main profile");
+        assert_eq!(read_default_profile(&doc), Some("Main profile"));
         assert!(text.starts_with("version = 2"));
     }
 
@@ -1521,8 +1521,8 @@ mod tests {
         config.create_default().expect("create succeeds");
         match config.view() {
             ConfigView::Ready(settings) => {
-                assert_eq!(settings.profiles[0].key.name, "Default");
-                assert_eq!(settings.default_profile.as_deref(), Some("Default"));
+                assert_eq!(settings.profiles[0].key.name, "Main profile");
+                assert_eq!(settings.default_profile.as_deref(), Some("Main profile"));
             }
             other => panic!("expected ready view, got {other:?}"),
         }

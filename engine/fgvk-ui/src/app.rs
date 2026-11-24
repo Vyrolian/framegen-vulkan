@@ -269,27 +269,27 @@ impl App {
         }
 
         section(ui, "Profile");
-        self.profile_row(ui, &profiles);
+        self.profile_row(ui, &profiles, default_profile.as_deref());
         self.name_editor(ui);
         self.delete_confirm(ui, &profiles);
 
         match profiles.get(self.selected) {
             Some(profile) => {
-                let mut is_default = default_profile.as_deref() == Some(profile.key.name.as_str());
-                let was_default = is_default;
+                let is_default = default_profile.as_deref() == Some(profile.key.name.as_str());
+                let label = if is_default {
+                    "Default profile"
+                } else {
+                    "Make default"
+                };
                 if ui
-                    .add_enabled(
-                        !was_default,
-                        egui::Checkbox::new(&mut is_default, "Use as default for fgvk launches"),
-                    )
-                    .on_hover_text("Uses this profile when no per-game profile matches.")
+                    .add_enabled(!is_default, Button::new(label))
+                    .on_hover_text("Use this profile for fgvk launches that match no per-game profile.")
                     .on_disabled_hover_text(
-                        "There must always be a default profile. Make another profile the default instead.",
+                        "This is the default profile for fgvk launches that match no per-game profile. Make another profile the default to change it.",
                     )
-                    .changed()
-                    && is_default
+                    .clicked()
                 {
-                    let result = self.config.set_default_profile(&profile.key, is_default);
+                    let result = self.config.set_default_profile(&profile.key, true);
                     self.report(result);
                 }
                 self.profile_fields(ui, profile);
@@ -304,10 +304,17 @@ impl App {
         self.global(ui, dll.unwrap_or_default(), allow_fp16, real_present_lead);
     }
 
-    fn profile_row(&mut self, ui: &mut Ui, profiles: &[Profile]) {
+    fn profile_row(&mut self, ui: &mut Ui, profiles: &[Profile], default_profile: Option<&str>) {
+        let shown = |profile: &Profile| {
+            if default_profile == Some(profile.key.name.as_str()) {
+                format!("{} (default)", profile.key.name)
+            } else {
+                profile.key.name.clone()
+            }
+        };
         let current = profiles
             .get(self.selected)
-            .map_or("No profiles", |profile| profile.key.name.as_str());
+            .map_or_else(|| "No profiles".to_owned(), &shown);
         let rename_target = profiles
             .get(self.selected)
             .map(|profile| profile.key.clone());
@@ -317,10 +324,10 @@ impl App {
             .horizontal(|ui| {
                 egui::ComboBox::from_id_salt("profile")
                     .width(170.0)
-                    .selected_text(current)
+                    .selected_text(current.as_str())
                     .show_ui(ui, |ui| {
                         for (index, profile) in profiles.iter().enumerate() {
-                            ui.selectable_value(&mut selected, index, profile.key.name.as_str());
+                            ui.selectable_value(&mut selected, index, shown(profile));
                         }
                     });
                 let new_clicked = ui.button("New").clicked();
