@@ -13,7 +13,10 @@ use egui::{
 };
 
 use crate::capture_ui::Captures;
-use crate::config::{self, Config, ConfigView, FpsMemory, Mode, Profile, ProfileKey, Settings};
+use crate::config::{
+    self, Config, ConfigView, FpsMemory, Mode, Profile, ProfileKey, Settings,
+    DEFAULT_PROFILE_DELETE,
+};
 use crate::dll_locate;
 use crate::launcher_conf::{LauncherConf, Logging, Switch};
 use crate::live::{self, Row, View};
@@ -309,6 +312,9 @@ impl App {
         let rename_target = profiles
             .get(self.selected)
             .map(|profile| profile.key.clone());
+        let selected_is_default = rename_target
+            .as_ref()
+            .is_some_and(|key| default_profile == Some(key.name.as_str()));
         let mut selected = self.selected;
 
         let (new_clicked, rename_clicked, delete_clicked) = ui
@@ -326,8 +332,15 @@ impl App {
                     .add_enabled(rename_target.is_some(), Button::new("Rename"))
                     .clicked();
                 let delete_clicked = ui
-                    .add_enabled(profiles.len() > 1, Button::new("Delete"))
-                    .on_disabled_hover_text("The last profile cannot be deleted.")
+                    .add_enabled(
+                        profiles.len() > 1 && !selected_is_default,
+                        Button::new("Delete"),
+                    )
+                    .on_disabled_hover_text(if selected_is_default {
+                        DEFAULT_PROFILE_DELETE
+                    } else {
+                        "The last profile cannot be deleted."
+                    })
                     .clicked();
                 (new_clicked, rename_clicked, delete_clicked)
             })

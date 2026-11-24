@@ -41,7 +41,7 @@ The window has these controls:
 | Control | What it sets |
 | --- | --- |
 | Profile | Chooses the profile to edit. New, Rename and Delete manage profiles; each profile needs a unique name. |
-| Set as default | Makes the selected profile the default for games launched through `fgvk` that have no per-game match. The button is disabled on the default profile; deleting the default profile moves the default to the first remaining profile. |
+| Set as default | Makes the selected profile the default for games launched through `fgvk` that have no per-game match. The button is disabled on the default profile, and the default profile cannot be deleted until another profile is set as the default. |
 | Games | Lists the `active_in` entries. Type an executable name and press Add, or choose Pick running… to add a program that is running now. The × button removes an entry. |
 | Frame generation | `Off` or a fixed `2x` to `5x` multiplier. |
 | Quality (flow scale) | `flow_scale` from 25% to 100%. Higher values track motion more precisely and cost more GPU time. |

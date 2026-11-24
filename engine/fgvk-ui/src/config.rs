@@ -20,6 +20,8 @@ const FILE_NAME: &str = "conf.toml";
 const FORMAT_VERSION: i64 = 2;
 const DEFAULT_PROFILE_NAME: &str = "Main profile";
 const UNNAMED_PROFILE: &str = "unnamed";
+pub const DEFAULT_PROFILE_DELETE: &str =
+    "Cannot delete the default profile. Set another profile as the default first.";
 const STALE_PROFILE: &str = "The profile list changed on disk. Nothing was written; try again.";
 const MISSING_PROFILES: &str = "The file has no profile tables.";
 
@@ -681,16 +683,14 @@ fn rename_profile_in(doc: &mut DocumentMut, key: &ProfileKey, name: &str) -> Res
 
 fn remove_profile_in(doc: &mut DocumentMut, key: &ProfileKey) -> Result<(), String> {
     let index = verified_index(doc, key)?;
-    let was_default = read_default_profile(doc) == Some(key.name.as_str());
+    if read_default_profile(doc) == Some(key.name.as_str()) {
+        return Err(DEFAULT_PROFILE_DELETE.to_owned());
+    }
     let profiles = profiles_mut(doc)?;
     if profiles.len() <= 1 {
         return Err("The last profile cannot be deleted.".to_owned());
     }
     profiles.remove(index);
-    let first = profiles.get(0).map(|table| profile_name(table).to_owned());
-    if let (true, Some(first)) = (was_default, first) {
-        write_default_profile(doc, &first);
-    }
     Ok(())
 }
 
@@ -1465,7 +1465,16 @@ mod tests {
         config
             .set_default_profile(&renamed, true)
             .expect("restore default");
-        config.delete_profile(&renamed).expect("delete default");
+        assert_eq!(
+            config.delete_profile(&renamed),
+            Err(DEFAULT_PROFILE_DELETE.to_owned())
+        );
+        config
+            .set_default_profile(&alpha, true)
+            .expect("move default to Alpha");
+        config
+            .delete_profile(&renamed)
+            .expect("delete former default");
         assert!(
             matches!(config.view(), ConfigView::Ready(settings) if settings.default_profile.as_deref() == Some("Alpha"))
         );
