@@ -295,8 +295,32 @@ impl Config {
             verified_index(doc, key)?;
             if enabled {
                 write_default_profile(doc, &key.name);
+                Ok(())
             } else {
-                clear_default_profile(doc, &key.name);
+                Err(
+                    "There must always be a default profile. Make another profile the default instead."
+                        .to_owned(),
+                )
+            }
+        })
+    }
+
+    /// Makes the first profile the default when the file names no existing profile.
+    pub fn ensure_default_profile(&mut self) -> Result<(), String> {
+        self.edit(|doc| {
+            let names: Vec<String> = profiles_ref(doc)
+                .map(|list| {
+                    list.iter()
+                        .map(|table| profile_name(table).to_owned())
+                        .collect()
+                })
+                .unwrap_or_default();
+            let current = read_default_profile(doc).map(str::to_owned);
+            match names.first() {
+                Some(first) if !current.is_some_and(|name| names.contains(&name)) => {
+                    write_default_profile(doc, first);
+                }
+                _ => {}
             }
             Ok(())
         })
@@ -480,6 +504,7 @@ fn parse_document(text: &str) -> Result<DocumentMut, String> {
 pub fn default_document() -> DocumentMut {
     let mut doc = DocumentMut::new();
     doc.insert("version", value(FORMAT_VERSION));
+    write_default_profile(&mut doc, DEFAULT_PROFILE_NAME);
     let mut profiles = ArrayOfTables::new();
     profiles.push(new_profile(DEFAULT_PROFILE_NAME));
     doc.insert("profile", Item::ArrayOfTables(profiles));
@@ -565,14 +590,6 @@ fn read_default_profile(doc: &DocumentMut) -> Option<&str> {
 fn write_default_profile(doc: &mut DocumentMut, name: &str) {
     if let Some(global) = global_mut(doc) {
         set_value(global, "default_profile", Value::from(name));
-    }
-}
-
-fn clear_default_profile(doc: &mut DocumentMut, name: &str) {
-    if read_default_profile(doc) == Some(name) {
-        if let Some(global) = global_mut(doc) {
-            global.remove("default_profile");
-        }
     }
 }
 
@@ -664,12 +681,16 @@ fn rename_profile_in(doc: &mut DocumentMut, key: &ProfileKey, name: &str) -> Res
 
 fn remove_profile_in(doc: &mut DocumentMut, key: &ProfileKey) -> Result<(), String> {
     let index = verified_index(doc, key)?;
+    let was_default = read_default_profile(doc) == Some(key.name.as_str());
     let profiles = profiles_mut(doc)?;
     if profiles.len() <= 1 {
         return Err("The last profile cannot be deleted.".to_owned());
     }
     profiles.remove(index);
-    clear_default_profile(doc, &key.name);
+    let first = profiles.get(0).map(|table| profile_name(table).to_owned());
+    if let (true, Some(first)) = (was_default, first) {
+        write_default_profile(doc, &first);
+    }
     Ok(())
 }
 
@@ -1325,6 +1346,7 @@ mod tests {
         let list = read_profiles(&doc);
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].key.name, "Default");
+        assert_eq!(read_default_profile(&doc), Some("Default"));
         assert!(text.starts_with("version = 2"));
     }
 
@@ -1426,9 +1448,7 @@ mod tests {
         config
             .set_default_profile(&beta, true)
             .expect("select Beta");
-        config
-            .set_default_profile(&alpha, false)
-            .expect("clear Alpha");
+        assert!(config.set_default_profile(&alpha, false).is_err());
         config
             .rename_profile(&beta, "Renamed")
             .expect("rename Beta");
@@ -1438,18 +1458,16 @@ mod tests {
         );
 
         let renamed = key(beta.index, "Renamed");
-        config
-            .set_default_profile(&renamed, false)
-            .expect("clear default");
+        assert!(config.set_default_profile(&renamed, false).is_err());
         assert!(
-            matches!(config.view(), ConfigView::Ready(settings) if settings.default_profile.is_none())
+            matches!(config.view(), ConfigView::Ready(settings) if settings.default_profile.as_deref() == Some("Renamed"))
         );
         config
             .set_default_profile(&renamed, true)
             .expect("restore default");
         config.delete_profile(&renamed).expect("delete default");
         assert!(
-            matches!(config.view(), ConfigView::Ready(settings) if settings.default_profile.is_none())
+            matches!(config.view(), ConfigView::Ready(settings) if settings.default_profile.as_deref() == Some("Alpha"))
         );
         fs::remove_dir_all(&dir).ok();
     }
@@ -1502,9 +1520,31 @@ mod tests {
         assert!(matches!(config.view(), ConfigView::Missing(_)));
         config.create_default().expect("create succeeds");
         match config.view() {
-            ConfigView::Ready(settings) => assert_eq!(settings.profiles[0].key.name, "Default"),
+            ConfigView::Ready(settings) => {
+                assert_eq!(settings.profiles[0].key.name, "Default");
+                assert_eq!(settings.default_profile.as_deref(), Some("Default"));
+            }
             other => panic!("expected ready view, got {other:?}"),
         }
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn ensure_default_profile_repairs_a_missing_default() {
+        let dir = temp_dir("ensure-default");
+        let path = dir.join(FILE_NAME);
+        fs::write(&path, BASE).expect("write fixture");
+        let mut config = Config::open(Ok(path.clone()));
+        config.ensure_default_profile().expect("repair succeeds");
+        assert!(
+            matches!(config.view(), ConfigView::Ready(settings) if settings.default_profile.as_deref() == Some("Alpha"))
+        );
+        config
+            .ensure_default_profile()
+            .expect("repair is idempotent");
+        assert!(
+            matches!(config.view(), ConfigView::Ready(settings) if settings.default_profile.as_deref() == Some("Alpha"))
+        );
         fs::remove_dir_all(&dir).ok();
     }
 }

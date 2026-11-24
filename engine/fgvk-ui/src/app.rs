@@ -114,6 +114,10 @@ pub struct App {
     remembered: Option<String>,
     /// Set once the first configuration view with profiles has applied the remembered selection.
     restored: bool,
+    /// Set once the first missing-file view has tried to create the file.
+    auto_create_tried: bool,
+    /// Set once the editor has tried to repair a missing default profile.
+    default_repair_tried: bool,
     /// The theme list, the theme in use and the Catppuccin accent. Its palette is applied to egui.
     themes: Catalog,
 }
@@ -150,6 +154,8 @@ impl App {
             state_path,
             remembered,
             restored: false,
+            auto_create_tried: false,
+            default_repair_tried: false,
             themes,
         }
     }
@@ -199,7 +205,14 @@ impl App {
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 match self.config.view() {
-                    ConfigView::Missing(path) => self.missing(ui, &path),
+                    ConfigView::Missing(path) => {
+                        if !self.auto_create_tried {
+                            self.auto_create_tried = true;
+                            let result = self.config.create_default();
+                            self.report(result);
+                        }
+                        self.missing(ui, &path);
+                    }
                     ConfigView::Invalid(message) => {
                         self.clear_profile_drafts();
                         invalid(ui, &message);
@@ -240,6 +253,14 @@ impl App {
             self.restored = true;
         }
         self.selected = self.selected.min(profiles.len().saturating_sub(1));
+        let has_default = profiles
+            .iter()
+            .any(|profile| default_profile.as_deref() == Some(profile.key.name.as_str()));
+        if !has_default && !profiles.is_empty() && !self.default_repair_tried {
+            self.default_repair_tried = true;
+            let result = self.config.ensure_default_profile();
+            self.report(result);
+        }
 
         section(ui, "Profile");
         self.profile_row(ui, &profiles);
@@ -249,10 +270,18 @@ impl App {
         match profiles.get(self.selected) {
             Some(profile) => {
                 let mut is_default = default_profile.as_deref() == Some(profile.key.name.as_str());
+                let was_default = is_default;
                 if ui
-                    .checkbox(&mut is_default, "Use as default for fgvk launches")
+                    .add_enabled(
+                        !was_default,
+                        egui::Checkbox::new(&mut is_default, "Use as default for fgvk launches"),
+                    )
                     .on_hover_text("Uses this profile when no per-game profile matches.")
+                    .on_disabled_hover_text(
+                        "There must always be a default profile. Make another profile the default instead.",
+                    )
                     .changed()
+                    && is_default
                 {
                     let result = self.config.set_default_profile(&profile.key, is_default);
                     self.report(result);
@@ -266,12 +295,7 @@ impl App {
         }
 
         section(ui, "Global");
-        self.global(
-            ui,
-            dll.unwrap_or_default(),
-            allow_fp16,
-            real_present_lead,
-        );
+        self.global(ui, dll.unwrap_or_default(), allow_fp16, real_present_lead);
     }
 
     fn profile_row(&mut self, ui: &mut Ui, profiles: &[Profile]) {
@@ -645,13 +669,7 @@ impl App {
         }
     }
 
-    fn global(
-        &mut self,
-        ui: &mut Ui,
-        dll: String,
-        allow_fp16: bool,
-        real_present_lead: bool,
-    ) {
+    fn global(&mut self, ui: &mut Ui, dll: String, allow_fp16: bool, real_present_lead: bool) {
         let mut fp16 = allow_fp16;
         if ui.checkbox(&mut fp16, "FP16 (faster)").changed() {
             let result = self.config.set_global_allow_fp16(fp16);
