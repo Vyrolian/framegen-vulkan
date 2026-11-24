@@ -2,6 +2,8 @@
 
 use std::ops::RangeInclusive;
 use std::path::PathBuf;
+use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
 use egui::text::{LayoutJob, TextWrapping};
@@ -12,6 +14,7 @@ use egui::{
 
 use crate::capture_ui::Captures;
 use crate::config::{self, Config, ConfigView, FpsMemory, Mode, Profile, ProfileKey, Settings};
+use crate::dll_locate;
 use crate::launcher_conf::{LauncherConf, Logging, Switch};
 use crate::live::{self, Row, View};
 use crate::picker::Picker;
@@ -101,6 +104,8 @@ pub struct App {
     fps_text: Option<String>,
     quality: Option<f64>,
     dll_text: Option<String>,
+    /// The open file picker's answer: Some(path), or None when it was cancelled.
+    dll_pick: Option<Receiver<Option<PathBuf>>>,
     new_game: String,
     /// Exists only while the "Pick a running program" window is open for the selected profile.
     picker: Option<Picker>,
@@ -142,6 +147,7 @@ impl App {
             fps_text: None,
             quality: None,
             dll_text: None,
+            dll_pick: None,
             new_game: String::new(),
             picker: None,
             last_poll: Instant::now(),
@@ -698,10 +704,68 @@ impl App {
             let result = self.config.set_global_dll(Some(text.trim()));
             self.report(result);
         }
+        let (browse, locate) = ui
+            .horizontal(|ui| {
+                let browse = ui
+                    .add_enabled(self.dll_pick.is_none(), Button::new("Browse…"))
+                    .on_hover_text("Choose Lossless.dll with the desktop file picker.")
+                    .clicked();
+                let locate = ui
+                    .button("Auto-locate")
+                    .on_hover_text("Search the Steam libraries for Lossless.dll once.")
+                    .clicked();
+                (browse, locate)
+            })
+            .inner;
+        if browse {
+            let (sender, receiver) = mpsc::channel();
+            thread::spawn(move || {
+                let file = rfd::FileDialog::new()
+                    .set_title("Choose Lossless.dll")
+                    .add_filter("Lossless.dll", &["dll", "DLL"])
+                    .pick_file();
+                let _ = sender.send(file);
+            });
+            self.dll_pick = Some(receiver);
+        }
+        if let Some(receiver) = &self.dll_pick {
+            match receiver.try_recv() {
+                Ok(Some(path)) => {
+                    self.dll_pick = None;
+                    self.use_dll(&path);
+                }
+                Ok(None) | Err(TryRecvError::Disconnected) => self.dll_pick = None,
+                Err(TryRecvError::Empty) => {}
+            }
+        }
+        if locate {
+            match dll_locate::locate_from_env() {
+                Some(path) => self.use_dll(&path),
+                None => {
+                    self.status = Status::Error(
+                        "Lossless.dll was not found in any Steam library. Use Browse to choose it."
+                            .to_owned(),
+                    );
+                }
+            }
+        }
         hint(
             ui,
-            "Needed for frame generation. Leave empty to remove the setting.",
+            "Needed for frame generation. Nothing is searched automatically. Restart the game to apply.",
         );
+    }
+
+    fn use_dll(&mut self, path: &std::path::Path) {
+        self.dll_text = None;
+        match path.to_str() {
+            Some(text) => {
+                let result = self.config.set_global_dll(Some(text));
+                self.report(result);
+            }
+            None => {
+                self.status = Status::Error("The Lossless.dll path is not valid UTF-8.".to_owned())
+            }
+        }
     }
 
     /// Readings from the pacing log of the game that is running, refreshed by the poll in `logic`.

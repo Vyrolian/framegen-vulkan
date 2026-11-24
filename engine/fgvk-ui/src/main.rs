@@ -4,6 +4,7 @@ mod analysis;
 mod app;
 mod capture_ui;
 mod config;
+mod dll_locate;
 mod launch;
 mod launcher_conf;
 mod live;

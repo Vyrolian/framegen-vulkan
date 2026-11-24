@@ -30,7 +30,7 @@ framegen-vulkan activates on the next launch of a matched process. To cover game
 
 ### Lossless Scaling availability
 
-**Frame Generation requires Lossless Scaling's `Lossless.dll`.** If framegen-vulkan reports it missing, install Lossless Scaling or set `dll` to the correct `Lossless.dll` path, then restart the game.
+**Frame Generation requires Lossless Scaling's `Lossless.dll`.** If framegen-vulkan reports it missing, set `dll` to the `Lossless.dll` path (Browse or Auto-locate in the settings window), then restart the game. framegen-vulkan never searches for it on its own.
 
 ## Settings window
 
@@ -51,7 +51,7 @@ The window has these controls:
 | Performance mode | `performance_mode` for the selected profile. |
 | FP16 (faster) | `[global] allow_fp16`. Restart the game to apply. |
 | Pacing correction | `[global] real_present_lead`: presents real frames earlier by their measured GPU wait. Applies while the game is running. The older `[global] pacing_correction` key has no control in the window; edit the file to change it. |
-| Lossless.dll | The `dll` path for Frame Generation. Leave it empty to remove the setting. |
+| Lossless.dll | The `dll` path for Frame Generation. Browse opens the desktop file picker; Auto-locate searches the Steam libraries once, including those in `libraryfolders.vdf`. Leave it empty to remove the setting. |
 
 Typed values apply when you press Enter or leave the field. Sliders apply when you release them, and buttons apply at once. Live settings change a running game; restart-only settings apply the next time the game starts. See [Applying changes](#applying-changes).
 
@@ -94,7 +94,7 @@ Older files can still contain `adaptive`, `adaptive_max_multiplier`, `adaptive_a
 | `allow_fp16` (restart, `[global]`) | FP16 for supported Frame Generation models; `false` uses FP32. |
 | `pacing_correction` (live, `[global]`) | On by default. Measures when each output gets the GPU after its present and moves each generated frame onto its own ideal point between its two reals, at every multiplier. Real frames are never moved. `FGVK_REAL_OFFSET_US=auto` turns it on; any other value turns it off. `false` keeps the uncorrected timing. |
 | `real_present_lead` (live, `[global]`) | On by default. A real output that follows a generated output presents earlier by the GPU wait its markers measured, at most 2.5 ms, so the GPU spacing stays even. `FGVK_REAL_PRESENT_LEAD=1` or `0` overrides it. |
-| `dll` (restart) | Lossless.dll path override; leave unset for automatic detection. |
+| `dll` (restart) | Lossless.dll path; required for Frame Generation, never detected automatically. |
 | `gpu` (restart) | Optional GPU name, vendor/device ID, or PCI bus ID. Multi-GPU Frame Generation is unsupported. |
 
 ## Compatibility

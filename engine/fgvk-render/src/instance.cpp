@@ -13,7 +13,6 @@
 
 #include "fgvk-common/configuration/detection.hpp"
 #include "fgvk-common/helpers/errors.hpp"
-#include "fgvk-common/helpers/paths.hpp"
 #include "fgvk-common/vulkan/vulkan.hpp"
 
 #include <algorithm>
@@ -802,11 +801,9 @@ void Root::createSwapchainContext(const vk::Vulkan& vk,
             const ScopedEnvironmentOverride disableVkBasalt(
                 "ENABLE_VKBASALT", "0"
             );
-            std::string dll{};
-            if (global.dll.has_value())
-                dll = *global.dll;
-            else
-                dll = ls::findShaderDll();
+            if (!global.dll.has_value())
+                throw ls::error("no Lossless.dll path is set; choose it in the fgvk settings window");
+            const std::string dll = *global.dll;
 
             const auto applicationDevice = identifyApplicationDevice(vk);
             if (profile.gpu) {
@@ -876,11 +873,9 @@ backend::Instance* Root::attachedBackendFor(const vk::Vulkan& vk) {
         return nullptr;
     try {
         const auto& global = this->config.get().global();
-        std::string dll{};
-        if (global.dll.has_value())
-            dll = *global.dll;
-        else
-            dll = ls::findShaderDll();
+        if (!global.dll.has_value())
+            throw ls::error("no Lossless.dll path is set; choose it in the fgvk settings window");
+        const std::string dll = *global.dll;
         auto instance = std::make_unique<backend::Instance>(vk, dll, this->fp16AtStartup);
         std::cerr << "framegen-vulkan: inline frame generation: device attached, queue_family="
                   << vk.queueFamilyIndex() << '\n';

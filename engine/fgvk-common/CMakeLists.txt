@@ -3,7 +3,6 @@ set(COMMON_SOURCES
     "src/configuration/detection.cpp"
     "src/configuration/launch.cpp"
     "src/helpers/errors.cpp"
-    "src/helpers/paths.cpp"
     "src/vulkan/buffer.cpp"
     "src/vulkan/command_buffer.cpp"
     "src/vulkan/descriptor_pool.cpp"
@@ -52,10 +51,6 @@ if(BUILD_TESTING)
     add_test(NAME descriptor-pool-capacity COMMAND fgvk-descriptor-pool-tests)
     set_tests_properties(external-fd-ownership descriptor-pool-capacity PROPERTIES
         LABELS "portable-policy")
-
-    add_executable(fgvk-dll-paths-tests "tests/paths_tests.cpp")
-    target_link_libraries(fgvk-dll-paths-tests PRIVATE fgvk-common)
-    add_test(NAME lossless-dll-discovery COMMAND fgvk-dll-paths-tests)
 
     add_executable(fgvk-config-tests
         "tests/config_tests.cpp")

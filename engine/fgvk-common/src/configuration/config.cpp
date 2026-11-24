@@ -25,7 +25,7 @@ void ConfigFile::createDefaultConfigFile(const std::filesystem::path& path) {
         ofs << "version = " << ConfigFile::formatVersion << R"(
 
 [global]
-# dll = '/media/games/Lossless Scaling/Lossless.dll' # if you don't have LS in the default location
+# dll = '/media/games/Lossless Scaling/Lossless.dll' # required for frame generation; set it in the fgvk settings window
 allow_fp16 = true # request FP16 model arithmetic; false selects FP32
 pacing_correction = true # centre generated frames from measured GPU present times
 real_present_lead = true # present real frames earlier by their measured GPU wait

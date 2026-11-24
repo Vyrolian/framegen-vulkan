@@ -14,3 +14,4 @@ eframe = { version = "0.37", default-features = false, features = ["glow", "wayl
 egui = "0.37"
 toml_edit = "0.25"
 serde_json = "1"
+rfd = { version = "0.18", default-features = false, features = ["xdg-portal"] }
